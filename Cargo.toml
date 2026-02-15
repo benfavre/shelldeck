@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shelldeck",
+    "crates/shelldeck-core",
+    "crates/shelldeck-ssh",
+    "crates/shelldeck-terminal",
+    "crates/shelldeck-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["ShellDeck Contributors"]
+description = "GPU-accelerated native desktop terminal and SSH companion app"
+repository = "https://github.com/nickarrow/shelldeck"
+homepage = "https://github.com/nickarrow/shelldeck"
+
+[workspace.dependencies]
+# GPUI framework (via adabraka fork)
+gpui = { package = "adabraka-gpui", version = "0.3" }
+adabraka-ui = "0.3"
+
+# SSH
+russh = { version = "0.45" }
+russh-keys = { version = "0.45" }
+ssh2-config = "0.2"
+
+# Terminal
+portable-pty = "0.8"
+vte = "0.13"
+
+# Async runtime
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Serialization & config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+directories = "6"
+notify = "7"
+keyring = "3"
+parking_lot = "0.12"
+smallvec = "1.13"
+once_cell = "1.19"
+
+[patch.crates-io]
+adabraka-gpui = { path = "patches/adabraka-gpui" }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

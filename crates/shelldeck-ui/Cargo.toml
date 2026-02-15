@@ -1,0 +1,21 @@
+[package]
+name = "shelldeck-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shelldeck-core = { path = "../shelldeck-core" }
+shelldeck-ssh = { path = "../shelldeck-ssh" }
+shelldeck-terminal = { path = "../shelldeck-terminal" }
+gpui = { workspace = true }
+adabraka-ui = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+smallvec = { workspace = true }
+once_cell = { workspace = true }
+open = "5"
