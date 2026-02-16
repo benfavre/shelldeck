@@ -3,6 +3,7 @@ pub mod platform;
 
 use gpui::*;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The running application version, set at compile time.
@@ -16,6 +17,20 @@ const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Delay before the first update check after launch.
 const INITIAL_CHECK_DELAY: Duration = Duration::from_secs(10);
+
+/// Shared Tokio runtime for HTTP requests. GPUI's background executor
+/// does not provide a Tokio reactor, so reqwest/hyper calls must run here.
+fn http_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .thread_name("shelldeck-http")
+            .build()
+            .expect("Failed to create HTTP tokio runtime")
+    })
+}
 
 /// Status of the auto-updater, suitable for display in the status bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,15 +137,18 @@ impl AutoUpdater {
         );
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let result = async {
-                let response = reqwest::get(&url).await?;
-                if !response.status().is_success() {
-                    anyhow::bail!("Server returned HTTP {}", response.status().as_u16());
-                }
-                let release: ReleaseInfo = response.json().await?;
-                Ok(release)
-            }
-            .await;
+            let result = http_runtime()
+                .spawn(async move {
+                    let response = reqwest::get(&url).await?;
+                    if !response.status().is_success() {
+                        anyhow::bail!("Server returned HTTP {}", response.status().as_u16());
+                    }
+                    let release: ReleaseInfo = response.json().await?;
+                    Ok(release)
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Task join error: {}", e))
+                .and_then(|r| r);
 
             match result {
                 Ok(release) => {
@@ -193,34 +211,60 @@ impl AutoUpdater {
         self.set_status(AutoUpdateStatus::Downloading, cx);
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let result = async {
-                let tmp_dir = tempfile::tempdir()?;
-                let archive_name = if cfg!(target_os = "linux") {
-                    "update.tar.gz"
-                } else {
-                    "update.zip"
-                };
-                let archive_path = tmp_dir.path().join(archive_name);
+            // Download phase runs on the Tokio runtime (needs reactor for HTTP)
+            let download_result = http_runtime()
+                .spawn(async move {
+                    let tmp_dir = tempfile::tempdir()?;
+                    let archive_name = if cfg!(target_os = "linux") {
+                        "update.tar.gz"
+                    } else {
+                        "update.zip"
+                    };
+                    let archive_path = tmp_dir.path().join(archive_name);
 
-                installer::download_and_verify(&release, &archive_path).await?;
+                    installer::download_and_verify(&release, &archive_path).await?;
+                    Ok::<(tempfile::TempDir, std::path::PathBuf, String), anyhow::Error>((
+                        tmp_dir,
+                        archive_path,
+                        release.version.clone(),
+                    ))
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Task join error: {}", e))
+                .and_then(|r| r);
 
-                let _ = this.update(cx, |u, cx| {
-                    u.set_status(AutoUpdateStatus::Installing, cx);
-                });
-
-                installer::install(&archive_path).await?;
-                Ok::<String, anyhow::Error>(release.version.clone())
-            }
-            .await;
-
-            match result {
-                Ok(version) => {
+            match download_result {
+                Ok((_tmp_dir, archive_path, version)) => {
                     let _ = this.update(cx, |u, cx| {
-                        u.set_status(AutoUpdateStatus::Updated(version), cx);
+                        u.set_status(AutoUpdateStatus::Installing, cx);
                     });
+
+                    // Install phase also runs on the Tokio runtime (uses tokio::process)
+                    let install_result = http_runtime()
+                        .spawn(async move {
+                            installer::install(&archive_path).await?;
+                            Ok::<String, anyhow::Error>(version)
+                        })
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))
+                        .and_then(|r| r);
+
+                    match install_result {
+                        Ok(version) => {
+                            let _ = this.update(cx, |u, cx| {
+                                u.set_status(AutoUpdateStatus::Updated(version), cx);
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Update installation failed: {}", e);
+                            let _ = this.update(cx, |u, cx| {
+                                u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
+                            });
+                        }
+                    }
                 }
                 Err(e) => {
-                    tracing::error!("Update installation failed: {}", e);
+                    tracing::error!("Update download failed: {}", e);
                     let _ = this.update(cx, |u, cx| {
                         u.set_status(AutoUpdateStatus::Errored(e.to_string()), cx);
                     });
