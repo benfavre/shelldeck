@@ -7,8 +7,9 @@ use uuid::Uuid;
 // ScriptLanguage — determines how the script body gets executed
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ScriptLanguage {
+    #[default]
     Shell,
     Python,
     Node,
@@ -21,12 +22,6 @@ pub enum ScriptLanguage {
     Systemd,
     Nginx,
     Custom(CustomRunner),
-}
-
-impl Default for ScriptLanguage {
-    fn default() -> Self {
-        Self::Shell
-    }
 }
 
 impl ScriptLanguage {
@@ -198,7 +193,7 @@ pub struct RunnerSpec {
 // ScriptCategory — for grouping in the UI
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ScriptCategory {
     System,
     Database,
@@ -208,13 +203,8 @@ pub enum ScriptCategory {
     Network,
     Security,
     Custom,
+    #[default]
     Uncategorized,
-}
-
-impl Default for ScriptCategory {
-    fn default() -> Self {
-        Self::Uncategorized
-    }
 }
 
 impl ScriptCategory {

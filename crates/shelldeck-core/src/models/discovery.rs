@@ -332,7 +332,6 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
                 let name = trimmed_semi
                     .strip_prefix("server_name")
                     .unwrap_or("")
-                    .trim()
                     .split_whitespace()
                     .next()
                     .unwrap_or("")
@@ -350,7 +349,6 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
                 let listen_parts: Vec<&str> = trimmed_semi
                     .strip_prefix("listen")
                     .unwrap_or("")
-                    .trim()
                     .split_whitespace()
                     .collect();
                 if let Some(port_str) = listen_parts.first() {
@@ -360,7 +358,7 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
                         listen_port = p;
                     }
                 }
-                if listen_parts.iter().any(|p| *p == "ssl") {
+                if listen_parts.contains(&"ssl") {
                     ssl = true;
                 }
             } else if trimmed.contains("ssl_certificate") && !trimmed.contains("ssl_certificate_key") {

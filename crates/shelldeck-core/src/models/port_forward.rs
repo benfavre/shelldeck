@@ -8,8 +8,9 @@ pub enum ForwardDirection {
     Dynamic,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ForwardStatus {
+    #[default]
     Inactive,
     Active,
     Error,
@@ -129,8 +130,3 @@ impl PortForward {
     }
 }
 
-impl Default for ForwardStatus {
-    fn default() -> Self {
-        Self::Inactive
-    }
-}

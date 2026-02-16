@@ -8,8 +8,9 @@ pub enum ConnectionSource {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionStatus {
+    #[default]
     Disconnected,
     Connecting,
     Connected,
@@ -68,8 +69,3 @@ impl Connection {
     }
 }
 
-impl Default for ConnectionStatus {
-    fn default() -> Self {
-        Self::Disconnected
-    }
-}

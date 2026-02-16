@@ -11,6 +11,12 @@ pub struct ConfigWatcher {
     _watcher: Option<RecommendedWatcher>,
 }
 
+impl Default for ConfigWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigWatcher {
     /// Create a new ConfigWatcher targeting the default ~/.ssh/config.
     pub fn new() -> Self {

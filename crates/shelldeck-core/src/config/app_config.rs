@@ -4,15 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub theme: ThemePreference,
     pub terminal: TerminalConfig,
     pub general: GeneralConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemePreference {
+    #[default]
     Dark,
     Light,
     System,
@@ -35,22 +36,6 @@ pub struct GeneralConfig {
     pub confirm_before_close: bool,
     pub sidebar_width: f32,
     pub auto_attach_tmux: bool,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            theme: ThemePreference::default(),
-            terminal: TerminalConfig::default(),
-            general: GeneralConfig::default(),
-        }
-    }
-}
-
-impl Default for ThemePreference {
-    fn default() -> Self {
-        Self::Dark
-    }
 }
 
 impl Default for TerminalConfig {

@@ -97,9 +97,9 @@ fn is_wildcard_only(pattern: &str) -> bool {
 /// Expand ~ in paths to the user's home directory.
 fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    if s.starts_with("~/") {
+    if let Some(stripped) = s.strip_prefix("~/") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        PathBuf::from(home).join(&s[2..])
+        PathBuf::from(home).join(stripped)
     } else {
         path.to_path_buf()
     }
@@ -214,8 +214,8 @@ fn strip_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
 
     if lower.starts_with(&kw_lower) {
         let rest = &line[keyword.len()..];
-        if rest.starts_with('=') {
-            Some(rest[1..].trim())
+        if let Some(stripped) = rest.strip_prefix('=') {
+            Some(stripped.trim())
         } else if rest.starts_with(' ') || rest.starts_with('\t') {
             Some(rest.trim())
         } else {
