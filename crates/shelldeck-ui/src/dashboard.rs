@@ -38,6 +38,12 @@ pub struct DashboardView {
     pub favorite_hosts: Vec<(String, String, bool)>, // (alias, hostname, is_connected)
 }
 
+impl Default for DashboardView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DashboardView {
     pub fn new() -> Self {
         Self {

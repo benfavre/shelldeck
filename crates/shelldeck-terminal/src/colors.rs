@@ -1,5 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TermColor {
+    #[default]
     Default,
     Named(NamedColor),
     Indexed(u8),
@@ -26,11 +27,6 @@ pub enum NamedColor {
     BrightWhite,
 }
 
-impl Default for TermColor {
-    fn default() -> Self {
-        Self::Default
-    }
-}
 
 impl NamedColor {
     /// Convert named color to (r, g, b, a) using standard xterm colors.

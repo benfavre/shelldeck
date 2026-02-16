@@ -8,6 +8,7 @@ use crate::syntax::highlight::render_code_block_with_language;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum TemplateBrowserEvent {
     Import(Script),
     Cancel,

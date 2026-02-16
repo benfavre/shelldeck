@@ -23,6 +23,12 @@ pub struct PortForwardView {
     pub forwards: Vec<PortForward>,
 }
 
+impl Default for PortForwardView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PortForwardView {
     pub fn new() -> Self {
         Self {
@@ -352,6 +358,7 @@ impl PortForwardView {
         map
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_preset_card(
         id: &str,
         title: &str,

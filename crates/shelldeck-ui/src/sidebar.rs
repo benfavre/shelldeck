@@ -234,7 +234,7 @@ impl SidebarView {
         fuzzy_match(conn.display_name(), q)
             || fuzzy_match(&conn.hostname, q)
             || fuzzy_match(&conn.user, q)
-            || conn.group.as_deref().map_or(false, |g| fuzzy_match(g, q))
+            || conn.group.as_deref().is_some_and(|g| fuzzy_match(g, q))
     }
 
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

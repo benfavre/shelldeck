@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ConnectionFormEvent {
     Save(Connection),
     Cancel,
@@ -115,22 +116,7 @@ impl ConnectionForm {
         if self.user.is_empty() {
             return false;
         }
-        match self.port.parse::<u16>() {
-            Ok(p) if p > 0 => true,
-            _ => false,
-        }
-    }
-
-    fn active_field_value(&self) -> Option<&str> {
-        self.active_field.map(|f| match f {
-            FormField::Alias => self.alias.as_str(),
-            FormField::Hostname => self.hostname.as_str(),
-            FormField::Port => self.port.as_str(),
-            FormField::User => self.user.as_str(),
-            FormField::IdentityFile => self.identity_file.as_str(),
-            FormField::ProxyJump => self.proxy_jump.as_str(),
-            FormField::Group => self.group.as_str(),
-        })
+        matches!(self.port.parse::<u16>(), Ok(p) if p > 0)
     }
 
     fn active_field_mut(&mut self) -> Option<&mut String> {

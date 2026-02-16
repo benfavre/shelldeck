@@ -246,7 +246,7 @@ impl SitesView {
             .collect();
 
         // Favorites first
-        result.sort_by(|a, b| b.favorite.cmp(&a.favorite));
+        result.sort_by_key(|s| std::cmp::Reverse(s.favorite));
 
         // Then by sort_by
         result.sort_by(|a, b| {
@@ -809,7 +809,7 @@ impl SitesView {
                         el.bg(ShellDeckColors::primary().opacity(0.15))
                             .text_color(ShellDeckColors::primary())
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(SitesEvent::OpenInBrowser(url.clone()));
                     }))
                     .child("Open"),

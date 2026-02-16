@@ -10,6 +10,7 @@ use crate::syntax::highlight::render_code_block_with_language;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ScriptFormEvent {
     Save(Script),
     Cancel,
@@ -664,12 +665,12 @@ impl ScriptForm {
         let mut chips = div().flex().gap(px(6.0));
 
         for (target, label) in options {
-            let selected = match (&self.target, &target) {
-                (ScriptTarget::Local, ScriptTarget::Local) => true,
-                (ScriptTarget::Remote(_), ScriptTarget::Remote(_)) => true,
-                (ScriptTarget::AskOnRun, ScriptTarget::AskOnRun) => true,
-                _ => false,
-            };
+            let selected = matches!(
+                (&self.target, &target),
+                (ScriptTarget::Local, ScriptTarget::Local)
+                    | (ScriptTarget::Remote(_), ScriptTarget::Remote(_))
+                    | (ScriptTarget::AskOnRun, ScriptTarget::AskOnRun)
+            );
 
             let target_for_click = match &target {
                 ScriptTarget::Remote(_) => {

@@ -51,7 +51,8 @@ impl ConnectionPool {
 
     /// Remove a session from the pool and disconnect it.
     pub async fn disconnect(&self, id: &Uuid) -> crate::Result<()> {
-        if let Some(session) = self.sessions.write().remove(id) {
+        let session = self.sessions.write().remove(id);
+        if let Some(session) = session {
             session.disconnect().await?;
             tracing::info!("Connection {} removed from pool", id);
         }

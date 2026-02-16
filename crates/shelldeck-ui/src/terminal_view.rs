@@ -420,15 +420,6 @@ impl TerminalPalette {
     }
 }
 
-/// Convert a `TermColor` to GPUI `Hsla` (uses default palette — kept for compatibility).
-#[inline]
-fn term_color_to_hsla(color: &TermColor, is_foreground: bool) -> Hsla {
-    let (r, g, b, _) = color.to_rgba(is_foreground);
-    Hsla::from(rgba(
-        (r as u32) << 24 | (g as u32) << 16 | (b as u32) << 8 | 0xFF,
-    ))
-}
-
 /// When bold is set and the foreground is a standard named color (0-7),
 /// brighten it to the bright variant (8-15).  This matches the traditional
 /// terminal convention that htop and many other TUI programs rely on.
@@ -1519,7 +1510,7 @@ impl TerminalView {
             .unwrap_or(1.0);
         let zoom_pct = format!("{}%", (zoom * 100.0).round() as u32);
 
-        let has_selection = self.active_session().map_or(false, |s| {
+        let has_selection = self.active_session().is_some_and(|s| {
             s.grid.lock().selected_text().is_some()
         });
 
@@ -1960,7 +1951,7 @@ impl TerminalView {
                                 let multi_click_threshold = std::time::Duration::from_millis(400);
 
                                 // Detect multi-click
-                                let is_multi = this.last_click_time.map_or(false, |t| {
+                                let is_multi = this.last_click_time.is_some_and(|t| {
                                     now.duration_since(t) < multi_click_threshold
                                 }) && this.last_click_pos == Some((col, row));
 
@@ -2446,6 +2437,7 @@ impl TerminalView {
     /// Create a grid canvas element that paints cells, cursor, search matches,
     /// URL underlines and scrollbar.  Shared by both the active and passive
     /// split panes.
+    #[allow(clippy::too_many_arguments)]
     fn create_grid_canvas(
         cache: Arc<GlyphCache>,
         grid: Arc<Mutex<TerminalGrid>>,
@@ -3429,9 +3421,9 @@ impl TerminalView {
                 format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes()
             }
             MouseEncoding::Normal => {
-                let b = (button + 32).min(255);
-                let c = ((col as u8).saturating_add(32)).min(255);
-                let r = ((row as u8).saturating_add(32)).min(255);
+                let b = button + 32 ;
+                let c = (col as u8).saturating_add(32) ;
+                let r = (row as u8).saturating_add(32) ;
                 vec![0x1b, b'[', b'M', b, c, r]
             }
         }

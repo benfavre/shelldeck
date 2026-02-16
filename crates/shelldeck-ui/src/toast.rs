@@ -75,6 +75,12 @@ pub struct ToastContainer {
     _dismiss_tasks: Vec<gpui::Task<()>>,
 }
 
+impl Default for ToastContainer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToastContainer {
     pub fn new() -> Self {
         Self {

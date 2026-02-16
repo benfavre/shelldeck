@@ -16,6 +16,7 @@ pub enum SettingsTab {
 
 /// Events emitted when settings change.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum SettingsEvent {
     ConfigChanged(AppConfig),
     ThemeChanged(ThemePreference),

@@ -154,8 +154,8 @@ impl Workspace {
             d
         });
 
-        let terminal = cx.new(|cx| TerminalView::new(cx));
-        let scripts = cx.new(|cx| ScriptEditorView::new(cx));
+        let terminal = cx.new(TerminalView::new);
+        let scripts = cx.new(ScriptEditorView::new);
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
             let mut view = ServerSyncView::new(cx);
@@ -1170,7 +1170,7 @@ impl Workspace {
             .iter()
             .filter(|s| s.last_run.is_some())
             .collect::<Vec<_>>();
-        recent.sort_by(|a, b| b.last_run.cmp(&a.last_run));
+        recent.sort_by_key(|s| std::cmp::Reverse(s.last_run));
         let recent: Vec<(Uuid, String, ScriptLanguage)> = recent
             .into_iter()
             .take(5)
@@ -1229,7 +1229,7 @@ impl Workspace {
                             }
                         });
                         self.add_activity(
-                            format!("Connection not found for port forward"),
+                            "Connection not found for port forward".to_string(),
                             ActivityType::Error,
                             cx,
                         );
@@ -1552,7 +1552,7 @@ impl Workspace {
                     });
 
                     self.add_activity(
-                        format!("Port forward stop requested (no active tunnel)"),
+                        "Port forward stop requested (no active tunnel)".to_string(),
                         ActivityType::Forward,
                         cx,
                     );
@@ -1884,10 +1884,10 @@ impl Workspace {
 
                 if let Ok(data) = stream_rx.try_recv() {
                     let path_for_parse = path_clone.clone();
-                    let entries = if data.starts_with("STAT:") {
-                        discovery::parse_stat_output(&data[5..], &path_for_parse)
-                    } else if data.starts_with("LS:") {
-                        discovery::parse_ls_output(&data[3..], &path_for_parse)
+                    let entries = if let Some(stripped) = data.strip_prefix("STAT:") {
+                        discovery::parse_stat_output(stripped, &path_for_parse)
+                    } else if let Some(stripped) = data.strip_prefix("LS:") {
+                        discovery::parse_ls_output(stripped, &path_for_parse)
                     } else {
                         // Error
                         Vec::new()
@@ -1944,7 +1944,7 @@ impl Workspace {
 
                 let mysql_output = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg(&discovery::mysql_discover_command(""))
+                    .arg(discovery::mysql_discover_command(""))
                     .output()
                     .ok()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -1953,7 +1953,7 @@ impl Workspace {
 
                 let pg_output = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg(&discovery::pg_discover_command("-U postgres"))
+                    .arg(discovery::pg_discover_command("-U postgres"))
                     .output()
                     .ok()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -2650,7 +2650,7 @@ impl Workspace {
     }
 
     fn show_template_browser(&mut self, cx: &mut Context<Self>) {
-        let browser = cx.new(|cx| TemplateBrowser::new(cx));
+        let browser = cx.new(TemplateBrowser::new);
 
         let sub = cx.subscribe(&browser, |this, _browser, event: &TemplateBrowserEvent, cx| {
             match event {

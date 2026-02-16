@@ -128,23 +128,11 @@ impl PortForwardForm {
         local_ok && remote_ok
     }
 
-    fn active_field_value(&self) -> Option<&str> {
-        self.active_field.map(|f| match f {
-            FormField::Connection => "",
-            FormField::Label => self.label.as_str(),
-            FormField::Direction => "",
-            FormField::LocalHost => self.local_host.as_str(),
-            FormField::LocalPort => self.local_port.as_str(),
-            FormField::RemoteHost => self.remote_host.as_str(),
-            FormField::RemotePort => self.remote_port.as_str(),
-        })
-    }
-
     fn active_field_mut(&mut self) -> Option<&mut String> {
         self.active_field.map(move |f| match f {
-            FormField::Connection => return None,
+            FormField::Connection => None,
             FormField::Label => Some(&mut self.label),
-            FormField::Direction => return None,
+            FormField::Direction => None,
             FormField::LocalHost => Some(&mut self.local_host),
             FormField::LocalPort => Some(&mut self.local_port),
             FormField::RemoteHost => Some(&mut self.remote_host),

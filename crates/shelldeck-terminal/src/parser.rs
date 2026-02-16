@@ -409,7 +409,7 @@ impl vte::Perform for TerminalProcessor {
             0x07 => grid.bell(),
             0x08 => grid.backspace(),
             0x09 => grid.tab(),
-            0x0A | 0x0B | 0x0C => grid.newline(), // LF, VT, FF all treated as newline
+            0x0A..=0x0C => grid.newline(), // LF, VT, FF all treated as newline
             0x0D => grid.carriage_return(),
             0x0E => grid.activate_g1(), // SO - Shift Out (activate G1)
             0x0F => grid.activate_g0(), // SI - Shift In (activate G0)

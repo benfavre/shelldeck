@@ -10,6 +10,12 @@ pub struct StatusBar {
     pub git_status: Option<String>,
 }
 
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StatusBar {
     pub fn new() -> Self {
         Self {

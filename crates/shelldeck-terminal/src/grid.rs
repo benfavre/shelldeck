@@ -648,8 +648,8 @@ impl TerminalGrid {
         if width == 2 {
             // --- Wide character (2 columns) ---
             // If at the very last column (no room for 2 cells), wrap first.
-            if col + 1 >= self.cols {
-                if self.auto_wrap {
+            if col + 1 >= self.cols
+                && self.auto_wrap {
                     self.cursor.col = 0;
                     if self.cursor.row == self.scroll_bottom {
                         self.scroll_up(1);
@@ -663,7 +663,6 @@ impl TerminalGrid {
                         }
                     }
                     self.ensure_row(self.cursor.row);
-                }
             }
 
             let row = self.cursor.row;
@@ -1868,14 +1867,14 @@ impl TerminalGrid {
                 }
                 let row_cells = visible[row_idx];
                 let mut line = String::new();
-                for ci in min_col..=max_col.min(row_cells.len().saturating_sub(1)) {
+                for cell in &row_cells[min_col..=max_col.min(row_cells.len().saturating_sub(1))] {
                     // Skip spacer cells (second half of wide chars).
-                    if row_cells[ci].wide == CellWidth::Spacer {
+                    if cell.wide == CellWidth::Spacer {
                         continue;
                     }
-                    line.push(row_cells[ci].c);
+                    line.push(cell.c);
                     // Append any combining characters.
-                    for &comb in &row_cells[ci].combining {
+                    for &comb in &cell.combining {
                         line.push(comb);
                     }
                 }
@@ -1911,14 +1910,14 @@ impl TerminalGrid {
             };
 
             let mut line = String::new();
-            for ci in col_start..=col_end.min(row_cells.len().saturating_sub(1)) {
+            for cell in &row_cells[col_start..=col_end.min(row_cells.len().saturating_sub(1))] {
                 // Skip spacer cells (second half of wide chars).
-                if row_cells[ci].wide == CellWidth::Spacer {
+                if cell.wide == CellWidth::Spacer {
                     continue;
                 }
-                line.push(row_cells[ci].c);
+                line.push(cell.c);
                 // Append any combining characters.
-                for &comb in &row_cells[ci].combining {
+                for &comb in &cell.combining {
                     line.push(comb);
                 }
             }

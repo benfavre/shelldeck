@@ -8,6 +8,7 @@ use shelldeck_core::models::script::{Script, ScriptVariable};
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum VariablePromptEvent {
     Run(Script, HashMap<String, String>),
     Cancel,
@@ -128,12 +129,11 @@ impl VariablePrompt {
             }
         }
 
-        if key.len() == 1 && !mods.control && !mods.alt {
-            if self.active_field < self.values.len() {
+        if key.len() == 1 && !mods.control && !mods.alt
+            && self.active_field < self.values.len() {
                 self.values[self.active_field].push_str(key);
                 cx.notify();
             }
-        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {

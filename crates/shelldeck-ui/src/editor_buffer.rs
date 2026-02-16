@@ -7,6 +7,12 @@ pub struct EditorBuffer {
     tab_size: usize,
 }
 
+impl Default for EditorBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditorBuffer {
     pub fn new() -> Self {
         Self {
@@ -63,7 +69,7 @@ impl EditorBuffer {
     }
 
     pub fn insert_tab(&mut self) {
-        let spaces: String = std::iter::repeat(' ').take(self.tab_size).collect();
+        let spaces: String = std::iter::repeat_n(' ', self.tab_size).collect();
         self.insert_str(&spaces);
     }
 

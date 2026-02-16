@@ -388,7 +388,7 @@ impl ScriptEditorView {
                                     this.show_favorites_only = !this.show_favorites_only;
                                     cx.notify();
                                 }))
-                                .child(if self.show_favorites_only { "*" } else { "*" }),
+                                .child("*"),
                         )
                         // Browse templates button
                         .child(
@@ -1048,7 +1048,7 @@ impl ScriptEditorView {
         editor = editor.child(body_area);
 
         // Variables bar (between code and output)
-        if let Some(var_bar) = self.render_variables_bar(&script, cx) {
+        if let Some(var_bar) = self.render_variables_bar(script, cx) {
             editor = editor.child(var_bar);
         }
 

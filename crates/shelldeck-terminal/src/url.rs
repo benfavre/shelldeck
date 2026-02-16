@@ -47,7 +47,7 @@ fn trim_trailing(url: &str) -> &str {
     loop {
         let prev = s;
         // Trim trailing punctuation that's usually not part of URLs
-        s = s.trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+        s = s.trim_end_matches(['.', ',', ';', ':', '!', '?']);
 
         // Balance parentheses: if closing > opening, trim trailing )
         let open = s.matches('(').count();
@@ -64,7 +64,7 @@ fn trim_trailing(url: &str) -> &str {
         }
 
         // Trim trailing quotes
-        s = s.trim_end_matches(|c: char| matches!(c, '\'' | '"'));
+        s = s.trim_end_matches(['\'', '"']);
 
         if s == prev {
             break;
