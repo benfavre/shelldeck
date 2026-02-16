@@ -3910,6 +3910,28 @@ impl Workspace {
     }
 }
 
+fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {
+    if pos.y < border && pos.x < border {
+        Some(ResizeEdge::TopLeft)
+    } else if pos.y < border && pos.x > size.width - border {
+        Some(ResizeEdge::TopRight)
+    } else if pos.y < border {
+        Some(ResizeEdge::Top)
+    } else if pos.y > size.height - border && pos.x < border {
+        Some(ResizeEdge::BottomLeft)
+    } else if pos.y > size.height - border && pos.x > size.width - border {
+        Some(ResizeEdge::BottomRight)
+    } else if pos.y > size.height - border {
+        Some(ResizeEdge::Bottom)
+    } else if pos.x < border {
+        Some(ResizeEdge::Left)
+    } else if pos.x > size.width - border {
+        Some(ResizeEdge::Right)
+    } else {
+        None
+    }
+}
+
 impl Workspace {
     /// Render the custom window titlebar with drag area and window controls.
     fn render_titlebar(
@@ -3934,6 +3956,9 @@ impl Workspace {
             .px_4()
             .gap_2()
             .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
+                window.start_window_move();
+            })
             .child(
                 div()
                     .text_sm()
@@ -3948,7 +3973,7 @@ impl Workspace {
                     .text_color(title_color)
                     .child("ShellDeck"),
             )
-            .child(div().text_xs().text_color(title_dim).child("v0.1.0"));
+            .child(div().text_xs().text_color(title_dim).child("v0.1.3"));
 
         // Minimize button
         let minimize_btn = div()
@@ -4035,6 +4060,8 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        _window.set_client_inset(px(5.0));
+
         // Check if script editor wants to open the template browser
         if self.scripts.read(_cx).template_browser_open && self.template_browser.is_none() {
             self.scripts.update(_cx, |editor, _| {
@@ -4348,6 +4375,60 @@ impl Render for Workspace {
                         }
                     },
                 );
+        }
+
+        // Edge resize handling (when not maximized and not already resizing)
+        if !is_maximized && !sidebar_resizing && !output_resizing {
+            let border = px(5.0);
+            root = root
+                .child(
+                    canvas(
+                        |_bounds, window, _cx| {
+                            window.insert_hitbox(
+                                Bounds::new(
+                                    point(px(0.0), px(0.0)),
+                                    window.window_bounds().get_bounds().size,
+                                ),
+                                HitboxBehavior::Normal,
+                            )
+                        },
+                        move |_bounds, hitbox, window, _cx| {
+                            let mouse = window.mouse_position();
+                            let size = window.window_bounds().get_bounds().size;
+                            let Some(edge) = resize_edge(mouse, border, size) else {
+                                return;
+                            };
+                            window.set_cursor_style(
+                                match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => {
+                                        CursorStyle::ResizeUpDown
+                                    }
+                                    ResizeEdge::Left | ResizeEdge::Right => {
+                                        CursorStyle::ResizeLeftRight
+                                    }
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
+                                        CursorStyle::ResizeUpLeftDownRight
+                                    }
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => {
+                                        CursorStyle::ResizeUpRightDownLeft
+                                    }
+                                },
+                                &hitbox,
+                            );
+                        },
+                    )
+                    .size_full()
+                    .absolute(),
+                )
+                .on_mouse_move(|_e, window, _cx| {
+                    window.refresh();
+                })
+                .on_mouse_down(MouseButton::Left, move |e, window, _cx| {
+                    let size = window.window_bounds().get_bounds().size;
+                    if let Some(edge) = resize_edge(e.position, px(5.0), size) {
+                        window.start_window_resize(edge);
+                    }
+                });
         }
 
         // Custom titlebar with drag area + window controls
