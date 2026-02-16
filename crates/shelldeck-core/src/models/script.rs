@@ -64,13 +64,13 @@ impl ScriptLanguage {
     /// Badge color as (r, g, b) for the UI.
     pub fn badge_color(&self) -> (u8, u8, u8) {
         match self {
-            Self::Shell => (74, 158, 64),       // green
-            Self::Python => (55, 118, 171),     // blue
-            Self::Node => (104, 159, 56),       // olive green
-            Self::Bun => (251, 191, 36),        // amber
-            Self::Php => (119, 97, 179),        // purple
+            Self::Shell => (74, 158, 64),                    // green
+            Self::Python => (55, 118, 171),                  // blue
+            Self::Node => (104, 159, 56),                    // olive green
+            Self::Bun => (251, 191, 36),                     // amber
+            Self::Php => (119, 97, 179),                     // purple
             Self::Mysql | Self::Postgresql => (0, 136, 204), // blue
-            Self::Docker => (36, 150, 237),     // docker blue
+            Self::Docker => (36, 150, 237),                  // docker blue
             Self::DockerCompose => (36, 150, 237),
             Self::Systemd => (200, 60, 60),     // red
             Self::Nginx => (0, 150, 57),        // nginx green
@@ -319,7 +319,14 @@ pub fn extract_variables(body: &str) -> Vec<(String, Option<String>)> {
                         let (name, default) = if let Some(colon_pos) = inner.find(':') {
                             let n = inner[..colon_pos].trim();
                             let d = inner[colon_pos + 1..].trim();
-                            (n.to_string(), if d.is_empty() { None } else { Some(d.to_string()) })
+                            (
+                                n.to_string(),
+                                if d.is_empty() {
+                                    None
+                                } else {
+                                    Some(d.to_string())
+                                },
+                            )
                         } else {
                             (inner.trim().to_string(), None)
                         };

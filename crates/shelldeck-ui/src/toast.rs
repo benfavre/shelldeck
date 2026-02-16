@@ -99,11 +99,7 @@ impl ToastContainer {
         let id = self.next_id;
         self.next_id += 1;
 
-        self.toasts.push(Toast {
-            id,
-            message,
-            level,
-        });
+        self.toasts.push(Toast { id, message, level });
 
         // Enforce the maximum visible count by dropping the oldest
         while self.toasts.len() > MAX_VISIBLE_TOASTS {
@@ -112,14 +108,14 @@ impl ToastContainer {
 
         // Spawn an auto-dismiss timer
         let duration = level.dismiss_duration();
-        let task = cx.spawn(async move |this: WeakEntity<ToastContainer>, cx: &mut AsyncApp| {
-            cx.background_executor()
-                .timer(duration)
-                .await;
-            let _ = this.update(cx, |container, cx| {
-                container.dismiss(id, cx);
-            });
-        });
+        let task = cx.spawn(
+            async move |this: WeakEntity<ToastContainer>, cx: &mut AsyncApp| {
+                cx.background_executor().timer(duration).await;
+                let _ = this.update(cx, |container, cx| {
+                    container.dismiss(id, cx);
+                });
+            },
+        );
         self._dismiss_tasks.push(task);
 
         cx.notify();

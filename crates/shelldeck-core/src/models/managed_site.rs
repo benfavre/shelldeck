@@ -59,7 +59,11 @@ impl ManagedSite {
     }
 
     /// Create from a discovered database.
-    pub fn from_database(connection_id: Uuid, connection_name: &str, db: DiscoveredDatabase) -> Self {
+    pub fn from_database(
+        connection_id: Uuid,
+        connection_name: &str,
+        db: DiscoveredDatabase,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             connection_id,

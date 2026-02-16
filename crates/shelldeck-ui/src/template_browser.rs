@@ -175,7 +175,10 @@ impl Render for TemplateBrowser {
             let selected = self.selected_category == Some(*cat);
             let cat_val = *cat;
             let mut tab = div()
-                .id(ElementId::from(SharedString::from(format!("tmpl-cat-{}", cat.label()))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "tmpl-cat-{}",
+                    cat.label()
+                ))))
                 .px(px(8.0))
                 .py(px(3.0))
                 .rounded(px(4.0))
@@ -219,12 +222,7 @@ impl Render for TemplateBrowser {
                     .text_color(ShellDeckColors::text_primary())
                     .flex()
                     .child(self.search_query.clone())
-                    .child(
-                        div()
-                            .w(px(1.0))
-                            .h(px(14.0))
-                            .bg(ShellDeckColors::primary()),
-                    )
+                    .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
             });
 
         // Template list
@@ -359,20 +357,16 @@ impl Render for TemplateBrowser {
                                     .child(tmpl_desc),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(10.0))
-                                            .px(px(4.0))
-                                            .py(px(1.0))
-                                            .rounded(px(3.0))
-                                            .bg(ShellDeckColors::badge_bg())
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(tmpl_cat_label),
-                                    ),
+                                div().flex().items_center().gap(px(6.0)).child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .px(px(4.0))
+                                        .py(px(1.0))
+                                        .rounded(px(3.0))
+                                        .bg(ShellDeckColors::badge_bg())
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(tmpl_cat_label),
+                                ),
                             ),
                     )
                     .child(
@@ -389,7 +383,8 @@ impl Render for TemplateBrowser {
                             .hover(|el| el.opacity(0.9))
                             .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                                 let templates = all_templates();
-                                if let Some(t) = templates.iter().find(|t| t.id == tmpl_id_for_btn) {
+                                if let Some(t) = templates.iter().find(|t| t.id == tmpl_id_for_btn)
+                                {
                                     cx.emit(TemplateBrowserEvent::Import(t.to_script()));
                                 }
                             }))
@@ -414,7 +409,9 @@ impl Render for TemplateBrowser {
                             .border_color(ShellDeckColors::border())
                             .font_family("JetBrains Mono")
                             .overflow_hidden()
-                            .child(render_code_block_with_language(&tmpl_body, None, false, &tmpl_lang)),
+                            .child(render_code_block_with_language(
+                                &tmpl_body, None, false, &tmpl_lang,
+                            )),
                     ),
             );
         } else {

@@ -7,8 +7,12 @@ use uuid::Uuid;
 use crate::theme::ShellDeckColors;
 
 // Theme helpers — map semantic names to existing ShellDeckColors methods.
-fn bg_secondary() -> gpui::Hsla { ShellDeckColors::bg_surface() }
-fn bg_tertiary() -> gpui::Hsla { ShellDeckColors::bg_sidebar() }
+fn bg_secondary() -> gpui::Hsla {
+    ShellDeckColors::bg_surface()
+}
+fn bg_tertiary() -> gpui::Hsla {
+    ShellDeckColors::bg_sidebar()
+}
 
 /// Which side of the split view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +172,11 @@ impl ServerSyncView {
                 self.source_panel.connection_id = Some(LOCAL_MACHINE_ID);
                 self.source_panel.connection_name = "Local Machine".to_string();
                 self.source_panel.is_local = true;
-            } else if let Some(src_conn) = self.connections.iter().find(|c| c.id == profile.source_connection_id) {
+            } else if let Some(src_conn) = self
+                .connections
+                .iter()
+                .find(|c| c.id == profile.source_connection_id)
+            {
                 self.source_panel.connection_id = Some(src_conn.id);
                 self.source_panel.connection_name = src_conn.display_name().to_string();
                 self.source_panel.is_local = false;
@@ -178,7 +186,11 @@ impl ServerSyncView {
                 self.dest_panel.connection_id = Some(LOCAL_MACHINE_ID);
                 self.dest_panel.connection_name = "Local Machine".to_string();
                 self.dest_panel.is_local = true;
-            } else if let Some(dest_conn) = self.connections.iter().find(|c| c.id == profile.dest_connection_id) {
+            } else if let Some(dest_conn) = self
+                .connections
+                .iter()
+                .find(|c| c.id == profile.dest_connection_id)
+            {
                 self.dest_panel.connection_id = Some(dest_conn.id);
                 self.dest_panel.connection_name = dest_conn.display_name().to_string();
                 self.dest_panel.is_local = false;
@@ -207,7 +219,11 @@ impl ServerSyncView {
         state.discovered_sites = sites;
     }
 
-    pub fn set_discovered_databases(&mut self, panel: PanelSide, databases: Vec<DiscoveredDatabase>) {
+    pub fn set_discovered_databases(
+        &mut self,
+        panel: PanelSide,
+        databases: Vec<DiscoveredDatabase>,
+    ) {
         let state = match panel {
             PanelSide::Source => &mut self.source_panel,
             PanelSide::Destination => &mut self.dest_panel,
@@ -238,8 +254,8 @@ impl ServerSyncView {
     // Toolbar
     // -----------------------------------------------------------------------
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let both_connected = self.source_panel.connection_id.is_some()
-            && self.dest_panel.connection_id.is_some();
+        let both_connected =
+            self.source_panel.connection_id.is_some() && self.dest_panel.connection_id.is_some();
 
         let mut toolbar = div()
             .flex()
@@ -271,7 +287,10 @@ impl ServerSyncView {
                 let is_active = self.selected_profile == Some(pid);
                 profile_section = profile_section.child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("profile-{}", pid))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "profile-{}",
+                            pid
+                        ))))
                         .px(px(8.0))
                         .py(px(4.0))
                         .rounded(px(6.0))
@@ -429,7 +448,10 @@ impl ServerSyncView {
         // Picker button
         picker = picker.child(
             div()
-                .id(ElementId::from(SharedString::from(format!("conn-picker-{:?}", side))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "conn-picker-{:?}",
+                    side
+                ))))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -484,7 +506,10 @@ impl ServerSyncView {
         // Dropdown list
         if picker_open {
             let mut dropdown = div()
-                .id(ElementId::from(SharedString::from(format!("conn-dropdown-{:?}", side))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "conn-dropdown-{:?}",
+                    side
+                ))))
                 .absolute()
                 .top(px(40.0))
                 .left_0()
@@ -501,7 +526,10 @@ impl ServerSyncView {
             let is_local_selected = state.is_local;
             dropdown = dropdown.child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("conn-opt-local-{:?}", side))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "conn-opt-local-{:?}",
+                        side
+                    ))))
                     .flex()
                     .items_center()
                     .gap(px(8.0))
@@ -511,7 +539,9 @@ impl ServerSyncView {
                     .cursor_pointer()
                     .border_b_1()
                     .border_color(ShellDeckColors::border())
-                    .when(is_local_selected, |el| el.bg(ShellDeckColors::primary().opacity(0.08)))
+                    .when(is_local_selected, |el| {
+                        el.bg(ShellDeckColors::primary().opacity(0.08))
+                    })
                     .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -554,11 +584,22 @@ impl ServerSyncView {
                             .child("~"),
                     )
                     .child(
-                        div().flex().flex_col().child(
-                            div().text_size(px(12.0)).text_color(ShellDeckColors::text_primary()).font_weight(FontWeight::MEDIUM).child("Local Machine"),
-                        ).child(
-                            div().text_size(px(10.0)).text_color(ShellDeckColors::text_muted()).child("This computer"),
-                        ),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Local Machine"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child("This computer"),
+                            ),
                     ),
             );
 
@@ -570,7 +611,10 @@ impl ServerSyncView {
                 let display = conn_name.clone();
                 dropdown = dropdown.child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("conn-opt-{}-{:?}", conn_id, side))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "conn-opt-{}-{:?}",
+                            conn_id, side
+                        ))))
                         .flex()
                         .items_center()
                         .gap(px(8.0))
@@ -619,11 +663,21 @@ impl ServerSyncView {
                                 .child("@"),
                         )
                         .child(
-                            div().flex().flex_col().child(
-                                div().text_size(px(12.0)).text_color(ShellDeckColors::text_primary()).child(conn_name),
-                            ).child(
-                                div().text_size(px(10.0)).text_color(ShellDeckColors::text_muted()).child(hostname),
-                            ),
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(conn_name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(hostname),
+                                ),
                         ),
                 );
             }
@@ -653,7 +707,10 @@ impl ServerSyncView {
         // Root
         crumbs = crumbs.child(
             div()
-                .id(ElementId::from(SharedString::from(format!("crumb-root-{:?}", side))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "crumb-root-{:?}",
+                    side
+                ))))
                 .text_size(px(11.0))
                 .text_color(ShellDeckColors::primary())
                 .cursor_pointer()
@@ -690,7 +747,10 @@ impl ServerSyncView {
                 )
                 .child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("crumb-{}-{}-{:?}", i, part_string, side))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "crumb-{}-{}-{:?}",
+                            i, part_string, side
+                        ))))
                         .text_size(px(11.0))
                         .cursor_pointer()
                         .when(i == parts.len() - 1, |el| {
@@ -730,7 +790,10 @@ impl ServerSyncView {
         let state = self.panel_state(side);
 
         let mut list = div()
-            .id(ElementId::from(SharedString::from(format!("file-list-{:?}", side))))
+            .id(ElementId::from(SharedString::from(format!(
+                "file-list-{:?}",
+                side
+            ))))
             .flex()
             .flex_col()
             .flex_grow()
@@ -822,11 +885,16 @@ impl ServerSyncView {
         if state.current_path != "/" {
             let parent_path = {
                 let p = std::path::Path::new(&state.current_path);
-                p.parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_else(|| "/".to_string())
+                p.parent()
+                    .map(|pp| pp.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/".to_string())
             };
             list = list.child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("file-parent-{:?}", side))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "file-parent-{:?}",
+                        side
+                    ))))
                     .flex()
                     .items_center()
                     .w_full()
@@ -880,7 +948,10 @@ impl ServerSyncView {
 
             list = list.child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("file-{}-{:?}", entry_path, side))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "file-{}-{:?}",
+                        entry_path, side
+                    ))))
                     .flex()
                     .items_center()
                     .w_full()
@@ -914,9 +985,7 @@ impl ServerSyncView {
                             .flex_grow()
                             .min_w(px(0.0))
                             .overflow_hidden()
-                            .child(
-                                div().text_size(px(12.0)).child(icon.to_string()),
-                            )
+                            .child(div().text_size(px(12.0)).child(icon.to_string()))
                             .child(
                                 div()
                                     .text_size(px(12.0))
@@ -964,7 +1033,11 @@ impl ServerSyncView {
     // -----------------------------------------------------------------------
     // Discovery sections
     // -----------------------------------------------------------------------
-    fn render_discovery_section(&self, side: PanelSide, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_discovery_section(
+        &self,
+        side: PanelSide,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let state = self.panel_state(side);
         let has_connection = state.connection_id.is_some();
         let panel_height = state.discovery_panel_height;
@@ -1020,7 +1093,10 @@ impl ServerSyncView {
                 )
                 .child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("discover-btn-{:?}", side))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "discover-btn-{:?}",
+                            side
+                        ))))
                         .px(px(8.0))
                         .py(px(3.0))
                         .rounded(px(4.0))
@@ -1043,7 +1119,11 @@ impl ServerSyncView {
                                 cx.notify();
                             }
                         }))
-                        .child(if state.discovery_loading { "Discovering..." } else { "Discover" }),
+                        .child(if state.discovery_loading {
+                            "Discovering..."
+                        } else {
+                            "Discover"
+                        }),
                 ),
         );
 
@@ -1121,7 +1201,10 @@ impl ServerSyncView {
             for db in &state.discovered_databases {
                 let engine_label = db.engine.label();
                 let size = db.size_display();
-                let tables = db.table_count.map(|c| format!("{} tables", c)).unwrap_or_default();
+                let tables = db
+                    .table_count
+                    .map(|c| format!("{} tables", c))
+                    .unwrap_or_default();
                 content = content.child(
                     div()
                         .flex()
@@ -1839,18 +1922,38 @@ impl ServerSyncView {
             .flex()
             .flex_col()
             .gap(px(12.0))
-            .child(self.render_option_toggle("Compress transfers", opts.compress, cx, |this, val| {
-                this.wizard_options.compress = val;
-            }))
-            .child(self.render_option_toggle("Dry run (preview only)", opts.dry_run, cx, |this, val| {
-                this.wizard_options.dry_run = val;
-            }))
-            .child(self.render_option_toggle("Delete extra files on destination", opts.delete_extra, cx, |this, val| {
-                this.wizard_options.delete_extra = val;
-            }))
-            .child(self.render_option_toggle("Skip existing files", opts.skip_existing, cx, |this, val| {
-                this.wizard_options.skip_existing = val;
-            }))
+            .child(self.render_option_toggle(
+                "Compress transfers",
+                opts.compress,
+                cx,
+                |this, val| {
+                    this.wizard_options.compress = val;
+                },
+            ))
+            .child(self.render_option_toggle(
+                "Dry run (preview only)",
+                opts.dry_run,
+                cx,
+                |this, val| {
+                    this.wizard_options.dry_run = val;
+                },
+            ))
+            .child(self.render_option_toggle(
+                "Delete extra files on destination",
+                opts.delete_extra,
+                cx,
+                |this, val| {
+                    this.wizard_options.delete_extra = val;
+                },
+            ))
+            .child(self.render_option_toggle(
+                "Skip existing files",
+                opts.skip_existing,
+                cx,
+                |this, val| {
+                    this.wizard_options.skip_existing = val;
+                },
+            ))
             // Bandwidth limit
             .child(
                 div()
@@ -1885,7 +1988,10 @@ impl ServerSyncView {
     ) -> impl IntoElement {
         let label_str = label.to_string();
         div()
-            .id(ElementId::from(SharedString::from(format!("opt-{}", label_str))))
+            .id(ElementId::from(SharedString::from(format!(
+                "opt-{}",
+                label_str
+            ))))
             .flex()
             .items_center()
             .justify_between()
@@ -1938,10 +2044,18 @@ impl ServerSyncView {
 
         // Options summary
         let mut opts_summary = Vec::new();
-        if self.wizard_options.compress { opts_summary.push("compress"); }
-        if self.wizard_options.dry_run { opts_summary.push("dry run"); }
-        if self.wizard_options.delete_extra { opts_summary.push("delete extra"); }
-        if self.wizard_options.skip_existing { opts_summary.push("skip existing"); }
+        if self.wizard_options.compress {
+            opts_summary.push("compress");
+        }
+        if self.wizard_options.dry_run {
+            opts_summary.push("dry run");
+        }
+        if self.wizard_options.delete_extra {
+            opts_summary.push("delete extra");
+        }
+        if self.wizard_options.skip_existing {
+            opts_summary.push("skip existing");
+        }
 
         if !opts_summary.is_empty() {
             content = content.child(
@@ -2037,13 +2151,7 @@ impl ServerSyncView {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .child(
-                            div()
-                                .w(px(6.0))
-                                .h(px(6.0))
-                                .rounded_full()
-                                .bg(status_color),
-                        )
+                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(status_color))
                         .child(
                             div()
                                 .text_size(px(11.0))
@@ -2128,7 +2236,9 @@ impl ServerSyncView {
             );
         }
 
-        if self.wizard_step == WizardStep::ConfigureOptions || self.wizard_step == WizardStep::ReviewConfirm {
+        if self.wizard_step == WizardStep::ConfigureOptions
+            || self.wizard_step == WizardStep::ReviewConfirm
+        {
             left = left.child(
                 div()
                     .id("wizard-back")
@@ -2305,11 +2415,7 @@ impl Render for ServerSyncView {
         // Main panels area
         let total_w = 1.0_f32; // relative
 
-        let mut panels = div()
-            .flex()
-            .flex_grow()
-            .min_h(px(0.0))
-            .overflow_hidden();
+        let mut panels = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
         panels = panels
             .child(

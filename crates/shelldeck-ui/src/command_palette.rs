@@ -96,7 +96,10 @@ impl CommandPalette {
         if query_lower.is_empty() {
             self.filtered = (0..self.actions.len()).collect();
         } else {
-            self.filtered = self.actions.iter().enumerate()
+            self.filtered = self
+                .actions
+                .iter()
+                .enumerate()
                 .filter(|(_, a)| fuzzy_match(&a.name, &query_lower))
                 .map(|(i, _)| i)
                 .collect();
@@ -121,14 +124,17 @@ impl CommandPalette {
     }
 
     pub fn selected_action(&self) -> Option<&PaletteAction> {
-        self.filtered.get(self.selected_index)
+        self.filtered
+            .get(self.selected_index)
             .and_then(|&i| self.actions.get(i))
     }
 
     /// Confirm the currently selected action.
     fn confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(action) = self.selected_action() {
-            cx.emit(CommandPaletteEvent::ActionSelected(action.action.boxed_clone()));
+            cx.emit(CommandPaletteEvent::ActionSelected(
+                action.action.boxed_clone(),
+            ));
         }
         self.dismiss();
         cx.notify();
@@ -201,11 +207,7 @@ impl Render for CommandPalette {
             return div().id("palette-hidden");
         }
 
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .max_h(px(400.0))
-            .overflow_hidden();
+        let mut list = div().flex().flex_col().max_h(px(400.0)).overflow_hidden();
 
         if self.filtered.is_empty() && !self.query.is_empty() {
             list = list.child(
@@ -226,7 +228,10 @@ impl Render for CommandPalette {
             let is_selected = fi == self.selected_index;
 
             let mut item = div()
-                .id(ElementId::from(SharedString::from(format!("palette-{}", fi))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "palette-{}",
+                    fi
+                ))))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -254,7 +259,9 @@ impl Render for CommandPalette {
                         .child(name),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.emit(CommandPaletteEvent::ActionSelected(action_clone.boxed_clone()));
+                    cx.emit(CommandPaletteEvent::ActionSelected(
+                        action_clone.boxed_clone(),
+                    ));
                     this.dismiss();
                     cx.notify();
                 }));
@@ -318,10 +325,7 @@ impl Render for CommandPalette {
                                     .flex()
                                     .child(self.query.clone())
                                     .child(
-                                        div()
-                                            .w(px(1.0))
-                                            .h(px(16.0))
-                                            .bg(ShellDeckColors::primary()),
+                                        div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()),
                                     )
                             }),
                     )

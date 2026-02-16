@@ -39,11 +39,10 @@ fn keywords() -> &'static HashSet<&'static str> {
 fn builtins() -> &'static HashSet<&'static str> {
     BUILTINS.get_or_init(|| {
         [
-            "echo", "cd", "pwd", "ls", "cat", "grep", "sed", "awk", "find", "sort", "head",
-            "tail", "wc", "chmod", "chown", "mkdir", "rm", "cp", "mv", "test", "read", "printf",
-            "exit", "true", "false", "shift", "set", "eval", "exec", "trap", "wait", "kill",
-            "jobs", "bg", "fg", "alias", "unalias", "type", "which", "xargs", "tee", "curl",
-            "wget",
+            "echo", "cd", "pwd", "ls", "cat", "grep", "sed", "awk", "find", "sort", "head", "tail",
+            "wc", "chmod", "chown", "mkdir", "rm", "cp", "mv", "test", "read", "printf", "exit",
+            "true", "false", "shift", "set", "eval", "exec", "trap", "wait", "kill", "jobs", "bg",
+            "fg", "alias", "unalias", "type", "which", "xargs", "tee", "curl", "wget",
         ]
         .into_iter()
         .collect()
@@ -266,9 +265,7 @@ fn scan_variable(bytes: &[u8], i: usize, len: usize) -> usize {
     }
 
     // Special variables: $@, $?, $$, $!, $#, $*, $0-$9
-    if matches!(next, b'@' | b'?' | b'$' | b'!' | b'#' | b'*')
-        || next.is_ascii_digit()
-    {
+    if matches!(next, b'@' | b'?' | b'$' | b'!' | b'#' | b'*') || next.is_ascii_digit() {
         return i + 2;
     }
 

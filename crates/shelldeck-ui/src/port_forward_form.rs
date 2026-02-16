@@ -90,8 +90,15 @@ impl PortForwardForm {
         }
     }
 
-    pub fn from_port_forward(forward: &PortForward, connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
-        let selected_idx = connections.iter().position(|(id, _, _)| *id == forward.connection_id).unwrap_or(0);
+    pub fn from_port_forward(
+        forward: &PortForward,
+        connections: Vec<(Uuid, String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let selected_idx = connections
+            .iter()
+            .position(|(id, _, _)| *id == forward.connection_id)
+            .unwrap_or(0);
         let dropdown_filtered = (0..connections.len()).collect();
         Self {
             editing_id: Some(forward.id),
@@ -153,7 +160,10 @@ impl PortForwardForm {
         if query_lower.is_empty() {
             self.dropdown_filtered = (0..self.connections.len()).collect();
         } else {
-            self.dropdown_filtered = self.connections.iter().enumerate()
+            self.dropdown_filtered = self
+                .connections
+                .iter()
+                .enumerate()
                 .filter(|(_, (_, name, host))| {
                     fuzzy_match(name, &query_lower) || fuzzy_match(host, &query_lower)
                 })
@@ -188,7 +198,8 @@ impl PortForwardForm {
                 }
                 "down" => {
                     if !self.dropdown_filtered.is_empty() {
-                        self.dropdown_selected = (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
+                        self.dropdown_selected =
+                            (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
                     }
                     cx.notify();
                 }
@@ -352,8 +363,12 @@ impl PortForwardForm {
                 PortForward::new_remote(*connection_id, remote_port, &self.local_host, local_port)
             }
             ForwardDirection::Dynamic => {
-                let mut f =
-                    PortForward::new_local(*connection_id, local_port, &self.remote_host, remote_port);
+                let mut f = PortForward::new_local(
+                    *connection_id,
+                    local_port,
+                    &self.remote_host,
+                    remote_port,
+                );
                 f.direction = ForwardDirection::Dynamic;
                 f
             }
@@ -423,12 +438,8 @@ impl PortForwardForm {
                 .child(value.to_string());
 
             if is_active {
-                text_el = text_el.child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(16.0))
-                        .bg(ShellDeckColors::primary()),
-                );
+                text_el =
+                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
             }
 
             input_box = input_box.child(text_el);
@@ -617,23 +628,13 @@ impl PortForwardForm {
                         .text_color(ShellDeckColors::text_muted())
                         .flex()
                         .child("Type to filter...")
-                        .child(
-                            div()
-                                .w(px(1.0))
-                                .h(px(14.0))
-                                .bg(ShellDeckColors::primary()),
-                        )
+                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
                 } else {
                     div()
                         .text_color(ShellDeckColors::text_primary())
                         .flex()
                         .child(self.dropdown_query.clone())
-                        .child(
-                            div()
-                                .w(px(1.0))
-                                .h(px(14.0))
-                                .bg(ShellDeckColors::primary()),
-                        )
+                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
                 });
 
             let mut items_list = div()
@@ -742,48 +743,40 @@ impl Render for PortForwardForm {
                 div()
                     .flex()
                     .gap(px(12.0))
-                    .child(
-                        div().flex_grow().child(self.render_text_field(
-                            FormField::LocalHost,
-                            "Local Host",
-                            &self.local_host.clone(),
-                            "127.0.0.1",
-                            cx,
-                        )),
-                    )
-                    .child(
-                        div().w(px(120.0)).child(self.render_text_field(
-                            FormField::LocalPort,
-                            "Local Port",
-                            &self.local_port.clone(),
-                            "8080",
-                            cx,
-                        )),
-                    ),
+                    .child(div().flex_grow().child(self.render_text_field(
+                        FormField::LocalHost,
+                        "Local Host",
+                        &self.local_host.clone(),
+                        "127.0.0.1",
+                        cx,
+                    )))
+                    .child(div().w(px(120.0)).child(self.render_text_field(
+                        FormField::LocalPort,
+                        "Local Port",
+                        &self.local_port.clone(),
+                        "8080",
+                        cx,
+                    ))),
             )
             // Row: RemoteHost + RemotePort
             .child(
                 div()
                     .flex()
                     .gap(px(12.0))
-                    .child(
-                        div().flex_grow().child(self.render_text_field(
-                            FormField::RemoteHost,
-                            "Remote Host",
-                            &self.remote_host.clone(),
-                            "127.0.0.1",
-                            cx,
-                        )),
-                    )
-                    .child(
-                        div().w(px(120.0)).child(self.render_text_field(
-                            FormField::RemotePort,
-                            "Remote Port",
-                            &self.remote_port.clone(),
-                            "80",
-                            cx,
-                        )),
-                    ),
+                    .child(div().flex_grow().child(self.render_text_field(
+                        FormField::RemoteHost,
+                        "Remote Host",
+                        &self.remote_host.clone(),
+                        "127.0.0.1",
+                        cx,
+                    )))
+                    .child(div().w(px(120.0)).child(self.render_text_field(
+                        FormField::RemotePort,
+                        "Remote Port",
+                        &self.remote_port.clone(),
+                        "80",
+                        cx,
+                    ))),
             );
 
         // Error message
@@ -838,7 +831,11 @@ impl Render for PortForwardForm {
                                     .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(if self.editing_id.is_some() { "Edit Port Forward" } else { "New Port Forward" }),
+                                    .child(if self.editing_id.is_some() {
+                                        "Edit Port Forward"
+                                    } else {
+                                        "New Port Forward"
+                                    }),
                             )
                             .child(
                                 div()
@@ -879,18 +876,19 @@ impl Render for PortForwardForm {
                             )
                             .child({
                                 let valid = self.is_valid();
-                                let btn_label = if self.editing_id.is_some() { "Save Forward" } else { "Create Forward" };
+                                let btn_label = if self.editing_id.is_some() {
+                                    "Save Forward"
+                                } else {
+                                    "Create Forward"
+                                };
                                 let mut save_btn = div()
                                     .id("pf-save-btn")
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.try_save(cx);
                                     }))
                                     .child(
-                                        adabraka_ui::prelude::Button::new(
-                                            "save",
-                                            btn_label,
-                                        )
-                                        .variant(adabraka_ui::prelude::ButtonVariant::Default),
+                                        adabraka_ui::prelude::Button::new("save", btn_label)
+                                            .variant(adabraka_ui::prelude::ButtonVariant::Default),
                                     );
                                 if valid {
                                     save_btn = save_btn.cursor_pointer();

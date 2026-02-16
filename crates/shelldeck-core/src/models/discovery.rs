@@ -23,7 +23,10 @@ pub fn ls_command(path: &str) -> String {
 
 /// Fallback `ls -la` command for systems without GNU stat.
 pub fn ls_command_fallback(path: &str) -> String {
-    format!("ls -la --time-style=long-iso {} 2>/dev/null", shell_escape(path))
+    format!(
+        "ls -la --time-style=long-iso {} 2>/dev/null",
+        shell_escape(path)
+    )
 }
 
 /// Parse output from `ls_command` (stat --printf format).
@@ -73,7 +76,9 @@ pub fn parse_stat_output(output: &str, base_path: &str) -> Vec<FileEntry> {
     }
     // Sort: directories first, then alphabetical
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     entries
 }
@@ -123,7 +128,9 @@ pub fn parse_ls_output(output: &str, base_path: &str) -> Vec<FileEntry> {
         });
     }
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     entries
 }
@@ -160,7 +167,11 @@ pub fn list_local_files(path: &str) -> Vec<FileEntry> {
             format_mode(mode, is_dir)
         };
         #[cfg(not(unix))]
-        let permissions = if is_dir { "drwxr-xr-x".to_string() } else { "-rw-r--r--".to_string() };
+        let permissions = if is_dir {
+            "drwxr-xr-x".to_string()
+        } else {
+            "-rw-r--r--".to_string()
+        };
 
         // Owner/group from uid/gid (Unix)
         #[cfg(unix)]
@@ -188,7 +199,9 @@ pub fn list_local_files(path: &str) -> Vec<FileEntry> {
         });
     }
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     entries
 }
@@ -256,7 +269,10 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
 
             // Detect start of a new server block (top-level only)
             if !in_server {
-                let first_word = trimmed.split(|c: char| c.is_whitespace() || c == '{').next().unwrap_or("");
+                let first_word = trimmed
+                    .split(|c: char| c.is_whitespace() || c == '{')
+                    .next()
+                    .unwrap_or("");
                 if first_word == "server" {
                     in_server = true;
                     brace_depth = 0;
@@ -353,7 +369,9 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
                     .collect();
                 if let Some(port_str) = listen_parts.first() {
                     // Handle [::]:443 or 443 or 0.0.0.0:80
-                    let port_part = port_str.trim_start_matches("[::]:").trim_start_matches("0.0.0.0:");
+                    let port_part = port_str
+                        .trim_start_matches("[::]:")
+                        .trim_start_matches("0.0.0.0:");
                     if let Ok(p) = port_part.parse::<u16>() {
                         listen_port = p;
                     }
@@ -361,7 +379,9 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
                 if listen_parts.contains(&"ssl") {
                     ssl = true;
                 }
-            } else if trimmed.contains("ssl_certificate") && !trimmed.contains("ssl_certificate_key") {
+            } else if trimmed.contains("ssl_certificate")
+                && !trimmed.contains("ssl_certificate_key")
+            {
                 ssl = true;
             }
         }
@@ -502,7 +522,12 @@ pub fn mysql_sync_command(
     } else {
         format!(
             "mysqldump {} {} --single-transaction --routines --triggers | ssh {}@{} 'mysql {} {}'",
-            src_creds, shell_escape(db), dest_user, dest_host, dest_creds, shell_escape(db)
+            src_creds,
+            shell_escape(db),
+            dest_user,
+            dest_host,
+            dest_creds,
+            shell_escape(db)
         )
     }
 }
@@ -519,12 +544,22 @@ pub fn pg_sync_command(
     if compress {
         format!(
             "pg_dump {} {} | gzip | ssh {}@{} 'gunzip | psql {} {}'",
-            src_creds, shell_escape(db), dest_user, dest_host, dest_creds, shell_escape(db)
+            src_creds,
+            shell_escape(db),
+            dest_user,
+            dest_host,
+            dest_creds,
+            shell_escape(db)
         )
     } else {
         format!(
             "pg_dump {} {} | ssh {}@{} 'psql {} {}'",
-            src_creds, shell_escape(db), dest_user, dest_host, dest_creds, shell_escape(db)
+            src_creds,
+            shell_escape(db),
+            dest_user,
+            dest_host,
+            dest_creds,
+            shell_escape(db)
         )
     }
 }
@@ -616,7 +651,14 @@ server {
             bandwidth_limit: Some(1000),
             skip_existing: false,
         };
-        let cmd = rsync_command("/var/www", "deploy", "server.com", "/var/www", &opts, &["*.log".into()]);
+        let cmd = rsync_command(
+            "/var/www",
+            "deploy",
+            "server.com",
+            "/var/www",
+            &opts,
+            &["*.log".into()],
+        );
         assert!(cmd.contains("--dry-run"));
         assert!(cmd.contains("--bwlimit=1000"));
         assert!(cmd.contains("--exclude="));

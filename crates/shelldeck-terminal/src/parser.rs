@@ -1,5 +1,7 @@
 use crate::colors::{NamedColor, TermColor};
-use crate::grid::{CursorShape, MouseEncoding, MouseMode, PromptMark, TerminalGrid, UnderlineStyle};
+use crate::grid::{
+    CursorShape, MouseEncoding, MouseMode, PromptMark, TerminalGrid, UnderlineStyle,
+};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -537,10 +539,7 @@ impl vte::Perform for TerminalProcessor {
                 if !private_mode {
                     let top = param(params, 0, 1) as usize;
                     let bottom = param(params, 1, grid.rows as u16) as usize;
-                    grid.set_scroll_region(
-                        top.saturating_sub(1),
-                        bottom.saturating_sub(1),
-                    );
+                    grid.set_scroll_region(top.saturating_sub(1), bottom.saturating_sub(1));
                 }
             }
             // Save cursor position
@@ -650,9 +649,7 @@ impl vte::Perform for TerminalProcessor {
                             // Cursor position report (CPR)
                             let row = grid.cursor.row + 1;
                             let col = grid.cursor.col + 1;
-                            grid.write_response(
-                                format!("\x1b[{};{}R", row, col).into_bytes(),
-                            );
+                            grid.write_response(format!("\x1b[{};{}R", row, col).into_bytes());
                         }
                         _ => {}
                     }
@@ -667,23 +664,43 @@ impl vte::Perform for TerminalProcessor {
                     let status = match mode {
                         1 => {
                             // DECCKM - application cursor keys
-                            if grid.application_cursor_keys() { 1 } else { 2 }
+                            if grid.application_cursor_keys() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         6 => {
                             // DECOM - origin mode
-                            if grid.origin_mode() { 1 } else { 2 }
+                            if grid.origin_mode() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         7 => {
                             // DECAWM - auto-wrap mode
-                            if grid.auto_wrap() { 1 } else { 2 }
+                            if grid.auto_wrap() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         12 => {
                             // Cursor blink
-                            if grid.cursor.blink { 1 } else { 2 }
+                            if grid.cursor.blink {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         25 => {
                             // DECTCEM - cursor visible
-                            if grid.cursor.visible { 1 } else { 2 }
+                            if grid.cursor.visible {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         47 => {
                             // Alternate screen buffer
@@ -691,19 +708,35 @@ impl vte::Perform for TerminalProcessor {
                         }
                         1000 => {
                             // Mouse press tracking
-                            if grid.mouse_mode == MouseMode::Press { 1 } else { 2 }
+                            if grid.mouse_mode == MouseMode::Press {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         1002 => {
                             // Mouse button tracking
-                            if grid.mouse_mode == MouseMode::ButtonTracking { 1 } else { 2 }
+                            if grid.mouse_mode == MouseMode::ButtonTracking {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         1003 => {
                             // Mouse any-motion tracking
-                            if grid.mouse_mode == MouseMode::AnyMotion { 1 } else { 2 }
+                            if grid.mouse_mode == MouseMode::AnyMotion {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         1006 => {
                             // SGR mouse encoding
-                            if grid.mouse_encoding == MouseEncoding::Sgr { 1 } else { 2 }
+                            if grid.mouse_encoding == MouseEncoding::Sgr {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         1049 => {
                             // Alternate screen buffer (with save/restore cursor)
@@ -711,7 +744,11 @@ impl vte::Perform for TerminalProcessor {
                         }
                         1004 => {
                             // Focus event reporting
-                            if grid.focus_reporting() { 1 } else { 2 }
+                            if grid.focus_reporting() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         1048 => {
                             // Save/restore cursor - not directly queryable as a toggle
@@ -719,17 +756,23 @@ impl vte::Perform for TerminalProcessor {
                         }
                         2004 => {
                             // Bracketed paste mode
-                            if grid.bracketed_paste() { 1 } else { 2 }
+                            if grid.bracketed_paste() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         2026 => {
                             // Synchronized output
-                            if grid.synchronized_output() { 1 } else { 2 }
+                            if grid.synchronized_output() {
+                                1
+                            } else {
+                                2
+                            }
                         }
                         _ => 0, // not recognized
                     };
-                    grid.write_response(
-                        format!("\x1b[?{};{}$y", mode, status).into_bytes(),
-                    );
+                    grid.write_response(format!("\x1b[?{};{}$y", mode, status).into_bytes());
                 }
             }
             // TBC - Tab Clear
@@ -923,12 +966,9 @@ impl vte::Perform for TerminalProcessor {
                                     .ok()
                                     .and_then(|s| s.parse::<i32>().ok())
                             } else {
-                                marker
-                                    .get(2..)
-                                    .and_then(|s| s.parse::<i32>().ok())
+                                marker.get(2..).and_then(|s| s.parse::<i32>().ok())
                             };
-                            grid.prompt_mark =
-                                Some(PromptMark::CommandFinished(exit_code));
+                            grid.prompt_mark = Some(PromptMark::CommandFinished(exit_code));
                         }
                         _ => {}
                     }
@@ -940,13 +980,7 @@ impl vte::Perform for TerminalProcessor {
         }
     }
 
-    fn hook(
-        &mut self,
-        _params: &vte::Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        _action: char,
-    ) {
+    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
         // DCS sequences - not commonly needed for basic terminal emulation.
     }
 

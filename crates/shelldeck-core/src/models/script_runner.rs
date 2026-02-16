@@ -66,7 +66,10 @@ pub fn substitute_variables(body: &str, values: &HashMap<String, String>) -> Str
                 i += 1;
             }
         } else {
-            let ch = body[i..].chars().next().expect("i < body.len() guarantees a char");
+            let ch = body[i..]
+                .chars()
+                .next()
+                .expect("i < body.len() guarantees a char");
             result.push(ch);
             i += ch.len_utf8();
         }
@@ -77,7 +80,10 @@ pub fn substitute_variables(body: &str, values: &HashMap<String, String>) -> Str
 
 /// Build an executable command from a script, respecting its language.
 /// When `var_values` is `Some`, template variables in the body are substituted first.
-pub fn build_command(script: &Script, var_values: Option<&HashMap<String, String>>) -> ScriptCommand {
+pub fn build_command(
+    script: &Script,
+    var_values: Option<&HashMap<String, String>>,
+) -> ScriptCommand {
     let spec = script.language.runner_spec();
     let body: String = match var_values {
         Some(values) if !values.is_empty() => substitute_variables(&script.body, values),

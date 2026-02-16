@@ -1,6 +1,6 @@
+use adabraka_ui::prelude::*;
 use gpui::prelude::*;
 use gpui::*;
-use adabraka_ui::prelude::*;
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus, PortForward};
 use uuid::Uuid;
 
@@ -36,7 +36,11 @@ impl PortForwardView {
         }
     }
 
-    fn render_forward_row(&self, forward: &PortForward, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_forward_row(
+        &self,
+        forward: &PortForward,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let status_color = match forward.status {
             ForwardStatus::Active => ShellDeckColors::success(),
             ForwardStatus::Inactive => ShellDeckColors::text_muted(),
@@ -71,13 +75,7 @@ impl PortForwardView {
                     .w(px(40.0))
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .w(px(8.0))
-                            .h(px(8.0))
-                            .rounded_full()
-                            .bg(status_color),
-                    ),
+                    .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color)),
             )
             // Label
             .child(
@@ -151,7 +149,10 @@ impl PortForwardView {
                     .gap(px(4.0))
                     .child(
                         div()
-                            .id(ElementId::from(SharedString::from(format!("fwd-edit-{}", fwd_id))))
+                            .id(ElementId::from(SharedString::from(format!(
+                                "fwd-edit-{}",
+                                fwd_id
+                            ))))
                             .cursor_pointer()
                             .px(px(6.0))
                             .py(px(3.0))
@@ -169,7 +170,10 @@ impl PortForwardView {
                     )
                     .child(
                         div()
-                            .id(ElementId::from(SharedString::from(format!("fwd-action-{}", fwd_id))))
+                            .id(ElementId::from(SharedString::from(format!(
+                                "fwd-action-{}",
+                                fwd_id
+                            ))))
                             .cursor_pointer()
                             .px(px(6.0))
                             .py(px(3.0))
@@ -516,20 +520,17 @@ impl Render for PortForwardView {
                             .child("Port Forwards"),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .id("add-forward-btn")
-                                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(PortForwardEvent::AddForward);
-                                    }))
-                                    .child(
-                                        Button::new("add-forward", "+ Add Forward")
-                                            .variant(ButtonVariant::Default),
-                                    ),
-                            ),
+                        div().flex().gap(px(8.0)).child(
+                            div()
+                                .id("add-forward-btn")
+                                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                    cx.emit(PortForwardEvent::AddForward);
+                                }))
+                                .child(
+                                    Button::new("add-forward", "+ Add Forward")
+                                        .variant(ButtonVariant::Default),
+                                ),
+                        ),
                     ),
             )
             // Presets

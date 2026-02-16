@@ -3,10 +3,10 @@ mod actions;
 use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::WindowDecorations;
-use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_core::config::app_config::AppConfig;
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
+use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::Workspace;
 use tracing_subscriber::EnvFilter;
 
@@ -60,9 +60,16 @@ fn main() -> Result<()> {
         adabraka_ui::init(cx);
 
         // Install theme
-        let is_dark = !matches!(config.theme, shelldeck_core::config::app_config::ThemePreference::Light);
+        let is_dark = !matches!(
+            config.theme,
+            shelldeck_core::config::app_config::ThemePreference::Light
+        );
         ShellDeckColors::set_dark_mode(is_dark);
-        let theme = if is_dark { Theme::dark() } else { Theme::light() };
+        let theme = if is_dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
         install_theme(cx, theme);
 
         // Register keyboard shortcuts
@@ -98,7 +105,14 @@ fn main() -> Result<()> {
         };
 
         cx.open_window(window_options, |window, cx| {
-            let workspace = cx.new(|cx| Workspace::new(cx, config.clone(), all_connections, store_for_workspace.clone()));
+            let workspace = cx.new(|cx| {
+                Workspace::new(
+                    cx,
+                    config.clone(),
+                    all_connections,
+                    store_for_workspace.clone(),
+                )
+            });
             // Focus the workspace root so keyboard shortcuts dispatch correctly
             workspace.read(cx).focus_handle.focus(window);
 

@@ -97,7 +97,9 @@ impl LocalPty {
 
     /// Write data to the PTY (sends input to the child process).
     pub fn write(&mut self, data: &[u8]) -> crate::Result<()> {
-        self.writer.write_all(data).map_err(crate::TerminalError::Io)
+        self.writer
+            .write_all(data)
+            .map_err(crate::TerminalError::Io)
     }
 
     /// Resize the PTY.

@@ -177,7 +177,11 @@ impl SitesView {
     }
 
     pub fn servers_scanned(&self) -> usize {
-        self.sites.iter().map(|s| s.connection_id).collect::<HashSet<_>>().len()
+        self.sites
+            .iter()
+            .map(|s| s.connection_id)
+            .collect::<HashSet<_>>()
+            .len()
     }
 
     pub fn ssl_sites_count(&self) -> usize {
@@ -252,14 +256,21 @@ impl SitesView {
         result.sort_by(|a, b| {
             let cmp = match self.sort_by {
                 SiteSortBy::Name => a.name().to_lowercase().cmp(&b.name().to_lowercase()),
-                SiteSortBy::Server => a.connection_name.to_lowercase().cmp(&b.connection_name.to_lowercase()),
+                SiteSortBy::Server => a
+                    .connection_name
+                    .to_lowercase()
+                    .cmp(&b.connection_name.to_lowercase()),
                 SiteSortBy::Type => a.site_type.label().cmp(b.site_type.label()),
                 SiteSortBy::DiscoveredAt => a.discovered_at.cmp(&b.discovered_at),
                 SiteSortBy::Status => a.status.label().cmp(b.status.label()),
             };
             // Favorites always first regardless of sort
             let fav_cmp = b.favorite.cmp(&a.favorite);
-            fav_cmp.then(if self.sort_ascending { cmp } else { cmp.reverse() })
+            fav_cmp.then(if self.sort_ascending {
+                cmp
+            } else {
+                cmp.reverse()
+            })
         });
 
         result
@@ -290,11 +301,17 @@ impl SitesView {
                 });
                 if !collapsed.contains(&group_key) {
                     for j in 0..count {
-                        items.push(FlatItem::SiteRow { site_index: i + j, in_group: true });
+                        items.push(FlatItem::SiteRow {
+                            site_index: i + j,
+                            in_group: true,
+                        });
                     }
                 }
             } else {
-                items.push(FlatItem::SiteRow { site_index: i, in_group: false });
+                items.push(FlatItem::SiteRow {
+                    site_index: i,
+                    in_group: false,
+                });
             }
 
             i += count;
@@ -389,7 +406,10 @@ impl SitesView {
         };
 
         div()
-            .id(ElementId::from(SharedString::from(format!("group-hdr-{}", group_key))))
+            .id(ElementId::from(SharedString::from(format!(
+                "group-hdr-{}",
+                group_key
+            ))))
             .flex()
             .items_center()
             .w_full()
@@ -495,15 +515,14 @@ impl SitesView {
             ))
     }
 
-    fn render_filter_badge(
-        &self,
-        filter: SiteTypeFilter,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    fn render_filter_badge(&self, filter: SiteTypeFilter, cx: &mut Context<Self>) -> Stateful<Div> {
         let is_active = self.type_filter == filter;
         let label = filter.label();
         div()
-            .id(ElementId::from(SharedString::from(format!("filter-{}", label))))
+            .id(ElementId::from(SharedString::from(format!(
+                "filter-{}",
+                label
+            ))))
             .px(px(10.0))
             .py(px(4.0))
             .rounded(px(12.0))
@@ -511,8 +530,7 @@ impl SitesView {
             .text_size(px(11.0))
             .font_weight(FontWeight::MEDIUM)
             .when(is_active, |el| {
-                el.bg(ShellDeckColors::primary())
-                    .text_color(gpui::white())
+                el.bg(ShellDeckColors::primary()).text_color(gpui::white())
             })
             .when(!is_active, |el| {
                 el.bg(ShellDeckColors::bg_surface())
@@ -530,19 +548,22 @@ impl SitesView {
             .child(label.to_string())
     }
 
-    fn render_sort_option(
-        &self,
-        sort: SiteSortBy,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    fn render_sort_option(&self, sort: SiteSortBy, cx: &mut Context<Self>) -> Stateful<Div> {
         let is_active = self.sort_by == sort;
         let arrow = if is_active {
-            if self.sort_ascending { " ^" } else { " v" }
+            if self.sort_ascending {
+                " ^"
+            } else {
+                " v"
+            }
         } else {
             ""
         };
         div()
-            .id(ElementId::from(SharedString::from(format!("sort-{}", sort.label()))))
+            .id(ElementId::from(SharedString::from(format!(
+                "sort-{}",
+                sort.label()
+            ))))
             .px(px(8.0))
             .py(px(3.0))
             .rounded(px(4.0))
@@ -616,36 +637,21 @@ impl SitesView {
                         .text_color(ShellDeckColors::text_primary())
                         .child(self.search_query.clone()),
                 )
-                .child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(14.0))
-                        .bg(ShellDeckColors::primary()),
-                )
+                .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
         };
 
         toolbar = toolbar.child(search_display);
 
         // Type filter badges
         toolbar = toolbar
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(20.0))
-                    .bg(ShellDeckColors::border()),
-            )
+            .child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()))
             .child(self.render_filter_badge(SiteTypeFilter::All, cx))
             .child(self.render_filter_badge(SiteTypeFilter::Nginx, cx))
             .child(self.render_filter_badge(SiteTypeFilter::Mysql, cx))
             .child(self.render_filter_badge(SiteTypeFilter::Postgresql, cx));
 
         // Sort options
-        toolbar = toolbar.child(
-            div()
-                .w(px(1.0))
-                .h(px(20.0))
-                .bg(ShellDeckColors::border()),
-        );
+        toolbar = toolbar.child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()));
         toolbar = toolbar
             .child(
                 div()
@@ -659,12 +665,7 @@ impl SitesView {
             .child(self.render_sort_option(SiteSortBy::DiscoveredAt, cx));
 
         // View mode toggle
-        toolbar = toolbar.child(
-            div()
-                .w(px(1.0))
-                .h(px(20.0))
-                .bg(ShellDeckColors::border()),
-        );
+        toolbar = toolbar.child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()));
 
         let is_table = self.view_mode == SitesViewMode::Table;
         toolbar = toolbar.child(
@@ -757,10 +758,19 @@ impl SitesView {
             },
         };
 
-        let port_str = site.port().map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
+        let port_str = site
+            .port()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let ssl_str = if site.has_ssl() { "[SSL]" } else { "-" };
 
-        let mut tag_row = div().flex().items_center().gap(px(3.0)).w(px(120.0)).flex_shrink_0().overflow_hidden();
+        let mut tag_row = div()
+            .flex()
+            .items_center()
+            .gap(px(3.0))
+            .w(px(120.0))
+            .flex_shrink_0()
+            .overflow_hidden();
         for tag in site.tags.iter().take(2) {
             tag_row = tag_row.child(
                 div()
@@ -798,7 +808,10 @@ impl SitesView {
         if let Some(url) = url_for_open {
             actions = actions.child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("open-{}", site_id))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "open-{}",
+                        site_id
+                    ))))
                     .px(px(4.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
@@ -818,7 +831,10 @@ impl SitesView {
 
         actions = actions.child(
             div()
-                .id(ElementId::from(SharedString::from(format!("ssh-{}", site_id))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "ssh-{}",
+                    site_id
+                ))))
                 .px(px(4.0))
                 .py(px(2.0))
                 .rounded(px(3.0))
@@ -838,7 +854,10 @@ impl SitesView {
         let fav_label = if site.favorite { "*" } else { "+" };
         actions = actions.child(
             div()
-                .id(ElementId::from(SharedString::from(format!("fav-{}", site_id))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "fav-{}",
+                    site_id
+                ))))
                 .px(px(4.0))
                 .py(px(2.0))
                 .rounded(px(3.0))
@@ -856,7 +875,10 @@ impl SitesView {
         );
 
         div()
-            .id(ElementId::from(SharedString::from(format!("site-row-click-{}", site_id))))
+            .id(ElementId::from(SharedString::from(format!(
+                "site-row-click-{}",
+                site_id
+            ))))
             .group(group_name)
             .flex()
             .items_center()
@@ -873,20 +895,17 @@ impl SitesView {
             }))
             // Type badge
             .child(
-                div()
-                    .w(px(60.0))
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(type_color.opacity(0.15))
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(type_color)
-                            .child(site.site_type.label().to_string()),
-                    ),
+                div().w(px(60.0)).flex_shrink_0().child(
+                    div()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .bg(type_color.opacity(0.15))
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(type_color)
+                        .child(site.site_type.label().to_string()),
+                ),
             )
             // Name
             .child(
@@ -966,7 +985,10 @@ impl SitesView {
         };
 
         let mut card = div()
-            .id(ElementId::from(SharedString::from(format!("site-card-{}", site_id))))
+            .id(ElementId::from(SharedString::from(format!(
+                "site-card-{}",
+                site_id
+            ))))
             .flex()
             .flex_col()
             .w(px(220.0))
@@ -976,7 +998,9 @@ impl SitesView {
             .bg(ShellDeckColors::bg_surface())
             .border_1()
             .cursor_pointer()
-            .when(is_selected, |el| el.border_color(ShellDeckColors::primary()))
+            .when(is_selected, |el| {
+                el.border_color(ShellDeckColors::primary())
+            })
             .when(!is_selected, |el| {
                 el.border_color(ShellDeckColors::border())
                     .hover(|el| el.border_color(ShellDeckColors::primary().opacity(0.5)))
@@ -1384,22 +1408,13 @@ impl SitesView {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .child(
-                            div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
-                                .bg(status_color),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(status_color)
-                                .child(match &site.status {
-                                    SiteStatus::Error(msg) => format!("Error: {}", msg),
-                                    other => other.label().to_string(),
-                                }),
-                        ),
+                        .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
+                        .child(div().text_size(px(11.0)).text_color(status_color).child(
+                            match &site.status {
+                                SiteStatus::Error(msg) => format!("Error: {}", msg),
+                                other => other.label().to_string(),
+                            },
+                        )),
                 ),
         );
 
@@ -1410,7 +1425,9 @@ impl SitesView {
                 .flex_col()
                 .gap(px(4.0))
                 .child(Self::detail_label("Discovered"))
-                .child(Self::detail_value(&site.discovered_at.format("%Y-%m-%d %H:%M").to_string())),
+                .child(Self::detail_value(
+                    &site.discovered_at.format("%Y-%m-%d %H:%M").to_string(),
+                )),
         );
 
         panel = panel.child(content);
@@ -1458,7 +1475,11 @@ impl SitesView {
 
         actions = actions.child(Self::detail_action_button(
             "detail-fav",
-            if site.favorite { "Remove Favorite" } else { "Add Favorite" },
+            if site.favorite {
+                "Remove Favorite"
+            } else {
+                "Add Favorite"
+            },
             ShellDeckColors::warning(),
             cx.listener(move |_this, _, _, cx| {
                 cx.emit(SitesEvent::ToggleFavorite(fav_id));
@@ -1641,7 +1662,10 @@ impl Render for SitesView {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("Scanning ({} remaining)...", self.scans_pending)),
+                                    .child(format!(
+                                        "Scanning ({} remaining)...",
+                                        self.scans_pending
+                                    )),
                             ),
                     )
                 }),
@@ -1731,24 +1755,16 @@ impl Render for SitesView {
             format!("{} of {} sites", filtered_count, total_count)
         };
         page = page.child(
-            div()
-                .px(px(24.0))
-                .pb(px(4.0))
-                .flex_shrink_0()
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(count_text),
-                ),
+            div().px(px(24.0)).pb(px(4.0)).flex_shrink_0().child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(count_text),
+            ),
         );
 
         // Content area (table/cards + optional detail panel)
-        let mut content_area = div()
-            .flex()
-            .flex_grow()
-            .min_h(px(0.0))
-            .overflow_hidden();
+        let mut content_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
         // Main list area
         let mut list_area = div()
@@ -1779,33 +1795,52 @@ impl Render for SitesView {
                         flat_items_count,
                         cx.processor(|this, range: Range<usize>, _window, cx| {
                             let filtered = this.filtered_sites();
-                            let flat_items = Self::grouped_flat_items(&filtered, &this.collapsed_groups);
+                            let flat_items =
+                                Self::grouped_flat_items(&filtered, &this.collapsed_groups);
                             let mut items: Vec<AnyElement> = Vec::new();
                             for i in range {
                                 if let Some(flat_item) = flat_items.get(i) {
                                     match flat_item {
-                                        FlatItem::GroupHeader { group_key, name, type_label, count } => {
-                                            let is_collapsed = this.collapsed_groups.contains(group_key);
+                                        FlatItem::GroupHeader {
+                                            group_key,
+                                            name,
+                                            type_label,
+                                            count,
+                                        } => {
+                                            let is_collapsed =
+                                                this.collapsed_groups.contains(group_key);
                                             items.push(
                                                 this.render_group_header_row(
-                                                    group_key, name, type_label, *count, is_collapsed, cx,
+                                                    group_key,
+                                                    name,
+                                                    type_label,
+                                                    *count,
+                                                    is_collapsed,
+                                                    cx,
                                                 )
                                                 .into_any_element(),
                                             );
                                         }
-                                        FlatItem::SiteRow { site_index, in_group } => {
+                                        FlatItem::SiteRow {
+                                            site_index,
+                                            in_group,
+                                        } => {
                                             if let Some(site) = filtered.get(*site_index) {
                                                 let row = this.render_table_row(site, cx);
                                                 if *in_group {
                                                     items.push(
                                                         div()
-                                                            .id(ElementId::from(SharedString::from(
-                                                                format!("grp-row-{}", site_index),
-                                                            )))
+                                                            .id(ElementId::from(
+                                                                SharedString::from(format!(
+                                                                    "grp-row-{}",
+                                                                    site_index
+                                                                )),
+                                                            ))
                                                             .w_full()
                                                             .border_l_2()
                                                             .border_color(
-                                                                ShellDeckColors::primary().opacity(0.2),
+                                                                ShellDeckColors::primary()
+                                                                    .opacity(0.2),
                                                             )
                                                             .child(row)
                                                             .into_any_element(),
@@ -1837,11 +1872,7 @@ impl Render for SitesView {
                         .min_h(px(0.0))
                         .overflow_y_scroll();
 
-                    let mut cards_wrap = div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(12.0))
-                        .p(px(24.0));
+                    let mut cards_wrap = div().flex().flex_wrap().gap(px(12.0)).p(px(24.0));
 
                     let mut card_i = 0;
                     let mut site_cards_shown: usize = 0;
@@ -1901,7 +1932,8 @@ impl Render for SitesView {
                                 if site_cards_shown >= visible_count {
                                     break;
                                 }
-                                cards_wrap = cards_wrap.child(self.render_card(filtered[card_i + j], cx));
+                                cards_wrap =
+                                    cards_wrap.child(self.render_card(filtered[card_i + j], cx));
                                 site_cards_shown += 1;
                             }
                         } else {
@@ -1930,7 +1962,10 @@ impl Render for SitesView {
                                     div()
                                         .text_size(px(11.0))
                                         .text_color(ShellDeckColors::text_muted())
-                                        .child(format!("Showing {} of {}", showing, filtered_count)),
+                                        .child(format!(
+                                            "Showing {} of {}",
+                                            showing, filtered_count
+                                        )),
                                 )
                                 .child(
                                     div()

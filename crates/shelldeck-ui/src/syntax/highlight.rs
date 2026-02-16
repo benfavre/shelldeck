@@ -139,11 +139,7 @@ fn highlight_template_variables(
 /// - `body`: the source text
 /// - `cursor`: optional `(line, col)` for cursor display (0-indexed)
 /// - `is_active`: whether the editor is focused (affects cursor visibility)
-pub fn render_code_block(
-    body: &str,
-    cursor: Option<(usize, usize)>,
-    is_active: bool,
-) -> Div {
+pub fn render_code_block(body: &str, cursor: Option<(usize, usize)>, is_active: bool) -> Div {
     render_code_block_with_language(body, cursor, is_active, &ScriptLanguage::Shell)
 }
 

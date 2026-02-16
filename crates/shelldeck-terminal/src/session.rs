@@ -30,11 +30,7 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     /// Spawn a new local terminal session.
-    pub fn spawn_local(
-        shell: Option<&str>,
-        rows: u16,
-        cols: u16,
-    ) -> crate::Result<Self> {
+    pub fn spawn_local(shell: Option<&str>, rows: u16, cols: u16) -> crate::Result<Self> {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -81,7 +77,9 @@ impl TerminalSession {
                 }
                 tracing::debug!("PTY reader thread exiting");
             })
-            .map_err(|e| crate::TerminalError::Pty(format!("Failed to spawn reader thread: {}", e)))?;
+            .map_err(|e| {
+                crate::TerminalError::Pty(format!("Failed to spawn reader thread: {}", e))
+            })?;
 
         // Spawn writer thread: forwards input to PTY.
         std::thread::Builder::new()
@@ -94,7 +92,9 @@ impl TerminalSession {
                 }
                 tracing::debug!("PTY writer thread exiting");
             })
-            .map_err(|e| crate::TerminalError::Pty(format!("Failed to spawn writer thread: {}", e)))?;
+            .map_err(|e| {
+                crate::TerminalError::Pty(format!("Failed to spawn writer thread: {}", e))
+            })?;
 
         // Build a resize callback that resizes the underlying PTY.
         // The master handle is Send so this closure can live in the session.
@@ -130,7 +130,11 @@ impl TerminalSession {
         title: String,
         rows: u16,
         cols: u16,
-    ) -> (Self, mpsc::UnboundedSender<Vec<u8>>, mpsc::UnboundedReceiver<Vec<u8>>) {
+    ) -> (
+        Self,
+        mpsc::UnboundedSender<Vec<u8>>,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (data_tx, mut data_rx) = mpsc::unbounded_channel::<Vec<u8>>();

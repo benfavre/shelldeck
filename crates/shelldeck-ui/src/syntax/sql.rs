@@ -16,25 +16,151 @@ static SQL_FUNCTIONS: OnceLock<HashSet<&'static str>> = OnceLock::new();
 fn keywords() -> &'static HashSet<&'static str> {
     SQL_KEYWORDS.get_or_init(|| {
         [
-            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "UPDATE", "DELETE", "SET",
-            "CREATE", "DROP", "ALTER", "TABLE", "INDEX", "VIEW", "DATABASE", "SCHEMA",
-            "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS", "ON", "AS", "AND",
-            "OR", "NOT", "IN", "IS", "NULL", "LIKE", "BETWEEN", "EXISTS", "HAVING",
-            "GROUP", "BY", "ORDER", "ASC", "DESC", "LIMIT", "OFFSET", "UNION", "ALL",
-            "DISTINCT", "VALUES", "DEFAULT", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
-            "CONSTRAINT", "CHECK", "UNIQUE", "IF", "THEN", "ELSE", "WHEN", "CASE",
-            "END", "BEGIN", "COMMIT", "ROLLBACK", "TRANSACTION", "GRANT", "REVOKE",
-            "WITH", "RECURSIVE", "EXPLAIN", "SHOW", "DESCRIBE", "USE", "TRUNCATE",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "INSERT",
+            "INTO",
+            "UPDATE",
+            "DELETE",
+            "SET",
+            "CREATE",
+            "DROP",
+            "ALTER",
+            "TABLE",
+            "INDEX",
+            "VIEW",
+            "DATABASE",
+            "SCHEMA",
+            "JOIN",
+            "INNER",
+            "LEFT",
+            "RIGHT",
+            "OUTER",
+            "CROSS",
+            "ON",
+            "AS",
+            "AND",
+            "OR",
+            "NOT",
+            "IN",
+            "IS",
+            "NULL",
+            "LIKE",
+            "BETWEEN",
+            "EXISTS",
+            "HAVING",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "ASC",
+            "DESC",
+            "LIMIT",
+            "OFFSET",
+            "UNION",
+            "ALL",
+            "DISTINCT",
+            "VALUES",
+            "DEFAULT",
+            "PRIMARY",
+            "KEY",
+            "FOREIGN",
+            "REFERENCES",
+            "CONSTRAINT",
+            "CHECK",
+            "UNIQUE",
+            "IF",
+            "THEN",
+            "ELSE",
+            "WHEN",
+            "CASE",
+            "END",
+            "BEGIN",
+            "COMMIT",
+            "ROLLBACK",
+            "TRANSACTION",
+            "GRANT",
+            "REVOKE",
+            "WITH",
+            "RECURSIVE",
+            "EXPLAIN",
+            "SHOW",
+            "DESCRIBE",
+            "USE",
+            "TRUNCATE",
             // lowercase aliases
-            "select", "from", "where", "insert", "into", "update", "delete", "set",
-            "create", "drop", "alter", "table", "index", "view", "database", "schema",
-            "join", "inner", "left", "right", "outer", "cross", "on", "as", "and",
-            "or", "not", "in", "is", "null", "like", "between", "exists", "having",
-            "group", "by", "order", "asc", "desc", "limit", "offset", "union", "all",
-            "distinct", "values", "default", "primary", "key", "foreign", "references",
-            "constraint", "check", "unique", "if", "then", "else", "when", "case",
-            "end", "begin", "commit", "rollback", "transaction", "grant", "revoke",
-            "with", "recursive", "explain", "show", "describe", "use", "truncate",
+            "select",
+            "from",
+            "where",
+            "insert",
+            "into",
+            "update",
+            "delete",
+            "set",
+            "create",
+            "drop",
+            "alter",
+            "table",
+            "index",
+            "view",
+            "database",
+            "schema",
+            "join",
+            "inner",
+            "left",
+            "right",
+            "outer",
+            "cross",
+            "on",
+            "as",
+            "and",
+            "or",
+            "not",
+            "in",
+            "is",
+            "null",
+            "like",
+            "between",
+            "exists",
+            "having",
+            "group",
+            "by",
+            "order",
+            "asc",
+            "desc",
+            "limit",
+            "offset",
+            "union",
+            "all",
+            "distinct",
+            "values",
+            "default",
+            "primary",
+            "key",
+            "foreign",
+            "references",
+            "constraint",
+            "check",
+            "unique",
+            "if",
+            "then",
+            "else",
+            "when",
+            "case",
+            "end",
+            "begin",
+            "commit",
+            "rollback",
+            "transaction",
+            "grant",
+            "revoke",
+            "with",
+            "recursive",
+            "explain",
+            "show",
+            "describe",
+            "use",
+            "truncate",
         ]
         .into_iter()
         .collect()
@@ -44,16 +170,62 @@ fn keywords() -> &'static HashSet<&'static str> {
 fn functions() -> &'static HashSet<&'static str> {
     SQL_FUNCTIONS.get_or_init(|| {
         [
-            "COUNT", "SUM", "AVG", "MIN", "MAX", "ROUND", "COALESCE", "IFNULL",
-            "CONCAT", "SUBSTRING", "REPLACE", "TRIM", "UPPER", "LOWER", "LENGTH",
-            "NOW", "DATE", "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
-            "CAST", "CONVERT", "FORMAT",
-            "count", "sum", "avg", "min", "max", "round", "coalesce", "ifnull",
-            "concat", "substring", "replace", "trim", "upper", "lower", "length",
-            "now", "date", "year", "month", "day", "hour", "minute", "second",
-            "cast", "convert", "format",
+            "COUNT",
+            "SUM",
+            "AVG",
+            "MIN",
+            "MAX",
+            "ROUND",
+            "COALESCE",
+            "IFNULL",
+            "CONCAT",
+            "SUBSTRING",
+            "REPLACE",
+            "TRIM",
+            "UPPER",
+            "LOWER",
+            "LENGTH",
+            "NOW",
+            "DATE",
+            "YEAR",
+            "MONTH",
+            "DAY",
+            "HOUR",
+            "MINUTE",
+            "SECOND",
+            "CAST",
+            "CONVERT",
+            "FORMAT",
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "round",
+            "coalesce",
+            "ifnull",
+            "concat",
+            "substring",
+            "replace",
+            "trim",
+            "upper",
+            "lower",
+            "length",
+            "now",
+            "date",
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "cast",
+            "convert",
+            "format",
             // PostgreSQL specifics
-            "pg_size_pretty", "pg_database_size", "pg_total_relation_size",
+            "pg_size_pretty",
+            "pg_database_size",
+            "pg_total_relation_size",
             "pg_stat_activity",
         ]
         .into_iter()
@@ -83,7 +255,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && bytes[i] != b'\n' {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Comment });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Comment,
+            });
             continue;
         }
 
@@ -98,8 +273,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 }
                 i += 1;
             }
-            if i >= len { i = len; }
-            tokens.push(Token { range: start..i, kind: TokenKind::Comment });
+            if i >= len {
+                i = len;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Comment,
+            });
             continue;
         }
 
@@ -118,7 +298,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 }
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
@@ -129,8 +312,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && bytes[i] != b'"' {
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
@@ -141,8 +329,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && bytes[i] != b'`' {
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::Variable });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Variable,
+            });
             continue;
         }
 
@@ -152,24 +345,36 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Number });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Number,
+            });
             continue;
         }
 
         // Operators
-        if matches!(b, b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%') {
+        if matches!(
+            b,
+            b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%'
+        ) {
             let start = i;
             i += 1;
             if i < len && (bytes[i] == b'=' || bytes[i] == b'>') {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Operator });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Operator,
+            });
             continue;
         }
 
         // Semicolons and commas as operators
         if b == b';' || b == b',' {
-            tokens.push(Token { range: i..i + 1, kind: TokenKind::Operator });
+            tokens.push(Token {
+                range: i..i + 1,
+                kind: TokenKind::Operator,
+            });
             i += 1;
             continue;
         }
@@ -177,7 +382,9 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         // Words (keywords, functions, identifiers)
         if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+            {
                 i += 1;
             }
             let word = &source[start..i];
@@ -190,7 +397,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 continue;
             };
 
-            tokens.push(Token { range: start..i, kind });
+            tokens.push(Token {
+                range: start..i,
+                kind,
+            });
             continue;
         }
 
@@ -198,12 +408,17 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         if b == b'@' {
             let start = i;
             i += 1;
-            if i < len && bytes[i] == b'@' { i += 1; }
+            if i < len && bytes[i] == b'@' {
+                i += 1;
+            }
             while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
             if i > start + 1 {
-                tokens.push(Token { range: start..i, kind: TokenKind::Variable });
+                tokens.push(Token {
+                    range: start..i,
+                    kind: TokenKind::Variable,
+                });
             }
             continue;
         }

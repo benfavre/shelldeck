@@ -5,9 +5,12 @@ use gpui::prelude::*;
 use gpui::*;
 use parking_lot::Mutex;
 use shelldeck_terminal::colors::{NamedColor, TermColor};
-use shelldeck_terminal::grid::{CellWidth, CursorShape, CursorState, MouseEncoding, MouseMode, SearchMatch, TerminalGrid, UnderlineStyle};
-use shelldeck_terminal::url::{detect_urls, UrlMatch};
+use shelldeck_terminal::grid::{
+    CellWidth, CursorShape, CursorState, MouseEncoding, MouseMode, SearchMatch, TerminalGrid,
+    UnderlineStyle,
+};
 use shelldeck_terminal::session::{SessionState, TerminalSession};
+use shelldeck_terminal::url::{detect_urls, UrlMatch};
 use uuid::Uuid;
 
 use shelldeck_core::config::themes::TerminalTheme;
@@ -164,30 +167,110 @@ fn paint_block_char(
 
         // Upper half block
         '\u{2580}' => {
-            window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, cell_h * 0.5)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(cell_w, cell_h * 0.5)),
+                color,
+            ));
             true
         }
         // Lower 1/8 .. 7/8 blocks
-        '\u{2581}' => { let h = cell_h * 0.125; window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2582}' => { let h = cell_h * 0.25;  window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2583}' => { let h = cell_h * 0.375; window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2584}' => { let h = cell_h * 0.5;   window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2585}' => { let h = cell_h * 0.625; window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2586}' => { let h = cell_h * 0.75;  window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
-        '\u{2587}' => { let h = cell_h * 0.875; window.paint_quad(fill(Bounds::new(point(x, y + cell_h - h), size(cell_w, h)), color)); true }
+        '\u{2581}' => {
+            let h = cell_h * 0.125;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2582}' => {
+            let h = cell_h * 0.25;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2583}' => {
+            let h = cell_h * 0.375;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2584}' => {
+            let h = cell_h * 0.5;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2585}' => {
+            let h = cell_h * 0.625;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2586}' => {
+            let h = cell_h * 0.75;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
+        '\u{2587}' => {
+            let h = cell_h * 0.875;
+            window.paint_quad(fill(
+                Bounds::new(point(x, y + cell_h - h), size(cell_w, h)),
+                color,
+            ));
+            true
+        }
         // Full block
         '\u{2588}' => {
             window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, cell_h)), color));
             true
         }
         // Left 7/8 .. 1/8 blocks
-        '\u{2589}' => { let w = cell_w * 0.875; window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258A}' => { let w = cell_w * 0.75;  window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258B}' => { let w = cell_w * 0.625; window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258C}' => { let w = cell_w * 0.5;   window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258D}' => { let w = cell_w * 0.375; window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258E}' => { let w = cell_w * 0.25;  window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
-        '\u{258F}' => { let w = cell_w * 0.125; window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color)); true }
+        '\u{2589}' => {
+            let w = cell_w * 0.875;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258A}' => {
+            let w = cell_w * 0.75;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258B}' => {
+            let w = cell_w * 0.625;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258C}' => {
+            let w = cell_w * 0.5;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258D}' => {
+            let w = cell_w * 0.375;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258E}' => {
+            let w = cell_w * 0.25;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
+        '\u{258F}' => {
+            let w = cell_w * 0.125;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(w, cell_h)), color));
+            true
+        }
 
         // Right half block
         '\u{2590}' => {
@@ -197,23 +280,46 @@ fn paint_block_char(
         }
 
         // Shade characters
-        '\u{2591}' => { // Light shade (25%)
-            window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, cell_h)), color.opacity(0.25)));
+        '\u{2591}' => {
+            // Light shade (25%)
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(cell_w, cell_h)),
+                color.opacity(0.25),
+            ));
             true
         }
-        '\u{2592}' => { // Medium shade (50%)
-            window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, cell_h)), color.opacity(0.5)));
+        '\u{2592}' => {
+            // Medium shade (50%)
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(cell_w, cell_h)),
+                color.opacity(0.5),
+            ));
             true
         }
-        '\u{2593}' => { // Dark shade (75%)
-            window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, cell_h)), color.opacity(0.75)));
+        '\u{2593}' => {
+            // Dark shade (75%)
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(cell_w, cell_h)),
+                color.opacity(0.75),
+            ));
             true
         }
 
         // Upper 1/8 block
-        '\u{2594}' => { let h = cell_h * 0.125; window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, h)), color)); true }
+        '\u{2594}' => {
+            let h = cell_h * 0.125;
+            window.paint_quad(fill(Bounds::new(point(x, y), size(cell_w, h)), color));
+            true
+        }
         // Right 1/8 block
-        '\u{2595}' => { let w = cell_w * 0.125; window.paint_quad(fill(Bounds::new(point(x + cell_w - w, y), size(w, cell_h)), color)); true }
+        '\u{2595}' => {
+            let w = cell_w * 0.125;
+            window.paint_quad(fill(
+                Bounds::new(point(x + cell_w - w, y), size(w, cell_h)),
+                color,
+            ));
+            true
+        }
 
         // ---- Box-drawing lines (U+2500–U+257F) — most common subset ----
 
@@ -221,14 +327,20 @@ fn paint_block_char(
         '\u{2500}' | '\u{2501}' => {
             let thick = if ch == '\u{2501}' { px(2.0) } else { px(1.0) };
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(cell_w, thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(cell_w, thick)),
+                color,
+            ));
             true
         }
         // │ Vertical line
         '\u{2502}' | '\u{2503}' => {
             let thick = if ch == '\u{2503}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, cell_h)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, cell_h)),
+                color,
+            ));
             true
         }
         // ┌ Upper-left corner
@@ -236,8 +348,14 @@ fn paint_block_char(
             let thick = if ch == '\u{250F}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))),
+                color,
+            ));
             true
         }
         // ┐ Upper-right corner
@@ -245,8 +363,14 @@ fn paint_block_char(
             let thick = if ch == '\u{2513}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))),
+                color,
+            ));
             true
         }
         // └ Lower-left corner
@@ -254,8 +378,14 @@ fn paint_block_char(
             let thick = if ch == '\u{2517}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)),
+                color,
+            ));
             true
         }
         // ┘ Lower-right corner
@@ -263,8 +393,14 @@ fn paint_block_char(
             let thick = if ch == '\u{251B}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)),
+                color,
+            ));
             true
         }
         // ├ Left tee
@@ -272,8 +408,14 @@ fn paint_block_char(
             let thick = if ch == '\u{2523}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, cell_h)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, cell_h)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), thick)),
+                color,
+            ));
             true
         }
         // ┤ Right tee
@@ -281,8 +423,14 @@ fn paint_block_char(
             let thick = if ch == '\u{252B}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, cell_h)), color));
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, cell_h)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(mid_x - x + thick, thick)),
+                color,
+            ));
             true
         }
         // ┬ Top tee
@@ -290,8 +438,14 @@ fn paint_block_char(
             let thick = if ch == '\u{2533}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(cell_w, thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(cell_w, thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(thick, cell_h - (mid_y - y))),
+                color,
+            ));
             true
         }
         // ┴ Bottom tee
@@ -299,8 +453,14 @@ fn paint_block_char(
             let thick = if ch == '\u{253B}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(cell_w, thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(cell_w, thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, mid_y - y + thick)),
+                color,
+            ));
             true
         }
         // ┼ Cross
@@ -308,36 +468,54 @@ fn paint_block_char(
             let thick = if ch == '\u{254B}' { px(2.0) } else { px(1.0) };
             let mid_x = x + cell_w * 0.5 - thick * 0.5;
             let mid_y = y + cell_h * 0.5 - thick * 0.5;
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(cell_w, thick)), color));
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(thick, cell_h)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(cell_w, thick)),
+                color,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(thick, cell_h)),
+                color,
+            ));
             true
         }
         // ╴ Right-end stub (light)
         '\u{2574}' => {
             let mid_x = x + cell_w * 0.5;
             let mid_y = y + cell_h * 0.5 - px(0.5);
-            window.paint_quad(fill(Bounds::new(point(x, mid_y), size(mid_x - x, px(1.0))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(x, mid_y), size(mid_x - x, px(1.0))),
+                color,
+            ));
             true
         }
         // ╵ Up-end stub (light)
         '\u{2575}' => {
             let mid_x = x + cell_w * 0.5 - px(0.5);
             let mid_y = y + cell_h * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, y), size(px(1.0), mid_y - y)), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, y), size(px(1.0), mid_y - y)),
+                color,
+            ));
             true
         }
         // ╶ Left-end stub (light)
         '\u{2576}' => {
             let mid_x = x + cell_w * 0.5;
             let mid_y = y + cell_h * 0.5 - px(0.5);
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), px(1.0))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(cell_w - (mid_x - x), px(1.0))),
+                color,
+            ));
             true
         }
         // ╷ Down-end stub (light)
         '\u{2577}' => {
             let mid_x = x + cell_w * 0.5 - px(0.5);
             let mid_y = y + cell_h * 0.5;
-            window.paint_quad(fill(Bounds::new(point(mid_x, mid_y), size(px(1.0), cell_h - (mid_y - y))), color));
+            window.paint_quad(fill(
+                Bounds::new(point(mid_x, mid_y), size(px(1.0), cell_h - (mid_y - y))),
+                color,
+            ));
             true
         }
 
@@ -749,18 +927,16 @@ impl TerminalView {
         self.cursor_blink_on = true;
         let entity = cx.entity().downgrade();
         self.cursor_blink_timer = Some(cx.spawn(
-            async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(530))
-                        .await;
-                    let Ok(_) = entity.update(cx, |this, cx| {
-                        this.cursor_blink_on = !this.cursor_blink_on;
-                        cx.notify();
-                    }) else {
-                        break;
-                    };
-                }
+            async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(530))
+                    .await;
+                let Ok(_) = entity.update(cx, |this, cx| {
+                    this.cursor_blink_on = !this.cursor_blink_on;
+                    cx.notify();
+                }) else {
+                    break;
+                };
             },
         ));
     }
@@ -796,7 +972,11 @@ impl TerminalView {
         self.add_session_with_connection(session, None);
     }
 
-    pub fn add_session_with_connection(&mut self, session: TerminalSession, connection_id: Option<Uuid>) {
+    pub fn add_session_with_connection(
+        &mut self,
+        session: TerminalSession,
+        connection_id: Option<Uuid>,
+    ) {
         // Save the current tab's split before switching away
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
@@ -867,7 +1047,8 @@ impl TerminalView {
 
     /// Find a tab that belongs to the given connection, if any.
     pub fn find_tab_for_connection(&self, connection_id: Uuid) -> Option<Uuid> {
-        self.tabs.iter()
+        self.tabs
+            .iter()
             .find(|t| t.connection_id == Some(connection_id))
             .map(|t| t.id)
     }
@@ -984,7 +1165,10 @@ impl TerminalView {
         // Ctrl+key combos: letter & 0x1f produces the control character.
         // Skip when Shift is held so Ctrl+Shift+C/V reach the Copy/Paste actions.
         if mods.control && !mods.alt && !mods.shift && key.len() == 1 {
-            let ch = key.chars().next().expect("key.len() == 1 guarantees a char");
+            let ch = key
+                .chars()
+                .next()
+                .expect("key.len() == 1 guarantees a char");
             if ch.is_ascii_alphabetic() {
                 return Some(vec![(ch.to_ascii_lowercase() as u8) & 0x1f]);
             }
@@ -998,7 +1182,11 @@ impl TerminalView {
                 + if mods.shift { 1 } else { 0 }
                 + if mods.alt { 2 } else { 0 }
                 + if mods.control { 4 } else { 0 };
-            if val > 1 { Some(val) } else { None }
+            if val > 1 {
+                Some(val)
+            } else {
+                None
+            }
         };
 
         // ---- Function keys F1..F24 ----
@@ -1154,18 +1342,24 @@ impl TerminalView {
 
         let sidebar_px = px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH * 2.0);
         let mut available_width = (viewport.width - sidebar_px).max(px(cell_width * 10.0));
-        let mut available_height =
-            (viewport.height - px(TITLEBAR_HEIGHT) - px(TAB_BAR_HEIGHT) - px(TOOLBAR_HEIGHT) - px(STATUS_BAR_HEIGHT)).max(px(cell_height * 2.0));
+        let mut available_height = (viewport.height
+            - px(TITLEBAR_HEIGHT)
+            - px(TAB_BAR_HEIGHT)
+            - px(TOOLBAR_HEIGHT)
+            - px(STATUS_BAR_HEIGHT))
+        .max(px(cell_height * 2.0));
 
         // Account for split panes
         if let Some(ref split) = self.split_view {
             let divider = px(SPLIT_DIVIDER_SIZE);
             match split.direction {
                 SplitDirection::Horizontal => {
-                    available_width = ((available_width - divider) * split.ratio).max(px(cell_width * 10.0));
+                    available_width =
+                        ((available_width - divider) * split.ratio).max(px(cell_width * 10.0));
                 }
                 SplitDirection::Vertical => {
-                    available_height = ((available_height - divider) * split.ratio).max(px(cell_height * 2.0));
+                    available_height =
+                        ((available_height - divider) * split.ratio).max(px(cell_height * 2.0));
                 }
             }
         }
@@ -1185,17 +1379,23 @@ impl TerminalView {
 
         let sidebar_px = px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH * 2.0);
         let mut available_width = (viewport.width - sidebar_px).max(px(cell_width * 10.0));
-        let mut available_height =
-            (viewport.height - px(TITLEBAR_HEIGHT) - px(TAB_BAR_HEIGHT) - px(TOOLBAR_HEIGHT) - px(STATUS_BAR_HEIGHT)).max(px(cell_height * 2.0));
+        let mut available_height = (viewport.height
+            - px(TITLEBAR_HEIGHT)
+            - px(TAB_BAR_HEIGHT)
+            - px(TOOLBAR_HEIGHT)
+            - px(STATUS_BAR_HEIGHT))
+        .max(px(cell_height * 2.0));
 
         if let Some(ref split) = self.split_view {
             let divider = px(SPLIT_DIVIDER_SIZE);
             match split.direction {
                 SplitDirection::Horizontal => {
-                    available_width = ((available_width - divider) * (1.0 - split.ratio)).max(px(cell_width * 10.0));
+                    available_width = ((available_width - divider) * (1.0 - split.ratio))
+                        .max(px(cell_width * 10.0));
                 }
                 SplitDirection::Vertical => {
-                    available_height = ((available_height - divider) * (1.0 - split.ratio)).max(px(cell_height * 2.0));
+                    available_height = ((available_height - divider) * (1.0 - split.ratio))
+                        .max(px(cell_height * 2.0));
                 }
             }
         }
@@ -1254,8 +1454,8 @@ impl TerminalView {
     /// actually dirty (new data arrived).
     pub fn ensure_refresh_running(&mut self, cx: &mut Context<Self>) {
         if self._refresh_task.is_none() {
-            self._refresh_task = Some(cx.spawn(
-                async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            self._refresh_task =
+                Some(cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     loop {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(8))
@@ -1265,13 +1465,21 @@ impl TerminalView {
                             let mut any_sync = false;
                             for s in this.pane.sessions.iter() {
                                 let g = s.grid.lock();
-                                if g.dirty { any_dirty = true; }
-                                if g.synchronized_output() { any_sync = true; }
+                                if g.dirty {
+                                    any_dirty = true;
+                                }
+                                if g.synchronized_output() {
+                                    any_sync = true;
+                                }
                             }
                             if let Some(ref split) = this.split_view {
                                 let g = split.secondary_session.grid.lock();
-                                if g.dirty { any_dirty = true; }
-                                if g.synchronized_output() { any_sync = true; }
+                                if g.dirty {
+                                    any_dirty = true;
+                                }
+                                if g.synchronized_output() {
+                                    any_sync = true;
+                                }
                             }
                             // Also clear dirty flags on stored (background) splits so
                             // they don't accumulate stale dirty state, but don't trigger
@@ -1281,12 +1489,16 @@ impl TerminalView {
                             }
                             // Handle OSC 52 clipboard requests from any session.
                             for session in this.pane.sessions.iter() {
-                                if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
+                                if let Some((_sel, text)) =
+                                    session.grid.lock().clipboard_request.take()
+                                {
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }
                             }
                             if let Some(ref split) = this.split_view {
-                                if let Some((_sel, text)) = split.secondary_session.grid.lock().clipboard_request.take() {
+                                if let Some((_sel, text)) =
+                                    split.secondary_session.grid.lock().clipboard_request.take()
+                                {
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }
                             }
@@ -1301,8 +1513,7 @@ impl TerminalView {
                             break;
                         }
                     }
-                },
-            ));
+                }));
         }
     }
 
@@ -1385,13 +1596,11 @@ impl TerminalView {
                 .px(px(10.0))
                 .py(px(5.0))
                 .cursor_pointer()
-                .on_click(
-                    cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                        this.select_tab(tab_id);
-                        cx.emit(TerminalEvent::TabSelected(tab_id));
-                        cx.notify();
-                    }),
-                )
+                .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                    this.select_tab(tab_id);
+                    cx.emit(TerminalEvent::TabSelected(tab_id));
+                    cx.notify();
+                }))
                 // Status dot
                 .child(
                     div()
@@ -1449,13 +1658,11 @@ impl TerminalView {
                         .text_color(ShellDeckColors::error())
                 })
                 .child("x")
-                .on_click(
-                    cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                        this.close_tab(tab_id);
-                        cx.emit(TerminalEvent::TabClosed(tab_id));
-                        cx.notify();
-                    }),
-                );
+                .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                    this.close_tab(tab_id);
+                    cx.emit(TerminalEvent::TabClosed(tab_id));
+                    cx.notify();
+                }));
 
             if is_active {
                 // Always show close on active tab
@@ -1505,14 +1712,16 @@ impl TerminalView {
 
     /// Render the toolbar with action buttons between tab bar and terminal grid.
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let zoom = self.tabs.get(self.pane.active_index)
+        let zoom = self
+            .tabs
+            .get(self.pane.active_index)
             .map(|t| t.zoom_level)
             .unwrap_or(1.0);
         let zoom_pct = format!("{}%", (zoom * 100.0).round() as u32);
 
-        let has_selection = self.active_session().is_some_and(|s| {
-            s.grid.lock().selected_text().is_some()
-        });
+        let has_selection = self
+            .active_session()
+            .is_some_and(|s| s.grid.lock().selected_text().is_some());
 
         let toolbar_btn = |id: &str, label: &str, hint: &str| {
             div()
@@ -1563,7 +1772,11 @@ impl TerminalView {
         } else {
             ("Ctrl+", "Ctrl+")
         };
-        let shift = if cfg!(target_os = "macos") { "\u{21E7}" } else { "Shift+" };
+        let shift = if cfg!(target_os = "macos") {
+            "\u{21E7}"
+        } else {
+            "Shift+"
+        };
 
         let mut toolbar = div()
             .flex()
@@ -1579,89 +1792,100 @@ impl TerminalView {
         // Left group: search, copy, paste
         toolbar = toolbar
             .child(
-                toolbar_btn("tb-search", "Search", &format!("{}F", secondary))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                toolbar_btn("tb-search", "Search", &format!("{}F", secondary)).on_click(
+                    cx.listener(|this, _, _, cx| {
                         this.toggle_search();
                         cx.notify();
-                    })),
+                    }),
+                ),
             )
+            .child({
+                let mut btn = toolbar_btn("tb-copy", "Copy", &format!("{}{}C", ctrl, shift));
+                if !has_selection {
+                    btn = btn
+                        .text_color(ShellDeckColors::text_muted())
+                        .cursor_default();
+                } else {
+                    btn = btn.on_click(cx.listener(|this, _, _, cx| {
+                        this.copy_selection(cx);
+                        cx.notify();
+                    }));
+                }
+                btn
+            })
             .child(
-                {
-                    let mut btn = toolbar_btn("tb-copy", "Copy", &format!("{}{}C", ctrl, shift));
-                    if !has_selection {
-                        btn = btn
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_default();
-                    } else {
-                        btn = btn.on_click(cx.listener(|this, _, _, cx| {
-                            this.copy_selection(cx);
-                            cx.notify();
-                        }));
-                    }
-                    btn
-                },
-            )
-            .child(
-                toolbar_btn("tb-paste", "Paste", &format!("{}{}V", ctrl, shift))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                toolbar_btn("tb-paste", "Paste", &format!("{}{}V", ctrl, shift)).on_click(
+                    cx.listener(|this, _, _, cx| {
                         this.paste_clipboard(cx);
                         cx.notify();
-                    })),
+                    }),
+                ),
             );
 
         // Separator
         toolbar = toolbar.child(
-            div().w(px(1.0)).h(px(16.0)).mx(px(6.0)).bg(ShellDeckColors::border()),
+            div()
+                .w(px(1.0))
+                .h(px(16.0))
+                .mx(px(6.0))
+                .bg(ShellDeckColors::border()),
         );
 
         // Middle group: split
         if self.split_view.is_some() {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-rotate-split", "Rotate", "")
-                        .on_click(cx.listener(|this, _, window, cx| {
+                    toolbar_btn("tb-rotate-split", "Rotate", "").on_click(cx.listener(
+                        |this, _, window, cx| {
                             this.toggle_split_direction();
                             this.resize_if_needed(window);
                             cx.notify();
-                        })),
+                        },
+                    )),
                 )
                 .child(
-                    toolbar_btn("tb-close-split", "Close Split", "")
-                        .on_click(cx.listener(|this, _, _, cx| {
+                    toolbar_btn("tb-close-split", "Close Split", "").on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.close_split();
                             cx.notify();
-                        })),
+                        },
+                    )),
                 );
         } else {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-split-h", "Split H", &format!("{}{}D", ctrl, shift))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                    toolbar_btn("tb-split-h", "Split H", &format!("{}{}D", ctrl, shift)).on_click(
+                        cx.listener(|this, _, _, cx| {
                             this.split_horizontal(cx);
-                        })),
+                        }),
+                    ),
                 )
                 .child(
-                    toolbar_btn("tb-split-v", "Split V", "")
-                        .on_click(cx.listener(|this, _, _, cx| {
+                    toolbar_btn("tb-split-v", "Split V", "").on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.split_vertical(cx);
-                        })),
+                        },
+                    )),
                 );
         }
 
         // Separator
         toolbar = toolbar.child(
-            div().w(px(1.0)).h(px(16.0)).mx(px(6.0)).bg(ShellDeckColors::border()),
+            div()
+                .w(px(1.0))
+                .h(px(16.0))
+                .mx(px(6.0))
+                .bg(ShellDeckColors::border()),
         );
 
         // Right group: zoom controls
         toolbar = toolbar
             .child(
-                toolbar_icon("tb-zoom-out", "-")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.zoom_out();
-                        this.resize_if_needed(window);
-                        cx.notify();
-                    })),
+                toolbar_icon("tb-zoom-out", "-").on_click(cx.listener(|this, _, window, cx| {
+                    this.zoom_out();
+                    this.resize_if_needed(window);
+                    cx.notify();
+                })),
             )
             .child(
                 div()
@@ -1688,32 +1912,37 @@ impl TerminalView {
                     })),
             )
             .child(
-                toolbar_icon("tb-zoom-in", "+")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.zoom_in();
-                        this.resize_if_needed(window);
-                        cx.notify();
-                    })),
+                toolbar_icon("tb-zoom-in", "+").on_click(cx.listener(|this, _, window, cx| {
+                    this.zoom_in();
+                    this.resize_if_needed(window);
+                    cx.notify();
+                })),
             );
 
         // Separator before scripts
         let has_scripts = !self.favorite_scripts.is_empty() || !self.recent_scripts.is_empty();
         if has_scripts {
             toolbar = toolbar.child(
-                div().w(px(1.0)).h(px(16.0)).mx(px(6.0)).bg(ShellDeckColors::border()),
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .mx(px(6.0))
+                    .bg(ShellDeckColors::border()),
             );
 
             // Scripts dropdown button + panel
             let is_open = self.script_dropdown_open;
-            let mut scripts_wrapper = div()
-                .relative()
-                .child(
-                    toolbar_btn("tb-scripts", "Scripts", "")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.script_dropdown_open = !this.script_dropdown_open;
-                            cx.notify();
-                        })),
-                );
+            let mut scripts_wrapper =
+                div()
+                    .relative()
+                    .child(
+                        toolbar_btn("tb-scripts", "Scripts", "").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.script_dropdown_open = !this.script_dropdown_open;
+                                cx.notify();
+                            },
+                        )),
+                    );
 
             if is_open {
                 let mut dropdown = div()
@@ -1749,7 +1978,10 @@ impl TerminalView {
                         let badge = lang_badge.clone();
                         dropdown = dropdown.child(
                             div()
-                                .id(ElementId::from(SharedString::from(format!("fav-{}", script_id))))
+                                .id(ElementId::from(SharedString::from(format!(
+                                    "fav-{}",
+                                    script_id
+                                ))))
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
@@ -1786,7 +2018,11 @@ impl TerminalView {
                 // Separator between sections
                 if !self.favorite_scripts.is_empty() && !self.recent_scripts.is_empty() {
                     dropdown = dropdown.child(
-                        div().h(px(1.0)).mx(px(8.0)).my(px(4.0)).bg(ShellDeckColors::border()),
+                        div()
+                            .h(px(1.0))
+                            .mx(px(8.0))
+                            .my(px(4.0))
+                            .bg(ShellDeckColors::border()),
                     );
                 }
 
@@ -1807,7 +2043,10 @@ impl TerminalView {
                         let badge = lang_badge.clone();
                         dropdown = dropdown.child(
                             div()
-                                .id(ElementId::from(SharedString::from(format!("rec-{}", script_id))))
+                                .id(ElementId::from(SharedString::from(format!(
+                                    "rec-{}",
+                                    script_id
+                                ))))
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
@@ -1852,15 +2091,16 @@ impl TerminalView {
 
         // Right-aligned: clear terminal
         toolbar = toolbar.child(
-            toolbar_btn("tb-clear", "Clear", &format!("{}L", secondary))
-                .on_click(cx.listener(|this, _, _, cx| {
+            toolbar_btn("tb-clear", "Clear", &format!("{}L", secondary)).on_click(cx.listener(
+                |this, _, _, cx| {
                     if let Some(session) = this.active_session() {
                         let mut grid = session.grid.lock();
                         grid.erase_display(2);
                         grid.cursor_to(0, 0);
                     }
                     cx.notify();
-                })),
+                },
+            )),
         );
 
         toolbar
@@ -1894,8 +2134,7 @@ impl TerminalView {
                     if let Some(view) = h_down.upgrade() {
                         view.update(cx, |this, _cx| {
                             if let Some((col, row)) = this.pixel_to_cell(event.position) {
-                                let bytes =
-                                    Self::encode_mouse(mouse_encoding, 0, col, row, true);
+                                let bytes = Self::encode_mouse(mouse_encoding, 0, col, row, true);
                                 if let Some(s) = this.active_session() {
                                     s.write_input(&bytes);
                                 }
@@ -1905,7 +2144,8 @@ impl TerminalView {
                 } else {
                     // Check for scrollbar click first
                     if let Some(view) = h_down.upgrade() {
-                        let is_scrollbar = view.read(cx).is_in_scrollbar_area(event.position, window);
+                        let is_scrollbar =
+                            view.read(cx).is_in_scrollbar_area(event.position, window);
                         if is_scrollbar {
                             view.update(cx, |this, cx| {
                                 this.scrollbar_dragging = true;
@@ -1951,9 +2191,10 @@ impl TerminalView {
                                 let multi_click_threshold = std::time::Duration::from_millis(400);
 
                                 // Detect multi-click
-                                let is_multi = this.last_click_time.is_some_and(|t| {
-                                    now.duration_since(t) < multi_click_threshold
-                                }) && this.last_click_pos == Some((col, row));
+                                let is_multi = this
+                                    .last_click_time
+                                    .is_some_and(|t| now.duration_since(t) < multi_click_threshold)
+                                    && this.last_click_pos == Some((col, row));
 
                                 if is_multi {
                                     this.click_count = (this.click_count % 3) + 1;
@@ -1990,33 +2231,31 @@ impl TerminalView {
 
         // Left mouse up
         let h_up = handle.clone();
-        let mouse_up_handler =
-            move |event: &MouseUpEvent, _window: &mut Window, cx: &mut App| {
-                if mouse_mode != MouseMode::None {
-                    if let Some(view) = h_up.upgrade() {
-                        view.update(cx, |this, _cx| {
-                            if let Some((col, row)) = this.pixel_to_cell(event.position) {
-                                let bytes =
-                                    Self::encode_mouse(mouse_encoding, 0, col, row, false);
-                                if let Some(s) = this.active_session() {
-                                    s.write_input(&bytes);
-                                }
+        let mouse_up_handler = move |event: &MouseUpEvent, _window: &mut Window, cx: &mut App| {
+            if mouse_mode != MouseMode::None {
+                if let Some(view) = h_up.upgrade() {
+                    view.update(cx, |this, _cx| {
+                        if let Some((col, row)) = this.pixel_to_cell(event.position) {
+                            let bytes = Self::encode_mouse(mouse_encoding, 0, col, row, false);
+                            if let Some(s) = this.active_session() {
+                                s.write_input(&bytes);
                             }
-                        });
-                    }
-                } else {
-                    // End scrollbar drag or selection drag
-                    if let Some(view) = h_up.upgrade() {
-                        view.update(cx, |this, _cx| {
-                            this.scrollbar_dragging = false;
-                            this.selecting = false;
-                            if let Some(session) = this.active_session() {
-                                session.grid.lock().end_selection();
-                            }
-                        });
-                    }
+                        }
+                    });
                 }
-            };
+            } else {
+                // End scrollbar drag or selection drag
+                if let Some(view) = h_up.upgrade() {
+                    view.update(cx, |this, _cx| {
+                        this.scrollbar_dragging = false;
+                        this.selecting = false;
+                        if let Some(session) = this.active_session() {
+                            session.grid.lock().end_selection();
+                        }
+                    });
+                }
+            }
+        };
 
         // Mouse move: selection drag or terminal mouse reporting
         let h_move = handle.clone();
@@ -2069,47 +2308,45 @@ impl TerminalView {
 
         // Scroll wheel: scrollback or terminal mouse reporting
         let h_scroll = handle.clone();
-        let scroll_handler =
-            move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
-                if mouse_mode != MouseMode::None {
-                    if let Some(view) = h_scroll.upgrade() {
-                        view.update(cx, |this, _cx| {
-                            if let Some((col, row)) = this.pixel_to_cell(event.position) {
-                                let delta_y = match event.delta {
-                                    ScrollDelta::Lines(pt) => pt.y,
-                                    ScrollDelta::Pixels(pt) => pt.y / px(cell_height_f),
-                                };
-                                let button = if delta_y < 0.0 { 64u8 } else { 65u8 };
-                                let bytes =
-                                    Self::encode_mouse(mouse_encoding, button, col, row, true);
-                                if let Some(s) = this.active_session() {
-                                    s.write_input(&bytes);
-                                }
-                            }
-                        });
-                    }
-                } else {
-                    // Scrollback navigation
-                    if let Some(view) = h_scroll.upgrade() {
-                        view.update(cx, |this, cx| {
+        let scroll_handler = move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
+            if mouse_mode != MouseMode::None {
+                if let Some(view) = h_scroll.upgrade() {
+                    view.update(cx, |this, _cx| {
+                        if let Some((col, row)) = this.pixel_to_cell(event.position) {
                             let delta_y = match event.delta {
                                 ScrollDelta::Lines(pt) => pt.y,
                                 ScrollDelta::Pixels(pt) => pt.y / px(cell_height_f),
                             };
-                            let lines = delta_y.abs().ceil() as usize;
-                            if let Some(session) = this.active_session() {
-                                let mut grid = session.grid.lock();
-                                if delta_y < 0.0 {
-                                    grid.scroll_view_up(lines);
-                                } else {
-                                    grid.scroll_view_down(lines);
-                                }
+                            let button = if delta_y < 0.0 { 64u8 } else { 65u8 };
+                            let bytes = Self::encode_mouse(mouse_encoding, button, col, row, true);
+                            if let Some(s) = this.active_session() {
+                                s.write_input(&bytes);
                             }
-                            cx.notify();
-                        });
-                    }
+                        }
+                    });
                 }
-            };
+            } else {
+                // Scrollback navigation
+                if let Some(view) = h_scroll.upgrade() {
+                    view.update(cx, |this, cx| {
+                        let delta_y = match event.delta {
+                            ScrollDelta::Lines(pt) => pt.y,
+                            ScrollDelta::Pixels(pt) => pt.y / px(cell_height_f),
+                        };
+                        let lines = delta_y.abs().ceil() as usize;
+                        if let Some(session) = this.active_session() {
+                            let mut grid = session.grid.lock();
+                            if delta_y < 0.0 {
+                                grid.scroll_view_up(lines);
+                            } else {
+                                grid.scroll_view_down(lines);
+                            }
+                        }
+                        cx.notify();
+                    });
+                }
+            }
+        };
 
         let focus2 = self.focus_handle.clone();
         let focus3 = self.focus_handle.clone();
@@ -2144,11 +2381,16 @@ impl TerminalView {
                         if let Some(view) = h_down2.upgrade() {
                             view.update(cx, |this, cx| {
                                 // Check if right-clicking on a URL
-                                let url = this.pixel_to_cell_zero(event.position).and_then(|(col, row)| {
-                                    this.detected_urls.iter().find(|u| {
-                                        u.row == row && col >= u.col && col < u.col + u.len
-                                    }).map(|u| u.url.clone())
-                                });
+                                let url = this.pixel_to_cell_zero(event.position).and_then(
+                                    |(col, row)| {
+                                        this.detected_urls
+                                            .iter()
+                                            .find(|u| {
+                                                u.row == row && col >= u.col && col < u.col + u.len
+                                            })
+                                            .map(|u| u.url.clone())
+                                    },
+                                );
                                 this.context_menu = Some(ContextMenuState {
                                     position: event.position,
                                     url,
@@ -2422,7 +2664,10 @@ impl TerminalView {
             .p(px(4.0))
             .overflow_hidden()
             // Direct glyph-painting canvas
-            .child(Self::create_grid_canvas(cache, grid, cursor,
+            .child(Self::create_grid_canvas(
+                cache,
+                grid,
+                cursor,
                 self.search_matches.clone(),
                 self.search_current_idx,
                 self.detected_urls.clone(),
@@ -2450,8 +2695,33 @@ impl TerminalView {
         cursor_blink_on: bool,
     ) -> impl IntoElement {
         canvas(
-            move |_bounds, _window, _cx| (cache, grid, cursor, search_matches, search_current, url_matches, palette, has_focus, cursor_blink_on),
-            move |bounds, (cache, grid, cursor, search_matches, search_current, url_matches, palette, has_focus, cursor_blink_on), window, _cx| {
+            move |_bounds, _window, _cx| {
+                (
+                    cache,
+                    grid,
+                    cursor,
+                    search_matches,
+                    search_current,
+                    url_matches,
+                    palette,
+                    has_focus,
+                    cursor_blink_on,
+                )
+            },
+            move |bounds,
+                  (
+                cache,
+                grid,
+                cursor,
+                search_matches,
+                search_current,
+                url_matches,
+                palette,
+                has_focus,
+                cursor_blink_on,
+            ),
+                  window,
+                  _cx| {
                 let cell_w = cache.cell_width;
                 let cell_h = cache.cell_height;
                 let baseline = cache.baseline_y;
@@ -2538,8 +2808,16 @@ impl TerminalView {
                                 let s: SharedString = char_str.into();
                                 let blen = s.len();
                                 let shaped = window.text_system().shape_line(
-                                    s, fs,
-                                    &[TextRun { len: blen, font: f, color: fg_color, background_color: None, underline: None, strikethrough: None }],
+                                    s,
+                                    fs,
+                                    &[TextRun {
+                                        len: blen,
+                                        font: f,
+                                        color: fg_color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }],
                                     None,
                                 );
                                 let _ = shaped.paint(point(x, y), cell_h, window, _cx);
@@ -2568,11 +2846,17 @@ impl TerminalView {
                             UnderlineStyle::Double => {
                                 // Two parallel lines 2px apart
                                 window.paint_quad(fill(
-                                    Bounds::new(point(x, underline_y - px(1.0)), size(glyph_w, px(1.0))),
+                                    Bounds::new(
+                                        point(x, underline_y - px(1.0)),
+                                        size(glyph_w, px(1.0)),
+                                    ),
                                     ul_color,
                                 ));
                                 window.paint_quad(fill(
-                                    Bounds::new(point(x, underline_y + px(1.0)), size(glyph_w, px(1.0))),
+                                    Bounds::new(
+                                        point(x, underline_y + px(1.0)),
+                                        size(glyph_w, px(1.0)),
+                                    ),
                                     ul_color,
                                 ));
                             }
@@ -2584,7 +2868,11 @@ impl TerminalView {
                                 let mut segment_idx = 0;
                                 while xoff < gw_f32 {
                                     let seg_w = wave_period.min(gw_f32 - xoff);
-                                    let y_shift = if segment_idx % 2 == 0 { 0.0 } else { wave_height };
+                                    let y_shift = if segment_idx % 2 == 0 {
+                                        0.0
+                                    } else {
+                                        wave_height
+                                    };
                                     window.paint_quad(fill(
                                         Bounds::new(
                                             point(x + px(xoff), underline_y + px(y_shift)),
@@ -2666,7 +2954,11 @@ impl TerminalView {
                 // Search match highlights
                 for (mi, m) in search_matches.iter().enumerate() {
                     let is_current = search_current == Some(mi);
-                    let color = if is_current { search_current_color } else { search_color };
+                    let color = if is_current {
+                        search_current_color
+                    } else {
+                        search_color
+                    };
                     for offset in 0..m.len {
                         let col = m.col + offset;
                         let y = bounds.origin.y + cell_h * m.row as f32;
@@ -2694,9 +2986,17 @@ impl TerminalView {
                     // Determine cursor width: 2 cells for wide chars, 1 for normal.
                     let cursor_w = if let Some(row) = visible.get(cursor.row) {
                         if let Some(cell) = row.get(cursor.col) {
-                            if cell.wide == CellWidth::Wide { cell_w * 2.0 } else { cell_w }
-                        } else { cell_w }
-                    } else { cell_w };
+                            if cell.wide == CellWidth::Wide {
+                                cell_w * 2.0
+                            } else {
+                                cell_w
+                            }
+                        } else {
+                            cell_w
+                        }
+                    } else {
+                        cell_w
+                    };
 
                     if !has_focus && cursor.shape == CursorShape::Block {
                         // Hollow cursor: outline only (unfocused block)
@@ -2736,14 +3036,26 @@ impl TerminalView {
                                         let ch = cell.c;
                                         if ch != ' ' && ch != '\0' {
                                             let bg = ShellDeckColors::terminal_bg();
-                                            if let Some((fid, gid)) = cache.lookup(ch, cell.attrs.bold, cell.attrs.italic) {
-                                                let _ = window.paint_glyph(point(cx_x, cx_y + baseline), fid, gid, fs, bg);
+                                            if let Some((fid, gid)) =
+                                                cache.lookup(ch, cell.attrs.bold, cell.attrs.italic)
+                                            {
+                                                let _ = window.paint_glyph(
+                                                    point(cx_x, cx_y + baseline),
+                                                    fid,
+                                                    gid,
+                                                    fs,
+                                                    bg,
+                                                );
                                             } else {
                                                 // Non-ASCII (e.g. CJK) under cursor: use shape_line
                                                 let f = match (cell.attrs.bold, cell.attrs.italic) {
-                                                    (true, true) => cache.base_font.clone().bold().italic(),
+                                                    (true, true) => {
+                                                        cache.base_font.clone().bold().italic()
+                                                    }
                                                     (true, false) => cache.base_font.clone().bold(),
-                                                    (false, true) => cache.base_font.clone().italic(),
+                                                    (false, true) => {
+                                                        cache.base_font.clone().italic()
+                                                    }
                                                     _ => cache.base_font.clone(),
                                                 };
                                                 let mut char_str = ch.to_string();
@@ -2753,11 +3065,24 @@ impl TerminalView {
                                                 let s: SharedString = char_str.into();
                                                 let blen = s.len();
                                                 let shaped = window.text_system().shape_line(
-                                                    s, fs,
-                                                    &[TextRun { len: blen, font: f, color: bg, background_color: None, underline: None, strikethrough: None }],
+                                                    s,
+                                                    fs,
+                                                    &[TextRun {
+                                                        len: blen,
+                                                        font: f,
+                                                        color: bg,
+                                                        background_color: None,
+                                                        underline: None,
+                                                        strikethrough: None,
+                                                    }],
                                                     None,
                                                 );
-                                                let _ = shaped.paint(point(cx_x, cx_y), cell_h, window, _cx);
+                                                let _ = shaped.paint(
+                                                    point(cx_x, cx_y),
+                                                    cell_h,
+                                                    window,
+                                                    _cx,
+                                                );
                                             }
                                         }
                                     }
@@ -2771,7 +3096,10 @@ impl TerminalView {
                             }
                             CursorShape::Underline => {
                                 window.paint_quad(fill(
-                                    Bounds::new(point(cx_x, cx_y + cell_h - px(2.0)), size(cursor_w, px(2.0))),
+                                    Bounds::new(
+                                        point(cx_x, cx_y + cell_h - px(2.0)),
+                                        size(cursor_w, px(2.0)),
+                                    ),
                                     ShellDeckColors::primary(),
                                 ));
                             }
@@ -2786,7 +3114,8 @@ impl TerminalView {
                     // Use actual grid content height, not full canvas height
                     let grid_content_height = cell_h * visible_lines as f32;
                     let track_height = grid_content_height.min(bounds.size.height);
-                    let track_x = bounds.origin.x + bounds.size.width - scrollbar_w - px(SCROLLBAR_MARGIN);
+                    let track_x =
+                        bounds.origin.x + bounds.size.width - scrollbar_w - px(SCROLLBAR_MARGIN);
                     let track_y = bounds.origin.y;
 
                     window.paint_quad(fill(
@@ -2805,7 +3134,10 @@ impl TerminalView {
                     let thumb_y = track_y + (track_height - thumb_height) * position;
 
                     window.paint_quad(PaintQuad {
-                        bounds: Bounds::new(point(track_x, thumb_y), size(scrollbar_w, thumb_height)),
+                        bounds: Bounds::new(
+                            point(track_x, thumb_y),
+                            size(scrollbar_w, thumb_height),
+                        ),
                         corner_radii: Corners::all(px(3.0)),
                         background: hsla(0.0, 0.0, 0.5, 0.5).into(),
                         border_widths: Edges::default(),
@@ -2870,8 +3202,7 @@ impl TerminalView {
     fn is_in_scrollbar_area(&self, position: Point<Pixels>, window: &Window) -> bool {
         let viewport = window.viewport_size();
         let scrollbar_start = viewport.width - px(SCROLLBAR_WIDTH + SCROLLBAR_MARGIN + 2.0);
-        position.x >= scrollbar_start
-            && position.y >= px(self.grid_y_offset)
+        position.x >= scrollbar_start && position.y >= px(self.grid_y_offset)
     }
 
     /// Scroll the active session's grid to a position based on the mouse y
@@ -2993,27 +3324,19 @@ impl TerminalView {
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))
             .shadow_md()
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .min_w(px(150.0))
-                    .child(if self.search_query.is_empty() {
-                        div()
-                            .text_color(ShellDeckColors::text_muted())
-                            .child("Search...")
-                    } else {
-                        div()
-                            .text_color(ShellDeckColors::text_primary())
-                            .flex()
-                            .child(self.search_query.clone())
-                            .child(
-                                div()
-                                    .w(px(1.0))
-                                    .h(px(14.0))
-                                    .bg(ShellDeckColors::primary()),
-                            )
-                    }),
-            )
+            .child(div().text_size(px(13.0)).min_w(px(150.0)).child(
+                if self.search_query.is_empty() {
+                    div()
+                        .text_color(ShellDeckColors::text_muted())
+                        .child("Search...")
+                } else {
+                    div()
+                        .text_color(ShellDeckColors::text_primary())
+                        .flex()
+                        .child(self.search_query.clone())
+                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
+                },
+            ))
             .child(
                 div()
                     .text_size(px(11.0))
@@ -3085,7 +3408,11 @@ impl TerminalView {
     }
 
     /// Render the context menu overlay.
-    fn render_context_menu(&self, state: &ContextMenuState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_context_menu(
+        &self,
+        state: &ContextMenuState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut menu = div()
             .id("context-menu")
             .absolute()
@@ -3118,27 +3445,29 @@ impl TerminalView {
 
         menu = menu
             .child(
-                menu_item("ctx-copy", "Copy")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.copy_selection(cx);
-                        this.context_menu = None;
-                        cx.notify();
-                    })),
+                menu_item("ctx-copy", "Copy").on_click(cx.listener(|this, _, _, cx| {
+                    this.copy_selection(cx);
+                    this.context_menu = None;
+                    cx.notify();
+                })),
             )
             .child(
-                menu_item("ctx-paste", "Paste")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.paste_clipboard(cx);
-                        this.context_menu = None;
-                        cx.notify();
-                    })),
+                menu_item("ctx-paste", "Paste").on_click(cx.listener(|this, _, _, cx| {
+                    this.paste_clipboard(cx);
+                    this.context_menu = None;
+                    cx.notify();
+                })),
             )
             .child(
-                div().h(px(1.0)).mx(px(8.0)).my(px(4.0)).bg(ShellDeckColors::border()),
+                div()
+                    .h(px(1.0))
+                    .mx(px(8.0))
+                    .my(px(4.0))
+                    .bg(ShellDeckColors::border()),
             )
             .child(
-                menu_item("ctx-select-all", "Select All")
-                    .on_click(cx.listener(|this, _, _, cx| {
+                menu_item("ctx-select-all", "Select All").on_click(cx.listener(
+                    |this, _, _, cx| {
                         if let Some(session) = this.active_session() {
                             let mut grid = session.grid.lock();
                             let rows = grid.rows;
@@ -3149,30 +3478,33 @@ impl TerminalView {
                         }
                         this.context_menu = None;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
             .child(
-                menu_item("ctx-clear", "Clear Terminal")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(session) = this.active_session() {
-                            let mut grid = session.grid.lock();
-                            grid.erase_display(2);
-                            grid.cursor_to(0, 0);
-                        }
-                        this.context_menu = None;
-                        cx.notify();
-                    })),
+                menu_item("ctx-clear", "Clear Terminal").on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(session) = this.active_session() {
+                        let mut grid = session.grid.lock();
+                        grid.erase_display(2);
+                        grid.cursor_to(0, 0);
+                    }
+                    this.context_menu = None;
+                    cx.notify();
+                })),
             )
             .child(
-                div().h(px(1.0)).mx(px(8.0)).my(px(4.0)).bg(ShellDeckColors::border()),
+                div()
+                    .h(px(1.0))
+                    .mx(px(8.0))
+                    .my(px(4.0))
+                    .bg(ShellDeckColors::border()),
             )
             .child(
-                menu_item("ctx-search", "Search")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.search_visible = true;
-                        this.context_menu = None;
-                        cx.notify();
-                    })),
+                menu_item("ctx-search", "Search").on_click(cx.listener(|this, _, _, cx| {
+                    this.search_visible = true;
+                    this.context_menu = None;
+                    cx.notify();
+                })),
             );
 
         // URL actions if applicable
@@ -3181,23 +3513,29 @@ impl TerminalView {
             let url_copy = url.clone();
             menu = menu
                 .child(
-                    div().h(px(1.0)).mx(px(8.0)).my(px(4.0)).bg(ShellDeckColors::border()),
+                    div()
+                        .h(px(1.0))
+                        .mx(px(8.0))
+                        .my(px(4.0))
+                        .bg(ShellDeckColors::border()),
                 )
                 .child(
-                    menu_item("ctx-open-link", "Open Link")
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    menu_item("ctx-open-link", "Open Link").on_click(cx.listener(
+                        move |this, _, _, cx| {
                             let _ = open::that(&url_clone);
                             this.context_menu = None;
                             cx.notify();
-                        })),
+                        },
+                    )),
                 )
                 .child(
-                    menu_item("ctx-copy-link", "Copy Link")
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    menu_item("ctx-copy-link", "Copy Link").on_click(cx.listener(
+                        move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(url_copy.clone()));
                             this.context_menu = None;
                             cx.notify();
-                        })),
+                        },
+                    )),
                 );
         }
 
@@ -3256,14 +3594,16 @@ impl TerminalView {
                 None,
                 vec![],
                 self.palette.clone(),
-                false,  // passive grid is never focused
-                true,   // cursor always visible (no blink) in passive pane
+                false, // passive grid is never focused
+                true,  // cursor always visible (no blink) in passive pane
             ))
     }
 
     /// Get the effective font size (base * zoom).
     fn effective_font_size(&self) -> f32 {
-        let zoom = self.tabs.get(self.pane.active_index)
+        let zoom = self
+            .tabs
+            .get(self.pane.active_index)
             .map(|t| t.zoom_level)
             .unwrap_or(1.0);
         self.font_size * zoom
@@ -3314,7 +3654,9 @@ impl TerminalView {
         }
 
         // Check if the current tab is an SSH connection
-        let connection_id = self.tabs.get(self.pane.active_index)
+        let connection_id = self
+            .tabs
+            .get(self.pane.active_index)
             .and_then(|t| t.connection_id);
 
         if let Some(conn_id) = connection_id {
@@ -3358,7 +3700,12 @@ impl TerminalView {
 
     /// Set the split secondary session from an externally-created session
     /// (e.g. an SSH session created by the workspace).
-    pub fn set_split_session(&mut self, session: TerminalSession, direction: SplitDirection, cx: &mut Context<Self>) {
+    pub fn set_split_session(
+        &mut self,
+        session: TerminalSession,
+        direction: SplitDirection,
+        cx: &mut Context<Self>,
+    ) {
         // Don't overwrite an existing split
         if self.split_view.is_some() {
             return;
@@ -3421,9 +3768,9 @@ impl TerminalView {
                 format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes()
             }
             MouseEncoding::Normal => {
-                let b = button + 32 ;
-                let c = (col as u8).saturating_add(32) ;
-                let r = (row as u8).saturating_add(32) ;
+                let b = button + 32;
+                let c = (col as u8).saturating_add(32);
+                let r = (row as u8).saturating_add(32);
                 vec![0x1b, b'[', b'M', b, c, r]
             }
         }
@@ -3435,7 +3782,11 @@ impl TerminalView {
         } else {
             ("Ctrl+", "Ctrl+")
         };
-        let shift = if cfg!(target_os = "macos") { "\u{21E7}" } else { "Shift+" };
+        let shift = if cfg!(target_os = "macos") {
+            "\u{21E7}"
+        } else {
+            "Shift+"
+        };
 
         let shortcut_row = |keys: String, desc: &str| {
             div()
@@ -3497,7 +3848,10 @@ impl TerminalView {
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(format!("Press {}T to open a new terminal or click a connection", cmd)),
+                            .child(format!(
+                                "Press {}T to open a new terminal or click a connection",
+                                cmd
+                            )),
                     ),
             )
             // Keyboard shortcuts reference
@@ -3521,13 +3875,25 @@ impl TerminalView {
                             .child("Keyboard Shortcuts"),
                     )
                     .child(shortcut_row(format!("{}T", cmd), "New terminal"))
-                    .child(shortcut_row(format!("{}{}P", cmd, shift), "Command palette"))
+                    .child(shortcut_row(
+                        format!("{}{}P", cmd, shift),
+                        "Command palette",
+                    ))
                     .child(shortcut_row(format!("{}F", cmd), "Search in terminal"))
                     .child(shortcut_row(format!("{}B", cmd), "Toggle sidebar"))
                     .child(shortcut_row(format!("{}{}D", ctrl, shift), "Split pane"))
-                    .child(shortcut_row(format!("{}{}C", ctrl, shift), "Copy selection"))
-                    .child(shortcut_row(format!("{}{}V", ctrl, shift), "Paste clipboard"))
-                    .child(shortcut_row(format!("{}= / {}-", cmd, cmd), "Zoom in / out"))
+                    .child(shortcut_row(
+                        format!("{}{}C", ctrl, shift),
+                        "Copy selection",
+                    ))
+                    .child(shortcut_row(
+                        format!("{}{}V", ctrl, shift),
+                        "Paste clipboard",
+                    ))
+                    .child(shortcut_row(
+                        format!("{}= / {}-", cmd, cmd),
+                        "Zoom in / out",
+                    ))
                     .child(shortcut_row(format!("{},", cmd), "Settings"))
                     .child(shortcut_row("Ctrl+Tab".to_string(), "Next tab")),
             )
@@ -3587,14 +3953,25 @@ impl Render for TerminalView {
 
             // Ensure glyph cache is ready
             self.ensure_glyph_cache(window);
-            let cache = self.glyph_cache.as_ref().expect("ensure_glyph_cache called above").clone();
+            let cache = self
+                .glyph_cache
+                .as_ref()
+                .expect("ensure_glyph_cache called above")
+                .clone();
 
             // Check for split view — extract state we need without cloning the session.
             let split_info = self.split_view.as_ref().map(|s| {
-                (s.direction, s.focus_secondary, s.ratio, s.secondary_session.grid.clone())
+                (
+                    s.direction,
+                    s.focus_secondary,
+                    s.ratio,
+                    s.secondary_session.grid.clone(),
+                )
             });
 
-            if let Some((split_direction, focus_secondary, split_ratio, secondary_grid)) = split_info {
+            if let Some((split_direction, focus_secondary, split_ratio, secondary_grid)) =
+                split_info
+            {
                 // ---- Split pane rendering ----
                 // Primary pane = active tab's session, secondary pane = split's session.
                 // "first" = primary (left/top), "second" = secondary (right/bottom).
@@ -3606,7 +3983,9 @@ impl Render for TerminalView {
                 }
                 secondary_grid.lock().dirty = false;
 
-                let primary_grid = self.pane.sessions
+                let primary_grid = self
+                    .pane
+                    .sessions
                     .get(self.pane.active_index)
                     .map(|s| s.grid.clone());
 
@@ -3622,13 +4001,21 @@ impl Render for TerminalView {
                 match split_direction {
                     SplitDirection::Horizontal => {
                         let first_w = (content_w - divider_f) * split_ratio;
-                        self.grid_x_offset = if first_is_active { sidebar_w } else { sidebar_w + first_w + divider_f };
+                        self.grid_x_offset = if first_is_active {
+                            sidebar_w
+                        } else {
+                            sidebar_w + first_w + divider_f
+                        };
                         self.grid_y_offset = top_offset;
                     }
                     SplitDirection::Vertical => {
                         let first_h = (content_h - divider_f) * split_ratio;
                         self.grid_x_offset = sidebar_w;
-                        self.grid_y_offset = if first_is_active { top_offset } else { top_offset + first_h + divider_f };
+                        self.grid_y_offset = if first_is_active {
+                            top_offset
+                        } else {
+                            top_offset + first_h + divider_f
+                        };
                     }
                 }
 
@@ -3660,9 +4047,15 @@ impl Render for TerminalView {
                     let passive_grid_el = self.render_split_passive_grid(passive_grid, cache, cx);
 
                     let (first_el, second_el) = if first_is_active {
-                        (active_grid_el.into_any_element(), passive_grid_el.into_any_element())
+                        (
+                            active_grid_el.into_any_element(),
+                            passive_grid_el.into_any_element(),
+                        )
                     } else {
-                        (passive_grid_el.into_any_element(), active_grid_el.into_any_element())
+                        (
+                            passive_grid_el.into_any_element(),
+                            active_grid_el.into_any_element(),
+                        )
                     };
 
                     // Build the split flex container
@@ -3679,7 +4072,9 @@ impl Render for TerminalView {
                             .flex_shrink_0()
                             .cursor_col_resize()
                             .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)))
-                            .when(split_dragging, |el| el.bg(ShellDeckColors::primary().opacity(0.5)))
+                            .when(split_dragging, |el| {
+                                el.bg(ShellDeckColors::primary().opacity(0.5))
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -3696,7 +4091,9 @@ impl Render for TerminalView {
                             .flex_shrink_0()
                             .cursor_row_resize()
                             .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)))
-                            .when(split_dragging, |el| el.bg(ShellDeckColors::primary().opacity(0.5)))
+                            .when(split_dragging, |el| {
+                                el.bg(ShellDeckColors::primary().opacity(0.5))
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -3723,29 +4120,33 @@ impl Render for TerminalView {
                         split_container = split_container
                             .when(is_horizontal, |el| el.cursor_col_resize())
                             .when(!is_horizontal, |el| el.cursor_row_resize())
-                            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
-                                if is_horizontal {
-                                    let viewport = window.viewport_size();
-                                    let sidebar_w = this.sidebar_width + SIDEBAR_HANDLE_WIDTH;
-                                    let content_w = viewport.width.to_f64() as f32 - sidebar_w;
-                                    let mouse_x = event.position.x.to_f64() as f32 - sidebar_w;
-                                    let new_ratio = (mouse_x / content_w).clamp(0.2, 0.8);
-                                    if let Some(ref mut split) = this.split_view {
-                                        split.ratio = new_ratio;
+                            .on_mouse_move(cx.listener(
+                                move |this, event: &MouseMoveEvent, window, cx| {
+                                    if is_horizontal {
+                                        let viewport = window.viewport_size();
+                                        let sidebar_w = this.sidebar_width + SIDEBAR_HANDLE_WIDTH;
+                                        let content_w = viewport.width.to_f64() as f32 - sidebar_w;
+                                        let mouse_x = event.position.x.to_f64() as f32 - sidebar_w;
+                                        let new_ratio = (mouse_x / content_w).clamp(0.2, 0.8);
+                                        if let Some(ref mut split) = this.split_view {
+                                            split.ratio = new_ratio;
+                                        }
+                                    } else {
+                                        let viewport = window.viewport_size();
+                                        let top_offset = GRID_TOP_OFFSET;
+                                        let content_h = viewport.height.to_f64() as f32
+                                            - top_offset
+                                            - STATUS_BAR_HEIGHT;
+                                        let mouse_y = event.position.y.to_f64() as f32 - top_offset;
+                                        let new_ratio = (mouse_y / content_h).clamp(0.2, 0.8);
+                                        if let Some(ref mut split) = this.split_view {
+                                            split.ratio = new_ratio;
+                                        }
                                     }
-                                } else {
-                                    let viewport = window.viewport_size();
-                                    let top_offset = GRID_TOP_OFFSET;
-                                    let content_h = viewport.height.to_f64() as f32 - top_offset - STATUS_BAR_HEIGHT;
-                                    let mouse_y = event.position.y.to_f64() as f32 - top_offset;
-                                    let new_ratio = (mouse_y / content_h).clamp(0.2, 0.8);
-                                    if let Some(ref mut split) = this.split_view {
-                                        split.ratio = new_ratio;
-                                    }
-                                }
-                                this.resize_if_needed(window);
-                                cx.notify();
-                            }))
+                                    this.resize_if_needed(window);
+                                    cx.notify();
+                                },
+                            ))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -3757,14 +4158,8 @@ impl Render for TerminalView {
 
                     // Compute explicit pixel sizes from ratio so panes
                     // actually resize visually (flex_1 always gives 50/50).
-                    let mut first_wrapper = div()
-                        .relative()
-                        .overflow_hidden()
-                        .border_t_2();
-                    let mut second_wrapper = div()
-                        .relative()
-                        .overflow_hidden()
-                        .border_t_2();
+                    let mut first_wrapper = div().relative().overflow_hidden().border_t_2();
+                    let mut second_wrapper = div().relative().overflow_hidden().border_t_2();
 
                     if is_horizontal {
                         let first_px = (content_w - divider_f) * split_ratio;
@@ -3796,14 +4191,16 @@ impl Render for TerminalView {
                             first_wrapper = first_wrapper.child(self.render_search_bar(cx));
                         }
                         if let Some(state) = self.context_menu.clone() {
-                            first_wrapper = first_wrapper.child(self.render_context_menu(&state, cx));
+                            first_wrapper =
+                                first_wrapper.child(self.render_context_menu(&state, cx));
                         }
                     } else {
                         if self.search_visible {
                             second_wrapper = second_wrapper.child(self.render_search_bar(cx));
                         }
                         if let Some(state) = self.context_menu.clone() {
-                            second_wrapper = second_wrapper.child(self.render_context_menu(&state, cx));
+                            second_wrapper =
+                                second_wrapper.child(self.render_context_menu(&state, cx));
                         }
                     }
 
@@ -3835,18 +4232,19 @@ impl Render for TerminalView {
                     };
                     cursor.shape = self.effective_cursor_shape(cursor.shape);
 
-                    let mut grid_wrapper = div()
-                        .relative()
-                        .flex_grow()
-                        .size_full()
-                        .child(self.render_terminal_grid(
-                            mouse_mode,
-                            mouse_encoding,
-                            cursor,
-                            cache,
-                            grid,
-                            cx,
-                        ));
+                    let mut grid_wrapper =
+                        div()
+                            .relative()
+                            .flex_grow()
+                            .size_full()
+                            .child(self.render_terminal_grid(
+                                mouse_mode,
+                                mouse_encoding,
+                                cursor,
+                                cache,
+                                grid,
+                                cx,
+                            ));
 
                     if self.search_visible {
                         grid_wrapper = grid_wrapper.child(self.render_search_bar(cx));

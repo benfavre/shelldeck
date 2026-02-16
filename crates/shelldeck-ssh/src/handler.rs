@@ -11,9 +11,19 @@ use crate::known_hosts::{self, KnownHostResult};
 pub enum SshEvent {
     Banner(String),
     Disconnected(String),
-    Data { channel: ChannelId, data: Vec<u8> },
-    ExtendedData { channel: ChannelId, data: Vec<u8>, ext: u32 },
-    ExitStatus { channel: ChannelId, code: u32 },
+    Data {
+        channel: ChannelId,
+        data: Vec<u8>,
+    },
+    ExtendedData {
+        channel: ChannelId,
+        data: Vec<u8>,
+        ext: u32,
+    },
+    ExitStatus {
+        channel: ChannelId,
+        code: u32,
+    },
     ChannelEof(ChannelId),
     ChannelClose(ChannelId),
     Error(String),
@@ -44,7 +54,12 @@ impl ClientHandler {
         hostname: String,
         port: u16,
     ) -> Self {
-        Self { event_tx, forwarded_tcpip_tx, hostname, port }
+        Self {
+            event_tx,
+            forwarded_tcpip_tx,
+            hostname,
+            port,
+        }
     }
 
     fn send_event(&self, event: SshEvent) {

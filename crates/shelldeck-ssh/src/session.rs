@@ -97,7 +97,7 @@ impl SshSession {
                 cols,
                 rows,
                 0,
-                0,  // pixel dimensions
+                0,   // pixel dimensions
                 &[], // terminal modes
             )
             .await
@@ -259,7 +259,11 @@ impl SshSession {
     pub async fn disconnect(&self) -> crate::Result<()> {
         let handle = self.handle.lock().await;
         handle
-            .disconnect(russh::Disconnect::ByApplication, "ShellDeck disconnect", "en")
+            .disconnect(
+                russh::Disconnect::ByApplication,
+                "ShellDeck disconnect",
+                "en",
+            )
             .await
             .map_err(|e| SshError::Russh(e.to_string()))
     }
@@ -342,7 +346,12 @@ impl SshChannel {
     /// reading and resize operations.
     pub fn split(self) -> (SshChannelReader, impl tokio::io::AsyncWrite + Send) {
         let writer = self.channel.make_writer();
-        (SshChannelReader { channel: self.channel }, writer)
+        (
+            SshChannelReader {
+                channel: self.channel,
+            },
+            writer,
+        )
     }
 }
 

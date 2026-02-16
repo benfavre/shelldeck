@@ -39,7 +39,11 @@ fn render_highlighted_text(
     highlight_color: Hsla,
 ) -> Div {
     let chars: Vec<char> = text.chars().collect();
-    let mut container = div().flex().items_center().overflow_hidden().whitespace_nowrap();
+    let mut container = div()
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .whitespace_nowrap();
     let mut i = 0;
     while i < chars.len() {
         let is_match = matched_indices.contains(&i);
@@ -160,7 +164,9 @@ impl SidebarView {
         let is_active = self.active_section == section;
 
         div()
-            .id(ElementId::from(SharedString::from(format!("nav-{section:?}"))))
+            .id(ElementId::from(SharedString::from(format!(
+                "nav-{section:?}"
+            ))))
             .flex()
             .items_center()
             .justify_between()
@@ -287,12 +293,7 @@ impl SidebarView {
                     .flex()
                     .child(self.search_query.clone())
                     .when(self.search_focused, |el| {
-                        el.child(
-                            div()
-                                .w(px(1.0))
-                                .h(px(14.0))
-                                .bg(ShellDeckColors::primary()),
-                        )
+                        el.child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
                     }),
             );
             // Clear button
@@ -359,7 +360,10 @@ impl SidebarView {
             .group_hover(group_name.clone(), |el| el.opacity(1.0))
             .child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("conn-connect-{}", conn_id))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "conn-connect-{}",
+                        conn_id
+                    ))))
                     .px(px(4.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
@@ -377,7 +381,10 @@ impl SidebarView {
             )
             .child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("conn-edit-{}", conn_id))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "conn-edit-{}",
+                        conn_id
+                    ))))
                     .px(px(4.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
@@ -395,7 +402,10 @@ impl SidebarView {
             )
             .child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("conn-del-{}", conn_id))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "conn-del-{}",
+                        conn_id
+                    ))))
                     .px(px(4.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
@@ -431,7 +441,8 @@ impl SidebarView {
                 13.0,
                 ShellDeckColors::text_primary(),
                 ShellDeckColors::primary(),
-            ).font_weight(FontWeight::MEDIUM)
+            )
+            .font_weight(FontWeight::MEDIUM)
         } else {
             div()
                 .flex()
@@ -464,7 +475,10 @@ impl SidebarView {
         };
 
         let content = div()
-            .id(ElementId::from(SharedString::from(format!("conn-{}", conn_id))))
+            .id(ElementId::from(SharedString::from(format!(
+                "conn-{}",
+                conn_id
+            ))))
             .flex()
             .items_center()
             .gap(px(8.0))
@@ -656,36 +670,11 @@ impl Render for SidebarView {
                 Some(connected_count),
                 cx,
             ))
-            .child(self.render_nav_item(
-                SidebarSection::Scripts,
-                "Scripts",
-                None,
-                cx,
-            ))
-            .child(self.render_nav_item(
-                SidebarSection::PortForwards,
-                "Port Forwards",
-                None,
-                cx,
-            ))
-            .child(self.render_nav_item(
-                SidebarSection::ServerSync,
-                "Server Sync",
-                None,
-                cx,
-            ))
-            .child(self.render_nav_item(
-                SidebarSection::Sites,
-                "Sites",
-                None,
-                cx,
-            ))
-            .child(self.render_nav_item(
-                SidebarSection::Settings,
-                "Settings",
-                None,
-                cx,
-            ));
+            .child(self.render_nav_item(SidebarSection::Scripts, "Scripts", None, cx))
+            .child(self.render_nav_item(SidebarSection::PortForwards, "Port Forwards", None, cx))
+            .child(self.render_nav_item(SidebarSection::ServerSync, "Server Sync", None, cx))
+            .child(self.render_nav_item(SidebarSection::Sites, "Sites", None, cx))
+            .child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 
         // Scrollable host list (fills remaining space)
         let mut host_list = div()
@@ -741,10 +730,7 @@ impl Render for SidebarView {
             .on_click(cx.listener(|_this, _event: &ClickEvent, _window, cx| {
                 cx.emit(SidebarEvent::AddConnection);
             }))
-            .child(
-                Button::new("add-connection", "+ Add Connection")
-                    .variant(ButtonVariant::Ghost),
-            );
+            .child(Button::new("add-connection", "+ Add Connection").variant(ButtonVariant::Ghost));
 
         // Invisible resize hit-area overlapping the right border.
         let resize_handle = div()
@@ -756,7 +742,9 @@ impl Render for SidebarView {
             .h_full()
             .cursor_col_resize()
             .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.4)))
-            .when(self.resizing, |el| el.bg(ShellDeckColors::primary().opacity(0.6)))
+            .when(self.resizing, |el| {
+                el.bg(ShellDeckColors::primary().opacity(0.6))
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseDownEvent, _window, cx| {

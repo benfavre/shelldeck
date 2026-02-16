@@ -73,7 +73,12 @@ impl SshClient {
         // Authenticate
         self.authenticate(&mut handle, connection).await?;
 
-        Ok(SshSession::new(connection.id, handle, event_rx, forwarded_tcpip_rx))
+        Ok(SshSession::new(
+            connection.id,
+            handle,
+            event_rx,
+            forwarded_tcpip_rx,
+        ))
     }
 
     /// Connect to the final target via a jump host using `direct-tcpip` forwarding.
@@ -150,15 +155,11 @@ impl SshClient {
             target.port
         );
 
-        let mut handle =
-            client::connect_stream(self.config.clone(), channel_stream, handler)
-                .await
-                .map_err(|e| {
-                    SshError::ConnectionFailed(format!(
-                        "SSH handshake over jump channel failed: {}",
-                        e
-                    ))
-                })?;
+        let mut handle = client::connect_stream(self.config.clone(), channel_stream, handler)
+            .await
+            .map_err(|e| {
+                SshError::ConnectionFailed(format!("SSH handshake over jump channel failed: {}", e))
+            })?;
 
         // --- 5. Authenticate on the final target ---
         self.authenticate(&mut handle, target).await?;
@@ -192,9 +193,7 @@ impl SshClient {
         let spec = spec.trim();
 
         // Strip optional ssh:// prefix
-        let spec = spec
-            .strip_prefix("ssh://")
-            .unwrap_or(spec);
+        let spec = spec.strip_prefix("ssh://").unwrap_or(spec);
 
         let (user, host_port) = if let Some(at_idx) = spec.find('@') {
             let user = &spec[..at_idx];
@@ -254,10 +253,7 @@ impl SshClient {
     ) -> crate::Result<()> {
         // Try key-based auth with explicit key first
         if let Some(ref key_path) = connection.identity_file {
-            match self
-                .auth_with_key(handle, &connection.user, key_path)
-                .await
-            {
+            match self.auth_with_key(handle, &connection.user, key_path).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     tracing::debug!(
@@ -382,9 +378,7 @@ impl SshClient {
             Ok(Some(pw)) => pw,
             Ok(None) => {
                 tracing::debug!("No password stored in keychain for {}@{}", user, hostname);
-                return Err(SshError::AuthFailed(
-                    "No password found in keychain".into(),
-                ));
+                return Err(SshError::AuthFailed("No password found in keychain".into()));
             }
             Err(e) => {
                 tracing::warn!("Failed to access keychain for {}@{}: {}", user, hostname, e);
@@ -395,7 +389,11 @@ impl SshClient {
             }
         };
 
-        tracing::info!("Attempting password authentication for {}@{}", user, hostname);
+        tracing::info!(
+            "Attempting password authentication for {}@{}",
+            user,
+            hostname
+        );
 
         let auth_result = handle
             .authenticate_password(user, &password)

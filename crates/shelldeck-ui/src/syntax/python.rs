@@ -16,11 +16,10 @@ static PY_BUILTINS: OnceLock<HashSet<&'static str>> = OnceLock::new();
 fn keywords() -> &'static HashSet<&'static str> {
     PY_KEYWORDS.get_or_init(|| {
         [
-            "False", "None", "True", "and", "as", "assert", "async", "await",
-            "break", "class", "continue", "def", "del", "elif", "else", "except",
-            "finally", "for", "from", "global", "if", "import", "in", "is",
-            "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-            "while", "with", "yield",
+            "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+            "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+            "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise",
+            "return", "try", "while", "with", "yield",
         ]
         .into_iter()
         .collect()
@@ -30,13 +29,54 @@ fn keywords() -> &'static HashSet<&'static str> {
 fn builtins() -> &'static HashSet<&'static str> {
     PY_BUILTINS.get_or_init(|| {
         [
-            "print", "len", "range", "int", "str", "float", "list", "dict",
-            "tuple", "set", "bool", "type", "isinstance", "issubclass", "hasattr",
-            "getattr", "setattr", "delattr", "super", "property", "staticmethod",
-            "classmethod", "enumerate", "zip", "map", "filter", "sorted", "reversed",
-            "abs", "min", "max", "sum", "round", "input", "open", "repr",
-            "format", "id", "hash", "dir", "vars", "globals", "locals",
-            "callable", "iter", "next", "any", "all",
+            "print",
+            "len",
+            "range",
+            "int",
+            "str",
+            "float",
+            "list",
+            "dict",
+            "tuple",
+            "set",
+            "bool",
+            "type",
+            "isinstance",
+            "issubclass",
+            "hasattr",
+            "getattr",
+            "setattr",
+            "delattr",
+            "super",
+            "property",
+            "staticmethod",
+            "classmethod",
+            "enumerate",
+            "zip",
+            "map",
+            "filter",
+            "sorted",
+            "reversed",
+            "abs",
+            "min",
+            "max",
+            "sum",
+            "round",
+            "input",
+            "open",
+            "repr",
+            "format",
+            "id",
+            "hash",
+            "dir",
+            "vars",
+            "globals",
+            "locals",
+            "callable",
+            "iter",
+            "next",
+            "any",
+            "all",
         ]
         .into_iter()
         .collect()
@@ -65,7 +105,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && bytes[i] != b'\n' {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Comment });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Comment,
+            });
             continue;
         }
 
@@ -79,11 +122,18 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                     i += 3;
                     break;
                 }
-                if bytes[i] == b'\\' { i += 1; }
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i > len { i = len; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i > len {
+                i = len;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
@@ -93,50 +143,88 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             let quote = b;
             i += 1;
             while i < len && bytes[i] != quote {
-                if bytes[i] == b'\\' && i + 1 < len { i += 1; }
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
         // f-string prefix (f"..." or f'...')
         if (b == b'f' || b == b'F' || b == b'r' || b == b'R' || b == b'b' || b == b'B')
-            && i + 1 < len && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+            && i + 1 < len
+            && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
         {
             let start = i;
             i += 1;
             let quote = bytes[i];
             i += 1;
             while i < len && bytes[i] != quote {
-                if bytes[i] == b'\\' && i + 1 < len { i += 1; }
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
         // Numbers
         if b.is_ascii_digit() {
             let start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
+            {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Number });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Number,
+            });
             continue;
         }
 
         // Operators
-        if matches!(b, b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'^' | b'~' | b'@') {
+        if matches!(
+            b,
+            b'+' | b'-'
+                | b'*'
+                | b'/'
+                | b'%'
+                | b'='
+                | b'<'
+                | b'>'
+                | b'!'
+                | b'&'
+                | b'|'
+                | b'^'
+                | b'~'
+                | b'@'
+        ) {
             let start = i;
             i += 1;
             // Consume double operators
             if i < len && matches!(bytes[i], b'=' | b'*' | b'/' | b'>' | b'<') {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Operator });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Operator,
+            });
             continue;
         }
 
@@ -144,10 +232,15 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         if b == b'@' {
             let start = i;
             i += 1;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+            {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Builtin });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Builtin,
+            });
             continue;
         }
 
@@ -169,7 +262,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 continue;
             };
 
-            tokens.push(Token { range: start..i, kind });
+            tokens.push(Token {
+                range: start..i,
+                kind,
+            });
             continue;
         }
 

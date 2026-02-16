@@ -6,12 +6,11 @@ pub use shelldeck_ui::workspace::{
 };
 
 // Re-export terminal view actions
-pub use shelldeck_ui::terminal_view::{
-    CopySelection, PasteClipboard, ClearTerminal, ToggleSearch,
-    SplitHorizontal, SplitVertical, ZoomIn, ZoomOut, ZoomReset,
-    ToggleSplitFocus,
-};
 pub use shelldeck_ui::command_palette::ToggleCommandPalette;
+pub use shelldeck_ui::terminal_view::{
+    ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical, ToggleSearch,
+    ToggleSplitFocus, ZoomIn, ZoomOut, ZoomReset,
+};
 
 /// Register all keyboard shortcuts.
 ///

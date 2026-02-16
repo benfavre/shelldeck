@@ -13,8 +13,8 @@ use unicode_width::UnicodeWidthChar;
 /// `Vec::remove(0)` operations.
 pub struct RingBuffer<T> {
     buf: Vec<Option<T>>,
-    head: usize,   // Index where the next item will be written
-    len: usize,    // Current number of items
+    head: usize, // Index where the next item will be written
+    len: usize,  // Current number of items
     capacity: usize,
 }
 
@@ -23,7 +23,12 @@ impl<T> RingBuffer<T> {
         let capacity = capacity.max(1);
         let mut buf = Vec::with_capacity(capacity);
         buf.resize_with(capacity, || None);
-        Self { buf, head: 0, len: 0, capacity }
+        Self {
+            buf,
+            head: 0,
+            len: 0,
+            capacity,
+        }
     }
 
     /// Push an item. If the buffer is full, the oldest item is evicted.
@@ -35,8 +40,12 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    pub fn len(&self) -> usize { self.len }
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     /// The starting index in the underlying buffer (the oldest item).
     fn start(&self) -> usize {
@@ -49,14 +58,18 @@ impl<T> RingBuffer<T> {
 
     /// Get item by logical index (0 = oldest, len-1 = newest).
     pub fn get(&self, index: usize) -> Option<&T> {
-        if index >= self.len { return None; }
+        if index >= self.len {
+            return None;
+        }
         let real_idx = (self.start() + index) % self.capacity;
         self.buf[real_idx].as_ref()
     }
 
     /// Get mutable item by logical index (0 = oldest, len-1 = newest).
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        if index >= self.len { return None; }
+        if index >= self.len {
+            return None;
+        }
         let start = self.start();
         let real_idx = (start + index) % self.capacity;
         self.buf[real_idx].as_mut()
@@ -64,14 +77,22 @@ impl<T> RingBuffer<T> {
 
     /// Pop the newest item (index len-1).
     pub fn pop(&mut self) -> Option<T> {
-        if self.len == 0 { return None; }
-        self.head = if self.head == 0 { self.capacity - 1 } else { self.head - 1 };
+        if self.len == 0 {
+            return None;
+        }
+        self.head = if self.head == 0 {
+            self.capacity - 1
+        } else {
+            self.head - 1
+        };
         self.len -= 1;
         self.buf[self.head].take()
     }
 
     pub fn clear(&mut self) {
-        for item in &mut self.buf { *item = None; }
+        for item in &mut self.buf {
+            *item = None;
+        }
         self.head = 0;
         self.len = 0;
     }
@@ -489,9 +510,7 @@ impl TerminalGrid {
         let cols = cols.max(1);
         let max_scrollback = max_scrollback.max(1);
 
-        let cells: Vec<Vec<Cell>> = (0..rows)
-            .map(|_| vec![Cell::default(); cols])
-            .collect();
+        let cells: Vec<Vec<Cell>> = (0..rows).map(|_| vec![Cell::default(); cols]).collect();
 
         let mut tab_stops = vec![false; cols];
         for i in (0..cols).step_by(8) {
@@ -550,7 +569,9 @@ impl TerminalGrid {
     // -- Per-row dirty tracking --
 
     /// Returns true if any row is dirty.
-    pub fn is_any_dirty(&self) -> bool { self.any_dirty }
+    pub fn is_any_dirty(&self) -> bool {
+        self.any_dirty
+    }
 
     /// Returns true if the given row is dirty. Out-of-bounds rows are
     /// considered dirty (safe default).
@@ -604,13 +625,12 @@ impl TerminalGrid {
                 0
             };
             // If the target is a Spacer, attach to the Wide cell before it.
-            let attach_col = if target_col > 0
-                && self.cells[row][target_col].wide == CellWidth::Spacer
-            {
-                target_col - 1
-            } else {
-                target_col
-            };
+            let attach_col =
+                if target_col > 0 && self.cells[row][target_col].wide == CellWidth::Spacer {
+                    target_col - 1
+                } else {
+                    target_col
+                };
             if attach_col < self.cols {
                 self.cells[row][attach_col].combining.push(c);
             }
@@ -648,21 +668,20 @@ impl TerminalGrid {
         if width == 2 {
             // --- Wide character (2 columns) ---
             // If at the very last column (no room for 2 cells), wrap first.
-            if col + 1 >= self.cols
-                && self.auto_wrap {
-                    self.cursor.col = 0;
-                    if self.cursor.row == self.scroll_bottom {
-                        self.scroll_up(1);
-                        if self.scroll_bottom < self.line_flags.len() {
-                            self.line_flags[self.scroll_bottom].soft_wrapped = true;
-                        }
-                    } else if self.cursor.row < self.rows - 1 {
-                        self.cursor.row += 1;
-                        if self.cursor.row < self.line_flags.len() {
-                            self.line_flags[self.cursor.row].soft_wrapped = true;
-                        }
+            if col + 1 >= self.cols && self.auto_wrap {
+                self.cursor.col = 0;
+                if self.cursor.row == self.scroll_bottom {
+                    self.scroll_up(1);
+                    if self.scroll_bottom < self.line_flags.len() {
+                        self.line_flags[self.scroll_bottom].soft_wrapped = true;
                     }
-                    self.ensure_row(self.cursor.row);
+                } else if self.cursor.row < self.rows - 1 {
+                    self.cursor.row += 1;
+                    if self.cursor.row < self.line_flags.len() {
+                        self.line_flags[self.cursor.row].soft_wrapped = true;
+                    }
+                }
+                self.ensure_row(self.cursor.row);
             }
 
             let row = self.cursor.row;
@@ -1027,7 +1046,8 @@ impl TerminalGrid {
             let insert_pos = self.scroll_bottom.min(self.cells.len());
             self.cells.insert(insert_pos, self.bce_row());
             let flags_insert_pos = insert_pos.min(self.line_flags.len());
-            self.line_flags.insert(flags_insert_pos, LineFlags::default());
+            self.line_flags
+                .insert(flags_insert_pos, LineFlags::default());
         }
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
@@ -1140,7 +1160,8 @@ impl TerminalGrid {
             let insert_at = bottom.min(self.cells.len());
             self.cells.insert(insert_at, self.bce_row());
             let flags_insert_at = insert_at.min(self.line_flags.len());
-            self.line_flags.insert(flags_insert_at, LineFlags::default());
+            self.line_flags
+                .insert(flags_insert_at, LineFlags::default());
         }
         // Ensure we still have the right row count.
         while self.cells.len() < self.rows {
@@ -1170,7 +1191,8 @@ impl TerminalGrid {
             }
             self.cells.insert(top, self.bce_row());
             let flags_insert_at = top.min(self.line_flags.len());
-            self.line_flags.insert(flags_insert_at, LineFlags::default());
+            self.line_flags
+                .insert(flags_insert_at, LineFlags::default());
         }
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
@@ -1263,7 +1285,8 @@ impl TerminalGrid {
         }
 
         // Ensure line_flags matches cells length.
-        self.line_flags.resize(self.cells.len(), LineFlags::default());
+        self.line_flags
+            .resize(self.cells.len(), LineFlags::default());
 
         // Also resize scrollback rows.
         for i in 0..self.scrollback.len() {
@@ -1460,9 +1483,7 @@ impl TerminalGrid {
         self.alt_cursor = Some(self.cursor.clone());
         self.alt_line_flags = Some(self.line_flags.clone());
         // Clear the screen for the alt buffer.
-        self.cells = (0..self.rows)
-            .map(|_| self.new_row())
-            .collect();
+        self.cells = (0..self.rows).map(|_| self.new_row()).collect();
         self.line_flags = vec![LineFlags::default(); self.rows];
         self.cursor = CursorState::default();
         self.pending_wrap = false;
@@ -1949,7 +1970,11 @@ impl TerminalGrid {
 
     /// Return the current scroll info: (total_lines, visible_lines, scroll_offset).
     pub fn scroll_info(&self) -> (usize, usize, usize) {
-        (self.scrollback.len() + self.rows, self.rows, self.scroll_offset)
+        (
+            self.scrollback.len() + self.rows,
+            self.rows,
+            self.scroll_offset,
+        )
     }
 
     // -- Search --
@@ -2044,9 +2069,8 @@ impl TerminalGrid {
         if row[col].wide == CellWidth::Spacer && col > 0 {
             col -= 1;
         }
-        let is_word_char = |c: char| -> bool {
-            c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
-        };
+        let is_word_char =
+            |c: char| -> bool { c.is_alphanumeric() || c == '_' || c == '-' || c == '.' };
 
         let anchor = row[col].c;
         if !is_word_char(anchor) && anchor != ' ' {

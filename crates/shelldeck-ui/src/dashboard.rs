@@ -155,7 +155,12 @@ impl DashboardView {
             )
     }
 
-    fn render_quick_connect_button(alias: &str, hostname: &str, is_connected: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_quick_connect_button(
+        alias: &str,
+        hostname: &str,
+        is_connected: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let alias_str = alias.to_string();
         let alias_for_click = alias_str.clone();
         let status_color = if is_connected {
@@ -165,7 +170,10 @@ impl DashboardView {
         };
 
         div()
-            .id(ElementId::from(SharedString::from(format!("qc-{}", alias_str))))
+            .id(ElementId::from(SharedString::from(format!(
+                "qc-{}",
+                alias_str
+            ))))
             .flex()
             .items_center()
             .gap(px(8.0))
@@ -184,13 +192,7 @@ impl DashboardView {
                 cx.emit(DashboardEvent::QuickConnect(alias_for_click.clone()));
             }))
             // Status indicator
-            .child(
-                div()
-                    .w(px(8.0))
-                    .h(px(8.0))
-                    .rounded_full()
-                    .bg(status_color),
-            )
+            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
             .child(
                 div()
                     .flex()
@@ -276,9 +278,12 @@ impl Render for DashboardView {
             let hosts = self.favorite_hosts.clone();
             let mut host_buttons = div().flex().flex_wrap().gap(px(8.0));
             for (alias, hostname, is_connected) in &hosts {
-                host_buttons = host_buttons.child(
-                    Self::render_quick_connect_button(alias, hostname, *is_connected, cx),
-                );
+                host_buttons = host_buttons.child(Self::render_quick_connect_button(
+                    alias,
+                    hostname,
+                    *is_connected,
+                    cx,
+                ));
             }
             container = container.child(
                 div()
@@ -314,9 +319,8 @@ impl Render for DashboardView {
                     .child("No recent activity. Connect to a host to get started."),
             );
         } else {
-            activity_panel = activity_panel.children(
-                self.recent_activity.iter().map(Self::render_activity_item),
-            );
+            activity_panel = activity_panel
+                .children(self.recent_activity.iter().map(Self::render_activity_item));
         }
 
         container = container.child(
@@ -340,7 +344,11 @@ impl Render for DashboardView {
         } else {
             ("Ctrl+", "Ctrl+")
         };
-        let shift = if cfg!(target_os = "macos") { "\u{21E7}" } else { "Shift+" };
+        let shift = if cfg!(target_os = "macos") {
+            "\u{21E7}"
+        } else {
+            "Shift+"
+        };
 
         container = container.child(
             div()
@@ -379,19 +387,18 @@ impl Render for DashboardView {
                                         .child("NAVIGATION"),
                                 )
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}T", cmd), "New terminal",
+                                    &format!("{}T", cmd),
+                                    "New terminal",
                                 ))
+                                .child(Self::render_shortcut_item("Ctrl+Tab", "Next tab"))
                                 .child(Self::render_shortcut_item(
-                                    "Ctrl+Tab", "Next tab",
+                                    &format!("{}B", cmd),
+                                    "Toggle sidebar",
                                 ))
+                                .child(Self::render_shortcut_item(&format!("{},", cmd), "Settings"))
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}B", cmd), "Toggle sidebar",
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{},", cmd), "Settings",
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}P", cmd, shift), "Command palette",
+                                    &format!("{}{}P", cmd, shift),
+                                    "Command palette",
                                 )),
                         )
                         .child(
@@ -415,22 +422,25 @@ impl Render for DashboardView {
                                         .child("TERMINAL"),
                                 )
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}{}C", ctrl, shift), "Copy",
+                                    &format!("{}{}C", ctrl, shift),
+                                    "Copy",
                                 ))
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}{}V", ctrl, shift), "Paste",
+                                    &format!("{}{}V", ctrl, shift),
+                                    "Paste",
+                                ))
+                                .child(Self::render_shortcut_item(&format!("{}F", cmd), "Search"))
+                                .child(Self::render_shortcut_item(
+                                    &format!("{}L", cmd),
+                                    "Clear terminal",
                                 ))
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}F", cmd), "Search",
+                                    &format!("{}{}D", ctrl, shift),
+                                    "Split pane",
                                 ))
                                 .child(Self::render_shortcut_item(
-                                    &format!("{}L", cmd), "Clear terminal",
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}{}D", ctrl, shift), "Split pane",
-                                ))
-                                .child(Self::render_shortcut_item(
-                                    &format!("{}= / {}-", cmd, cmd), "Zoom in / out",
+                                    &format!("{}= / {}-", cmd, cmd),
+                                    "Zoom in / out",
                                 )),
                         ),
                 ),

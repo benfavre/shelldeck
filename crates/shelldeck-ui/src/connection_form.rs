@@ -252,7 +252,9 @@ impl ConnectionForm {
         let is_active = self.active_field == Some(field);
 
         let mut input_box = div()
-            .id(ElementId::from(SharedString::from(format!("field-{field:?}"))))
+            .id(ElementId::from(SharedString::from(format!(
+                "field-{field:?}"
+            ))))
             .w_full()
             .px(px(10.0))
             .py(px(6.0))
@@ -290,12 +292,8 @@ impl ConnectionForm {
 
             // Show cursor at the end when active
             if is_active {
-                text_el = text_el.child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(16.0))
-                        .bg(ShellDeckColors::primary()),
-                );
+                text_el =
+                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
             }
 
             input_box = input_box.child(text_el);
@@ -368,16 +366,20 @@ impl Render for ConnectionForm {
                 div()
                     .flex()
                     .gap(px(12.0))
-                    .child(
-                        div()
-                            .flex_grow()
-                            .child(self.render_field(FormField::Alias, "Alias", &self.alias.clone(), "my-server", cx)),
-                    )
-                    .child(
-                        div()
-                            .w(px(140.0))
-                            .child(self.render_field(FormField::Group, "Group", &self.group.clone(), "Production", cx)),
-                    ),
+                    .child(div().flex_grow().child(self.render_field(
+                        FormField::Alias,
+                        "Alias",
+                        &self.alias.clone(),
+                        "my-server",
+                        cx,
+                    )))
+                    .child(div().w(px(140.0)).child(self.render_field(
+                        FormField::Group,
+                        "Group",
+                        &self.group.clone(),
+                        "Production",
+                        cx,
+                    ))),
             )
             // Hostname
             .child(self.render_field(
@@ -392,16 +394,20 @@ impl Render for ConnectionForm {
                 div()
                     .flex()
                     .gap(px(12.0))
-                    .child(
-                        div()
-                            .flex_grow()
-                            .child(self.render_field(FormField::User, "User", &self.user.clone(), "deploy", cx)),
-                    )
-                    .child(
-                        div()
-                            .w(px(100.0))
-                            .child(self.render_field(FormField::Port, "Port", &self.port.clone(), "22", cx)),
-                    ),
+                    .child(div().flex_grow().child(self.render_field(
+                        FormField::User,
+                        "User",
+                        &self.user.clone(),
+                        "deploy",
+                        cx,
+                    )))
+                    .child(div().w(px(100.0)).child(self.render_field(
+                        FormField::Port,
+                        "Port",
+                        &self.port.clone(),
+                        "22",
+                        cx,
+                    ))),
             )
             // Identity File
             .child(self.render_field(

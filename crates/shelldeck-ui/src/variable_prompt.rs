@@ -129,11 +129,10 @@ impl VariablePrompt {
             }
         }
 
-        if key.len() == 1 && !mods.control && !mods.alt
-            && self.active_field < self.values.len() {
-                self.values[self.active_field].push_str(key);
-                cx.notify();
-            }
+        if key.len() == 1 && !mods.control && !mods.alt && self.active_field < self.values.len() {
+            self.values[self.active_field].push_str(key);
+            cx.notify();
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -163,7 +162,7 @@ impl Render for VariablePrompt {
             let value = self.values.get(idx).cloned().unwrap_or_default();
 
             let display_value: SharedString = if value.is_empty() {
-                SharedString::from(format!("{{{{{}}}}}",  var.name))
+                SharedString::from(format!("{{{{{}}}}}", var.name))
             } else {
                 SharedString::from(value)
             };

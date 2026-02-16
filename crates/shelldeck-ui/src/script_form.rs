@@ -93,10 +93,17 @@ impl ScriptForm {
         }
     }
 
-    pub fn from_script(script: &Script, connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
+    pub fn from_script(
+        script: &Script,
+        connections: Vec<(Uuid, String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (target, selected_idx) = match &script.target {
             ScriptTarget::Remote(conn_id) => {
-                let idx = connections.iter().position(|(id, _, _)| id == conn_id).unwrap_or(0);
+                let idx = connections
+                    .iter()
+                    .position(|(id, _, _)| id == conn_id)
+                    .unwrap_or(0);
                 (script.target.clone(), idx)
             }
             other => (other.clone(), 0),
@@ -165,7 +172,10 @@ impl ScriptForm {
         if query_lower.is_empty() {
             self.dropdown_filtered = (0..self.connections.len()).collect();
         } else {
-            self.dropdown_filtered = self.connections.iter().enumerate()
+            self.dropdown_filtered = self
+                .connections
+                .iter()
+                .enumerate()
                 .filter(|(_, (_, name, host))| {
                     fuzzy_match(name, &query_lower) || fuzzy_match(host, &query_lower)
                 })
@@ -314,7 +324,8 @@ impl ScriptForm {
                 }
                 "down" => {
                     if !self.dropdown_filtered.is_empty() {
-                        self.dropdown_selected = (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
+                        self.dropdown_selected =
+                            (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
                     }
                     cx.notify();
                 }
@@ -534,12 +545,8 @@ impl ScriptForm {
                 .child(value.to_string());
 
             if is_active {
-                text_el = text_el.child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(16.0))
-                        .bg(ShellDeckColors::primary()),
-                );
+                text_el =
+                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
             }
 
             input_box = input_box.child(text_el);
@@ -625,7 +632,12 @@ impl ScriptForm {
                 );
             }
         } else {
-            input_box = input_box.child(render_code_block_with_language(self.body.text(), cursor_pos, is_active, &self.language));
+            input_box = input_box.child(render_code_block_with_language(
+                self.body.text(),
+                cursor_pos,
+                is_active,
+                &self.language,
+            ));
         }
 
         div()
@@ -756,16 +768,12 @@ impl ScriptForm {
             let selected = self.language == *lang;
             let lang_clone = lang.clone();
             let (r, g, b) = lang.badge_color();
-            let badge_color = gpui::hsla(
-                r as f32 / 255.0,
-                g as f32 / 255.0,
-                b as f32 / 255.0,
-                1.0,
-            );
+            let badge_color = gpui::hsla(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0);
 
             let mut chip = div()
                 .id(ElementId::from(SharedString::from(format!(
-                    "sf-lang-{}", lang.label()
+                    "sf-lang-{}",
+                    lang.label()
                 ))))
                 .px(px(8.0))
                 .py(px(3.0))
@@ -837,7 +845,8 @@ impl ScriptForm {
 
             let mut chip = div()
                 .id(ElementId::from(SharedString::from(format!(
-                    "sf-cat-{}", cat.label()
+                    "sf-cat-{}",
+                    cat.label()
                 ))))
                 .px(px(8.0))
                 .py(px(3.0))
@@ -976,23 +985,13 @@ impl ScriptForm {
                         .text_color(ShellDeckColors::text_muted())
                         .flex()
                         .child("Type to filter...")
-                        .child(
-                            div()
-                                .w(px(1.0))
-                                .h(px(14.0))
-                                .bg(ShellDeckColors::primary()),
-                        )
+                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
                 } else {
                     div()
                         .text_color(ShellDeckColors::text_primary())
                         .flex()
                         .child(self.dropdown_query.clone())
-                        .child(
-                            div()
-                                .w(px(1.0))
-                                .h(px(14.0))
-                                .bg(ShellDeckColors::primary()),
-                        )
+                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
                 });
 
             let mut items_list = div()
@@ -1171,7 +1170,11 @@ impl Render for ScriptForm {
                                     .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(if self.editing_id.is_some() { "Edit Script" } else { "New Script" }),
+                                    .child(if self.editing_id.is_some() {
+                                        "Edit Script"
+                                    } else {
+                                        "New Script"
+                                    }),
                             )
                             .child(
                                 div()
@@ -1212,18 +1215,19 @@ impl Render for ScriptForm {
                             )
                             .child({
                                 let valid = self.is_valid();
-                                let btn_label = if self.editing_id.is_some() { "Save Script" } else { "Create Script" };
+                                let btn_label = if self.editing_id.is_some() {
+                                    "Save Script"
+                                } else {
+                                    "Create Script"
+                                };
                                 let mut save_btn = div()
                                     .id("sf-save-btn")
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.try_save(cx);
                                     }))
                                     .child(
-                                        adabraka_ui::prelude::Button::new(
-                                            "save",
-                                            btn_label,
-                                        )
-                                        .variant(adabraka_ui::prelude::ButtonVariant::Default),
+                                        adabraka_ui::prelude::Button::new("save", btn_label)
+                                            .variant(adabraka_ui::prelude::ButtonVariant::Default),
                                     );
                                 if valid {
                                     save_btn = save_btn.cursor_pointer();

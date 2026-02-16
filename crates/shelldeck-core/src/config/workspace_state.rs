@@ -51,7 +51,9 @@ impl WorkspaceState {
     /// Save workspace state to disk.
     pub fn save(&self) -> Result<()> {
         let path = Self::state_path();
-        let dir = path.parent().expect("state_path always has a parent directory");
+        let dir = path
+            .parent()
+            .expect("state_path always has a parent directory");
         if !dir.exists() {
             std::fs::create_dir_all(dir)?;
         }

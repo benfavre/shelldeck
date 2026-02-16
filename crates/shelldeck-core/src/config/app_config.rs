@@ -94,7 +94,11 @@ impl AppConfig {
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
             let config: Self = toml::from_str(&content).map_err(|e| {
-                ShellDeckError::Config(format!("Failed to parse config at {}: {}", path.display(), e))
+                ShellDeckError::Config(format!(
+                    "Failed to parse config at {}: {}",
+                    path.display(),
+                    e
+                ))
             })?;
             info!("Loaded config from {}", path.display());
             Ok(config)

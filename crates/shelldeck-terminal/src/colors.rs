@@ -27,7 +27,6 @@ pub enum NamedColor {
     BrightWhite,
 }
 
-
 impl NamedColor {
     /// Convert named color to (r, g, b, a) using standard xterm colors.
     pub fn to_rgb(self) -> (u8, u8, u8, u8) {

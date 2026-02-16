@@ -1,15 +1,15 @@
-use adabraka_ui::prelude::{Theme, install_theme};
+use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
+use shelldeck_core::models::managed_site::ManagedSite;
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus};
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
-use shelldeck_core::models::managed_site::ManagedSite;
-use shelldeck_core::models::server_sync::SyncProfile;
 use shelldeck_core::models::script_runner::build_command;
+use shelldeck_core::models::server_sync::SyncProfile;
 use shelldeck_core::models::templates::all_templates;
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::tunnel::TunnelHandle;
@@ -18,17 +18,19 @@ use std::collections::HashMap;
 use std::ops::DerefMut;
 use uuid::Uuid;
 
-use crate::command_palette::{CommandPalette, CommandPaletteEvent, PaletteAction, ToggleCommandPalette};
+use crate::command_palette::{
+    CommandPalette, CommandPaletteEvent, PaletteAction, ToggleCommandPalette,
+};
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
-use crate::port_forward_form::{PortForwardForm, PortForwardFormEvent};
-use crate::script_form::{ScriptForm, ScriptFormEvent};
 use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
+use crate::port_forward_form::{PortForwardForm, PortForwardFormEvent};
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
-use crate::script_editor::{ScriptEvent, ScriptEditorView};
-use crate::server_sync_view::{ServerSyncEvent, ServerSyncView, PanelSide, LOCAL_MACHINE_ID};
-use crate::sites_view::{SitesEvent, SitesView};
+use crate::script_editor::{ScriptEditorView, ScriptEvent};
+use crate::script_form::{ScriptForm, ScriptFormEvent};
+use crate::server_sync_view::{PanelSide, ServerSyncEvent, ServerSyncView, LOCAL_MACHINE_ID};
 use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
+use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::StatusBar;
 use crate::template_browser::{TemplateBrowser, TemplateBrowserEvent};
 use crate::terminal_view::{SplitDirection, TerminalEvent, TerminalView};
@@ -137,7 +139,12 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(cx: &mut Context<Self>, config: AppConfig, connections: Vec<Connection>, store: ConnectionStore) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        config: AppConfig,
+        connections: Vec<Connection>,
+        store: ConnectionStore,
+    ) -> Self {
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_connections(connections.clone());
@@ -149,7 +156,13 @@ impl Workspace {
             d.favorite_hosts = connections
                 .iter()
                 .take(5)
-                .map(|c| (c.display_name().to_string(), c.hostname.clone(), c.status == ConnectionStatus::Connected))
+                .map(|c| {
+                    (
+                        c.display_name().to_string(),
+                        c.hostname.clone(),
+                        c.status == ConnectionStatus::Connected,
+                    )
+                })
                 .collect();
             d
         });
@@ -184,7 +197,11 @@ impl Workspace {
                 PaletteAction::new("Next Tab", Some("Ctrl+Tab"), Box::new(NextTab)),
                 PaletteAction::new("Previous Tab", Some("Ctrl+Shift+Tab"), Box::new(PrevTab)),
                 PaletteAction::new("Quit", Some("Ctrl+Q"), Box::new(Quit)),
-                PaletteAction::new("Browse Script Templates", None, Box::new(OpenTemplateBrowser)),
+                PaletteAction::new(
+                    "Browse Script Templates",
+                    None,
+                    Box::new(OpenTemplateBrowser),
+                ),
                 PaletteAction::new("New Script", None, Box::new(NewScript)),
                 PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
                 PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
@@ -193,47 +210,37 @@ impl Workspace {
         });
 
         // Subscribe to sidebar events
-        let sidebar_sub =
-            cx.subscribe(&sidebar, |this, _sidebar, event: &SidebarEvent, cx| {
-                this.handle_sidebar_event(event, cx);
-            });
+        let sidebar_sub = cx.subscribe(&sidebar, |this, _sidebar, event: &SidebarEvent, cx| {
+            this.handle_sidebar_event(event, cx);
+        });
 
         // Subscribe to terminal events
-        let terminal_sub =
-            cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
-                this.handle_terminal_event(event, cx);
-            });
+        let terminal_sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
+            this.handle_terminal_event(event, cx);
+        });
 
         // Subscribe to command palette events
         let palette_sub = cx.subscribe(
             &command_palette,
-            |_this, _palette, event: &CommandPaletteEvent, cx| {
-                match event {
-                    CommandPaletteEvent::ActionSelected(action) => {
-                        cx.dispatch_action(action.as_ref());
-                    }
-                    CommandPaletteEvent::Dismissed => {
-                        cx.notify();
-                    }
+            |_this, _palette, event: &CommandPaletteEvent, cx| match event {
+                CommandPaletteEvent::ActionSelected(action) => {
+                    cx.dispatch_action(action.as_ref());
+                }
+                CommandPaletteEvent::Dismissed => {
+                    cx.notify();
                 }
             },
         );
 
         // Subscribe to settings events
-        let settings_sub = cx.subscribe(
-            &settings,
-            |this, _settings, event: &SettingsEvent, cx| {
-                this.handle_settings_event(event, cx);
-            },
-        );
+        let settings_sub = cx.subscribe(&settings, |this, _settings, event: &SettingsEvent, cx| {
+            this.handle_settings_event(event, cx);
+        });
 
         // Subscribe to script editor events
-        let scripts_sub = cx.subscribe(
-            &scripts,
-            |this, _scripts, event: &ScriptEvent, cx| {
-                this.handle_script_event(event, cx);
-            },
-        );
+        let scripts_sub = cx.subscribe(&scripts, |this, _scripts, event: &ScriptEvent, cx| {
+            this.handle_script_event(event, cx);
+        });
 
         // Subscribe to port forward events
         let forwards_sub = cx.subscribe(
@@ -244,20 +251,15 @@ impl Workspace {
         );
 
         // Subscribe to server sync events
-        let server_sync_sub = cx.subscribe(
-            &server_sync,
-            |this, _view, event: &ServerSyncEvent, cx| {
+        let server_sync_sub =
+            cx.subscribe(&server_sync, |this, _view, event: &ServerSyncEvent, cx| {
                 this.handle_server_sync_event(event, cx);
-            },
-        );
+            });
 
         // Subscribe to sites events
-        let sites_sub = cx.subscribe(
-            &sites,
-            |this, _view, event: &SitesEvent, cx| {
-                this.handle_sites_event(event, cx);
-            },
-        );
+        let sites_sub = cx.subscribe(&sites, |this, _view, event: &SitesEvent, cx| {
+            this.handle_sites_event(event, cx);
+        });
 
         // Subscribe to dashboard events
         let dashboard_sub = cx.subscribe(
@@ -468,10 +470,18 @@ impl Workspace {
                 self.update_dashboard_stats(cx);
                 cx.notify();
             }
-            TerminalEvent::SplitRequested { connection_id, direction } => {
+            TerminalEvent::SplitRequested {
+                connection_id,
+                direction,
+            } => {
                 let connection_id = *connection_id;
                 let direction = *direction;
-                if let Some(conn) = self.connections.iter().find(|c| c.id == connection_id).cloned() {
+                if let Some(conn) = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == connection_id)
+                    .cloned()
+                {
                     self.connect_ssh_split(conn, direction, cx);
                 } else {
                     tracing::error!("Split requested for unknown connection {}", connection_id);
@@ -479,7 +489,14 @@ impl Workspace {
             }
             TerminalEvent::RunScriptRequested(id) => {
                 let id = *id;
-                if let Some(script) = self.scripts.read(cx).scripts.iter().find(|s| s.id == id).cloned() {
+                if let Some(script) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                {
                     self.handle_script_event(&ScriptEvent::RunScript(script), cx);
                 }
             }
@@ -512,7 +529,11 @@ impl Workspace {
                 ShellDeckColors::set_dark_mode(is_dark);
 
                 // Switch the adabraka-ui component theme
-                let ui_theme = if is_dark { Theme::dark() } else { Theme::light() };
+                let ui_theme = if is_dark {
+                    Theme::dark()
+                } else {
+                    Theme::light()
+                };
                 install_theme(cx.deref_mut(), ui_theme);
 
                 // Apply a terminal theme matching the preference
@@ -601,7 +622,14 @@ impl Workspace {
                     }
                 });
                 // Persist run stats to store
-                if let Some(s) = self.scripts.read(cx).scripts.iter().find(|s| s.id == script_id).cloned() {
+                if let Some(s) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == script_id)
+                    .cloned()
+                {
                     let _ = self.store.update_script(s);
                 }
 
@@ -620,23 +648,32 @@ impl Workspace {
                 // Route based on script target
                 match &script.target {
                     ScriptTarget::Remote(connection_id) => {
-                        let connection = self.connections.iter().find(|c| c.id == *connection_id).cloned();
+                        let connection = self
+                            .connections
+                            .iter()
+                            .find(|c| c.id == *connection_id)
+                            .cloned();
                         if let Some(conn) = connection {
-                            self.run_script_remote(cmd.ssh_command.clone(), script_name, script_id, conn, cx);
-                        } else {
-                            tracing::error!("Connection {} not found for remote script", connection_id);
-                            self.scripts.update(cx, |editor, cx| {
-                                editor.running_script_id = None;
-                                editor.execution_output.push(
-                                    format!("Error: Connection {} not found", connection_id),
-                                );
-                                cx.notify();
-                            });
-                            self.show_toast(
-                                "Remote connection not found",
-                                ToastLevel::Error,
+                            self.run_script_remote(
+                                cmd.ssh_command.clone(),
+                                script_name,
+                                script_id,
+                                conn,
                                 cx,
                             );
+                        } else {
+                            tracing::error!(
+                                "Connection {} not found for remote script",
+                                connection_id
+                            );
+                            self.scripts.update(cx, |editor, cx| {
+                                editor.running_script_id = None;
+                                editor
+                                    .execution_output
+                                    .push(format!("Error: Connection {} not found", connection_id));
+                                cx.notify();
+                            });
+                            self.show_toast("Remote connection not found", ToastLevel::Error, cx);
                             self.update_dashboard_stats(cx);
                         }
                     }
@@ -666,7 +703,9 @@ impl Workspace {
 
                     self.scripts.update(cx, |editor, cx| {
                         editor.running_script_id = None;
-                        editor.execution_output.push("[Script cancelled]".to_string());
+                        editor
+                            .execution_output
+                            .push("[Script cancelled]".to_string());
                         // Finalize the last execution record
                         if let Some(record) = editor.history.last_mut() {
                             record.finish(-1);
@@ -683,7 +722,14 @@ impl Workspace {
                 self.show_script_form(cx);
             }
             ScriptEvent::EditScript(id) => {
-                if let Some(script) = self.scripts.read(cx).scripts.iter().find(|s| s.id == *id).cloned() {
+                if let Some(script) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == *id)
+                    .cloned()
+                {
                     self.show_script_form_edit(&script, cx);
                 }
             }
@@ -737,7 +783,14 @@ impl Workspace {
                         s.is_favorite = !s.is_favorite;
                     }
                 });
-                if let Some(s) = self.scripts.read(cx).scripts.iter().find(|s| s.id == id).cloned() {
+                if let Some(s) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                {
                     let _ = self.store.update_script(s);
                 }
                 self.sync_scripts_to_terminal_toolbar(cx);
@@ -745,7 +798,13 @@ impl Workspace {
             }
             ScriptEvent::DeleteScript(id) => {
                 let id = *id;
-                let name = self.scripts.read(cx).scripts.iter().find(|s| s.id == id).map(|s| s.name.clone());
+                let name = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.name.clone());
                 self.scripts.update(cx, |editor, _| {
                     editor.scripts.retain(|s| s.id != id);
                     if editor.selected_script == Some(id) {
@@ -768,14 +827,25 @@ impl Workspace {
                         editor.scripts.push(script.clone());
                     });
                     let _ = self.store.add_script(script);
-                    self.show_toast(format!("Imported template: {}", name), ToastLevel::Success, cx);
+                    self.show_toast(
+                        format!("Imported template: {}", name),
+                        ToastLevel::Success,
+                        cx,
+                    );
                     self.sync_scripts_to_terminal_toolbar(cx);
                     cx.notify();
                 }
             }
             ScriptEvent::RunScriptById(id) => {
                 let id = *id;
-                if let Some(script) = self.scripts.read(cx).scripts.iter().find(|s| s.id == id).cloned() {
+                if let Some(script) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                {
                     self.handle_script_event(&ScriptEvent::RunScript(script), cx);
                 }
             }
@@ -808,8 +878,7 @@ impl Workspace {
                 for (k, v) in &env_vars {
                     cmd.env(k, v);
                 }
-                let mut child = match cmd.spawn()
-                {
+                let mut child = match cmd.spawn() {
                     Ok(c) => c,
                     Err(e) => {
                         let _ = stream_tx.send(format!("Error: {}", e));
@@ -827,7 +896,9 @@ impl Workspace {
                     if let Some(stdout) = stdout {
                         for line in BufReader::new(stdout).lines() {
                             match line {
-                                Ok(l) => { let _ = stream_tx.send(l); }
+                                Ok(l) => {
+                                    let _ = stream_tx.send(l);
+                                }
                                 Err(_) => break,
                             }
                         }
@@ -902,10 +973,13 @@ impl Workspace {
             })
             .expect("Failed to spawn local script thread");
 
-        self.active_scripts.insert(script_id, ActiveScript {
-            shutdown_tx,
-            _thread: Some(thread_handle),
-        });
+        self.active_scripts.insert(
+            script_id,
+            ActiveScript {
+                shutdown_tx,
+                _thread: Some(thread_handle),
+            },
+        );
 
         // UI poller: drains output and handles completion
         let scripts_handle = self.scripts.downgrade();
@@ -957,14 +1031,20 @@ impl Workspace {
                             match exit_code {
                                 Some(0) => {
                                     ws.show_toast(
-                                        format!("Script '{}' completed successfully", script_name_done),
+                                        format!(
+                                            "Script '{}' completed successfully",
+                                            script_name_done
+                                        ),
                                         ToastLevel::Success,
                                         cx,
                                     );
                                 }
                                 Some(code) => {
                                     ws.show_toast(
-                                        format!("Script '{}' exited with code {}", script_name_done, code),
+                                        format!(
+                                            "Script '{}' exited with code {}",
+                                            script_name_done, code
+                                        ),
                                         ToastLevel::Error,
                                         cx,
                                     );
@@ -985,7 +1065,9 @@ impl Workspace {
                         // Thread exited without sending done — clean up
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
-                            editor.execution_output.push("[Script thread exited unexpectedly]".to_string());
+                            editor
+                                .execution_output
+                                .push("[Script thread exited unexpectedly]".to_string());
                             cx.notify();
                         });
                         let _ = _this.update(cx, |ws, cx| {
@@ -996,7 +1078,8 @@ impl Workspace {
                     }
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     fn run_script_remote(
@@ -1010,7 +1093,9 @@ impl Workspace {
         let host_display = connection.display_name().to_string();
 
         self.scripts.update(cx, |editor, _| {
-            editor.execution_output.push(format!("[remote: {}]", host_display));
+            editor
+                .execution_output
+                .push(format!("[remote: {}]", host_display));
         });
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -1051,7 +1136,9 @@ impl Workspace {
                         }
                     });
 
-                    let result = session.exec_cancellable(&body, output_tx, shutdown_rx).await;
+                    let result = session
+                        .exec_cancellable(&body, output_tx, shutdown_rx)
+                        .await;
 
                     // Wait for forwarding to flush
                     let _ = fwd_task.await;
@@ -1069,10 +1156,13 @@ impl Workspace {
             })
             .expect("Failed to spawn remote script thread");
 
-        self.active_scripts.insert(script_id, ActiveScript {
-            shutdown_tx,
-            _thread: Some(thread_handle),
-        });
+        self.active_scripts.insert(
+            script_id,
+            ActiveScript {
+                shutdown_tx,
+                _thread: Some(thread_handle),
+            },
+        );
 
         // UI poller
         let scripts_handle = self.scripts.downgrade();
@@ -1122,14 +1212,20 @@ impl Workspace {
                             match exit_code {
                                 Some(0) | None => {
                                     ws.show_toast(
-                                        format!("Script '{}' completed on {}", script_name_done, host_display),
+                                        format!(
+                                            "Script '{}' completed on {}",
+                                            script_name_done, host_display
+                                        ),
                                         ToastLevel::Success,
                                         cx,
                                     );
                                 }
                                 Some(code) => {
                                     ws.show_toast(
-                                        format!("Script '{}' exited with code {} on {}", script_name_done, code, host_display),
+                                        format!(
+                                            "Script '{}' exited with code {} on {}",
+                                            script_name_done, code, host_display
+                                        ),
                                         ToastLevel::Error,
                                         cx,
                                     );
@@ -1142,7 +1238,9 @@ impl Workspace {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         let _ = scripts_handle.update(cx, |editor, cx| {
                             editor.running_script_id = None;
-                            editor.execution_output.push("[Remote script thread exited unexpectedly]".to_string());
+                            editor
+                                .execution_output
+                                .push("[Remote script thread exited unexpectedly]".to_string());
                             cx.notify();
                         });
                         let _ = _this.update(cx, |ws, cx| {
@@ -1153,7 +1251,8 @@ impl Workspace {
                     }
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     /// Push favorite and recent scripts to the terminal toolbar.
@@ -1191,7 +1290,11 @@ impl Workspace {
                 // Look up the port forward configuration
                 let forward = {
                     let pf_view = self.port_forwards.read(cx);
-                    pf_view.forwards.iter().find(|f| f.id == forward_id).cloned()
+                    pf_view
+                        .forwards
+                        .iter()
+                        .find(|f| f.id == forward_id)
+                        .cloned()
                 };
                 let forward = match forward {
                     Some(f) => f,
@@ -1214,7 +1317,11 @@ impl Workspace {
                 }
 
                 // Look up the connection for this forward
-                let connection = self.connections.iter().find(|c| c.id == forward.connection_id).cloned();
+                let connection = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == forward.connection_id)
+                    .cloned();
                 let connection = match connection {
                     Some(c) => c,
                     None => {
@@ -1233,7 +1340,11 @@ impl Workspace {
                             ActivityType::Error,
                             cx,
                         );
-                        self.show_toast("Connection not found for port forward", ToastLevel::Error, cx);
+                        self.show_toast(
+                            "Connection not found for port forward",
+                            ToastLevel::Error,
+                            cx,
+                        );
                         cx.notify();
                         return;
                     }
@@ -1263,7 +1374,8 @@ impl Workspace {
                 );
 
                 // Use a channel to send the TunnelHandle back from the background thread
-                let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<TunnelHandle, String>>();
+                let (result_tx, result_rx) =
+                    std::sync::mpsc::channel::<Result<TunnelHandle, String>>();
 
                 let direction = forward.direction;
                 let local_port = forward.local_port;
@@ -1393,26 +1505,37 @@ impl Workspace {
 
                 cx.spawn(async move |_this, cx: &mut AsyncApp| {
                     // Wait for the result on the background executor so we don't block GPUI
-                    let result = cx.background_executor().spawn(async move {
-                        // The SSH connection + tunnel setup happens on the dedicated thread.
-                        // We give it a generous timeout.
-                        result_rx.recv_timeout(std::time::Duration::from_secs(30))
-                    }).await;
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            // The SSH connection + tunnel setup happens on the dedicated thread.
+                            // We give it a generous timeout.
+                            result_rx.recv_timeout(std::time::Duration::from_secs(30))
+                        })
+                        .await;
 
                     match result {
                         Ok(Ok(tunnel_handle)) => {
-                            tracing::info!("Tunnel started successfully for forward {}", forward_id);
+                            tracing::info!(
+                                "Tunnel started successfully for forward {}",
+                                forward_id
+                            );
 
                             // Store the active tunnel in the workspace
                             let _ = weak_self.update(cx, |ws, cx| {
-                                ws.active_tunnels.insert(forward_id, ActiveTunnel {
-                                    tunnel_handle,
-                                    _thread: thread_handle,
-                                });
+                                ws.active_tunnels.insert(
+                                    forward_id,
+                                    ActiveTunnel {
+                                        tunnel_handle,
+                                        _thread: thread_handle,
+                                    },
+                                );
 
                                 // Update forward status to Active
                                 ws.port_forwards.update(cx, |pf, _| {
-                                    if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id) {
+                                    if let Some(f) =
+                                        pf.forwards.iter_mut().find(|f| f.id == forward_id)
+                                    {
                                         f.status = ForwardStatus::Active;
                                     }
                                 });
@@ -1432,22 +1555,32 @@ impl Workspace {
                             });
                         }
                         Ok(Err(err_msg)) => {
-                            tracing::error!("Tunnel failed for forward {}: {}", forward_id, err_msg);
+                            tracing::error!(
+                                "Tunnel failed for forward {}: {}",
+                                forward_id,
+                                err_msg
+                            );
 
                             let _ = pf_handle.update(cx, |pf, cx| {
-                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id) {
+                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id)
+                                {
                                     f.status = ForwardStatus::Error;
                                 }
                                 cx.notify();
                             });
 
                             let _ = dashboard_handle.update(cx, |dashboard, _| {
-                                dashboard.recent_activity.insert(0, ActivityEvent {
-                                    icon: "alert",
-                                    message: format!("Port forward failed: {}", err_msg),
-                                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                                    event_type: ActivityType::Error,
-                                });
+                                dashboard.recent_activity.insert(
+                                    0,
+                                    ActivityEvent {
+                                        icon: "alert",
+                                        message: format!("Port forward failed: {}", err_msg),
+                                        timestamp: chrono::Local::now()
+                                            .format("%H:%M:%S")
+                                            .to_string(),
+                                        event_type: ActivityType::Error,
+                                    },
+                                );
                                 if dashboard.recent_activity.len() > 50 {
                                     dashboard.recent_activity.truncate(50);
                                 }
@@ -1465,19 +1598,28 @@ impl Workspace {
                             tracing::error!("Tunnel setup timed out for forward {}", forward_id);
 
                             let _ = pf_handle.update(cx, |pf, cx| {
-                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id) {
+                                if let Some(f) = pf.forwards.iter_mut().find(|f| f.id == forward_id)
+                                {
                                     f.status = ForwardStatus::Error;
                                 }
                                 cx.notify();
                             });
 
                             let _ = dashboard_handle.update(cx, |dashboard, _| {
-                                dashboard.recent_activity.insert(0, ActivityEvent {
-                                    icon: "alert",
-                                    message: format!("Port forward timed out: {}", label_for_activity),
-                                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                                    event_type: ActivityType::Error,
-                                });
+                                dashboard.recent_activity.insert(
+                                    0,
+                                    ActivityEvent {
+                                        icon: "alert",
+                                        message: format!(
+                                            "Port forward timed out: {}",
+                                            label_for_activity
+                                        ),
+                                        timestamp: chrono::Local::now()
+                                            .format("%H:%M:%S")
+                                            .to_string(),
+                                        event_type: ActivityType::Error,
+                                    },
+                                );
                                 if dashboard.recent_activity.len() > 50 {
                                     dashboard.recent_activity.truncate(50);
                                 }
@@ -1492,7 +1634,8 @@ impl Workspace {
                             });
                         }
                     }
-                }).detach();
+                })
+                .detach();
 
                 cx.notify();
             }
@@ -1565,7 +1708,14 @@ impl Workspace {
                 self.show_port_forward_form(cx);
             }
             PortForwardEvent::EditForward(id) => {
-                if let Some(fwd) = self.port_forwards.read(cx).forwards.iter().find(|f| f.id == *id).cloned() {
+                if let Some(fwd) = self
+                    .port_forwards
+                    .read(cx)
+                    .forwards
+                    .iter()
+                    .find(|f| f.id == *id)
+                    .cloned()
+                {
                     self.show_port_forward_form_edit(&fwd, cx);
                 }
             }
@@ -1578,24 +1728,35 @@ impl Workspace {
 
     fn handle_server_sync_event(&mut self, event: &ServerSyncEvent, cx: &mut Context<Self>) {
         match event {
-            ServerSyncEvent::ListFiles { connection_id, path, panel } => {
+            ServerSyncEvent::ListFiles {
+                connection_id,
+                path,
+                panel,
+            } => {
                 let conn_id = *connection_id;
                 let path = path.clone();
                 let panel = *panel;
 
                 if conn_id == LOCAL_MACHINE_ID {
                     self.list_local_files(path, panel, cx);
-                } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id).cloned() {
+                } else if let Some(conn) =
+                    self.connections.iter().find(|c| c.id == conn_id).cloned()
+                {
                     self.list_remote_files(conn, path, panel, cx);
                 }
             }
-            ServerSyncEvent::DiscoverServices { connection_id, panel } => {
+            ServerSyncEvent::DiscoverServices {
+                connection_id,
+                panel,
+            } => {
                 let conn_id = *connection_id;
                 let panel = *panel;
 
                 if conn_id == LOCAL_MACHINE_ID {
                     self.discover_local_services(panel, cx);
-                } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id).cloned() {
+                } else if let Some(conn) =
+                    self.connections.iter().find(|c| c.id == conn_id).cloned()
+                {
                     self.discover_remote_services(conn, panel, cx);
                 }
             }
@@ -1611,7 +1772,8 @@ impl Workspace {
                 self.server_sync.update(cx, |view, _| {
                     if let Some(ref mut op) = view.active_operation {
                         if op.id == op_id {
-                            op.status = shelldeck_core::models::server_sync::SyncOperationStatus::Cancelled;
+                            op.status =
+                                shelldeck_core::models::server_sync::SyncOperationStatus::Cancelled;
                         }
                     }
                 });
@@ -1635,7 +1797,12 @@ impl Workspace {
                 });
                 cx.notify();
             }
-            ServerSyncEvent::ExecSync { source_connection_id: _, command: _, operation_id, item_id } => {
+            ServerSyncEvent::ExecSync {
+                source_connection_id: _,
+                command: _,
+                operation_id,
+                item_id,
+            } => {
                 // Individual sync command execution — handled as part of start_sync_operation
                 tracing::debug!("ExecSync for item {:?} on op {:?}", item_id, operation_id);
             }
@@ -1732,18 +1899,19 @@ impl Workspace {
                                     rt.block_on(async move {
                                         let client = SshClient::new();
                                         match client.connect(&conn).await {
-                                            Ok(session) => {
-                                                match session.exec(&check_cmd).await {
-                                                    Ok(result) => {
-                                                        let output = String::from_utf8_lossy(&result.stdout).trim().to_string();
-                                                        let online = output.contains("ONLINE");
-                                                        let _ = done_tx.send((online, String::new()));
-                                                    }
-                                                    Err(e) => {
-                                                        let _ = done_tx.send((false, e.to_string()));
-                                                    }
+                                            Ok(session) => match session.exec(&check_cmd).await {
+                                                Ok(result) => {
+                                                    let output =
+                                                        String::from_utf8_lossy(&result.stdout)
+                                                            .trim()
+                                                            .to_string();
+                                                    let online = output.contains("ONLINE");
+                                                    let _ = done_tx.send((online, String::new()));
                                                 }
-                                            }
+                                                Err(e) => {
+                                                    let _ = done_tx.send((false, e.to_string()));
+                                                }
+                                            },
                                             Err(e) => {
                                                 let _ = done_tx.send((false, e.to_string()));
                                             }
@@ -1845,7 +2013,8 @@ impl Workspace {
                                 // Fallback to ls
                                 match session.exec(&fallback_cmd).await {
                                     Ok(result) => {
-                                        let out = String::from_utf8_lossy(&result.stdout).to_string();
+                                        let out =
+                                            String::from_utf8_lossy(&result.stdout).to_string();
                                         let _ = stream_tx.send(format!("LS:{}", out));
                                         let _ = done_tx.send(true);
                                     }
@@ -1907,12 +2076,7 @@ impl Workspace {
         .detach();
     }
 
-    fn list_local_files(
-        &mut self,
-        path: String,
-        panel: PanelSide,
-        cx: &mut Context<Self>,
-    ) {
+    fn list_local_files(&mut self, path: String, panel: PanelSide, cx: &mut Context<Self>) {
         use shelldeck_core::models::discovery;
         let entries = discovery::list_local_files(&path);
         self.server_sync.update(cx, |view, cx| {
@@ -1921,14 +2085,13 @@ impl Workspace {
         });
     }
 
-    fn discover_local_services(
-        &mut self,
-        panel: PanelSide,
-        cx: &mut Context<Self>,
-    ) {
+    fn discover_local_services(&mut self, panel: PanelSide, cx: &mut Context<Self>) {
         use shelldeck_core::models::discovery;
 
-        let (tx, rx) = std::sync::mpsc::channel::<(Vec<shelldeck_core::models::DiscoveredSite>, Vec<shelldeck_core::models::DiscoveredDatabase>)>();
+        let (tx, rx) = std::sync::mpsc::channel::<(
+            Vec<shelldeck_core::models::DiscoveredSite>,
+            Vec<shelldeck_core::models::DiscoveredDatabase>,
+        )>();
 
         std::thread::Builder::new()
             .name("sync-discover-local".to_string())
@@ -1968,21 +2131,19 @@ impl Workspace {
             .expect("spawn local discover thread");
 
         let sync_handle = self.server_sync.downgrade();
-        cx.spawn(async move |_this, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(50))
-                    .await;
+        cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
 
-                if let Ok((sites, dbs)) = rx.try_recv() {
-                    let _ = sync_handle.update(cx, |view, cx| {
-                        view.set_discovered_sites(panel, sites);
-                        view.set_discovered_databases(panel, dbs);
-                        view.panel_state_mut(panel).discovery_loading = false;
-                        cx.notify();
-                    });
-                    break;
-                }
+            if let Ok((sites, dbs)) = rx.try_recv() {
+                let _ = sync_handle.update(cx, |view, cx| {
+                    view.set_discovered_sites(panel, sites);
+                    view.set_discovered_databases(panel, dbs);
+                    view.panel_state_mut(panel).discovery_loading = false;
+                    cx.notify();
+                });
+                break;
             }
         })
         .detach();
@@ -2020,7 +2181,9 @@ impl Workspace {
                     let session = match tokio::time::timeout(
                         std::time::Duration::from_secs(15),
                         client.connect(&connection),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(Ok(s)) => s,
                         Ok(Err(e)) => {
                             let _ = stream_tx.send(("error".to_string(), format!("Error: {}", e)));
@@ -2028,7 +2191,10 @@ impl Workspace {
                             return;
                         }
                         Err(_) => {
-                            let _ = stream_tx.send(("error".to_string(), format!("Connection timed out for {}", thread_disc_conn_name)));
+                            let _ = stream_tx.send((
+                                "error".to_string(),
+                                format!("Connection timed out for {}", thread_disc_conn_name),
+                            ));
                             let _ = done_tx.send(false);
                             return;
                         }
@@ -2042,8 +2208,14 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("nginx".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("nginx discover exec error on {}: {}", thread_disc_conn_name, e),
-                        Err(_) => tracing::warn!("nginx discover timed out on {}", thread_disc_conn_name),
+                        Ok(Err(e)) => tracing::debug!(
+                            "nginx discover exec error on {}: {}",
+                            thread_disc_conn_name,
+                            e
+                        ),
+                        Err(_) => {
+                            tracing::warn!("nginx discover timed out on {}", thread_disc_conn_name)
+                        }
                     }
 
                     // Discover MySQL
@@ -2052,8 +2224,14 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("mysql".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("mysql discover exec error on {}: {}", thread_disc_conn_name, e),
-                        Err(_) => tracing::warn!("mysql discover timed out on {}", thread_disc_conn_name),
+                        Ok(Err(e)) => tracing::debug!(
+                            "mysql discover exec error on {}: {}",
+                            thread_disc_conn_name,
+                            e
+                        ),
+                        Err(_) => {
+                            tracing::warn!("mysql discover timed out on {}", thread_disc_conn_name)
+                        }
                     }
 
                     // Discover PostgreSQL
@@ -2062,8 +2240,14 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("pg".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("pg discover exec error on {}: {}", thread_disc_conn_name, e),
-                        Err(_) => tracing::warn!("pg discover timed out on {}", thread_disc_conn_name),
+                        Ok(Err(e)) => tracing::debug!(
+                            "pg discover exec error on {}: {}",
+                            thread_disc_conn_name,
+                            e
+                        ),
+                        Err(_) => {
+                            tracing::warn!("pg discover timed out on {}", thread_disc_conn_name)
+                        }
                     }
 
                     let _ = done_tx.send(true);
@@ -2087,7 +2271,11 @@ impl Workspace {
                         "nginx" => {
                             let sites = discovery::parse_nginx_configs(&data);
                             for s in &sites {
-                                auto_sites.push(ManagedSite::from_nginx(disc_conn_id, &disc_conn_name, s.clone()));
+                                auto_sites.push(ManagedSite::from_nginx(
+                                    disc_conn_id,
+                                    &disc_conn_name,
+                                    s.clone(),
+                                ));
                             }
                             let _ = sync_handle.update(cx, |view, cx| {
                                 view.set_discovered_sites(panel, sites);
@@ -2097,11 +2285,16 @@ impl Workspace {
                         "mysql" => {
                             let dbs = discovery::parse_mysql_discovery(&data);
                             for d in &dbs {
-                                auto_sites.push(ManagedSite::from_database(disc_conn_id, &disc_conn_name, d.clone()));
+                                auto_sites.push(ManagedSite::from_database(
+                                    disc_conn_id,
+                                    &disc_conn_name,
+                                    d.clone(),
+                                ));
                             }
                             if !dbs.is_empty() {
                                 let _ = sync_handle.update(cx, |view, cx| {
-                                    let mut all = view.panel_state_mut(panel).discovered_databases.clone();
+                                    let mut all =
+                                        view.panel_state_mut(panel).discovered_databases.clone();
                                     all.extend(dbs);
                                     view.set_discovered_databases(panel, all);
                                     cx.notify();
@@ -2111,11 +2304,16 @@ impl Workspace {
                         "pg" => {
                             let dbs = discovery::parse_pg_discovery(&data);
                             for d in &dbs {
-                                auto_sites.push(ManagedSite::from_database(disc_conn_id, &disc_conn_name, d.clone()));
+                                auto_sites.push(ManagedSite::from_database(
+                                    disc_conn_id,
+                                    &disc_conn_name,
+                                    d.clone(),
+                                ));
                             }
                             if !dbs.is_empty() {
                                 let _ = sync_handle.update(cx, |view, cx| {
-                                    let mut all = view.panel_state_mut(panel).discovered_databases.clone();
+                                    let mut all =
+                                        view.panel_state_mut(panel).discovered_databases.clone();
                                     all.extend(dbs);
                                     view.set_discovered_databases(panel, all);
                                     cx.notify();
@@ -2145,7 +2343,10 @@ impl Workspace {
 
                 // Wall-clock safety: abort if background thread is stuck
                 if wall_clock_start.elapsed() > wall_clock_limit {
-                    tracing::warn!("Sync discover poller timed out after 90s for {}", disc_conn_name);
+                    tracing::warn!(
+                        "Sync discover poller timed out after 90s for {}",
+                        disc_conn_name
+                    );
                     let _ = sync_handle.update(cx, |view, cx| {
                         view.panel_state_mut(panel).discovery_loading = false;
                         cx.notify();
@@ -2166,11 +2367,7 @@ impl Workspace {
         .detach();
     }
 
-    fn discover_for_sites(
-        &mut self,
-        connection: Connection,
-        cx: &mut Context<Self>,
-    ) {
+    fn discover_for_sites(&mut self, connection: Connection, cx: &mut Context<Self>) {
         use shelldeck_core::models::discovery;
 
         let conn_id = connection.id;
@@ -2197,7 +2394,9 @@ impl Workspace {
                     let session = match tokio::time::timeout(
                         std::time::Duration::from_secs(15),
                         client.connect(&connection),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(Ok(s)) => s,
                         Ok(Err(e)) => {
                             tracing::warn!("Sites discover failed for {}: {}", thread_conn_name, e);
@@ -2205,7 +2404,10 @@ impl Workspace {
                             return;
                         }
                         Err(_) => {
-                            tracing::warn!("Sites discover timed out connecting to {}", thread_conn_name);
+                            tracing::warn!(
+                                "Sites discover timed out connecting to {}",
+                                thread_conn_name
+                            );
                             let _ = done_tx.send(false);
                             return;
                         }
@@ -2218,8 +2420,14 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("nginx".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("nginx discover exec error on {}: {}", thread_conn_name, e),
-                        Err(_) => tracing::warn!("nginx discover timed out on {}", thread_conn_name),
+                        Ok(Err(e)) => tracing::debug!(
+                            "nginx discover exec error on {}: {}",
+                            thread_conn_name,
+                            e
+                        ),
+                        Err(_) => {
+                            tracing::warn!("nginx discover timed out on {}", thread_conn_name)
+                        }
                     }
 
                     match tokio::time::timeout(exec_timeout, session.exec(&mysql_cmd)).await {
@@ -2227,8 +2435,14 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("mysql".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("mysql discover exec error on {}: {}", thread_conn_name, e),
-                        Err(_) => tracing::warn!("mysql discover timed out on {}", thread_conn_name),
+                        Ok(Err(e)) => tracing::debug!(
+                            "mysql discover exec error on {}: {}",
+                            thread_conn_name,
+                            e
+                        ),
+                        Err(_) => {
+                            tracing::warn!("mysql discover timed out on {}", thread_conn_name)
+                        }
                     }
 
                     match tokio::time::timeout(exec_timeout, session.exec(&pg_cmd)).await {
@@ -2236,7 +2450,9 @@ impl Workspace {
                             let output = String::from_utf8_lossy(&result.stdout).to_string();
                             let _ = stream_tx.send(("pg".to_string(), output));
                         }
-                        Ok(Err(e)) => tracing::debug!("pg discover exec error on {}: {}", thread_conn_name, e),
+                        Ok(Err(e)) => {
+                            tracing::debug!("pg discover exec error on {}: {}", thread_conn_name, e)
+                        }
                         Err(_) => tracing::warn!("pg discover timed out on {}", thread_conn_name),
                     }
 
@@ -2293,7 +2509,10 @@ impl Workspace {
 
                 // Wall-clock safety: abort if background thread is stuck
                 if wall_clock_start.elapsed() > wall_clock_limit {
-                    tracing::warn!("Sites discover poller timed out after 90s for conn {}", conn_name);
+                    tracing::warn!(
+                        "Sites discover poller timed out after 90s for conn {}",
+                        conn_name
+                    );
                     let _ = this.update(cx, |ws, cx| {
                         let _ = ws.store.add_managed_sites_bulk(new_sites);
                         ws.sites.update(cx, |view, _| {
@@ -2309,18 +2528,16 @@ impl Workspace {
         .detach();
     }
 
-    fn start_sync_operation(
-        &mut self,
-        profile: SyncProfile,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_sync_operation(&mut self, profile: SyncProfile, cx: &mut Context<Self>) {
         use chrono::Utc;
         use shelldeck_core::models::discovery;
         use shelldeck_core::models::server_sync::*;
 
         let op_id = Uuid::new_v4();
-        let item_progress: Vec<SyncProgress> = profile.items.iter().map(|item| {
-            SyncProgress {
+        let item_progress: Vec<SyncProgress> = profile
+            .items
+            .iter()
+            .map(|item| SyncProgress {
                 item_id: item.id,
                 status: SyncOperationStatus::Pending,
                 bytes_transferred: 0,
@@ -2329,8 +2546,8 @@ impl Workspace {
                 total_files: None,
                 current_file: None,
                 error_message: None,
-            }
-        }).collect();
+            })
+            .collect();
 
         let operation = SyncOperation {
             id: op_id,
@@ -2344,19 +2561,30 @@ impl Workspace {
 
         self.server_sync.update(cx, |view, cx| {
             view.active_operation = Some(operation);
-            view.log_lines.push(format!("[sync] Starting sync operation {}", op_id));
+            view.log_lines
+                .push(format!("[sync] Starting sync operation {}", op_id));
             cx.notify();
         });
 
         // Get connection info
-        let source_conn = self.connections.iter().find(|c| c.id == profile.source_connection_id).cloned();
-        let dest_conn = self.connections.iter().find(|c| c.id == profile.dest_connection_id).cloned();
+        let source_conn = self
+            .connections
+            .iter()
+            .find(|c| c.id == profile.source_connection_id)
+            .cloned();
+        let dest_conn = self
+            .connections
+            .iter()
+            .find(|c| c.id == profile.dest_connection_id)
+            .cloned();
 
         let (source_conn, dest_conn) = match (source_conn, dest_conn) {
             (Some(s), Some(d)) => (s, d),
             _ => {
                 self.server_sync.update(cx, |view, cx| {
-                    view.append_log("[sync] Error: source or destination connection not found".to_string());
+                    view.append_log(
+                        "[sync] Error: source or destination connection not found".to_string(),
+                    );
                     if let Some(ref mut op) = view.active_operation {
                         op.status = SyncOperationStatus::Failed;
                     }
@@ -2373,42 +2601,65 @@ impl Workspace {
                 continue;
             }
             let cmd = match &item.kind {
-                SyncItemKind::Directory { source_path, dest_path, exclude_patterns } => {
-                    discovery::rsync_command(
-                        source_path,
+                SyncItemKind::Directory {
+                    source_path,
+                    dest_path,
+                    exclude_patterns,
+                } => discovery::rsync_command(
+                    source_path,
+                    &dest_conn.user,
+                    &dest_conn.hostname,
+                    dest_path,
+                    &profile.options,
+                    exclude_patterns,
+                ),
+                SyncItemKind::Database {
+                    ref name,
+                    engine,
+                    ref source_credentials,
+                    ref dest_credentials,
+                } => match engine {
+                    DatabaseEngine::Mysql => discovery::mysql_sync_command(
+                        name,
+                        source_credentials,
                         &dest_conn.user,
                         &dest_conn.hostname,
-                        dest_path,
-                        &profile.options,
-                        exclude_patterns,
-                    )
-                }
-                SyncItemKind::Database { ref name, engine, ref source_credentials, ref dest_credentials } => {
-                    match engine {
-                        DatabaseEngine::Mysql => discovery::mysql_sync_command(
-                            name, source_credentials,
-                            &dest_conn.user, &dest_conn.hostname,
-                            dest_credentials, profile.options.compress,
-                        ),
-                        DatabaseEngine::Postgresql => discovery::pg_sync_command(
-                            name, source_credentials,
-                            &dest_conn.user, &dest_conn.hostname,
-                            dest_credentials, profile.options.compress,
-                        ),
-                    }
-                }
-                SyncItemKind::NginxSite { ref site, ref sync_config, ref sync_root } => {
+                        dest_credentials,
+                        profile.options.compress,
+                    ),
+                    DatabaseEngine::Postgresql => discovery::pg_sync_command(
+                        name,
+                        source_credentials,
+                        &dest_conn.user,
+                        &dest_conn.hostname,
+                        dest_credentials,
+                        profile.options.compress,
+                    ),
+                },
+                SyncItemKind::NginxSite {
+                    ref site,
+                    ref sync_config,
+                    ref sync_root,
+                } => {
                     let mut cmds = Vec::new();
                     if *sync_root && !site.root.is_empty() {
                         cmds.push(discovery::rsync_command(
-                            &site.root, &dest_conn.user, &dest_conn.hostname,
-                            &site.root, &profile.options, &[],
+                            &site.root,
+                            &dest_conn.user,
+                            &dest_conn.hostname,
+                            &site.root,
+                            &profile.options,
+                            &[],
                         ));
                     }
                     if *sync_config && !site.config_path.is_empty() {
                         cmds.push(discovery::rsync_command(
-                            &site.config_path, &dest_conn.user, &dest_conn.hostname,
-                            &site.config_path, &profile.options, &[],
+                            &site.config_path,
+                            &dest_conn.user,
+                            &dest_conn.hostname,
+                            &site.config_path,
+                            &profile.options,
+                            &[],
                         ));
                     }
                     cmds.join(" && ")
@@ -2435,7 +2686,8 @@ impl Workspace {
                     let session = match client.connect(&source_conn).await {
                         Ok(s) => s,
                         Err(e) => {
-                            let _ = stream_tx.send((Uuid::nil(), format!("[sync] SSH Error: {}", e)));
+                            let _ =
+                                stream_tx.send((Uuid::nil(), format!("[sync] SSH Error: {}", e)));
                             return;
                         }
                     };
@@ -2475,10 +2727,13 @@ impl Workspace {
             })
             .expect("spawn sync thread");
 
-        self.active_scripts.insert(op_id, ActiveScript {
-            shutdown_tx,
-            _thread: Some(thread_handle),
-        });
+        self.active_scripts.insert(
+            op_id,
+            ActiveScript {
+                shutdown_tx,
+                _thread: Some(thread_handle),
+            },
+        );
 
         // UI poller
         let sync_handle = self.server_sync.downgrade();
@@ -2504,7 +2759,9 @@ impl Workspace {
                     };
                     let _ = sync_handle.update(cx, |view, cx| {
                         if let Some(ref mut op) = view.active_operation {
-                            if let Some(prog) = op.item_progress.iter_mut().find(|p| p.item_id == item_id) {
+                            if let Some(prog) =
+                                op.item_progress.iter_mut().find(|p| p.item_id == item_id)
+                            {
                                 prog.status = status;
                             }
                         }
@@ -2518,10 +2775,16 @@ impl Workspace {
                             view.log_lines.push(line.clone());
                             // Parse rsync progress if applicable
                             if line.contains('%') {
-                                if let Some(pct_str) = line.split_whitespace().find(|w| w.ends_with('%')) {
+                                if let Some(pct_str) =
+                                    line.split_whitespace().find(|w| w.ends_with('%'))
+                                {
                                     if let Ok(pct) = pct_str.trim_end_matches('%').parse::<f64>() {
                                         if let Some(ref mut op) = view.active_operation {
-                                            if let Some(prog) = op.item_progress.iter_mut().find(|p| p.item_id == *item_id) {
+                                            if let Some(prog) = op
+                                                .item_progress
+                                                .iter_mut()
+                                                .find(|p| p.item_id == *item_id)
+                                            {
                                                 prog.status = SyncOperationStatus::Running;
                                                 prog.total_bytes = Some(100);
                                                 prog.bytes_transferred = pct as u64;
@@ -2532,7 +2795,9 @@ impl Workspace {
                             }
                             // Update current file
                             if let Some(ref mut op) = view.active_operation {
-                                if let Some(prog) = op.item_progress.iter_mut().find(|p| p.item_id == *item_id) {
+                                if let Some(prog) =
+                                    op.item_progress.iter_mut().find(|p| p.item_id == *item_id)
+                                {
                                     if !line.starts_with("[sync]") {
                                         prog.current_file = Some(line.clone());
                                     }
@@ -2546,7 +2811,10 @@ impl Workspace {
                 if all_done.len() >= total_items {
                     let _ = sync_handle.update(cx, |view, cx| {
                         if let Some(ref mut op) = view.active_operation {
-                            let all_success = op.item_progress.iter().all(|p| p.status == SyncOperationStatus::Completed);
+                            let all_success = op
+                                .item_progress
+                                .iter()
+                                .all(|p| p.status == SyncOperationStatus::Completed);
                             op.status = if all_success {
                                 SyncOperationStatus::Completed
                             } else {
@@ -2554,7 +2822,8 @@ impl Workspace {
                             };
                             op.finished_at = Some(Utc::now());
                         }
-                        view.log_lines.push("[sync] Operation complete.".to_string());
+                        view.log_lines
+                            .push("[sync] Operation complete.".to_string());
                         view.wizard_active = false;
                         cx.notify();
                     });
@@ -2652,15 +2921,20 @@ impl Workspace {
     fn show_template_browser(&mut self, cx: &mut Context<Self>) {
         let browser = cx.new(TemplateBrowser::new);
 
-        let sub = cx.subscribe(&browser, |this, _browser, event: &TemplateBrowserEvent, cx| {
-            match event {
+        let sub = cx.subscribe(
+            &browser,
+            |this, _browser, event: &TemplateBrowserEvent, cx| match event {
                 TemplateBrowserEvent::Import(script) => {
                     let name = script.name.clone();
                     this.scripts.update(cx, |editor, _| {
                         editor.scripts.push(script.clone());
                     });
                     let _ = this.store.add_script(script.clone());
-                    this.show_toast(format!("Imported template: {}", name), ToastLevel::Success, cx);
+                    this.show_toast(
+                        format!("Imported template: {}", name),
+                        ToastLevel::Success,
+                        cx,
+                    );
                     this.sync_scripts_to_terminal_toolbar(cx);
                     this.template_browser = None;
                     this._template_browser_sub = None;
@@ -2671,8 +2945,8 @@ impl Workspace {
                     this._template_browser_sub = None;
                     cx.notify();
                 }
-            }
-        });
+            },
+        );
 
         self.template_browser = Some(browser);
         self._template_browser_sub = Some(sub);
@@ -2688,8 +2962,9 @@ impl Workspace {
         let script_clone = script.clone();
         let prompt = cx.new(|cx| VariablePrompt::new(script_clone, variables, cx));
 
-        let sub = cx.subscribe(&prompt, |this, _prompt, event: &VariablePromptEvent, cx| {
-            match event {
+        let sub = cx.subscribe(
+            &prompt,
+            |this, _prompt, event: &VariablePromptEvent, cx| match event {
                 VariablePromptEvent::Run(script, values) => {
                     this.variable_prompt = None;
                     this._variable_prompt_sub = None;
@@ -2701,8 +2976,8 @@ impl Workspace {
                     this._variable_prompt_sub = None;
                     cx.notify();
                 }
-            }
-        });
+            },
+        );
 
         self.variable_prompt = Some(prompt);
         self._variable_prompt_sub = Some(sub);
@@ -2724,13 +2999,14 @@ impl Workspace {
             _ => None,
         };
 
-        let record = shelldeck_core::models::execution::ExecutionRecord::new(
-            script_id,
-            connection_id,
-        );
+        let record =
+            shelldeck_core::models::execution::ExecutionRecord::new(script_id, connection_id);
 
         let display_cmd = if matches!(script.language, ScriptLanguage::Shell) {
-            format!("$ {}", shelldeck_core::models::script_runner::substitute_variables(&script.body, &values))
+            format!(
+                "$ {}",
+                shelldeck_core::models::script_runner::substitute_variables(&script.body, &values)
+            )
         } else {
             format!("$ [{}] {}", script.language.label(), cmd.ssh_command)
         };
@@ -2751,7 +3027,14 @@ impl Workspace {
                 s.run_count += 1;
             }
         });
-        if let Some(s) = self.scripts.read(cx).scripts.iter().find(|s| s.id == script_id).cloned() {
+        if let Some(s) = self
+            .scripts
+            .read(cx)
+            .scripts
+            .iter()
+            .find(|s| s.id == script_id)
+            .cloned()
+        {
             let _ = self.store.update_script(s);
         }
 
@@ -2769,23 +3052,29 @@ impl Workspace {
 
         match &script.target {
             ScriptTarget::Remote(connection_id) => {
-                let connection = self.connections.iter().find(|c| c.id == *connection_id).cloned();
+                let connection = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == *connection_id)
+                    .cloned();
                 if let Some(conn) = connection {
-                    self.run_script_remote(cmd.ssh_command.clone(), script_name, script_id, conn, cx);
+                    self.run_script_remote(
+                        cmd.ssh_command.clone(),
+                        script_name,
+                        script_id,
+                        conn,
+                        cx,
+                    );
                 } else {
                     tracing::error!("Connection {} not found for remote script", connection_id);
                     self.scripts.update(cx, |editor, cx| {
                         editor.running_script_id = None;
-                        editor.execution_output.push(
-                            format!("Error: Connection {} not found", connection_id),
-                        );
+                        editor
+                            .execution_output
+                            .push(format!("Error: Connection {} not found", connection_id));
                         cx.notify();
                     });
-                    self.show_toast(
-                        "Remote connection not found",
-                        ToastLevel::Error,
-                        cx,
-                    );
+                    self.show_toast("Remote connection not found", ToastLevel::Error, cx);
                     self.update_dashboard_stats(cx);
                 }
             }
@@ -2859,7 +3148,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn show_port_forward_form_edit(&mut self, forward: &shelldeck_core::models::port_forward::PortForward, cx: &mut Context<Self>) {
+    fn show_port_forward_form_edit(
+        &mut self,
+        forward: &shelldeck_core::models::port_forward::PortForward,
+        cx: &mut Context<Self>,
+    ) {
         let connections: Vec<(Uuid, String, String)> = self
             .connections
             .iter()
@@ -2867,7 +3160,8 @@ impl Workspace {
             .collect();
 
         let forward = forward.clone();
-        let form = cx.new(|form_cx| PortForwardForm::from_port_forward(&forward, connections, form_cx));
+        let form =
+            cx.new(|form_cx| PortForwardForm::from_port_forward(&forward, connections, form_cx));
 
         let sub = cx.subscribe(&form, |this, _form, event: &PortForwardFormEvent, cx| {
             match event {
@@ -2898,7 +3192,8 @@ impl Workspace {
                     }
                     // Update the view
                     this.port_forwards.update(cx, |pf, _| {
-                        if let Some(existing) = pf.forwards.iter_mut().find(|f| f.id == forward.id) {
+                        if let Some(existing) = pf.forwards.iter_mut().find(|f| f.id == forward.id)
+                        {
                             *existing = forward.clone();
                         }
                     });
@@ -2930,7 +3225,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn show_script_form_edit(&mut self, script: &shelldeck_core::models::script::Script, cx: &mut Context<Self>) {
+    fn show_script_form_edit(
+        &mut self,
+        script: &shelldeck_core::models::script::Script,
+        cx: &mut Context<Self>,
+    ) {
         let connections: Vec<(Uuid, String, String)> = self
             .connections
             .iter()
@@ -2969,7 +3268,9 @@ impl Workspace {
                     }
                     // Update in script editor view
                     this.scripts.update(cx, |editor, _| {
-                        if let Some(existing) = editor.scripts.iter_mut().find(|s| s.id == script.id) {
+                        if let Some(existing) =
+                            editor.scripts.iter_mut().find(|s| s.id == script.id)
+                        {
                             *existing = script.clone();
                         }
                     });
@@ -3092,16 +3393,33 @@ impl Workspace {
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
         let active_forwards = self.active_tunnels.len();
-        let running_scripts = if self.scripts.read(cx).is_running() { 1 } else { 0 };
-        let active_connections = self.connections
+        let running_scripts = if self.scripts.read(cx).is_running() {
+            1
+        } else {
+            0
+        };
+        let active_connections = self
+            .connections
             .iter()
-            .filter(|c| matches!(c.status, shelldeck_core::models::connection::ConnectionStatus::Connected))
+            .filter(|c| {
+                matches!(
+                    c.status,
+                    shelldeck_core::models::connection::ConnectionStatus::Connected
+                )
+            })
             .count();
 
-        let favorite_hosts: Vec<(String, String, bool)> = self.connections
+        let favorite_hosts: Vec<(String, String, bool)> = self
+            .connections
             .iter()
             .take(5)
-            .map(|c| (c.display_name().to_string(), c.hostname.clone(), c.status == ConnectionStatus::Connected))
+            .map(|c| {
+                (
+                    c.display_name().to_string(),
+                    c.hostname.clone(),
+                    c.status == ConnectionStatus::Connected,
+                )
+            })
             .collect();
 
         self.dashboard.update(cx, |d, _| {
@@ -3165,7 +3483,11 @@ impl Workspace {
         self.sidebar.update(cx, |sidebar, _cx| {
             sidebar.toggle_collapsed();
         });
-        let effective_width = if self.sidebar_visible { self.sidebar_width } else { 0.0 };
+        let effective_width = if self.sidebar_visible {
+            self.sidebar_width
+        } else {
+            0.0
+        };
         self.terminal.update(cx, |terminal, _cx| {
             terminal.set_sidebar_width(effective_width);
         });
@@ -3183,11 +3505,17 @@ impl Workspace {
     }
 
     pub fn next_tab(&mut self, cx: &mut Context<Self>) {
-        self.terminal.update(cx, |t, cx| { t.next_tab(); cx.notify(); });
+        self.terminal.update(cx, |t, cx| {
+            t.next_tab();
+            cx.notify();
+        });
     }
 
     pub fn prev_tab(&mut self, cx: &mut Context<Self>) {
-        self.terminal.update(cx, |t, cx| { t.prev_tab(); cx.notify(); });
+        self.terminal.update(cx, |t, cx| {
+            t.prev_tab();
+            cx.notify();
+        });
     }
 
     pub fn close_active_tab(&mut self, cx: &mut Context<Self>) {
@@ -3212,33 +3540,36 @@ impl Workspace {
     /// Start periodic git status polling (every 5 seconds).
     fn start_git_polling(cx: &mut Context<Self>, status_bar: &Entity<StatusBar>) -> gpui::Task<()> {
         let weak_bar = status_bar.downgrade();
-        cx.spawn(async move |_this, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(5))
-                    .await;
+        cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5))
+                .await;
 
-                let git_display = cx.background_executor()
-                    .spawn(async {
-                        let cwd = std::env::current_dir().unwrap_or_default();
-                        shelldeck_core::git::get_git_status(&cwd)
-                            .and_then(|s| s.display())
-                    })
-                    .await;
+            let git_display = cx
+                .background_executor()
+                .spawn(async {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    shelldeck_core::git::get_git_status(&cwd).and_then(|s| s.display())
+                })
+                .await;
 
-                let result = weak_bar.update(cx, |bar, cx| {
-                    bar.git_status = git_display;
-                    cx.notify();
-                });
-                if result.is_err() {
-                    break;
-                }
+            let result = weak_bar.update(cx, |bar, cx| {
+                bar.git_status = git_display;
+                cx.notify();
+            });
+            if result.is_err() {
+                break;
             }
         })
     }
 
     /// Update a connection's status and refresh sidebar.
-    fn set_connection_status(&mut self, conn_id: Uuid, status: ConnectionStatus, cx: &mut Context<Self>) {
+    fn set_connection_status(
+        &mut self,
+        conn_id: Uuid,
+        status: ConnectionStatus,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(conn) = self.connections.iter_mut().find(|c| c.id == conn_id) {
             conn.status = status;
         }
@@ -3263,11 +3594,8 @@ impl Workspace {
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
 
-        let (mut session, data_tx, input_rx) = TerminalSession::spawn_ssh(
-            title.clone(),
-            rows,
-            cols,
-        );
+        let (mut session, data_tx, input_rx) =
+            TerminalSession::spawn_ssh(title.clone(), rows, cols);
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {
@@ -3375,9 +3703,10 @@ impl Workspace {
         let weak = cx.entity().downgrade();
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
             // Poll in a non-blocking way on the background executor
-            let result = cx.background_executor().spawn(async move {
-                status_rx.recv().ok()
-            }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { status_rx.recv().ok() })
+                .await;
 
             if let Some(status) = result {
                 let _ = weak.update(cx, |ws, cx| {
@@ -3402,21 +3731,24 @@ impl Workspace {
                     cx.notify();
                 });
             }
-        }).detach();
+        })
+        .detach();
     }
 
     /// Initiate an SSH connection for a split pane on the current tab.
-    fn connect_ssh_split(&mut self, connection: Connection, direction: SplitDirection, cx: &mut Context<Self>) {
+    fn connect_ssh_split(
+        &mut self,
+        connection: Connection,
+        direction: SplitDirection,
+        cx: &mut Context<Self>,
+    ) {
         let title = format!("{} (split)", connection.display_name());
         let conn_id = connection.id;
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
 
-        let (mut session, data_tx, input_rx) = TerminalSession::spawn_ssh(
-            title.clone(),
-            rows,
-            cols,
-        );
+        let (mut session, data_tx, input_rx) =
+            TerminalSession::spawn_ssh(title.clone(), rows, cols);
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {
@@ -3553,12 +3885,7 @@ impl Workspace {
                     .text_color(title_color)
                     .child("ShellDeck"),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(title_dim)
-                    .child("v0.1.0"),
-            );
+            .child(div().text_xs().text_color(title_dim).child("v0.1.0"));
 
         // Minimize button
         let minimize_btn = div()
@@ -3609,14 +3936,16 @@ impl Workspace {
             .text_color(btn_text)
             .hover(|s| s.bg(close_hover_bg).text_color(gpui::white()))
             .window_control_area(WindowControlArea::Close)
-            .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                if let Some(ws) = h_quit.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.shutdown(cx);
-                        cx.quit();
-                    });
-                }
-            });
+            .on_click(
+                move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                    if let Some(ws) = h_quit.upgrade() {
+                        ws.update(cx, |ws, cx| {
+                            ws.shutdown(cx);
+                            cx.quit();
+                        });
+                    }
+                },
+            );
         let close_btn = close_btn.child("\u{00D7}"); // ×
 
         div()
@@ -3654,15 +3983,14 @@ impl Render for Workspace {
         let handle = _cx.entity().downgrade();
         let is_maximized = _window.is_maximized();
 
-        let sidebar_resizing = self.sidebar_visible
-            && self.sidebar.read(_cx).is_resizing();
+        let sidebar_resizing = self.sidebar_visible && self.sidebar.read(_cx).is_resizing();
 
         let output_resizing = (self.active_view == ActiveView::Scripts
             && self.scripts.read(_cx).is_output_resizing())
             || (self.active_view == ActiveView::ServerSync
-            && (self.server_sync.read(_cx).is_panel_dragging()
-                || self.server_sync.read(_cx).is_log_resizing()
-                || self.server_sync.read(_cx).is_discovery_resizing()));
+                && (self.server_sync.read(_cx).is_panel_dragging()
+                    || self.server_sync.read(_cx).is_log_resizing()
+                    || self.server_sync.read(_cx).is_discovery_resizing()));
 
         // Build main content area — flex_grow fills between titlebar and status bar
         let mut main_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
@@ -3888,26 +4216,35 @@ impl Render for Workspace {
                                 if is_sync_panel_drag {
                                     let window_width = window.viewport_size().width.to_f64() as f32;
                                     let mouse_x = event.position.x.to_f64() as f32;
-                                    let sidebar_w = if ws.sidebar_visible { ws.sidebar_width } else { 0.0 };
+                                    let sidebar_w = if ws.sidebar_visible {
+                                        ws.sidebar_width
+                                    } else {
+                                        0.0
+                                    };
                                     let content_w = window_width - sidebar_w;
                                     if content_w > 0.0 {
-                                        let ratio = ((mouse_x - sidebar_w) / content_w).clamp(0.2, 0.8);
+                                        let ratio =
+                                            ((mouse_x - sidebar_w) / content_w).clamp(0.2, 0.8);
                                         ws.server_sync.update(cx, |view, _| {
                                             view.panel_ratio = ratio;
                                         });
                                     }
                                 } else if is_sync_log_resize {
-                                    let window_height = window.viewport_size().height.to_f64() as f32;
+                                    let window_height =
+                                        window.viewport_size().height.to_f64() as f32;
                                     let mouse_y = event.position.y.to_f64() as f32;
-                                    let new_height = (window_height - 28.0 - mouse_y).clamp(60.0, 600.0);
+                                    let new_height =
+                                        (window_height - 28.0 - mouse_y).clamp(60.0, 600.0);
                                     ws.server_sync.update(cx, |view, _| {
                                         view.log_panel_height = new_height;
                                     });
                                 } else if is_sync_discovery_resize {
-                                    let window_height = window.viewport_size().height.to_f64() as f32;
+                                    let window_height =
+                                        window.viewport_size().height.to_f64() as f32;
                                     let mouse_y = event.position.y.to_f64() as f32;
                                     // Discovery panel grows upward from the bottom of the server panel
-                                    let new_height = (window_height - 28.0 - mouse_y).clamp(60.0, 400.0);
+                                    let new_height =
+                                        (window_height - 28.0 - mouse_y).clamp(60.0, 400.0);
                                     ws.server_sync.update(cx, |view, _| {
                                         if view.source_panel.discovery_resizing {
                                             view.source_panel.discovery_panel_height = new_height;
@@ -3917,7 +4254,8 @@ impl Render for Workspace {
                                         }
                                     });
                                 } else {
-                                    let window_height = window.viewport_size().height.to_f64() as f32;
+                                    let window_height =
+                                        window.viewport_size().height.to_f64() as f32;
                                     let mouse_y = event.position.y.to_f64() as f32;
                                     let new_height = window_height - 28.0 - mouse_y;
                                     ws.scripts.update(cx, |editor, _| {

@@ -81,11 +81,7 @@ impl ConfigWatcher {
         watcher
             .watch(&watch_path, RecursiveMode::NonRecursive)
             .map_err(|e| {
-                ShellDeckError::Config(format!(
-                    "Failed to watch {}: {}",
-                    watch_path.display(),
-                    e
-                ))
+                ShellDeckError::Config(format!("Failed to watch {}: {}", watch_path.display(), e))
             })?;
 
         info!("Watching {} for changes", watch_path.display());

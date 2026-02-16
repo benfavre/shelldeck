@@ -234,8 +234,10 @@ impl ConnectionStore {
         let exists = self.managed_sites.iter().any(|s| {
             s.connection_id == conn_id
                 && s.name() == name
-                && matches!((&s.site_type, is_nginx),
-                    (ManagedSiteType::NginxSite(_), true) | (ManagedSiteType::Database(_), false))
+                && matches!(
+                    (&s.site_type, is_nginx),
+                    (ManagedSiteType::NginxSite(_), true) | (ManagedSiteType::Database(_), false)
+                )
         });
 
         if !exists {
@@ -260,7 +262,8 @@ impl ConnectionStore {
             sites.iter().map(|s| s.connection_id).collect();
 
         // Remove old entries for those connections
-        self.managed_sites.retain(|s| !refreshed_conns.contains(&s.connection_id));
+        self.managed_sites
+            .retain(|s| !refreshed_conns.contains(&s.connection_id));
 
         // Add all fresh results
         self.managed_sites.extend(sites);

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use adabraka_ui::prelude::*;
 use gpui::prelude::*;
 use gpui::*;
-use adabraka_ui::prelude::*;
 use shelldeck_core::models::execution::ExecutionRecord;
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;
@@ -509,7 +509,10 @@ impl ScriptEditorView {
                 let selected = self.selected_category == Some(*cat);
                 let cat_val = *cat;
                 let mut tab = div()
-                    .id(ElementId::from(SharedString::from(format!("cat-{}", cat.label()))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "cat-{}",
+                        cat.label()
+                    ))))
                     .px(px(6.0))
                     .py(px(2.0))
                     .rounded(px(4.0))
@@ -582,7 +585,10 @@ impl ScriptEditorView {
             let lang = script.language.clone();
 
             let mut item_el = div()
-                .id(ElementId::from(SharedString::from(format!("script-{}", script_id))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "script-{}",
+                    script_id
+                ))))
                 .group("script-item")
                 .flex()
                 .flex_col()
@@ -630,7 +636,10 @@ impl ScriptEditorView {
                 // Favorite star
                 .child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("fav-{}", script_id))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "fav-{}",
+                            script_id
+                        ))))
                         .cursor_pointer()
                         .text_size(px(12.0))
                         .text_color(if is_favorite {
@@ -672,7 +681,10 @@ impl ScriptEditorView {
                 // Quick run button (visible on hover via group)
                 .child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("run-{}", script_id))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "run-{}",
+                            script_id
+                        ))))
                         .cursor_pointer()
                         .text_size(px(10.0))
                         .px(px(4.0))
@@ -690,7 +702,10 @@ impl ScriptEditorView {
                 // Delete button (visible on hover via group)
                 .child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("del-{}", script_id))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "del-{}",
+                            script_id
+                        ))))
                         .cursor_pointer()
                         .text_size(px(10.0))
                         .px(px(4.0))
@@ -718,37 +733,32 @@ impl ScriptEditorView {
         let is_inline_editing = self.inline_editing && self.inline_script_id == Some(script.id);
         let lang = &script.language;
 
-        let mut script_info = div()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(Self::render_language_badge(lang))
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(script.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .px(px(4.0))
-                            .py(px(1.0))
-                            .rounded(px(3.0))
-                            .bg(ShellDeckColors::badge_bg())
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(script.category.label().to_string()),
-                    ),
-            );
+        let mut script_info = div().flex().flex_col().min_w_0().overflow_hidden().child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(Self::render_language_badge(lang))
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(script.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .px(px(4.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
+                        .bg(ShellDeckColors::badge_bg())
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(script.category.label().to_string()),
+                ),
+        );
 
         if let Some(ref desc) = script.description {
             script_info = script_info.child(
@@ -763,20 +773,14 @@ impl ScriptEditorView {
 
         // Build run buttons area
         let run_buttons = if self.is_running() {
-            div()
-                .flex()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .id("stop-script-btn")
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(ScriptEvent::StopScript);
-                        }))
-                        .child(
-                            Button::new("stop-script", "Stop")
-                                .variant(ButtonVariant::Destructive),
-                        ),
-                )
+            div().flex().gap(px(4.0)).child(
+                div()
+                    .id("stop-script-btn")
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        cx.emit(ScriptEvent::StopScript);
+                    }))
+                    .child(Button::new("stop-script", "Stop").variant(ButtonVariant::Destructive)),
+            )
         } else {
             div()
                 .flex()
@@ -794,10 +798,7 @@ impl ScriptEditorView {
                                 }
                             }
                         }))
-                        .child(
-                            Button::new("run-script", "Run")
-                                .variant(ButtonVariant::Default),
-                        ),
+                        .child(Button::new("run-script", "Run").variant(ButtonVariant::Default)),
                 )
                 .child(
                     div()
@@ -828,10 +829,7 @@ impl ScriptEditorView {
                     this.cancel_inline_edit();
                     cx.notify();
                 }))
-                .child(
-                    Button::new("cancel-edit-script", "Cancel")
-                        .variant(ButtonVariant::Ghost),
-                )
+                .child(Button::new("cancel-edit-script", "Cancel").variant(ButtonVariant::Ghost))
         } else {
             div()
                 .id("edit-script-btn")
@@ -840,10 +838,7 @@ impl ScriptEditorView {
                     this.focus_handle.focus(window);
                     cx.notify();
                 }))
-                .child(
-                    Button::new("edit-script", "Edit")
-                        .variant(ButtonVariant::Ghost),
-                )
+                .child(Button::new("edit-script", "Edit").variant(ButtonVariant::Ghost))
         };
 
         // Header bar
@@ -988,44 +983,39 @@ impl ScriptEditorView {
                         ),
                 )
         } else {
-            div()
-                .flex()
-                .flex_col()
-                .flex_grow()
-                .min_h_0()
-                .child(
-                    div()
-                        .flex_grow()
-                        .min_h_0()
-                        .p(px(16.0))
-                        .id("script-body")
-                        .overflow_y_scroll()
-                        .child(
-                            div()
-                                .id("script-body-code")
-                                .w_full()
-                                .rounded(px(8.0))
-                                .bg(ShellDeckColors::terminal_bg())
-                                .border_1()
-                                .border_color(ShellDeckColors::border())
-                                .font_family("JetBrains Mono")
-                                .overflow_hidden()
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                                    if event.click_count() >= 2 {
-                                        this.start_inline_edit(script_id);
-                                        this.focus_handle.focus(window);
-                                        cx.notify();
-                                    }
-                                }))
-                                .child(render_code_block_with_language(
-                                    &script.body,
-                                    None,
-                                    false,
-                                    lang,
-                                )),
-                        ),
-                )
+            div().flex().flex_col().flex_grow().min_h_0().child(
+                div()
+                    .flex_grow()
+                    .min_h_0()
+                    .p(px(16.0))
+                    .id("script-body")
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .id("script-body-code")
+                            .w_full()
+                            .rounded(px(8.0))
+                            .bg(ShellDeckColors::terminal_bg())
+                            .border_1()
+                            .border_color(ShellDeckColors::border())
+                            .font_family("JetBrains Mono")
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                if event.click_count() >= 2 {
+                                    this.start_inline_edit(script_id);
+                                    this.focus_handle.focus(window);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(render_code_block_with_language(
+                                &script.body,
+                                None,
+                                false,
+                                lang,
+                            )),
+                    ),
+            )
         };
 
         let mut editor = div()
@@ -1057,15 +1047,17 @@ impl ScriptEditorView {
 
         // Run target picker — rendered last so it paints on top
         if self.run_target_open && !self.is_running() {
-            editor = editor.child(
-                self.render_run_target_picker(&script_for_dropdown, cx),
-            );
+            editor = editor.child(self.render_run_target_picker(&script_for_dropdown, cx));
         }
 
         editor
     }
 
-    fn render_run_target_picker(&self, script: &Script, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_run_target_picker(
+        &self,
+        script: &Script,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut picker = div()
             .absolute()
             .top(px(48.0))
@@ -1104,11 +1096,7 @@ impl ScriptEditorView {
         );
 
         // Separator
-        picker = picker.child(
-            div()
-                .h(px(1.0))
-                .bg(ShellDeckColors::border()),
-        );
+        picker = picker.child(div().h(px(1.0)).bg(ShellDeckColors::border()));
 
         if self.run_target_connections.is_empty() {
             picker = picker.child(
@@ -1128,7 +1116,10 @@ impl ScriptEditorView {
                 };
                 picker = picker.child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("run-target-{}", i))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "run-target-{}",
+                            i
+                        ))))
                         .px(px(12.0))
                         .py(px(8.0))
                         .cursor_pointer()
@@ -1157,15 +1148,10 @@ impl ScriptEditorView {
         let last_values = self.last_var_values.get(&script.id);
         let script_id = script.id;
 
-        let mut pills = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(6.0));
+        let mut pills = div().flex().flex_wrap().gap(px(6.0));
 
         for var in &resolved {
-            let value = last_values
-                .and_then(|m| m.get(&var.name))
-                .cloned();
+            let value = last_values.and_then(|m| m.get(&var.name)).cloned();
 
             let label = var.label.as_deref().unwrap_or(&var.name);
             let display = if let Some(ref val) = value {
@@ -1241,17 +1227,13 @@ impl ScriptEditorView {
     }
 
     fn render_output_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut output_label = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_muted())
-                    .child("OUTPUT"),
-            );
+        let mut output_label = div().flex().items_center().gap(px(8.0)).child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ShellDeckColors::text_muted())
+                .child("OUTPUT"),
+        );
 
         if self.is_running() {
             output_label = output_label.child(
@@ -1282,11 +1264,16 @@ impl ScriptEditorView {
                     .h(px(6.0))
                     .cursor_row_resize()
                     .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.4)))
-                    .when(self.output_resizing, |el| el.bg(ShellDeckColors::primary().opacity(0.6)))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        this.output_resizing = true;
-                        cx.notify();
-                    })),
+                    .when(self.output_resizing, |el| {
+                        el.bg(ShellDeckColors::primary().opacity(0.6))
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.output_resizing = true;
+                            cx.notify();
+                        }),
+                    ),
             )
             // Output header
             .child(
@@ -1345,9 +1332,11 @@ impl ScriptEditorView {
                     .font_family("JetBrains Mono")
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_primary())
-                    .children(self.execution_output.iter().map(|line| {
-                        div().child(line.clone())
-                    })),
+                    .children(
+                        self.execution_output
+                            .iter()
+                            .map(|line| div().child(line.clone())),
+                    ),
             );
 
         panel

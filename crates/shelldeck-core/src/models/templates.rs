@@ -202,28 +202,38 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
         ("sudo dnf install -y mysql", PackageManager::Dnf),
     ]));
 
-    t.push(ScriptTemplate::new(
-        "mysql-backup",
-        "MySQL: Backup Database",
-        "Dump a MySQL database",
-        "mysqldump --single-transaction --routines --triggers {{database}}",
-        ScriptLanguage::Shell,
-        ScriptCategory::Database,
-    ).with_var("database", "Database Name", "mydb")
-    .with_dep("mysqldump", "which mysqldump", vec![
-        ("sudo apt-get install -y mysql-client", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "mysql-backup",
+            "MySQL: Backup Database",
+            "Dump a MySQL database",
+            "mysqldump --single-transaction --routines --triggers {{database}}",
+            ScriptLanguage::Shell,
+            ScriptCategory::Database,
+        )
+        .with_var("database", "Database Name", "mydb")
+        .with_dep(
+            "mysqldump",
+            "which mysqldump",
+            vec![("sudo apt-get install -y mysql-client", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "mysql-users",
-        "MySQL: List Users",
-        "Show all MySQL users and their hosts",
-        "SELECT User, Host, plugin FROM mysql.user ORDER BY User;",
-        ScriptLanguage::Mysql,
-        ScriptCategory::Database,
-    ).with_dep("mysql", "which mysql", vec![
-        ("sudo apt-get install -y mysql-client", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "mysql-users",
+            "MySQL: List Users",
+            "Show all MySQL users and their hosts",
+            "SELECT User, Host, plugin FROM mysql.user ORDER BY User;",
+            ScriptLanguage::Mysql,
+            ScriptCategory::Database,
+        )
+        .with_dep(
+            "mysql",
+            "which mysql",
+            vec![("sudo apt-get install -y mysql-client", PackageManager::Apt)],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "mysql-slow-queries",
@@ -236,16 +246,21 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
         ("sudo apt-get install -y mysql-client", PackageManager::Apt),
     ]));
 
-    t.push(ScriptTemplate::new(
-        "mysql-processlist",
-        "MySQL: Process List",
-        "Show currently running MySQL queries",
-        "SHOW FULL PROCESSLIST;",
-        ScriptLanguage::Mysql,
-        ScriptCategory::Database,
-    ).with_dep("mysql", "which mysql", vec![
-        ("sudo apt-get install -y mysql-client", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "mysql-processlist",
+            "MySQL: Process List",
+            "Show currently running MySQL queries",
+            "SHOW FULL PROCESSLIST;",
+            ScriptLanguage::Mysql,
+            ScriptCategory::Database,
+        )
+        .with_dep(
+            "mysql",
+            "which mysql",
+            vec![("sudo apt-get install -y mysql-client", PackageManager::Apt)],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "mysql-table-sizes",
@@ -274,17 +289,25 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
         ("sudo yum install -y postgresql", PackageManager::Yum),
     ]));
 
-    t.push(ScriptTemplate::new(
-        "pg-backup",
-        "PostgreSQL: Backup Database",
-        "Dump a PostgreSQL database",
-        "pg_dump --format=custom --verbose {{database}}",
-        ScriptLanguage::Shell,
-        ScriptCategory::Database,
-    ).with_var("database", "Database Name", "mydb")
-    .with_dep("pg_dump", "which pg_dump", vec![
-        ("sudo apt-get install -y postgresql-client", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "pg-backup",
+            "PostgreSQL: Backup Database",
+            "Dump a PostgreSQL database",
+            "pg_dump --format=custom --verbose {{database}}",
+            ScriptLanguage::Shell,
+            ScriptCategory::Database,
+        )
+        .with_var("database", "Database Name", "mydb")
+        .with_dep(
+            "pg_dump",
+            "which pg_dump",
+            vec![(
+                "sudo apt-get install -y postgresql-client",
+                PackageManager::Apt,
+            )],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "pg-active-queries",
@@ -323,27 +346,37 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
     // Web / Nginx (4)
     // =====================================================================
 
-    t.push(ScriptTemplate::new(
-        "nginx-test",
-        "Nginx: Config Test",
-        "Test nginx configuration for syntax errors",
-        "-t",
-        ScriptLanguage::Nginx,
-        ScriptCategory::Web,
-    ).with_dep("nginx", "which nginx", vec![
-        ("sudo apt-get install -y nginx", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "nginx-test",
+            "Nginx: Config Test",
+            "Test nginx configuration for syntax errors",
+            "-t",
+            ScriptLanguage::Nginx,
+            ScriptCategory::Web,
+        )
+        .with_dep(
+            "nginx",
+            "which nginx",
+            vec![("sudo apt-get install -y nginx", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "nginx-reload",
-        "Nginx: Reload",
-        "Reload nginx configuration without downtime",
-        "-s reload",
-        ScriptLanguage::Nginx,
-        ScriptCategory::Web,
-    ).with_dep("nginx", "which nginx", vec![
-        ("sudo apt-get install -y nginx", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "nginx-reload",
+            "Nginx: Reload",
+            "Reload nginx configuration without downtime",
+            "-s reload",
+            ScriptLanguage::Nginx,
+            ScriptCategory::Web,
+        )
+        .with_dep(
+            "nginx",
+            "which nginx",
+            vec![("sudo apt-get install -y nginx", PackageManager::Apt)],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "nginx-sites",
@@ -369,28 +402,38 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
     // Web / PHP (4)
     // =====================================================================
 
-    t.push(ScriptTemplate::new(
-        "php-version",
-        "PHP: Version Info",
-        "Show PHP version and loaded modules",
-        "echo php_uname(); echo PHP_VERSION; echo implode(', ', get_loaded_extensions());",
-        ScriptLanguage::Php,
-        ScriptCategory::Web,
-    ).with_dep("php", "which php", vec![
-        ("sudo apt-get install -y php-cli", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "php-version",
+            "PHP: Version Info",
+            "Show PHP version and loaded modules",
+            "echo php_uname(); echo PHP_VERSION; echo implode(', ', get_loaded_extensions());",
+            ScriptLanguage::Php,
+            ScriptCategory::Web,
+        )
+        .with_dep(
+            "php",
+            "which php",
+            vec![("sudo apt-get install -y php-cli", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "php-laravel-migrate",
-        "Laravel: Run Migrations",
-        "Run Laravel database migrations",
-        "cd {{project_path}} && php artisan migrate --force",
-        ScriptLanguage::Shell,
-        ScriptCategory::Web,
-    ).with_var("project_path", "Project Path", "/var/www/html")
-    .with_dep("php", "which php", vec![
-        ("sudo apt-get install -y php-cli", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "php-laravel-migrate",
+            "Laravel: Run Migrations",
+            "Run Laravel database migrations",
+            "cd {{project_path}} && php artisan migrate --force",
+            ScriptLanguage::Shell,
+            ScriptCategory::Web,
+        )
+        .with_var("project_path", "Project Path", "/var/www/html")
+        .with_dep(
+            "php",
+            "which php",
+            vec![("sudo apt-get install -y php-cli", PackageManager::Apt)],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "php-cache-clear",
@@ -404,32 +447,42 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
         ("sudo apt-get install -y php-cli", PackageManager::Apt),
     ]));
 
-    t.push(ScriptTemplate::new(
-        "php-composer-install",
-        "Composer: Install",
-        "Install PHP dependencies via Composer",
-        "cd {{project_path}} && composer install --no-dev --optimize-autoloader",
-        ScriptLanguage::Shell,
-        ScriptCategory::Web,
-    ).with_var("project_path", "Project Path", "/var/www/html")
-    .with_dep("composer", "which composer", vec![
-        ("sudo apt-get install -y composer", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "php-composer-install",
+            "Composer: Install",
+            "Install PHP dependencies via Composer",
+            "cd {{project_path}} && composer install --no-dev --optimize-autoloader",
+            ScriptLanguage::Shell,
+            ScriptCategory::Web,
+        )
+        .with_var("project_path", "Project Path", "/var/www/html")
+        .with_dep(
+            "composer",
+            "which composer",
+            vec![("sudo apt-get install -y composer", PackageManager::Apt)],
+        ),
+    );
 
     // =====================================================================
     // Runtime / Bun + Node (4)
     // =====================================================================
 
-    t.push(ScriptTemplate::new(
-        "pm2-status",
-        "PM2: Process Status",
-        "Show PM2 managed process status",
-        "pm2 list && echo '' && pm2 monit --no-color 2>/dev/null | head -30 || true",
-        ScriptLanguage::Shell,
-        ScriptCategory::Runtime,
-    ).with_dep("pm2", "which pm2", vec![
-        ("sudo npm install -g pm2", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "pm2-status",
+            "PM2: Process Status",
+            "Show PM2 managed process status",
+            "pm2 list && echo '' && pm2 monit --no-color 2>/dev/null | head -30 || true",
+            ScriptLanguage::Shell,
+            ScriptCategory::Runtime,
+        )
+        .with_dep(
+            "pm2",
+            "which pm2",
+            vec![("sudo npm install -g pm2", PackageManager::Apt)],
+        ),
+    );
 
     t.push(ScriptTemplate::new(
         "node-install-deps",
@@ -442,14 +495,17 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
         ("sudo apt-get install -y nodejs npm", PackageManager::Apt),
     ]));
 
-    t.push(ScriptTemplate::new(
-        "bun-run",
-        "Bun: Run Script",
-        "Run a script with Bun (edit script name)",
-        "console.log('Hello from Bun!'); console.log(`Bun version: ${Bun.version}`);",
-        ScriptLanguage::Bun,
-        ScriptCategory::Runtime,
-    ).with_dep("bun", "which bun", vec![]));
+    t.push(
+        ScriptTemplate::new(
+            "bun-run",
+            "Bun: Run Script",
+            "Run a script with Bun (edit script name)",
+            "console.log('Hello from Bun!'); console.log(`Bun version: ${Bun.version}`);",
+            ScriptLanguage::Bun,
+            ScriptCategory::Runtime,
+        )
+        .with_dep("bun", "which bun", vec![]),
+    );
 
     t.push(ScriptTemplate::new(
         "node-version-check",
@@ -464,83 +520,114 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
     // Container / Docker (5)
     // =====================================================================
 
-    t.push(ScriptTemplate::new(
-        "docker-running",
-        "Docker: Running Containers",
-        "List all running Docker containers",
-        "ps --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
-        ScriptLanguage::Docker,
-        ScriptCategory::Container,
-    ).with_dep("docker", "which docker", vec![
-        ("sudo apt-get install -y docker.io", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "docker-running",
+            "Docker: Running Containers",
+            "List all running Docker containers",
+            "ps --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+            ScriptLanguage::Docker,
+            ScriptCategory::Container,
+        )
+        .with_dep(
+            "docker",
+            "which docker",
+            vec![("sudo apt-get install -y docker.io", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "docker-all",
-        "Docker: All Containers",
-        "List all Docker containers including stopped",
-        "ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}'",
-        ScriptLanguage::Docker,
-        ScriptCategory::Container,
-    ).with_dep("docker", "which docker", vec![
-        ("sudo apt-get install -y docker.io", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "docker-all",
+            "Docker: All Containers",
+            "List all Docker containers including stopped",
+            "ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}'",
+            ScriptLanguage::Docker,
+            ScriptCategory::Container,
+        )
+        .with_dep(
+            "docker",
+            "which docker",
+            vec![("sudo apt-get install -y docker.io", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "docker-images",
-        "Docker: List Images",
-        "List all Docker images with sizes",
-        "images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}'",
-        ScriptLanguage::Docker,
-        ScriptCategory::Container,
-    ).with_dep("docker", "which docker", vec![
-        ("sudo apt-get install -y docker.io", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "docker-images",
+            "Docker: List Images",
+            "List all Docker images with sizes",
+            "images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}'",
+            ScriptLanguage::Docker,
+            ScriptCategory::Container,
+        )
+        .with_dep(
+            "docker",
+            "which docker",
+            vec![("sudo apt-get install -y docker.io", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "docker-compose-status",
-        "Docker Compose: Status",
-        "Show Docker Compose service status",
-        "ps --format table",
-        ScriptLanguage::DockerCompose,
-        ScriptCategory::Container,
-    ).with_dep("docker", "which docker", vec![
-        ("sudo apt-get install -y docker.io", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "docker-compose-status",
+            "Docker Compose: Status",
+            "Show Docker Compose service status",
+            "ps --format table",
+            ScriptLanguage::DockerCompose,
+            ScriptCategory::Container,
+        )
+        .with_dep(
+            "docker",
+            "which docker",
+            vec![("sudo apt-get install -y docker.io", PackageManager::Apt)],
+        ),
+    );
 
-    t.push(ScriptTemplate::new(
-        "docker-logs",
-        "Docker: Container Logs",
-        "Show last 50 lines of a container's logs",
-        "logs --tail 50 {{container}}",
-        ScriptLanguage::Docker,
-        ScriptCategory::Container,
-    ).with_var("container", "Container Name", "")
-    .with_dep("docker", "which docker", vec![
-        ("sudo apt-get install -y docker.io", PackageManager::Apt),
-    ]));
+    t.push(
+        ScriptTemplate::new(
+            "docker-logs",
+            "Docker: Container Logs",
+            "Show last 50 lines of a container's logs",
+            "logs --tail 50 {{container}}",
+            ScriptLanguage::Docker,
+            ScriptCategory::Container,
+        )
+        .with_var("container", "Container Name", "")
+        .with_dep(
+            "docker",
+            "which docker",
+            vec![("sudo apt-get install -y docker.io", PackageManager::Apt)],
+        ),
+    );
 
     // =====================================================================
     // System / Systemd (3)
     // =====================================================================
 
-    t.push(ScriptTemplate::new(
-        "systemd-status",
-        "Systemd: Service Status",
-        "Check status of a service",
-        "status {{service}}",
-        ScriptLanguage::Systemd,
-        ScriptCategory::System,
-    ).with_var("service", "Service Name", "nginx"));
+    t.push(
+        ScriptTemplate::new(
+            "systemd-status",
+            "Systemd: Service Status",
+            "Check status of a service",
+            "status {{service}}",
+            ScriptLanguage::Systemd,
+            ScriptCategory::System,
+        )
+        .with_var("service", "Service Name", "nginx"),
+    );
 
-    t.push(ScriptTemplate::new(
-        "systemd-restart",
-        "Systemd: Restart Service",
-        "Restart a systemd service",
-        "restart {{service}}",
-        ScriptLanguage::Systemd,
-        ScriptCategory::System,
-    ).with_var("service", "Service Name", "nginx"));
+    t.push(
+        ScriptTemplate::new(
+            "systemd-restart",
+            "Systemd: Restart Service",
+            "Restart a systemd service",
+            "restart {{service}}",
+            ScriptLanguage::Systemd,
+            ScriptCategory::System,
+        )
+        .with_var("service", "Service Name", "nginx"),
+    );
 
     t.push(ScriptTemplate::new(
         "systemd-enabled",

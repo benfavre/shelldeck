@@ -38,16 +38,12 @@ impl StatusBar {
     }
 
     fn status_item(_icon: &str, count: usize, label: &str) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(4.0))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(format!("{} {}", count, label)),
-            )
+        div().flex().items_center().gap(px(4.0)).child(
+            div()
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(format!("{} {}", count, label)),
+        )
     }
 }
 
@@ -80,19 +76,12 @@ impl Render for StatusBar {
                         self.active_forwards,
                         "forwards",
                     ))
-                    .child(Self::status_item(
-                        "play",
-                        self.running_scripts,
-                        "scripts",
-                    )),
+                    .child(Self::status_item("play", self.running_scripts, "scripts")),
             )
             .child(
                 // Center: git status
                 {
-                    let mut git_el = div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0));
+                    let mut git_el = div().flex().items_center().gap(px(4.0));
                     if let Some(ref git) = self.git_status {
                         git_el = git_el.child(
                             div()

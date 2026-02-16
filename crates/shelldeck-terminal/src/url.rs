@@ -5,10 +5,7 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UrlKind {
     Web,
-    FilePath {
-        line: Option<u32>,
-        col: Option<u32>,
-    },
+    FilePath { line: Option<u32>, col: Option<u32> },
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +76,8 @@ pub fn detect_urls(visible_rows: &[&Vec<Cell>]) -> Vec<UrlMatch> {
     let mut matches = Vec::new();
 
     for (ri, row) in visible_rows.iter().enumerate() {
-        let line: String = row.iter()
+        let line: String = row
+            .iter()
             .filter(|c| c.wide != CellWidth::Spacer)
             .map(|c| c.c)
             .collect();
@@ -90,7 +88,11 @@ pub fn detect_urls(visible_rows: &[&Vec<Cell>]) -> Vec<UrlMatch> {
                 continue;
             }
 
-            let kind = if trimmed.starts_with('/') || trimmed.starts_with("~/") || trimmed.starts_with("./") || trimmed.starts_with("../") {
+            let kind = if trimmed.starts_with('/')
+                || trimmed.starts_with("~/")
+                || trimmed.starts_with("./")
+                || trimmed.starts_with("../")
+            {
                 // Try to extract line:col from patterns like file.rs:42:10
                 let (_, line_num, col_num) = parse_file_location(trimmed);
                 UrlKind::FilePath {
@@ -125,7 +127,9 @@ fn parse_file_location(s: &str) -> (&str, Option<u32>, Option<u32>) {
                 (parts[2], Some(line), Some(col))
             } else if let Ok(line) = parts[0].parse::<u32>() {
                 // Last segment was the line
-                let path_end = s.rfind(':').expect("split(':') produced 3 parts so ':' exists");
+                let path_end = s
+                    .rfind(':')
+                    .expect("split(':') produced 3 parts so ':' exists");
                 (&s[..path_end], Some(line), None)
             } else {
                 (s, None, None)

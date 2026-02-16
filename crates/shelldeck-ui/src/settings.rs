@@ -62,7 +62,9 @@ impl SettingsView {
         let is_active = self.active_tab == tab;
 
         let mut el = div()
-            .id(ElementId::from(SharedString::from(format!("settings-tab-{tab:?}"))))
+            .id(ElementId::from(SharedString::from(format!(
+                "settings-tab-{tab:?}"
+            ))))
             .px(px(16.0))
             .py(px(8.0))
             .cursor_pointer()
@@ -132,28 +134,24 @@ impl SettingsView {
             .items_center();
 
         if enabled {
-            el = el
-                .bg(ShellDeckColors::primary())
-                .child(
-                    div()
-                        .ml_auto()
-                        .mr(px(2.0))
-                        .w(px(18.0))
-                        .h(px(18.0))
-                        .rounded_full()
-                        .bg(white()),
-                );
+            el = el.bg(ShellDeckColors::primary()).child(
+                div()
+                    .ml_auto()
+                    .mr(px(2.0))
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .rounded_full()
+                    .bg(white()),
+            );
         } else {
-            el = el
-                .bg(ShellDeckColors::toggle_off_bg())
-                .child(
-                    div()
-                        .ml(px(2.0))
-                        .w(px(18.0))
-                        .h(px(18.0))
-                        .rounded_full()
-                        .bg(ShellDeckColors::toggle_off_knob()),
-                );
+            el = el.bg(ShellDeckColors::toggle_off_bg()).child(
+                div()
+                    .ml(px(2.0))
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::toggle_off_knob()),
+            );
         }
 
         el
@@ -169,9 +167,12 @@ impl SettingsView {
                 "Reconnect to previously active sessions when app starts",
                 div()
                     .id("toggle-auto-connect")
-                    .child(Self::render_toggle(self.config.general.auto_connect_on_startup))
+                    .child(Self::render_toggle(
+                        self.config.general.auto_connect_on_startup,
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.auto_connect_on_startup = !this.config.general.auto_connect_on_startup;
+                        this.config.general.auto_connect_on_startup =
+                            !this.config.general.auto_connect_on_startup;
                         this.mark_changed();
                         cx.notify();
                     })),
@@ -183,7 +184,8 @@ impl SettingsView {
                     .id("toggle-notifications")
                     .child(Self::render_toggle(self.config.general.show_notifications))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.show_notifications = !this.config.general.show_notifications;
+                        this.config.general.show_notifications =
+                            !this.config.general.show_notifications;
                         this.mark_changed();
                         cx.notify();
                     })),
@@ -193,9 +195,12 @@ impl SettingsView {
                 "Ask for confirmation when closing with active sessions",
                 div()
                     .id("toggle-confirm-close")
-                    .child(Self::render_toggle(self.config.general.confirm_before_close))
+                    .child(Self::render_toggle(
+                        self.config.general.confirm_before_close,
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.confirm_before_close = !this.config.general.confirm_before_close;
+                        this.config.general.confirm_before_close =
+                            !this.config.general.confirm_before_close;
                         this.mark_changed();
                         cx.notify();
                     })),
@@ -207,7 +212,8 @@ impl SettingsView {
                     .id("toggle-tmux")
                     .child(Self::render_toggle(self.config.general.auto_attach_tmux))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.auto_attach_tmux = !this.config.general.auto_attach_tmux;
+                        this.config.general.auto_attach_tmux =
+                            !this.config.general.auto_attach_tmux;
                         this.mark_changed();
                         cx.notify();
                     })),
@@ -235,7 +241,8 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("-")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.font_size = (this.config.terminal.font_size - 1.0).max(8.0);
+                                this.config.terminal.font_size =
+                                    (this.config.terminal.font_size - 1.0).max(8.0);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -255,7 +262,8 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("+")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.font_size = (this.config.terminal.font_size + 1.0).min(32.0);
+                                this.config.terminal.font_size =
+                                    (this.config.terminal.font_size + 1.0).min(32.0);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -297,13 +305,11 @@ impl SettingsView {
                         }
 
                         let f_clone = f.clone();
-                        btn = btn
-                            .child(f)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.config.terminal.font_family = f_clone.clone();
-                                this.mark_changed();
-                                cx.notify();
-                            }));
+                        btn = btn.child(f).on_click(cx.listener(move |this, _, _, cx| {
+                            this.config.terminal.font_family = f_clone.clone();
+                            this.mark_changed();
+                            cx.notify();
+                        }));
 
                         row = row.child(btn);
                     }
@@ -326,7 +332,12 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("-")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.scrollback_lines = this.config.terminal.scrollback_lines.saturating_sub(1000).max(1000);
+                                this.config.terminal.scrollback_lines = this
+                                    .config
+                                    .terminal
+                                    .scrollback_lines
+                                    .saturating_sub(1000)
+                                    .max(1000);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -346,7 +357,8 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("+")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.scrollback_lines = (this.config.terminal.scrollback_lines + 1000).min(100_000);
+                                this.config.terminal.scrollback_lines =
+                                    (this.config.terminal.scrollback_lines + 1000).min(100_000);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -381,13 +393,11 @@ impl SettingsView {
                         }
 
                         let s_clone = s.clone();
-                        btn = btn
-                            .child(s)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.config.terminal.cursor_style = s_clone.clone();
-                                this.mark_changed();
-                                cx.notify();
-                            }));
+                        btn = btn.child(s).on_click(cx.listener(move |this, _, _, cx| {
+                            this.config.terminal.cursor_style = s_clone.clone();
+                            this.mark_changed();
+                            cx.notify();
+                        }));
 
                         row = row.child(btn);
                     }
@@ -422,7 +432,10 @@ impl SettingsView {
             let is_active = current_theme == *pref;
             let pref_clone = pref.clone();
             let mut btn = div()
-                .id(ElementId::from(SharedString::from(format!("theme-pref-{}", label))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "theme-pref-{}",
+                    label
+                ))))
                 .px(px(10.0))
                 .py(px(4.0))
                 .rounded(px(4.0))
@@ -452,10 +465,7 @@ impl SettingsView {
         }
 
         // Terminal theme picker (built-in themes)
-        let mut theme_cards = div()
-            .flex()
-            .gap(px(8.0))
-            .flex_wrap();
+        let mut theme_cards = div().flex().gap(px(8.0)).flex_wrap();
 
         for terminal_theme in TerminalTheme::builtins() {
             let name = terminal_theme.name.clone();
@@ -465,7 +475,10 @@ impl SettingsView {
 
             theme_cards = theme_cards.child(
                 div()
-                    .id(ElementId::from(SharedString::from(format!("theme-{}", name))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "theme-{}",
+                        name
+                    ))))
                     .w(px(120.0))
                     .h(px(70.0))
                     .rounded(px(6.0))
@@ -544,7 +557,8 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("-")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.sidebar_width = (this.config.general.sidebar_width - 20.0).max(140.0);
+                                this.config.general.sidebar_width =
+                                    (this.config.general.sidebar_width - 20.0).max(140.0);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -564,7 +578,8 @@ impl SettingsView {
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                             .child("+")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.sidebar_width = (this.config.general.sidebar_width + 20.0).min(400.0);
+                                this.config.general.sidebar_width =
+                                    (this.config.general.sidebar_width + 20.0).min(400.0);
                                 this.mark_changed();
                                 cx.notify();
                             })),
@@ -646,10 +661,7 @@ impl Render for SettingsView {
         }
 
         // Tab content
-        let mut tab_content = div()
-            .flex_grow()
-            .p(px(24.0))
-            .max_w(px(600.0));
+        let mut tab_content = div().flex_grow().p(px(24.0)).max_w(px(600.0));
 
         match self.active_tab {
             SettingsTab::General => {
@@ -692,7 +704,11 @@ impl Render for SettingsView {
                             .border_color(ShellDeckColors::border())
                             .child(self.render_tab_button(SettingsTab::General, "General", cx))
                             .child(self.render_tab_button(SettingsTab::Terminal, "Terminal", cx))
-                            .child(self.render_tab_button(SettingsTab::Appearance, "Appearance", cx))
+                            .child(self.render_tab_button(
+                                SettingsTab::Appearance,
+                                "Appearance",
+                                cx,
+                            ))
                             .child(self.render_tab_button(SettingsTab::About, "About", cx)),
                     )
                     // Tab content

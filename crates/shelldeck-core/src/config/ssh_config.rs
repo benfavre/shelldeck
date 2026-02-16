@@ -284,10 +284,19 @@ mod tests {
     #[test]
     fn test_strip_keyword() {
         assert_eq!(strip_keyword("Host myserver", "Host"), Some("myserver"));
-        assert_eq!(strip_keyword("HostName 1.2.3.4", "HostName"), Some("1.2.3.4"));
+        assert_eq!(
+            strip_keyword("HostName 1.2.3.4", "HostName"),
+            Some("1.2.3.4")
+        );
         assert_eq!(strip_keyword("Port 22", "Port"), Some("22"));
-        assert_eq!(strip_keyword("ProxyJump bastion", "ProxyJump"), Some("bastion"));
-        assert_eq!(strip_keyword("ForwardAgent yes", "ForwardAgent"), Some("yes"));
+        assert_eq!(
+            strip_keyword("ProxyJump bastion", "ProxyJump"),
+            Some("bastion")
+        );
+        assert_eq!(
+            strip_keyword("ForwardAgent yes", "ForwardAgent"),
+            Some("yes")
+        );
         assert_eq!(strip_keyword("Host=myserver", "Host"), Some("myserver"));
         assert_eq!(strip_keyword("Something else", "Host"), None);
     }
@@ -300,7 +309,12 @@ mod tests {
         );
         assert_eq!(
             parse_forward_directive("127.0.0.1:3306 db.internal:3306"),
-            Some(("127.0.0.1".to_string(), 3306, "db.internal".to_string(), 3306))
+            Some((
+                "127.0.0.1".to_string(),
+                3306,
+                "db.internal".to_string(),
+                3306
+            ))
         );
     }
 

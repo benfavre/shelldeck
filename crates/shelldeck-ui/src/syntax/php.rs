@@ -16,16 +16,79 @@ static PHP_BUILTINS: OnceLock<HashSet<&'static str>> = OnceLock::new();
 fn keywords() -> &'static HashSet<&'static str> {
     PHP_KEYWORDS.get_or_init(|| {
         [
-            "abstract", "and", "array", "as", "break", "callable", "case", "catch",
-            "class", "clone", "const", "continue", "declare", "default", "do", "echo",
-            "else", "elseif", "empty", "enddeclare", "endfor", "endforeach", "endif",
-            "endswitch", "endwhile", "eval", "exit", "extends", "final", "finally",
-            "fn", "for", "foreach", "function", "global", "goto", "if", "implements",
-            "include", "include_once", "instanceof", "insteadof", "interface", "isset",
-            "list", "match", "namespace", "new", "or", "print", "private", "protected",
-            "public", "readonly", "require", "require_once", "return", "static",
-            "switch", "throw", "trait", "try", "unset", "use", "var", "while",
-            "xor", "yield", "true", "false", "null", "self", "parent",
+            "abstract",
+            "and",
+            "array",
+            "as",
+            "break",
+            "callable",
+            "case",
+            "catch",
+            "class",
+            "clone",
+            "const",
+            "continue",
+            "declare",
+            "default",
+            "do",
+            "echo",
+            "else",
+            "elseif",
+            "empty",
+            "enddeclare",
+            "endfor",
+            "endforeach",
+            "endif",
+            "endswitch",
+            "endwhile",
+            "eval",
+            "exit",
+            "extends",
+            "final",
+            "finally",
+            "fn",
+            "for",
+            "foreach",
+            "function",
+            "global",
+            "goto",
+            "if",
+            "implements",
+            "include",
+            "include_once",
+            "instanceof",
+            "insteadof",
+            "interface",
+            "isset",
+            "list",
+            "match",
+            "namespace",
+            "new",
+            "or",
+            "print",
+            "private",
+            "protected",
+            "public",
+            "readonly",
+            "require",
+            "require_once",
+            "return",
+            "static",
+            "switch",
+            "throw",
+            "trait",
+            "try",
+            "unset",
+            "use",
+            "var",
+            "while",
+            "xor",
+            "yield",
+            "true",
+            "false",
+            "null",
+            "self",
+            "parent",
         ]
         .into_iter()
         .collect()
@@ -35,12 +98,37 @@ fn keywords() -> &'static HashSet<&'static str> {
 fn builtins() -> &'static HashSet<&'static str> {
     PHP_BUILTINS.get_or_init(|| {
         [
-            "php_uname", "phpversion", "phpinfo", "strlen", "strpos", "substr",
-            "explode", "implode", "str_replace", "trim", "strtolower", "strtoupper",
-            "array_map", "array_filter", "array_merge", "array_push", "array_pop",
-            "array_keys", "array_values", "count", "in_array", "sort", "rsort",
-            "json_encode", "json_decode", "file_get_contents", "file_put_contents",
-            "var_dump", "print_r", "get_loaded_extensions", "PHP_VERSION",
+            "php_uname",
+            "phpversion",
+            "phpinfo",
+            "strlen",
+            "strpos",
+            "substr",
+            "explode",
+            "implode",
+            "str_replace",
+            "trim",
+            "strtolower",
+            "strtoupper",
+            "array_map",
+            "array_filter",
+            "array_merge",
+            "array_push",
+            "array_pop",
+            "array_keys",
+            "array_values",
+            "count",
+            "in_array",
+            "sort",
+            "rsort",
+            "json_encode",
+            "json_decode",
+            "file_get_contents",
+            "file_put_contents",
+            "var_dump",
+            "print_r",
+            "get_loaded_extensions",
+            "PHP_VERSION",
         ]
         .into_iter()
         .collect()
@@ -64,13 +152,19 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         }
 
         // PHP tags
-        if b == b'<' && i + 4 < len && &source[i..i+5] == "<?php" {
-            tokens.push(Token { range: i..i + 5, kind: TokenKind::Keyword });
+        if b == b'<' && i + 4 < len && &source[i..i + 5] == "<?php" {
+            tokens.push(Token {
+                range: i..i + 5,
+                kind: TokenKind::Keyword,
+            });
             i += 5;
             continue;
         }
         if b == b'?' && i + 1 < len && bytes[i + 1] == b'>' {
-            tokens.push(Token { range: i..i + 2, kind: TokenKind::Keyword });
+            tokens.push(Token {
+                range: i..i + 2,
+                kind: TokenKind::Keyword,
+            });
             i += 2;
             continue;
         }
@@ -81,7 +175,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             while i < len && bytes[i] != b'\n' {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Comment });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Comment,
+            });
             continue;
         }
 
@@ -96,8 +193,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 }
                 i += 1;
             }
-            if i > len { i = len; }
-            tokens.push(Token { range: start..i, kind: TokenKind::Comment });
+            if i > len {
+                i = len;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Comment,
+            });
             continue;
         }
 
@@ -106,11 +208,18 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             let start = i;
             i += 1;
             while i < len && bytes[i] != b'\'' {
-                if bytes[i] == b'\\' && i + 1 < len { i += 1; }
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
@@ -119,7 +228,9 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             let start = i;
             i += 1;
             while i < len && bytes[i] != b'"' {
-                if bytes[i] == b'\\' && i + 1 < len { i += 1; }
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 1;
+                }
                 // $variable inside string
                 if bytes[i] == b'$' {
                     let var_start = i;
@@ -128,14 +239,22 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                         i += 1;
                     }
                     if i > var_start + 1 {
-                        tokens.push(Token { range: var_start..i, kind: TokenKind::Variable });
+                        tokens.push(Token {
+                            range: var_start..i,
+                            kind: TokenKind::Variable,
+                        });
                     }
                     continue;
                 }
                 i += 1;
             }
-            if i < len { i += 1; }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
+            if i < len {
+                i += 1;
+            }
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::String,
+            });
             continue;
         }
 
@@ -147,7 +266,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 i += 1;
             }
             if i > start + 1 {
-                tokens.push(Token { range: start..i, kind: TokenKind::Variable });
+                tokens.push(Token {
+                    range: start..i,
+                    kind: TokenKind::Variable,
+                });
             }
             continue;
         }
@@ -155,21 +277,46 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         // Numbers
         if b.is_ascii_digit() {
             let start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
+            {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Number });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Number,
+            });
             continue;
         }
 
         // Operators
-        if matches!(b, b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'^' | b'~' | b'.' | b'?' | b':') {
+        if matches!(
+            b,
+            b'+' | b'-'
+                | b'*'
+                | b'/'
+                | b'%'
+                | b'='
+                | b'<'
+                | b'>'
+                | b'!'
+                | b'&'
+                | b'|'
+                | b'^'
+                | b'~'
+                | b'.'
+                | b'?'
+                | b':'
+        ) {
             let start = i;
             i += 1;
             if i < len && matches!(bytes[i], b'=' | b'>' | b'.' | b'&' | b'|') {
                 i += 1;
             }
-            tokens.push(Token { range: start..i, kind: TokenKind::Operator });
+            tokens.push(Token {
+                range: start..i,
+                kind: TokenKind::Operator,
+            });
             continue;
         }
 
@@ -189,7 +336,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 continue;
             };
 
-            tokens.push(Token { range: start..i, kind });
+            tokens.push(Token {
+                range: start..i,
+                kind,
+            });
             continue;
         }
 

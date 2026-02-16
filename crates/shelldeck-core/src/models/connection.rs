@@ -68,4 +68,3 @@ impl Connection {
         format!("{}@{}:{}", self.user, self.hostname, self.port)
     }
 }
-

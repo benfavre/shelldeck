@@ -24,7 +24,12 @@ fn known_hosts_path() -> PathBuf {
 /// `hostname` is the hostname (and optionally port in `[host]:port` format for non-22 ports).
 /// `key_type` is e.g. "ssh-ed25519", "ssh-rsa", etc.
 /// `key_base64` is the base64-encoded public key data.
-pub fn check_known_host(hostname: &str, port: u16, key_type: &str, key_base64: &str) -> KnownHostResult {
+pub fn check_known_host(
+    hostname: &str,
+    port: u16,
+    key_type: &str,
+    key_base64: &str,
+) -> KnownHostResult {
     let path = known_hosts_path();
     let contents = match fs::read_to_string(&path) {
         Ok(c) => c,
@@ -110,11 +115,7 @@ pub fn add_known_host(hostname: &str, port: u16, key_type: &str, key_base64: &st
 
     let line = format!("{} {} {}\n", host_entry, key_type, key_base64);
 
-    match fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    match fs::OpenOptions::new().create(true).append(true).open(&path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(line.as_bytes()) {
                 tracing::warn!("Failed to write to known_hosts: {}", e);
