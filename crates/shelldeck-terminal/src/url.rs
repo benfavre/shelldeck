@@ -145,3 +145,52 @@ fn parse_file_location(s: &str) -> (&str, Option<u32>, Option<u32>) {
         _ => (s, None, None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_from_text(text: &str) -> Vec<Cell> {
+        text.chars()
+            .map(|c| Cell {
+                c,
+                ..Cell::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trims_trailing_punctuation_from_detected_web_url() {
+        let row = row_from_text("See https://example.com/docs, for details.");
+        let urls = detect_urls(&[&row]);
+
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://example.com/docs");
+        assert_eq!(urls[0].kind, UrlKind::Web);
+    }
+
+    #[test]
+    fn detects_file_path_with_line_and_column() {
+        let row = row_from_text("Error at ./src/main.rs:42:7");
+        let urls = detect_urls(&[&row]);
+
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "./src/main.rs:42:7");
+        assert_eq!(
+            urls[0].kind,
+            UrlKind::FilePath {
+                line: Some(42),
+                col: Some(7),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_path_that_contains_colons_and_line_suffix() {
+        let (path, line, col) = parse_file_location("/tmp/svc:api/main.rs:120");
+
+        assert_eq!(path, "/tmp/svc:api/main.rs");
+        assert_eq!(line, Some(120));
+        assert_eq!(col, None);
+    }
+}
