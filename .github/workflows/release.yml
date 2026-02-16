@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build only, skip GitHub release)"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─── Extract version from tag or Cargo.toml ───
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry_run: ${{ steps.flags.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Determine flags
+        id: flags
+        run: |
+          DRY_RUN="${{ inputs.dry_run || 'false' }}"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "Dry run: $DRY_RUN"
+
+  # ─── Build on each platform ───
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            archive_ext: zip
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            archive_ext: zip
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      # Linux dependencies
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libssl-dev \
+            pkg-config \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libvulkan-dev \
+            libfontconfig1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libxkbcommon-x11-dev
+
+      # macOS dependencies
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install openssl pkg-config
+
+      - name: Build release
+        shell: bash
+        run: bash scripts/build-release.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelldeck-${{ matrix.platform }}
+          path: dist/shelldeck-${{ matrix.platform }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─── Create GitHub Release ───
+  release:
+    name: Create GitHub Release
+    needs: [prepare, build]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          for dir in artifacts/shelldeck-*/; do
+            cp "$dir"/* release-assets/
+          done
+          echo "=== Release Assets ==="
+          ls -la release-assets/
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ShellDeck ${{ needs.prepare.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-beta') || contains(needs.prepare.outputs.version, '-rc') }}
+          generate_release_notes: true
+          files: |
+            release-assets/*
+
+      - name: Release summary
+        run: |
+          echo "=== Release Published ==="
+          echo "  Version: ${{ needs.prepare.outputs.version }}"
+          echo "  Tag:     ${{ github.ref_name }}"
+          echo "  Assets:"
+          ls -la release-assets/
+
+  # ─── Dry run summary ───
+  dry-run-summary:
+    name: Dry Run Summary
+    needs: [prepare, build]
+    if: needs.prepare.outputs.dry_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Summary
+        run: |
+          echo "=== DRY RUN ==="
+          echo "Would have released:"
+          echo "  Version: ${{ needs.prepare.outputs.version }}"
+          echo "  Platforms: linux-x86_64, macos-aarch64, windows-x86_64"
+          echo "  Artifacts:"
+          find artifacts -type f -exec ls -la {} \;
