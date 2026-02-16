@@ -64,11 +64,11 @@ if [ -f "$ICON_SRC" ]; then
 else
     echo "WARNING: No icon at $ICON_SRC, generating placeholder..."
     # Create a simple 256x256 placeholder with ImageMagick if available
-    if command -v convert &>/dev/null; then
-        convert -size 256x256 xc:'#1a1b26' \
+    if command -v convert &>/dev/null && convert -size 256x256 xc:'#1a1b26' \
             -fill '#7aa2f7' -font Helvetica-Bold -pointsize 72 \
             -gravity center -annotate 0 'SD' \
-            "$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png"
+            "$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png" 2>/dev/null; then
+        echo "  Generated placeholder PNG with ImageMagick"
     elif command -v python3 &>/dev/null; then
         # Generate a minimal 256x256 PNG with Python (no dependencies)
         python3 -c "
