@@ -102,23 +102,80 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxcb1-dev \
-            libxkbcommon-x11-dev
+            libxkbcommon-x11-dev \
+            libfuse2
 
       # macOS dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install openssl pkg-config
+        run: brew install openssl pkg-config create-dmg
 
       - name: Build release
         shell: bash
         run: bash scripts/build-release.sh
 
-      - name: Upload artifact
+      # ─── Native Installers ───
+
+      # Linux: AppImage
+      - name: Build AppImage
+        if: runner.os == 'Linux'
+        run: bash packaging/linux/build-appimage.sh
+
+      # macOS: DMG
+      - name: Build DMG
+        if: runner.os == 'macOS'
+        run: bash packaging/macos/build-dmg.sh
+
+      # Windows: NSIS installer
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install nsis -y
+
+      - name: Build NSIS installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          bash packaging/windows/build-nsis.sh
+
+      # Upload archive artifact
+      - name: Upload archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: shelldeck-${{ matrix.platform }}
           path: dist/shelldeck-${{ matrix.platform }}.${{ matrix.archive_ext }}
           if-no-files-found: error
+          retention-days: 14
+
+      # Upload native installer artifact (Linux)
+      - name: Upload AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelldeck-linux-appimage
+          path: dist/ShellDeck-x86_64.AppImage
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Upload native installer artifact (macOS)
+      - name: Upload DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelldeck-macos-dmg
+          path: dist/ShellDeck-macos-*.dmg
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Upload native installer artifact (Windows)
+      - name: Upload NSIS installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelldeck-windows-setup
+          path: dist/ShellDeck-windows-x86_64-setup.exe
+          if-no-files-found: warn
           retention-days: 14
 
   # ─── Create GitHub Release ───
@@ -141,7 +198,7 @@ jobs:
         run: |
           mkdir -p release-assets
           for dir in artifacts/shelldeck-*/; do
-            cp "$dir"/* release-assets/
+            cp "$dir"/* release-assets/ 2>/dev/null || true
           done
           echo "=== Release Assets ==="
           ls -la release-assets/
