@@ -1,5 +1,4 @@
 use adabraka_ui::prelude::*;
-use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus, PortForward};
 use uuid::Uuid;
