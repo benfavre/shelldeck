@@ -69,8 +69,27 @@ else
             -fill '#7aa2f7' -font Helvetica-Bold -pointsize 72 \
             -gravity center -annotate 0 'SD' \
             "$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png"
+    elif command -v python3 &>/dev/null; then
+        # Generate a minimal 256x256 PNG with Python (no dependencies)
+        python3 -c "
+import struct, zlib
+w, h = 256, 256
+# RGBA: dark blue #1a1b26
+row = b'\\x00' + (b'\\x1a\\x1b\\x26\\xff' * w)
+raw = row * h
+compressed = zlib.compress(raw)
+def chunk(t, d):
+    c = t + d
+    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+with open('$APPDIR/usr/share/icons/hicolor/256x256/apps/shelldeck.png', 'wb') as f:
+    f.write(b'\\x89PNG\\r\\n\\x1a\\n')
+    f.write(chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)))
+    f.write(chunk(b'IDAT', compressed))
+    f.write(chunk(b'IEND', b''))
+"
+        echo "  Generated placeholder PNG with Python"
     else
-        echo "WARNING: No icon and no ImageMagick. AppImage will have no icon."
+        echo "WARNING: No icon, no ImageMagick, no Python. AppImage will have no icon."
     fi
 fi
 
