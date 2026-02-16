@@ -79,7 +79,8 @@ fi
 echo "==> Using makensis: $MAKENSIS"
 
 # MSYS_NO_PATHCONV prevents Git Bash from mangling /D into C:\Program Files\Git\D
-MSYS_NO_PATHCONV=1 "$MAKENSIS" /DVERSION="$VERSION" "packaging/windows/shelldeck.nsi"
+# /NOCD keeps the working directory (project root) instead of changing to the .nsi file's directory
+MSYS_NO_PATHCONV=1 "$MAKENSIS" /NOCD /DVERSION="$VERSION" "packaging/windows/shelldeck.nsi"
 
 INSTALLER="dist/ShellDeck-windows-x86_64-setup.exe"
 if [ -f "$INSTALLER" ]; then

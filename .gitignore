@@ -6,3 +6,5 @@
 .DS_Store
 /dist
 /.build-tools
+node_modules/
+.wrangler/
