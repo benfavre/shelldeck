@@ -3973,7 +3973,7 @@ impl Workspace {
                     .text_color(title_color)
                     .child("ShellDeck"),
             )
-            .child(div().text_xs().text_color(title_dim).child("v0.1.3"));
+            .child(div().text_xs().text_color(title_dim).child(concat!("v", env!("CARGO_PKG_VERSION"))));
 
         // Minimize button
         let minimize_btn = div()

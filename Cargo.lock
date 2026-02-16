@@ -5801,7 +5801,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shelldeck"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
@@ -5820,7 +5820,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5839,7 +5839,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ssh"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5858,7 +5858,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-terminal"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5878,7 +5878,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-ui"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "adabraka-gpui",
  "adabraka-ui",
@@ -5899,7 +5899,7 @@ dependencies = [
 
 [[package]]
 name = "shelldeck-update"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "adabraka-gpui",
  "anyhow",
