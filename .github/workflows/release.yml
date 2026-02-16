@@ -228,6 +228,76 @@ jobs:
           echo "  Assets:"
           ls -la release-assets/
 
+  # ─── Publish update manifest to Cloudflare KV ───
+  update-manifest:
+    name: Publish Update Manifest
+    needs: [prepare, release]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate update manifest
+        id: manifest
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Compute SHA-256 and size for each platform archive
+          declare -A PLATFORMS
+          PLATFORMS[linux-x86_64]="shelldeck-linux-x86_64/shelldeck-linux-x86_64.tar.gz"
+          PLATFORMS[macos-aarch64]="shelldeck-macos-aarch64/shelldeck-macos-aarch64.zip"
+          PLATFORMS[windows-x86_64]="shelldeck-windows-x86_64/shelldeck-windows-x86_64.zip"
+
+          MANIFEST='{"version":"'"$VERSION"'","pub_date":"'"$PUB_DATE"'","platforms":{'
+          FIRST=true
+
+          for PLATFORM in "${!PLATFORMS[@]}"; do
+            FILE="artifacts/${PLATFORMS[$PLATFORM]}"
+            if [ -f "$FILE" ]; then
+              SHA=$(sha256sum "$FILE" | awk '{print $1}')
+              SIZE=$(stat -c%s "$FILE")
+              URL="https://github.com/${REPO}/releases/download/${TAG}/$(basename "$FILE")"
+
+              if [ "$FIRST" = true ]; then
+                FIRST=false
+              else
+                MANIFEST="$MANIFEST,"
+              fi
+
+              MANIFEST="$MANIFEST\"${PLATFORM}\":{\"url\":\"${URL}\",\"sha256\":\"${SHA}\",\"size\":${SIZE}}"
+            else
+              echo "Warning: $FILE not found, skipping $PLATFORM"
+            fi
+          done
+
+          MANIFEST="$MANIFEST}}"
+
+          echo "=== Update Manifest ==="
+          echo "$MANIFEST" | jq .
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+
+      - name: Upload manifest to Cloudflare KV
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+        run: |
+          curl -sf -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/latest-release" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data '${{ steps.manifest.outputs.manifest }}' \
+          && echo "Manifest uploaded successfully" \
+          || (echo "Failed to upload manifest" && exit 1)
+
   # ─── Dry run summary ───
   dry-run-summary:
     name: Dry Run Summary

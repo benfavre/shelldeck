@@ -37,6 +37,7 @@ use crate::terminal_view::{SplitDirection, TerminalEvent, TerminalView};
 use crate::theme::ShellDeckColors;
 use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::{VariablePrompt, VariablePromptEvent};
+use shelldeck_update::{AutoUpdateEvent, AutoUpdateStatus, AutoUpdater};
 
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +135,8 @@ pub struct Workspace {
     _template_browser_sub: Option<Subscription>,
     _variable_prompt_sub: Option<Subscription>,
     _git_poll_task: Option<gpui::Task<()>>,
+    auto_updater: Entity<AutoUpdater>,
+    _update_sub: Subscription,
     /// Connection ID pending deletion (requires second click to confirm).
     pending_delete: Option<Uuid>,
 }
@@ -182,9 +185,17 @@ impl Workspace {
             view.set_sites(store.managed_sites.clone());
             view
         });
+        let auto_update_enabled = config.general.auto_update;
         let settings = cx.new(|_| SettingsView::new(config));
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
+
+        // Create auto-updater
+        let auto_updater = cx.new(|cx| {
+            let mut updater = AutoUpdater::new();
+            updater.set_enabled(auto_update_enabled, cx);
+            updater
+        });
 
         // Create command palette with registered actions
         let command_palette = cx.new(|cx| {
@@ -269,6 +280,14 @@ impl Workspace {
             },
         );
 
+        // Subscribe to auto-updater events
+        let update_sub = cx.subscribe(
+            &auto_updater,
+            |this, _updater, event: &AutoUpdateEvent, cx| {
+                this.handle_update_event(event, cx);
+            },
+        );
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -332,6 +351,8 @@ impl Workspace {
             _template_browser_sub: None,
             _variable_prompt_sub: None,
             _git_poll_task: Some(git_poll_task),
+            auto_updater,
+            _update_sub: update_sub,
             pending_delete: None,
         }
     }
@@ -503,6 +524,43 @@ impl Workspace {
         }
     }
 
+    fn handle_update_event(&mut self, event: &AutoUpdateEvent, cx: &mut Context<Self>) {
+        match event {
+            AutoUpdateEvent::StatusChanged(status) => {
+                let text = status.to_string();
+                let show_toast = matches!(
+                    status,
+                    AutoUpdateStatus::UpdateAvailable(_)
+                        | AutoUpdateStatus::Updated(_)
+                        | AutoUpdateStatus::Errored(_)
+                );
+
+                // Update status bar
+                self.status_bar.update(cx, |bar, cx| {
+                    bar.update_status = match status {
+                        AutoUpdateStatus::Idle => None,
+                        _ => Some(text.clone()),
+                    };
+                    cx.notify();
+                });
+
+                // Show toast for notable events
+                if show_toast {
+                    let level = match status {
+                        AutoUpdateStatus::Errored(_) => ToastLevel::Error,
+                        AutoUpdateStatus::Updated(_) => ToastLevel::Success,
+                        _ => ToastLevel::Info,
+                    };
+                    self.toasts.update(cx, |toasts, cx| {
+                        toasts.push(text, level, cx);
+                    });
+                }
+
+                cx.notify();
+            }
+        }
+    }
+
     fn handle_settings_event(&mut self, event: &SettingsEvent, cx: &mut Context<Self>) {
         match event {
             SettingsEvent::ConfigChanged(config) => {
@@ -518,6 +576,11 @@ impl Workspace {
                 self.sidebar_width = config.general.sidebar_width;
                 self.terminal.update(cx, |terminal, _cx| {
                     terminal.set_sidebar_width(config.general.sidebar_width);
+                });
+                // Apply auto-update preference
+                let auto_update = config.general.auto_update;
+                self.auto_updater.update(cx, |updater, cx| {
+                    updater.set_enabled(auto_update, cx);
                 });
                 cx.notify();
             }

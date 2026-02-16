@@ -8,6 +8,7 @@ license.workspace = true
 shelldeck-core = { path = "../shelldeck-core" }
 shelldeck-ssh = { path = "../shelldeck-ssh" }
 shelldeck-terminal = { path = "../shelldeck-terminal" }
+shelldeck-update = { path = "../shelldeck-update" }
 gpui = { workspace = true }
 adabraka-ui = { workspace = true }
 anyhow = { workspace = true }

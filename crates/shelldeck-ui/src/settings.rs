@@ -218,6 +218,18 @@ impl SettingsView {
                         cx.notify();
                     })),
             ))
+            .child(Self::render_setting_row(
+                "Auto-update",
+                "Automatically check for and install new versions",
+                div()
+                    .id("toggle-auto-update")
+                    .child(Self::render_toggle(self.config.general.auto_update))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.general.auto_update = !this.config.general.auto_update;
+                        this.mark_changed();
+                        cx.notify();
+                    })),
+            ))
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -611,7 +623,7 @@ impl SettingsView {
                 div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Version 0.1.0"),
+                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
             )
             .child(
                 div()

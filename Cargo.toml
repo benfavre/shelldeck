@@ -6,6 +6,7 @@ members = [
     "crates/shelldeck-ssh",
     "crates/shelldeck-terminal",
     "crates/shelldeck-ui",
+    "crates/shelldeck-update",
 ]
 
 [workspace.package]
@@ -54,6 +55,10 @@ keyring = "3"
 parking_lot = "0.12"
 smallvec = "1.13"
 once_cell = "1.19"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+semver = "1"
+tempfile = "3"
+sha2 = "0.10"
 
 [patch.crates-io]
 adabraka-gpui = { path = "patches/adabraka-gpui" }

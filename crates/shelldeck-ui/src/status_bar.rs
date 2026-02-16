@@ -8,6 +8,7 @@ pub struct StatusBar {
     pub running_scripts: usize,
     pub notification: Option<String>,
     pub git_status: Option<String>,
+    pub update_status: Option<String>,
 }
 
 impl Default for StatusBar {
@@ -24,6 +25,7 @@ impl StatusBar {
             running_scripts: 0,
             notification: None,
             git_status: None,
+            update_status: None,
         }
     }
 
@@ -125,16 +127,19 @@ impl Render for StatusBar {
                                     .child("Command Palette"),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(
-                                self.notification
-                                    .clone()
-                                    .unwrap_or_else(|| "ShellDeck v0.1.0".to_string()),
-                            ),
-                    ),
+                    .child({
+                        let (text, color) = if let Some(ref update) = self.update_status {
+                            (update.clone(), ShellDeckColors::primary())
+                        } else if let Some(ref notif) = self.notification {
+                            (notif.clone(), ShellDeckColors::text_muted())
+                        } else {
+                            (
+                                format!("ShellDeck v{}", env!("CARGO_PKG_VERSION")),
+                                ShellDeckColors::text_muted(),
+                            )
+                        };
+                        div().text_size(px(11.0)).text_color(color).child(text)
+                    }),
             )
     }
 }

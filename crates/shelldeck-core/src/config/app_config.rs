@@ -30,12 +30,14 @@ pub struct TerminalConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GeneralConfig {
     pub auto_connect_on_startup: bool,
     pub show_notifications: bool,
     pub confirm_before_close: bool,
     pub sidebar_width: f32,
     pub auto_attach_tmux: bool,
+    pub auto_update: bool,
 }
 
 impl Default for TerminalConfig {
@@ -59,6 +61,7 @@ impl Default for GeneralConfig {
             confirm_before_close: true,
             sidebar_width: 260.0,
             auto_attach_tmux: false,
+            auto_update: true,
         }
     }
 }
