@@ -5,7 +5,7 @@ use gpui::prelude::*;
 use gpui::*;
 use parking_lot::Mutex;
 use shelldeck_terminal::colors::{NamedColor, TermColor};
-use shelldeck_terminal::grid::{CursorShape, CursorState, MouseEncoding, MouseMode, SearchMatch, TerminalGrid};
+use shelldeck_terminal::grid::{CellWidth, CursorShape, CursorState, MouseEncoding, MouseMode, SearchMatch, TerminalGrid, UnderlineStyle};
 use shelldeck_terminal::url::{detect_urls, UrlMatch};
 use shelldeck_terminal::session::{SessionState, TerminalSession};
 use uuid::Uuid;
@@ -451,6 +451,23 @@ fn brighten_for_bold(color: TermColor) -> TermColor {
     }
 }
 
+/// Dim/faint a foreground color by halving the RGB component values.
+/// For named and indexed colors, convert to RGB first, then dim.
+/// For the default foreground, produce a mid-gray.
+fn dim_color(color: TermColor) -> TermColor {
+    match color {
+        TermColor::Rgb(r, g, b) => TermColor::Rgb(r / 2, g / 2, b / 2),
+        TermColor::Default => {
+            // Default foreground is typically ~(204, 204, 204); dim to half.
+            TermColor::Rgb(102, 102, 102)
+        }
+        other => {
+            let (r, g, b, _) = other.to_rgba(true);
+            TermColor::Rgb(r / 2, g / 2, b / 2)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terminal view types
 // ---------------------------------------------------------------------------
@@ -606,14 +623,20 @@ pub struct TerminalView {
     scrollbar_dragging: bool,
     /// Active terminal color palette (set from theme).
     palette: TerminalPalette,
-    /// User-preferred cursor shape (overrides the grid's default).
-    cursor_style_override: CursorShape,
+    /// User-preferred cursor shape (overrides the grid's DECSCUSR shape when set).
+    cursor_style_override: Option<CursorShape>,
     /// Script dropdown state for toolbar integration.
     script_dropdown_open: bool,
     /// Favorite scripts for toolbar dropdown.
     favorite_scripts: Vec<(Uuid, String, String)>,
     /// Recently run scripts for toolbar dropdown.
     recent_scripts: Vec<(Uuid, String, String)>,
+    /// Current blink phase: true = cursor visible, false = cursor hidden.
+    cursor_blink_on: bool,
+    /// Async task that toggles `cursor_blink_on` every 530ms.
+    cursor_blink_timer: Option<gpui::Task<()>>,
+    /// Whether the terminal grid currently has focus (tracked for hollow cursor).
+    has_focus: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -662,10 +685,13 @@ impl TerminalView {
             split_dragging: false,
             scrollbar_dragging: false,
             palette: TerminalPalette::default(),
-            cursor_style_override: CursorShape::Block,
+            cursor_style_override: None,
             script_dropdown_open: false,
             favorite_scripts: Vec::new(),
             recent_scripts: Vec::new(),
+            cursor_blink_on: true,
+            cursor_blink_timer: None,
+            has_focus: false,
         }
     }
 
@@ -708,12 +734,71 @@ impl TerminalView {
     }
 
     /// Update the cursor style preference.
+    ///
+    /// Pass `"default"` (or any unrecognized value) to clear the override and
+    /// let the terminal application control the shape via DECSCUSR.
     pub fn set_cursor_style(&mut self, style: &str) {
         self.cursor_style_override = match style {
-            "underline" => CursorShape::Underline,
-            "bar" => CursorShape::Bar,
-            _ => CursorShape::Block,
+            "underline" => Some(CursorShape::Underline),
+            "bar" => Some(CursorShape::Bar),
+            "block" => Some(CursorShape::Block),
+            _ => None,
         };
+    }
+
+    // ------------------------------------------------------------------
+    // Cursor blink timer
+    // ------------------------------------------------------------------
+
+    /// Start (or restart) the cursor blink timer.
+    ///
+    /// The cursor is made visible immediately and then toggled every 530 ms.
+    /// Calling this while a timer is already running cancels the old one.
+    fn start_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.cursor_blink_on = true;
+        let entity = cx.entity().downgrade();
+        self.cursor_blink_timer = Some(cx.spawn(
+            async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(530))
+                        .await;
+                    let Ok(_) = entity.update(cx, |this, cx| {
+                        this.cursor_blink_on = !this.cursor_blink_on;
+                        cx.notify();
+                    }) else {
+                        break;
+                    };
+                }
+            },
+        ));
+    }
+
+    /// Stop the blink timer and ensure the cursor is visible (steady).
+    fn stop_cursor_blink(&mut self) {
+        self.cursor_blink_timer = None;
+        self.cursor_blink_on = true;
+    }
+
+    /// Reset the blink cycle so the cursor stays visible right after input,
+    /// then resumes blinking after the interval.
+    fn reset_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        // Only restart if the grid says blinking is enabled
+        let grid_blink = self
+            .active_session()
+            .map(|s| s.grid.lock().cursor.blink)
+            .unwrap_or(false);
+        if grid_blink && self.has_focus {
+            self.start_cursor_blink(cx);
+        } else {
+            self.stop_cursor_blink();
+        }
+    }
+
+    /// Determine the effective cursor shape: the user override wins if set,
+    /// otherwise the grid's shape (set by DECSCUSR) is used.
+    fn effective_cursor_shape(&self, grid_shape: CursorShape) -> CursorShape {
+        self.cursor_style_override.unwrap_or(grid_shape)
     }
 
     pub fn add_session(&mut self, session: TerminalSession) {
@@ -896,16 +981,39 @@ impl TerminalView {
     }
 
     /// Convert a GPUI KeyDownEvent into the byte sequence expected by a terminal.
-    fn keystroke_to_bytes(event: &KeyDownEvent) -> Option<Vec<u8>> {
+    ///
+    /// `app_cursor` indicates whether application cursor keys mode (DECCKM) is
+    /// active on the grid. When true, arrow keys and Home/End emit SS3
+    /// sequences instead of CSI sequences.
+    fn keystroke_to_bytes(event: &KeyDownEvent, app_cursor: bool) -> Option<Vec<u8>> {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         let mods = &keystroke.modifiers;
 
-        // Ctrl+key combos: letter & 0x1f produces the control character
-        if mods.control && !mods.alt && key.len() == 1 {
+        // Ctrl+key combos: letter & 0x1f produces the control character.
+        // Skip when Shift is held so Ctrl+Shift+C/V reach the Copy/Paste actions.
+        if mods.control && !mods.alt && !mods.shift && key.len() == 1 {
             let ch = key.chars().next().expect("key.len() == 1 guarantees a char");
             if ch.is_ascii_alphabetic() {
                 return Some(vec![(ch.to_ascii_lowercase() as u8) & 0x1f]);
+            }
+        }
+
+        // Compute xterm modifier code for modified special keys.
+        // Shift=2, Alt=3, Shift+Alt=4, Ctrl=5, Shift+Ctrl=6, Alt+Ctrl=7,
+        // Shift+Alt+Ctrl=8.
+        let modifier_code = || -> Option<u8> {
+            let val = 1
+                + if mods.shift { 1 } else { 0 }
+                + if mods.alt { 2 } else { 0 }
+                + if mods.control { 4 } else { 0 };
+            if val > 1 { Some(val) } else { None }
+        };
+
+        // ---- Function keys F1..F24 ----
+        if let Some(fnum) = key.strip_prefix('f').and_then(|s| s.parse::<u8>().ok()) {
+            if (1..=24).contains(&fnum) {
+                return Some(Self::function_key_bytes(fnum, modifier_code()));
             }
         }
 
@@ -914,17 +1022,72 @@ impl TerminalView {
             "backspace" => Some(vec![0x7f]),
             "tab" => Some(b"\t".to_vec()),
             "escape" => Some(vec![0x1b]),
-            "up" => Some(b"\x1b[A".to_vec()),
-            "down" => Some(b"\x1b[B".to_vec()),
-            "right" => Some(b"\x1b[C".to_vec()),
-            "left" => Some(b"\x1b[D".to_vec()),
-            "home" => Some(b"\x1b[H".to_vec()),
-            "end" => Some(b"\x1b[F".to_vec()),
+
+            // Arrow keys: SS3 in application cursor mode, CSI otherwise.
+            // With modifiers always use CSI form: \x1b[1;{mod}{final}
+            "up" | "down" | "right" | "left" => {
+                let final_byte = match key {
+                    "up" => b'A',
+                    "down" => b'B',
+                    "right" => b'C',
+                    "left" => b'D',
+                    _ => unreachable!(),
+                };
+                if let Some(m) = modifier_code() {
+                    Some(format!("\x1b[1;{}{}", m, final_byte as char).into_bytes())
+                } else if app_cursor {
+                    Some(vec![0x1b, b'O', final_byte])
+                } else {
+                    Some(vec![0x1b, b'[', final_byte])
+                }
+            }
+
+            // Home / End: SS3 in application cursor mode, CSI otherwise.
+            "home" => {
+                if let Some(m) = modifier_code() {
+                    Some(format!("\x1b[1;{}H", m).into_bytes())
+                } else if app_cursor {
+                    Some(b"\x1bOH".to_vec())
+                } else {
+                    Some(b"\x1b[H".to_vec())
+                }
+            }
+            "end" => {
+                if let Some(m) = modifier_code() {
+                    Some(format!("\x1b[1;{}F", m).into_bytes())
+                } else if app_cursor {
+                    Some(b"\x1bOF".to_vec())
+                } else {
+                    Some(b"\x1b[F".to_vec())
+                }
+            }
+
+            "insert" => Some(b"\x1b[2~".to_vec()),
             "delete" => Some(b"\x1b[3~".to_vec()),
             "pageup" => Some(b"\x1b[5~".to_vec()),
             "pagedown" => Some(b"\x1b[6~".to_vec()),
-            "space" => Some(b" ".to_vec()),
+            "space" => {
+                // Alt+Space sends ESC followed by space
+                if mods.alt {
+                    Some(b"\x1b ".to_vec())
+                } else {
+                    Some(b" ".to_vec())
+                }
+            }
             _ => {
+                // Alt+key: send ESC prefix before the character.
+                if mods.alt && !mods.control {
+                    if let Some(ref kc) = keystroke.key_char {
+                        let mut bytes = vec![0x1b];
+                        bytes.extend_from_slice(kc.as_bytes());
+                        return Some(bytes);
+                    } else if key.len() == 1 {
+                        let mut bytes = vec![0x1b];
+                        bytes.extend_from_slice(key.as_bytes());
+                        return Some(bytes);
+                    }
+                }
+
                 // Use key_char for typed characters (handles shift etc.)
                 if let Some(ref kc) = keystroke.key_char {
                     Some(kc.as_bytes().to_vec())
@@ -934,6 +1097,60 @@ impl TerminalView {
                     None
                 }
             }
+        }
+    }
+
+    /// Build the escape sequence for a function key F1..F24, optionally with
+    /// an xterm modifier code.
+    fn function_key_bytes(fnum: u8, modifier: Option<u8>) -> Vec<u8> {
+        // F1-F4 use SS3 finals P/Q/R/S (no modifier) or CSI 1;mod P/Q/R/S
+        // F5+ use CSI code ~ format
+        match fnum {
+            1..=4 => {
+                let final_ch = match fnum {
+                    1 => 'P',
+                    2 => 'Q',
+                    3 => 'R',
+                    4 => 'S',
+                    _ => unreachable!(),
+                };
+                if let Some(m) = modifier {
+                    format!("\x1b[1;{}{}", m, final_ch).into_bytes()
+                } else {
+                    format!("\x1bO{}", final_ch).into_bytes()
+                }
+            }
+            5..=24 => {
+                let code = match fnum {
+                    5 => 15,
+                    6 => 17,
+                    7 => 18,
+                    8 => 19,
+                    9 => 20,
+                    10 => 21,
+                    11 => 23,
+                    12 => 24,
+                    13 => 25,
+                    14 => 26,
+                    15 => 28,
+                    16 => 29,
+                    17 => 31,
+                    18 => 32,
+                    19 => 33,
+                    20 => 34,
+                    21 => 42,
+                    22 => 43,
+                    23 => 44,
+                    24 => 45,
+                    _ => unreachable!(),
+                };
+                if let Some(m) = modifier {
+                    format!("\x1b[{};{}~", code, m).into_bytes()
+                } else {
+                    format!("\x1b[{}~", code).into_bytes()
+                }
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -1053,10 +1270,17 @@ impl TerminalView {
                             .timer(std::time::Duration::from_millis(8))
                             .await;
                         let result = this.update(cx, |this, cx| {
-                            let mut any_dirty =
-                                this.pane.sessions.iter().any(|s| s.grid.lock().dirty);
+                            let mut any_dirty = false;
+                            let mut any_sync = false;
+                            for s in this.pane.sessions.iter() {
+                                let g = s.grid.lock();
+                                if g.dirty { any_dirty = true; }
+                                if g.synchronized_output() { any_sync = true; }
+                            }
                             if let Some(ref split) = this.split_view {
-                                any_dirty = any_dirty || split.secondary_session.grid.lock().dirty;
+                                let g = split.secondary_session.grid.lock();
+                                if g.dirty { any_dirty = true; }
+                                if g.synchronized_output() { any_sync = true; }
                             }
                             // Also clear dirty flags on stored (background) splits so
                             // they don't accumulate stale dirty state, but don't trigger
@@ -1064,7 +1288,21 @@ impl TerminalView {
                             for split in this.stored_splits.values() {
                                 split.secondary_session.grid.lock().dirty = false;
                             }
-                            if any_dirty {
+                            // Handle OSC 52 clipboard requests from any session.
+                            for session in this.pane.sessions.iter() {
+                                if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                }
+                            }
+                            if let Some(ref split) = this.split_view {
+                                if let Some((_sel, text)) = split.secondary_session.grid.lock().clipboard_request.take() {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                }
+                            }
+                            // Suppress repaint while synchronized output is active
+                            // (batching updates to prevent flicker). When the app
+                            // turns sync off, dirty will be set and any_sync cleared.
+                            if any_dirty && !any_sync {
                                 cx.notify();
                             }
                         });
@@ -1709,6 +1947,8 @@ impl TerminalView {
                     // Selection mode: handle single/double/triple click
                     if let Some(view) = h_down.upgrade() {
                         view.update(cx, |this, cx| {
+                            // Reset blink on click so cursor stays visible
+                            this.reset_cursor_blink(cx);
                             // Dismiss context menu on any click
                             if this.context_menu.is_some() {
                                 this.context_menu = None;
@@ -1734,10 +1974,15 @@ impl TerminalView {
 
                                 if let Some(session) = this.active_session() {
                                     let mut grid = session.grid.lock();
+                                    let alt_held = event.modifiers.alt;
                                     match this.click_count {
                                         1 => {
                                             grid.clear_selection();
-                                            grid.start_selection(col, row);
+                                            if alt_held {
+                                                grid.start_block_selection(col, row);
+                                            } else {
+                                                grid.start_selection(col, row);
+                                            }
                                         }
                                         2 => grid.start_word_selection(col, row),
                                         3 => grid.start_line_selection(col, row),
@@ -2029,7 +2274,11 @@ impl TerminalView {
                         }
 
                         // Normal terminal input
-                        if let Some(bytes) = TerminalView::keystroke_to_bytes(event) {
+                        let app_cursor = this
+                            .active_session()
+                            .map(|s| s.grid.lock().application_cursor_keys())
+                            .unwrap_or(false);
+                        if let Some(bytes) = TerminalView::keystroke_to_bytes(event, app_cursor) {
                             // Clear selection on typing
                             if let Some(session) = this.active_session() {
                                 session.grid.lock().clear_selection();
@@ -2037,6 +2286,8 @@ impl TerminalView {
                             if let Some(s) = this.active_session() {
                                 s.write_input(&bytes);
                             }
+                            // Reset blink so cursor stays visible during typing
+                            this.reset_cursor_blink(cx);
                         }
                     });
                 }
@@ -2185,6 +2436,8 @@ impl TerminalView {
                 self.search_current_idx,
                 self.detected_urls.clone(),
                 self.palette.clone(),
+                self.has_focus,
+                self.cursor_blink_on,
             ));
 
         grid_el
@@ -2201,10 +2454,12 @@ impl TerminalView {
         search_current: Option<usize>,
         url_matches: Vec<UrlMatch>,
         palette: TerminalPalette,
+        has_focus: bool,
+        cursor_blink_on: bool,
     ) -> impl IntoElement {
         canvas(
-            move |_bounds, _window, _cx| (cache, grid, cursor, search_matches, search_current, url_matches, palette),
-            move |bounds, (cache, grid, cursor, search_matches, search_current, url_matches, palette), window, _cx| {
+            move |_bounds, _window, _cx| (cache, grid, cursor, search_matches, search_current, url_matches, palette, has_focus, cursor_blink_on),
+            move |bounds, (cache, grid, cursor, search_matches, search_current, url_matches, palette, has_focus, cursor_blink_on), window, _cx| {
                 let cell_w = cache.cell_width;
                 let cell_h = cache.cell_height;
                 let baseline = cache.baseline_y;
@@ -2234,8 +2489,15 @@ impl TerminalView {
                             fg_t = brighten_for_bold(fg_t);
                         }
 
-                        let eff_fg = if cell.attrs.hidden { bg_t } else { fg_t };
+                        let eff_fg = if cell.attrs.hidden {
+                            bg_t
+                        } else if cell.attrs.dim {
+                            dim_color(fg_t)
+                        } else {
+                            fg_t
+                        };
 
+                        // Background: always paint for every cell (including spacers)
                         if bg_t != TermColor::Default || inverse {
                             window.paint_quad(fill(
                                 Bounds::new(point(x, y), size(cell_w, cell_h)),
@@ -2250,21 +2512,38 @@ impl TerminalView {
                             ));
                         }
 
+                        // Skip glyph rendering for Spacer cells -- the Wide cell's
+                        // glyph already covers both columns.
+                        if cell.wide == CellWidth::Spacer {
+                            continue;
+                        }
+
                         let fg_color = palette.resolve(&eff_fg, !inverse);
+
+                        // Determine the rendering width: wide chars span 2 cell widths.
+                        let glyph_w = if cell.wide == CellWidth::Wide {
+                            cell_w * 2.0
+                        } else {
+                            cell_w
+                        };
 
                         let ch = cell.c;
                         if ch != ' ' && ch != '\0' {
-                            if paint_block_char(ch, x, y, cell_w, cell_h, fg_color, window) {
+                            if paint_block_char(ch, x, y, glyph_w, cell_h, fg_color, window) {
                                 // Handled by procedural block/box-drawing renderer
                             } else {
-                                // DEBUG: bypass glyph cache, use shape_line for ALL chars
                                 let f = match (cell.attrs.bold, cell.attrs.italic) {
                                     (true, true) => cache.base_font.clone().bold().italic(),
                                     (true, false) => cache.base_font.clone().bold(),
                                     (false, true) => cache.base_font.clone().italic(),
                                     _ => cache.base_font.clone(),
                                 };
-                                let s: SharedString = ch.to_string().into();
+                                // Build the string: base char + combining chars
+                                let mut char_str = ch.to_string();
+                                for &comb in &cell.combining {
+                                    char_str.push(comb);
+                                }
+                                let s: SharedString = char_str.into();
                                 let blen = s.len();
                                 let shaped = window.text_system().shape_line(
                                     s, fs,
@@ -2275,15 +2554,100 @@ impl TerminalView {
                             }
                         }
 
-                        if cell.attrs.underline {
+                        // Underline color: use dedicated underline_color if set,
+                        // otherwise fall back to the foreground color.
+                        let ul_color = if let Some(ref uc) = cell.attrs.underline_color {
+                            palette.resolve(uc, true)
+                        } else {
+                            fg_color
+                        };
+
+                        // Styled underline rendering
+                        let underline_y = y + cell_h - px(2.0);
+                        let gw_f32 = glyph_w.to_f64() as f32;
+                        match cell.attrs.underline {
+                            UnderlineStyle::None => {}
+                            UnderlineStyle::Single => {
+                                window.paint_quad(fill(
+                                    Bounds::new(point(x, underline_y), size(glyph_w, px(1.0))),
+                                    ul_color,
+                                ));
+                            }
+                            UnderlineStyle::Double => {
+                                // Two parallel lines 2px apart
+                                window.paint_quad(fill(
+                                    Bounds::new(point(x, underline_y - px(1.0)), size(glyph_w, px(1.0))),
+                                    ul_color,
+                                ));
+                                window.paint_quad(fill(
+                                    Bounds::new(point(x, underline_y + px(1.0)), size(glyph_w, px(1.0))),
+                                    ul_color,
+                                ));
+                            }
+                            UnderlineStyle::Curly => {
+                                // Wavy/zigzag underline: small quads alternating y position
+                                let wave_period = 4.0_f32;
+                                let wave_height = 2.0_f32;
+                                let mut xoff = 0.0_f32;
+                                let mut segment_idx = 0;
+                                while xoff < gw_f32 {
+                                    let seg_w = wave_period.min(gw_f32 - xoff);
+                                    let y_shift = if segment_idx % 2 == 0 { 0.0 } else { wave_height };
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(x + px(xoff), underline_y + px(y_shift)),
+                                            size(px(seg_w), px(1.0)),
+                                        ),
+                                        ul_color,
+                                    ));
+                                    xoff += wave_period;
+                                    segment_idx += 1;
+                                }
+                            }
+                            UnderlineStyle::Dotted => {
+                                // Dots: 1px on, 1px off
+                                let mut xoff = 0.0_f32;
+                                while xoff < gw_f32 {
+                                    let dot_w = 1.0_f32.min(gw_f32 - xoff);
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(x + px(xoff), underline_y),
+                                            size(px(dot_w), px(1.0)),
+                                        ),
+                                        ul_color,
+                                    ));
+                                    xoff += 2.0;
+                                }
+                            }
+                            UnderlineStyle::Dashed => {
+                                // Dashes: 3px on, 2px off
+                                let mut xoff = 0.0_f32;
+                                while xoff < gw_f32 {
+                                    let dash_w = 3.0_f32.min(gw_f32 - xoff);
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(x + px(xoff), underline_y),
+                                            size(px(dash_w), px(1.0)),
+                                        ),
+                                        ul_color,
+                                    ));
+                                    xoff += 5.0;
+                                }
+                            }
+                        }
+
+                        // Overline: drawn at the top of the cell
+                        if cell.attrs.overline {
                             window.paint_quad(fill(
-                                Bounds::new(point(x, y + cell_h - px(1.0)), size(cell_w, px(1.0))),
+                                Bounds::new(point(x, y + px(1.0)), size(glyph_w, px(1.0))),
                                 fg_color,
                             ));
                         }
+
+                        // Strikethrough: horizontal line at vertical center
                         if cell.attrs.strikethrough {
                             window.paint_quad(fill(
-                                Bounds::new(point(x, y + cell_h / 2.0), size(cell_w, px(1.0))),
+                                Bounds::new(point(x, y + cell_h / 2.0), size(glyph_w, px(1.0))),
                                 fg_color,
                             ));
                         }
@@ -2323,38 +2687,102 @@ impl TerminalView {
                 }
 
                 // Cursor
-                if cursor.visible && cursor.row < visible.len() {
+                // Determine whether the cursor should be drawn at all:
+                // - Must be marked visible by the grid
+                // - If the grid's blink flag is set, respect the blink timer phase
+                let should_draw_cursor = cursor.visible
+                    && cursor.row < visible.len()
+                    && (!cursor.blink || cursor_blink_on);
+
+                if should_draw_cursor {
                     let cx_x = bounds.origin.x + cell_w * cursor.col as f32;
                     let cx_y = bounds.origin.y + cell_h * cursor.row as f32;
-                    match cursor.shape {
-                        CursorShape::Block => {
-                            window.paint_quad(fill(
-                                Bounds::new(point(cx_x, cx_y), size(cell_w, cell_h)),
-                                ShellDeckColors::text_primary(),
-                            ));
-                            if let Some(row) = visible.get(cursor.row) {
-                                if let Some(cell) = row.get(cursor.col) {
-                                    let ch = cell.c;
-                                    if ch != ' ' && ch != '\0' {
-                                        let bg = ShellDeckColors::terminal_bg();
-                                        if let Some((fid, gid)) = cache.lookup(ch, cell.attrs.bold, cell.attrs.italic) {
-                                            let _ = window.paint_glyph(point(cx_x, cx_y + baseline), fid, gid, fs, bg);
+                    let cursor_color = ShellDeckColors::text_primary();
+
+                    // Determine cursor width: 2 cells for wide chars, 1 for normal.
+                    let cursor_w = if let Some(row) = visible.get(cursor.row) {
+                        if let Some(cell) = row.get(cursor.col) {
+                            if cell.wide == CellWidth::Wide { cell_w * 2.0 } else { cell_w }
+                        } else { cell_w }
+                    } else { cell_w };
+
+                    if !has_focus && cursor.shape == CursorShape::Block {
+                        // Hollow cursor: outline only (unfocused block)
+                        let bw = px(1.0);
+                        // Top edge
+                        window.paint_quad(fill(
+                            Bounds::new(point(cx_x, cx_y), size(cursor_w, bw)),
+                            cursor_color,
+                        ));
+                        // Bottom edge
+                        window.paint_quad(fill(
+                            Bounds::new(point(cx_x, cx_y + cell_h - bw), size(cursor_w, bw)),
+                            cursor_color,
+                        ));
+                        // Left edge
+                        window.paint_quad(fill(
+                            Bounds::new(point(cx_x, cx_y), size(bw, cell_h)),
+                            cursor_color,
+                        ));
+                        // Right edge
+                        window.paint_quad(fill(
+                            Bounds::new(point(cx_x + cursor_w - bw, cx_y), size(bw, cell_h)),
+                            cursor_color,
+                        ));
+                    } else {
+                        // Focused cursor (or unfocused non-block shapes)
+                        match cursor.shape {
+                            CursorShape::Block => {
+                                window.paint_quad(fill(
+                                    Bounds::new(point(cx_x, cx_y), size(cursor_w, cell_h)),
+                                    cursor_color,
+                                ));
+                                // Draw the character under the cursor in the background color
+                                // so it remains readable against the filled block.
+                                if let Some(row) = visible.get(cursor.row) {
+                                    if let Some(cell) = row.get(cursor.col) {
+                                        let ch = cell.c;
+                                        if ch != ' ' && ch != '\0' {
+                                            let bg = ShellDeckColors::terminal_bg();
+                                            if let Some((fid, gid)) = cache.lookup(ch, cell.attrs.bold, cell.attrs.italic) {
+                                                let _ = window.paint_glyph(point(cx_x, cx_y + baseline), fid, gid, fs, bg);
+                                            } else {
+                                                // Non-ASCII (e.g. CJK) under cursor: use shape_line
+                                                let f = match (cell.attrs.bold, cell.attrs.italic) {
+                                                    (true, true) => cache.base_font.clone().bold().italic(),
+                                                    (true, false) => cache.base_font.clone().bold(),
+                                                    (false, true) => cache.base_font.clone().italic(),
+                                                    _ => cache.base_font.clone(),
+                                                };
+                                                let mut char_str = ch.to_string();
+                                                for &comb in &cell.combining {
+                                                    char_str.push(comb);
+                                                }
+                                                let s: SharedString = char_str.into();
+                                                let blen = s.len();
+                                                let shaped = window.text_system().shape_line(
+                                                    s, fs,
+                                                    &[TextRun { len: blen, font: f, color: bg, background_color: None, underline: None, strikethrough: None }],
+                                                    None,
+                                                );
+                                                let _ = shaped.paint(point(cx_x, cx_y), cell_h, window, _cx);
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        CursorShape::Bar => {
-                            window.paint_quad(fill(
-                                Bounds::new(point(cx_x, cx_y), size(px(2.0), cell_h)),
-                                ShellDeckColors::primary(),
-                            ));
-                        }
-                        CursorShape::Underline => {
-                            window.paint_quad(fill(
-                                Bounds::new(point(cx_x, cx_y + cell_h - px(2.0)), size(cell_w, px(2.0))),
-                                ShellDeckColors::primary(),
-                            ));
+                            CursorShape::Bar => {
+                                window.paint_quad(fill(
+                                    Bounds::new(point(cx_x, cx_y), size(px(2.0), cell_h)),
+                                    ShellDeckColors::primary(),
+                                ));
+                            }
+                            CursorShape::Underline => {
+                                window.paint_quad(fill(
+                                    Bounds::new(point(cx_x, cx_y + cell_h - px(2.0)), size(cursor_w, px(2.0))),
+                                    ShellDeckColors::primary(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2667,6 +3095,7 @@ impl TerminalView {
     /// Render the context menu overlay.
     fn render_context_menu(&self, state: &ContextMenuState, cx: &mut Context<Self>) -> impl IntoElement {
         let mut menu = div()
+            .id("context-menu")
             .absolute()
             .left(state.position.x - px(self.grid_x_offset))
             .top(state.position.y - px(self.grid_y_offset))
@@ -2678,7 +3107,10 @@ impl TerminalView {
             .shadow_lg()
             .py(px(4.0))
             .flex()
-            .flex_col();
+            .flex_col()
+            // Capture mouse events so they don't pass through to the grid underneath.
+            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+            .on_mouse_down(MouseButton::Right, |_, _, _| {});
 
         let menu_item = |id: &str, label: &str| {
             div()
@@ -2789,7 +3221,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let mut cursor = grid_arc.lock().cursor.clone();
-        cursor.shape = self.cursor_style_override;
+        cursor.shape = self.effective_cursor_shape(cursor.shape);
         let focus = self.focus_handle.clone();
 
         let focus2 = self.focus_handle.clone();
@@ -2832,6 +3264,8 @@ impl TerminalView {
                 None,
                 vec![],
                 self.palette.clone(),
+                false,  // passive grid is never focused
+                true,   // cursor always visible (no blink) in passive pane
             ))
     }
 
@@ -3120,6 +3554,39 @@ impl Render for TerminalView {
                 self.focus_handle.focus(window);
             }
 
+            // --- Focus change detection & blink timer management ---
+            let focused_now = self.focus_handle.is_focused(window);
+            if focused_now != self.has_focus {
+                self.has_focus = focused_now;
+                if focused_now {
+                    // Gained focus: start blink timer if grid wants blinking
+                    let grid_blink = self
+                        .active_session()
+                        .map(|s| s.grid.lock().cursor.blink)
+                        .unwrap_or(false);
+                    if grid_blink {
+                        self.start_cursor_blink(cx);
+                    } else {
+                        self.stop_cursor_blink();
+                    }
+                    // Send focus-in event if app requested it (mode 1004)
+                    if let Some(session) = self.active_session() {
+                        if session.grid.lock().focus_reporting() {
+                            session.write_input(b"\x1b[I");
+                        }
+                    }
+                } else {
+                    // Lost focus: stop blinking, show steady cursor
+                    self.stop_cursor_blink();
+                    // Send focus-out event if app requested it (mode 1004)
+                    if let Some(session) = self.active_session() {
+                        if session.grid.lock().focus_reporting() {
+                            session.write_input(b"\x1b[O");
+                        }
+                    }
+                }
+            }
+
             self.resize_if_needed(window);
 
             container = container
@@ -3187,7 +3654,7 @@ impl Render for TerminalView {
                         self.detected_urls = detect_urls(&visible);
                         (g.mouse_mode, g.mouse_encoding, g.cursor.clone())
                     };
-                    cursor.shape = self.cursor_style_override;
+                    cursor.shape = self.effective_cursor_shape(cursor.shape);
 
                     let active_grid_el = self.render_terminal_grid(
                         mouse_mode,
@@ -3374,7 +3841,7 @@ impl Render for TerminalView {
                         self.detected_urls = detect_urls(&visible);
                         (g.mouse_mode, g.mouse_encoding, g.cursor.clone())
                     };
-                    cursor.shape = self.cursor_style_override;
+                    cursor.shape = self.effective_cursor_shape(cursor.shape);
 
                     let mut grid_wrapper = div()
                         .relative()

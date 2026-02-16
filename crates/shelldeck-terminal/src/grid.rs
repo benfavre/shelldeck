@@ -1,5 +1,133 @@
 use crate::colors::TermColor;
 use regex::Regex;
+use smallvec::SmallVec;
+use std::collections::HashMap;
+use unicode_width::UnicodeWidthChar;
+
+// ---------------------------------------------------------------------------
+// Ring Buffer
+// ---------------------------------------------------------------------------
+
+/// A fixed-capacity ring buffer that automatically evicts the oldest item
+/// when pushing beyond capacity. Used for scrollback storage to avoid O(n)
+/// `Vec::remove(0)` operations.
+pub struct RingBuffer<T> {
+    buf: Vec<Option<T>>,
+    head: usize,   // Index where the next item will be written
+    len: usize,    // Current number of items
+    capacity: usize,
+}
+
+impl<T> RingBuffer<T> {
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        let mut buf = Vec::with_capacity(capacity);
+        buf.resize_with(capacity, || None);
+        Self { buf, head: 0, len: 0, capacity }
+    }
+
+    /// Push an item. If the buffer is full, the oldest item is evicted.
+    pub fn push(&mut self, item: T) {
+        self.buf[self.head] = Some(item);
+        self.head = (self.head + 1) % self.capacity;
+        if self.len < self.capacity {
+            self.len += 1;
+        }
+    }
+
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// The starting index in the underlying buffer (the oldest item).
+    fn start(&self) -> usize {
+        if self.len < self.capacity {
+            0
+        } else {
+            self.head // when full, head points to the oldest slot
+        }
+    }
+
+    /// Get item by logical index (0 = oldest, len-1 = newest).
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index >= self.len { return None; }
+        let real_idx = (self.start() + index) % self.capacity;
+        self.buf[real_idx].as_ref()
+    }
+
+    /// Get mutable item by logical index (0 = oldest, len-1 = newest).
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index >= self.len { return None; }
+        let start = self.start();
+        let real_idx = (start + index) % self.capacity;
+        self.buf[real_idx].as_mut()
+    }
+
+    /// Pop the newest item (index len-1).
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 { return None; }
+        self.head = if self.head == 0 { self.capacity - 1 } else { self.head - 1 };
+        self.len -= 1;
+        self.buf[self.head].take()
+    }
+
+    pub fn clear(&mut self) {
+        for item in &mut self.buf { *item = None; }
+        self.head = 0;
+        self.len = 0;
+    }
+
+    /// Iterate from oldest to newest.
+    pub fn iter(&self) -> RingBufferIter<'_, T> {
+        RingBufferIter {
+            buf: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct RingBufferIter<'a, T> {
+    buf: &'a RingBuffer<T>,
+    index: usize,
+}
+
+impl<'a, T> Iterator for RingBufferIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.buf.len {
+            return None;
+        }
+        let item = self.buf.get(self.index);
+        self.index += 1;
+        item
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.buf.len - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for RingBufferIter<'a, T> {}
+
+// ---------------------------------------------------------------------------
+// Prompt marks (OSC 133 - Shell Integration)
+// ---------------------------------------------------------------------------
+
+/// Prompt markers emitted by shell integration (OSC 133).
+/// These allow the terminal to identify prompt boundaries, enabling
+/// features like "jump to previous/next prompt".
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromptMark {
+    /// 133;A - A fresh prompt has started.
+    PromptStart,
+    /// 133;B - The user has started typing a command.
+    CommandStart,
+    /// 133;C - The command was executed.
+    CommandExecuted,
+    /// 133;D;exitcode - The command finished (with optional exit code).
+    CommandFinished(Option<i32>),
+}
 
 // ---------------------------------------------------------------------------
 // Selection
@@ -8,6 +136,7 @@ use regex::Regex;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionKind {
     Simple,
+    Block,
     Word,
     Line,
 }
@@ -61,49 +190,101 @@ pub struct SearchMatch {
 }
 
 // ---------------------------------------------------------------------------
+// Line flags (for reflow tracking)
+// ---------------------------------------------------------------------------
+
+/// Per-row flags used to track soft-wrap state for text reflow on resize.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LineFlags {
+    /// True if this line is a continuation of the previous line due to
+    /// auto-wrap (soft wrap). False if the line started after a hard
+    /// newline (LF/CR+LF) or is the first line.
+    pub soft_wrapped: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Cell types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Underline style variants as defined by SGR 4 sub-parameters and SGR 21.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnderlineStyle {
+    #[default]
+    None,
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellAttributes {
     pub bold: bool,
+    pub dim: bool,
     pub italic: bool,
-    pub underline: bool,
+    pub underline: UnderlineStyle,
     pub strikethrough: bool,
     pub blink: bool,
     pub inverse: bool,
     pub hidden: bool,
+    pub overline: bool,
+    pub underline_color: Option<TermColor>,
+    /// OSC 8 hyperlink URL associated with this cell, if any.
+    pub hyperlink: Option<String>,
 }
 
 impl Default for CellAttributes {
     fn default() -> Self {
         Self {
             bold: false,
+            dim: false,
             italic: false,
-            underline: false,
+            underline: UnderlineStyle::None,
             strikethrough: false,
             blink: false,
             inverse: false,
             hidden: false,
+            overline: false,
+            underline_color: None,
+            hyperlink: None,
         }
     }
+}
+
+/// Width classification for a terminal cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellWidth {
+    /// Standard 1-column character.
+    #[default]
+    Normal,
+    /// First cell of a 2-column character (CJK, emoji, etc.).
+    Wide,
+    /// Second cell of a 2-column character (placeholder, not rendered independently).
+    Spacer,
 }
 
 #[derive(Debug, Clone)]
 pub struct Cell {
     pub c: char,
+    /// Combining characters attached to this cell (e.g. diacritics).
+    pub combining: SmallVec<[char; 2]>,
     pub fg: TermColor,
     pub bg: TermColor,
     pub attrs: CellAttributes,
+    /// Whether this cell is normal width, the first half of a wide char, or a spacer.
+    pub wide: CellWidth,
 }
 
 impl Default for Cell {
     fn default() -> Self {
         Self {
             c: ' ',
+            combining: SmallVec::new(),
             fg: TermColor::Default,
             bg: TermColor::Default,
             attrs: CellAttributes::default(),
+            wide: CellWidth::Normal,
         }
     }
 }
@@ -177,6 +358,7 @@ pub struct CursorState {
     pub col: usize,
     pub visible: bool,
     pub shape: CursorShape,
+    pub blink: bool,
 }
 
 impl Default for CursorState {
@@ -186,6 +368,7 @@ impl Default for CursorState {
             col: 0,
             visible: true,
             shape: CursorShape::Block,
+            blink: false,
         }
     }
 }
@@ -214,11 +397,15 @@ pub enum MouseEncoding {
 
 pub struct TerminalGrid {
     pub cells: Vec<Vec<Cell>>,
+    /// Per-row flags tracking soft-wrap state for reflow on resize.
+    pub line_flags: Vec<LineFlags>,
     pub cursor: CursorState,
     pub rows: usize,
     pub cols: usize,
     pub title: String,
-    scrollback: Vec<Vec<Cell>>,
+    scrollback: RingBuffer<Vec<Cell>>,
+    /// Per-row flags for scrollback lines (mirrors scrollback RingBuffer).
+    scrollback_line_flags: RingBuffer<LineFlags>,
     max_scrollback: usize,
     scroll_offset: usize,
     scroll_top: usize,
@@ -229,9 +416,15 @@ pub struct TerminalGrid {
     pub current_bg: TermColor,
     tab_stops: Vec<bool>,
     pub dirty: bool,
+    /// Per-row dirty flags: one flag per visible row.
+    row_dirty: Vec<bool>,
+    /// Quick check: true if any row is dirty.
+    any_dirty: bool,
     /// Alternate screen buffer (used by fullscreen apps like vim, less)
     alt_cells: Option<Vec<Vec<Cell>>>,
     alt_cursor: Option<CursorState>,
+    /// Saved line flags for the primary screen when in alt screen.
+    alt_line_flags: Option<Vec<LineFlags>>,
     /// Auto-wrap mode: when the cursor reaches the right edge, the next
     /// character will wrap to a new line. Default true.
     auto_wrap: bool,
@@ -245,6 +438,12 @@ pub struct TerminalGrid {
     /// Bracketed paste mode (mode 2004): when enabled, pasted text is
     /// bracketed with ESC[200~ ... ESC[201~.
     bracketed_paste_mode: bool,
+    /// Application cursor keys mode (DECCKM, mode 1): when enabled, arrow
+    /// keys send SS3 sequences (\x1bO…) instead of CSI sequences (\x1b[…).
+    application_cursor_keys: bool,
+    /// Application keypad mode (DECKPAM): when enabled, keypad keys send
+    /// application-mode sequences.
+    application_keypad: bool,
     /// Text selection state.
     pub selection: Option<SelectionState>,
     /// G0 character set designation.
@@ -255,12 +454,40 @@ pub struct TerminalGrid {
     active_charset: CharsetSlot,
     /// Last printed character (for REP — CSI Pb b).
     last_char: char,
+    /// Channel for sending responses back to the PTY (e.g., DSR, DA replies).
+    response_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    /// Origin mode (DECOM, DECSET mode 6): when enabled, cursor positions
+    /// from CUP are relative to the scroll region top margin, and the cursor
+    /// is constrained to the scroll region.
+    origin_mode: bool,
+    /// Focus event reporting mode (DECSET mode 1004): when enabled, the
+    /// terminal sends ESC[I on focus in and ESC[O on focus out.
+    /// NOTE: The UI layer must check this flag and send the appropriate
+    /// sequences when the terminal view gains/loses focus.
+    focus_reporting: bool,
+    /// Synchronized output mode (mode 2026): when enabled, the UI should
+    /// buffer screen updates and only render when the mode is turned off
+    /// (DECRST 2026). This prevents flicker during large screen updates.
+    /// NOTE: The UI layer must check this flag to implement buffered rendering.
+    synchronized_output: bool,
+    pub working_directory: Option<String>,
+    pub hyperlink: Option<String>,
+    pub prompt_mark: Option<PromptMark>,
+    pub prompt_lines: Vec<usize>,
+    pub clipboard_request: Option<(String, String)>,
+    pub palette_overrides: HashMap<u8, (u8, u8, u8)>,
 }
 
 impl TerminalGrid {
     pub fn new(rows: usize, cols: usize) -> Self {
+        Self::with_scrollback(rows, cols, 10_000)
+    }
+
+    /// Create a new grid with a configurable scrollback limit.
+    pub fn with_scrollback(rows: usize, cols: usize, max_scrollback: usize) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
+        let max_scrollback = max_scrollback.max(1);
 
         let cells: Vec<Vec<Cell>> = (0..rows)
             .map(|_| vec![Cell::default(); cols])
@@ -273,12 +500,14 @@ impl TerminalGrid {
 
         Self {
             cells,
+            line_flags: vec![LineFlags::default(); rows],
             cursor: CursorState::default(),
             rows,
             cols,
             title: String::new(),
-            scrollback: Vec::new(),
-            max_scrollback: 10_000,
+            scrollback: RingBuffer::new(max_scrollback),
+            scrollback_line_flags: RingBuffer::new(max_scrollback),
+            max_scrollback,
             scroll_offset: 0,
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
@@ -288,34 +517,74 @@ impl TerminalGrid {
             current_bg: TermColor::Default,
             tab_stops,
             dirty: true,
+            row_dirty: vec![true; rows],
+            any_dirty: true,
             alt_cells: None,
             alt_cursor: None,
+            alt_line_flags: None,
             auto_wrap: true,
             pending_wrap: false,
             mouse_mode: MouseMode::None,
             mouse_encoding: MouseEncoding::Normal,
             bracketed_paste_mode: false,
+            application_cursor_keys: false,
+            application_keypad: false,
             selection: None,
             charset_g0: Charset::Ascii,
             charset_g1: Charset::Ascii,
             active_charset: CharsetSlot::G0,
             last_char: ' ',
+            response_tx: None,
+            origin_mode: false,
+            focus_reporting: false,
+            synchronized_output: false,
+            working_directory: None,
+            hyperlink: None,
+            prompt_mark: None,
+            prompt_lines: Vec::new(),
+            clipboard_request: None,
+            palette_overrides: HashMap::new(),
         }
     }
 
-    /// Write a character at the current cursor position and advance the cursor.
-    pub fn write_char(&mut self, c: char) {
-        // If we are in the pending-wrap state, wrap first.
-        if self.pending_wrap {
-            self.cursor.col = 0;
-            if self.cursor.row == self.scroll_bottom {
-                self.scroll_up(1);
-            } else if self.cursor.row < self.rows - 1 {
-                self.cursor.row += 1;
-            }
-            self.pending_wrap = false;
-        }
+    // -- Per-row dirty tracking --
 
+    /// Returns true if any row is dirty.
+    pub fn is_any_dirty(&self) -> bool { self.any_dirty }
+
+    /// Returns true if the given row is dirty. Out-of-bounds rows are
+    /// considered dirty (safe default).
+    pub fn is_row_dirty(&self, row: usize) -> bool {
+        self.row_dirty.get(row).copied().unwrap_or(true)
+    }
+
+    /// Clear all dirty flags (both per-row and the global flag).
+    pub fn clear_dirty(&mut self) {
+        self.row_dirty.fill(false);
+        self.any_dirty = false;
+        self.dirty = false;
+    }
+
+    /// Mark a single row as dirty.
+    pub fn mark_row_dirty(&mut self, row: usize) {
+        if row < self.row_dirty.len() {
+            self.row_dirty[row] = true;
+        }
+        self.any_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Mark all rows as dirty.
+    pub fn mark_all_dirty(&mut self) {
+        self.row_dirty.fill(true);
+        self.any_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Write a character at the current cursor position and advance the cursor.
+    /// Handles wide (CJK/emoji) characters that occupy 2 columns, combining
+    /// characters (zero-width diacritics), and normal single-width characters.
+    pub fn write_char(&mut self, c: char) {
         // Translate through the active charset (DEC Special Graphics).
         let c = if self.active_charset_is_dec_special() {
             dec_special_char(c)
@@ -323,29 +592,163 @@ impl TerminalGrid {
             c
         };
 
+        let width = UnicodeWidthChar::width(c).unwrap_or(0);
+
+        // --- Zero-width / combining character ---
+        if width == 0 {
+            let row = self.cursor.row;
+            self.ensure_row(row);
+            let target_col = if self.cursor.col > 0 {
+                self.cursor.col - 1
+            } else {
+                0
+            };
+            // If the target is a Spacer, attach to the Wide cell before it.
+            let attach_col = if target_col > 0
+                && self.cells[row][target_col].wide == CellWidth::Spacer
+            {
+                target_col - 1
+            } else {
+                target_col
+            };
+            if attach_col < self.cols {
+                self.cells[row][attach_col].combining.push(c);
+            }
+            self.dirty = true;
+            return;
+        }
+
+        // --- Normal or wide character: resolve pending wrap first ---
+        if self.pending_wrap {
+            self.cursor.col = 0;
+            if self.cursor.row == self.scroll_bottom {
+                self.scroll_up(1);
+                if self.scroll_bottom < self.line_flags.len() {
+                    self.line_flags[self.scroll_bottom].soft_wrapped = true;
+                }
+            } else if self.cursor.row < self.rows - 1 {
+                self.cursor.row += 1;
+                if self.cursor.row < self.line_flags.len() {
+                    self.line_flags[self.cursor.row].soft_wrapped = true;
+                }
+            }
+            self.pending_wrap = false;
+        }
+
         self.ensure_row(self.cursor.row);
 
-        let col = self.cursor.col.min(self.cols - 1);
-        let row = self.cursor.row;
-
-        self.cells[row][col] = Cell {
-            c,
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
-        };
-
-        self.last_char = c;
-
-        if col + 1 < self.cols {
-            self.cursor.col = col + 1;
-        } else if self.auto_wrap {
-            // Entered pending wrap state - don't move yet, wait for next char.
-            self.pending_wrap = true;
+        let mut attrs = self.current_attrs.clone();
+        if self.hyperlink.is_some() {
+            attrs.hyperlink = self.hyperlink.clone();
         }
-        // If auto_wrap is false and we're at the last column, cursor stays.
+
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(self.cols - 1);
+
+        if width == 2 {
+            // --- Wide character (2 columns) ---
+            // If at the very last column (no room for 2 cells), wrap first.
+            if col + 1 >= self.cols {
+                if self.auto_wrap {
+                    self.cursor.col = 0;
+                    if self.cursor.row == self.scroll_bottom {
+                        self.scroll_up(1);
+                        if self.scroll_bottom < self.line_flags.len() {
+                            self.line_flags[self.scroll_bottom].soft_wrapped = true;
+                        }
+                    } else if self.cursor.row < self.rows - 1 {
+                        self.cursor.row += 1;
+                        if self.cursor.row < self.line_flags.len() {
+                            self.line_flags[self.cursor.row].soft_wrapped = true;
+                        }
+                    }
+                    self.ensure_row(self.cursor.row);
+                }
+            }
+
+            let row = self.cursor.row;
+            let col = self.cursor.col.min(self.cols.saturating_sub(2));
+
+            // Clear any wide-char pair that we're about to overwrite.
+            self.clear_wide_pair_at(row, col);
+            if col + 1 < self.cols {
+                self.clear_wide_pair_at(row, col + 1);
+            }
+
+            self.cells[row][col] = Cell {
+                c,
+                combining: SmallVec::new(),
+                fg: self.current_fg,
+                bg: self.current_bg,
+                attrs: attrs.clone(),
+                wide: CellWidth::Wide,
+            };
+
+            if col + 1 < self.cols {
+                self.cells[row][col + 1] = Cell {
+                    c: ' ',
+                    combining: SmallVec::new(),
+                    fg: self.current_fg,
+                    bg: self.current_bg,
+                    attrs,
+                    wide: CellWidth::Spacer,
+                };
+            }
+
+            self.last_char = c;
+
+            if col + 2 < self.cols {
+                self.cursor.col = col + 2;
+            } else if self.auto_wrap {
+                self.cursor.col = self.cols - 1;
+                self.pending_wrap = true;
+            } else {
+                self.cursor.col = self.cols - 1;
+            }
+        } else {
+            // --- Normal single-width character ---
+            self.clear_wide_pair_at(row, col);
+
+            self.cells[row][col] = Cell {
+                c,
+                combining: SmallVec::new(),
+                fg: self.current_fg,
+                bg: self.current_bg,
+                attrs,
+                wide: CellWidth::Normal,
+            };
+
+            self.last_char = c;
+
+            if col + 1 < self.cols {
+                self.cursor.col = col + 1;
+            } else if self.auto_wrap {
+                self.pending_wrap = true;
+            }
+        }
 
         self.dirty = true;
+    }
+
+    /// If the cell at (row, col) is part of a wide character pair, clear both
+    /// halves to prevent "half characters" from lingering on screen.
+    fn clear_wide_pair_at(&mut self, row: usize, col: usize) {
+        if row >= self.rows || col >= self.cols {
+            return;
+        }
+        match self.cells[row][col].wide {
+            CellWidth::Wide => {
+                if col + 1 < self.cols && self.cells[row][col + 1].wide == CellWidth::Spacer {
+                    self.cells[row][col + 1] = Cell::default();
+                }
+            }
+            CellWidth::Spacer => {
+                if col > 0 && self.cells[row][col - 1].wide == CellWidth::Wide {
+                    self.cells[row][col - 1] = Cell::default();
+                }
+            }
+            CellWidth::Normal => {}
+        }
     }
 
     /// Repeat the last printed character `n` times (REP — CSI Pb b).
@@ -357,12 +760,21 @@ impl TerminalGrid {
     }
 
     /// Move cursor down one line, scrolling if necessary.
+    /// This is a hard newline (LF), so the new line is NOT soft-wrapped.
     pub fn newline(&mut self) {
         self.pending_wrap = false;
         if self.cursor.row == self.scroll_bottom {
             self.scroll_up(1);
+            // Hard newline: the new blank line at scroll_bottom is not soft-wrapped.
+            if self.scroll_bottom < self.line_flags.len() {
+                self.line_flags[self.scroll_bottom].soft_wrapped = false;
+            }
         } else if self.cursor.row < self.rows - 1 {
             self.cursor.row += 1;
+            // Hard newline: ensure the target line is not marked as soft-wrapped.
+            if self.cursor.row < self.line_flags.len() {
+                self.line_flags[self.cursor.row].soft_wrapped = false;
+            }
         }
         self.dirty = true;
     }
@@ -383,19 +795,10 @@ impl TerminalGrid {
         self.dirty = true;
     }
 
-    /// Advance cursor to next tab stop (every 8 columns by default).
+    /// Advance cursor to next tab stop.
     pub fn tab(&mut self) {
         self.pending_wrap = false;
-        let start = self.cursor.col + 1;
-        for i in start..self.cols {
-            if self.tab_stops.get(i).copied().unwrap_or(false) {
-                self.cursor.col = i;
-                self.dirty = true;
-                return;
-            }
-        }
-        // No tab stop found - move to last column.
-        self.cursor.col = self.cols - 1;
+        self.cursor.col = self.next_tab_stop(self.cursor.col);
         self.dirty = true;
     }
 
@@ -438,11 +841,27 @@ impl TerminalGrid {
     }
 
     /// Set absolute cursor position (0-indexed).
+    /// When origin mode is active, the row is relative to the scroll region
+    /// top margin and clamped to the scroll region.
     pub fn cursor_to(&mut self, row: usize, col: usize) {
         self.pending_wrap = false;
-        self.cursor.row = row.min(self.rows - 1);
-        self.cursor.col = col.min(self.cols - 1);
+        let (clamped_row, clamped_col) = self.cursor_position_clamped(row, col);
+        self.cursor.row = clamped_row;
+        self.cursor.col = clamped_col;
         self.dirty = true;
+    }
+
+    /// Clamp a cursor position. When origin mode is active, the row is
+    /// offset by scroll_top and constrained to the scroll region. Otherwise
+    /// it is clamped to the full screen.
+    pub fn cursor_position_clamped(&self, row: usize, col: usize) -> (usize, usize) {
+        if self.origin_mode {
+            let effective_row = (self.scroll_top + row).min(self.scroll_bottom);
+            let effective_col = col.min(self.cols - 1);
+            (effective_row, effective_col)
+        } else {
+            (row.min(self.rows - 1), col.min(self.cols - 1))
+        }
     }
 
     pub fn save_cursor(&mut self) {
@@ -473,6 +892,9 @@ impl TerminalGrid {
                 let row = self.cursor.row;
                 let col = self.cursor.col;
                 if row < self.rows {
+                    // If erasing starts on the Spacer half of a wide char,
+                    // also clear the Wide cell to the left.
+                    self.clear_wide_pair_at(row, col);
                     for c in col..self.cols {
                         self.cells[row][c] = bce.clone();
                     }
@@ -489,7 +911,11 @@ impl TerminalGrid {
                     self.cells[r] = self.bce_row();
                 }
                 if row < self.rows {
-                    for c in 0..=col.min(self.cols - 1) {
+                    let end_col = col.min(self.cols - 1);
+                    // If erasing ends on the Wide half but not its Spacer,
+                    // also clear the Spacer to the right.
+                    self.clear_wide_pair_at(row, end_col);
+                    for c in 0..=end_col {
                         self.cells[row][c] = bce.clone();
                     }
                 }
@@ -499,13 +925,21 @@ impl TerminalGrid {
                 for r in 0..self.rows {
                     self.cells[r] = self.bce_row();
                 }
+                // Reset all line flags since content is cleared.
+                for f in &mut self.line_flags {
+                    *f = LineFlags::default();
+                }
             }
             3 => {
                 // Clear entire display + scrollback.
                 for r in 0..self.rows {
                     self.cells[r] = self.bce_row();
                 }
+                for f in &mut self.line_flags {
+                    *f = LineFlags::default();
+                }
                 self.scrollback.clear();
+                self.scrollback_line_flags.clear();
                 self.scroll_offset = 0;
             }
             _ => {}
@@ -525,12 +959,15 @@ impl TerminalGrid {
         let bce = self.bce_cell();
         match mode {
             0 => {
+                self.clear_wide_pair_at(row, self.cursor.col);
                 for c in self.cursor.col..self.cols {
                     self.cells[row][c] = bce.clone();
                 }
             }
             1 => {
-                for c in 0..=self.cursor.col.min(self.cols - 1) {
+                let end_col = self.cursor.col.min(self.cols - 1);
+                self.clear_wide_pair_at(row, end_col);
+                for c in 0..=end_col {
                     self.cells[row][c] = bce.clone();
                 }
             }
@@ -555,11 +992,19 @@ impl TerminalGrid {
             if self.scroll_bottom < self.cells.len() {
                 self.cells.remove(self.scroll_bottom);
             }
+            if self.scroll_bottom < self.line_flags.len() {
+                self.line_flags.remove(self.scroll_bottom);
+            }
             self.cells.insert(row, self.bce_row());
+            let flags_row = row.min(self.line_flags.len());
+            self.line_flags.insert(flags_row, LineFlags::default());
         }
         // Ensure we still have the right number of rows.
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
+        }
+        while self.line_flags.len() < self.rows {
+            self.line_flags.push(LineFlags::default());
         }
         self.dirty = true;
     }
@@ -577,11 +1022,19 @@ impl TerminalGrid {
             if row < self.cells.len() {
                 self.cells.remove(row);
             }
+            if row < self.line_flags.len() {
+                self.line_flags.remove(row);
+            }
             let insert_pos = self.scroll_bottom.min(self.cells.len());
             self.cells.insert(insert_pos, self.bce_row());
+            let flags_insert_pos = insert_pos.min(self.line_flags.len());
+            self.line_flags.insert(flags_insert_pos, LineFlags::default());
         }
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
+        }
+        while self.line_flags.len() < self.rows {
+            self.line_flags.push(LineFlags::default());
         }
         self.dirty = true;
     }
@@ -595,10 +1048,14 @@ impl TerminalGrid {
         if row >= self.rows || col >= self.cols {
             return;
         }
+        // If we're deleting from the middle of a wide char, clear both halves first.
+        self.clear_wide_pair_at(row, col);
         let n = n.min(self.cols - col);
         let bce = self.bce_cell();
         for _ in 0..n {
             if col < self.cells[row].len() {
+                // If the cell being removed is one half of a wide pair, clear the other.
+                self.clear_wide_pair_at(row, col);
                 self.cells[row].remove(col);
             }
             self.cells[row].push(bce.clone());
@@ -617,12 +1074,18 @@ impl TerminalGrid {
         if row >= self.rows || col >= self.cols {
             return;
         }
+        // If inserting into the middle of a wide char, clear both halves.
+        self.clear_wide_pair_at(row, col);
         let n = n.min(self.cols - col);
         let bce = self.bce_cell();
         for _ in 0..n {
             self.cells[row].insert(col, bce.clone());
         }
         self.cells[row].truncate(self.cols);
+        // If truncation split a wide char at the right edge, clear the orphan.
+        if self.cols > 0 && self.cells[row][self.cols - 1].wide == CellWidth::Wide {
+            self.cells[row][self.cols - 1] = Cell::default();
+        }
         self.dirty = true;
     }
 
@@ -635,6 +1098,11 @@ impl TerminalGrid {
         }
         let bce = self.bce_cell();
         let end = (col + n).min(self.cols);
+        // Handle wide-char boundaries at both edges of the erase range.
+        self.clear_wide_pair_at(row, col);
+        if end > 0 && end < self.cols {
+            self.clear_wide_pair_at(row, end);
+        }
         for c in col..end {
             self.cells[row][c] = bce.clone();
         }
@@ -655,20 +1123,32 @@ impl TerminalGrid {
         let n = n.min(bottom - top + 1);
         for _ in 0..n {
             let row = self.cells[top].clone();
+            let flags = if top < self.line_flags.len() {
+                self.line_flags[top]
+            } else {
+                LineFlags::default()
+            };
             // Only add to scrollback if we're scrolling from the very top.
             if top == 0 {
+                // Ring buffer auto-evicts oldest when full.
                 self.scrollback.push(row);
-                if self.scrollback.len() > self.max_scrollback {
-                    self.scrollback.remove(0);
-                }
+                self.scrollback_line_flags.push(flags);
             }
             self.cells.remove(top);
+            if top < self.line_flags.len() {
+                self.line_flags.remove(top);
+            }
             let insert_at = bottom.min(self.cells.len());
             self.cells.insert(insert_at, self.bce_row());
+            let flags_insert_at = insert_at.min(self.line_flags.len());
+            self.line_flags.insert(flags_insert_at, LineFlags::default());
         }
         // Ensure we still have the right row count.
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
+        }
+        while self.line_flags.len() < self.rows {
+            self.line_flags.push(LineFlags::default());
         }
         self.dirty = true;
     }
@@ -686,10 +1166,18 @@ impl TerminalGrid {
             if bottom < self.cells.len() {
                 self.cells.remove(bottom);
             }
+            if bottom < self.line_flags.len() {
+                self.line_flags.remove(bottom);
+            }
             self.cells.insert(top, self.bce_row());
+            let flags_insert_at = top.min(self.line_flags.len());
+            self.line_flags.insert(flags_insert_at, LineFlags::default());
         }
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
+        }
+        while self.line_flags.len() < self.rows {
+            self.line_flags.push(LineFlags::default());
         }
         self.dirty = true;
     }
@@ -713,9 +1201,19 @@ impl TerminalGrid {
     }
 
     /// Resize the grid. Attempts to preserve content where possible.
+    /// When the width increases, soft-wrapped lines are re-joined (reflowed).
     pub fn resize(&mut self, new_rows: usize, new_cols: usize) {
         let new_rows = new_rows.max(1);
         let new_cols = new_cols.max(1);
+        let old_cols = self.cols;
+
+        // Reflow: when the terminal grows wider, merge soft-wrapped lines.
+        // When it shrinks, re-wrap long lines.
+        if new_cols > old_cols {
+            self.reflow_on_grow(new_cols);
+        } else if new_cols < old_cols {
+            self.reflow_on_shrink(new_cols);
+        }
 
         // Resize each existing row (truncate or extend).
         for row in &mut self.cells {
@@ -731,6 +1229,8 @@ impl TerminalGrid {
                 if let Some(mut row) = self.scrollback.pop() {
                     row.resize(new_cols, Cell::default());
                     self.cells.insert(0, row);
+                    let flags = self.scrollback_line_flags.pop().unwrap_or_default();
+                    self.line_flags.insert(0, flags);
                     self.cursor.row += 1;
                 }
             }
@@ -751,15 +1251,26 @@ impl TerminalGrid {
                 if !self.cells.is_empty() {
                     let row = self.cells.remove(0);
                     self.scrollback.push(row);
+                    let flags = if !self.line_flags.is_empty() {
+                        self.line_flags.remove(0)
+                    } else {
+                        LineFlags::default()
+                    };
+                    self.scrollback_line_flags.push(flags);
                     self.cursor.row = self.cursor.row.saturating_sub(1);
                 }
             }
             self.cells.truncate(new_rows);
         }
 
+        // Ensure line_flags matches cells length.
+        self.line_flags.resize(self.cells.len(), LineFlags::default());
+
         // Also resize scrollback rows.
-        for row in &mut self.scrollback {
-            row.resize(new_cols, Cell::default());
+        for i in 0..self.scrollback.len() {
+            if let Some(row) = self.scrollback.get_mut(i) {
+                row.resize(new_cols, Cell::default());
+            }
         }
 
         self.rows = new_rows;
@@ -780,12 +1291,100 @@ impl TerminalGrid {
             self.tab_stops[i] = true;
         }
 
-        if self.scrollback.len() > self.max_scrollback {
-            let drain = self.scrollback.len() - self.max_scrollback;
-            self.scrollback.drain(0..drain);
-        }
+        // Ring buffer handles capacity limits automatically, no drain needed.
 
+        // Reset per-row dirty tracking to match new row count.
+        self.row_dirty = vec![true; new_rows];
+        self.any_dirty = true;
         self.dirty = true;
+    }
+
+    /// Reflow soft-wrapped lines when the terminal width increases.
+    /// Walks the screen rows and merges consecutive soft-wrapped lines
+    /// when their combined content fits within `new_cols`.
+    fn reflow_on_grow(&mut self, new_cols: usize) {
+        let mut i = 1;
+        while i < self.cells.len() && i < self.line_flags.len() {
+            if self.line_flags[i].soft_wrapped {
+                // This row is a continuation of the previous row.
+                let prev_content_len = self.cells[i - 1]
+                    .iter()
+                    .rposition(|c| c.c != ' ' && c.c != '\0')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let curr_content_len = self.cells[i]
+                    .iter()
+                    .rposition(|c| c.c != ' ' && c.c != '\0')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+
+                if prev_content_len + curr_content_len <= new_cols {
+                    // Merge: append current row content to previous row.
+                    // First, ensure prev row is big enough.
+                    if self.cells[i - 1].len() < new_cols {
+                        self.cells[i - 1].resize(new_cols, Cell::default());
+                    }
+                    for j in 0..curr_content_len {
+                        if prev_content_len + j < self.cells[i - 1].len() {
+                            self.cells[i - 1][prev_content_len + j] = self.cells[i][j].clone();
+                        }
+                    }
+                    self.cells.remove(i);
+                    self.line_flags.remove(i);
+                    // Adjust cursor row if it was at or below the removed row.
+                    if self.cursor.row >= i {
+                        self.cursor.row = self.cursor.row.saturating_sub(1);
+                    }
+                    // Don't increment i, check the new row at this index.
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// Reflow when the terminal shrinks: split lines that are wider than
+    /// `new_cols` into multiple soft-wrapped rows.
+    fn reflow_on_shrink(&mut self, new_cols: usize) {
+        let mut i = 0;
+        while i < self.cells.len() {
+            let content_len = self.cells[i]
+                .iter()
+                .rposition(|c| c.c != ' ' && c.c != '\0')
+                .map(|p| p + 1)
+                .unwrap_or(0);
+
+            if content_len > new_cols {
+                // Split this row: keep first new_cols cells, move the rest to a new row.
+                let overflow: Vec<Cell> = self.cells[i].split_off(new_cols);
+                let mut new_row = overflow;
+                new_row.resize(self.cols, Cell::default());
+
+                // Mark current row as soft-wrapped.
+                if i < self.line_flags.len() {
+                    self.line_flags[i].soft_wrapped = true;
+                }
+
+                // Insert overflow as a new row below.
+                let insert_at = i + 1;
+                if insert_at <= self.cells.len() {
+                    self.cells.insert(insert_at, new_row);
+                    self.line_flags.insert(insert_at, LineFlags::default());
+                }
+
+                // Adjust cursor position if it was on or below the split point.
+                if self.cursor.row > i {
+                    self.cursor.row += 1;
+                } else if self.cursor.row == i && self.cursor.col >= new_cols {
+                    self.cursor.row += 1;
+                    self.cursor.col -= new_cols;
+                }
+
+                // Don't increment i — check the overflow row too (it might also be too long).
+            } else {
+                i += 1;
+            }
+        }
     }
 
     pub fn set_title(&mut self, title: String) {
@@ -834,8 +1433,9 @@ impl TerminalGrid {
         let sb_visible = offset.min(self.rows);
 
         for i in 0..sb_visible {
-            if sb_start + i < sb_len {
-                result.push(&self.scrollback[sb_start + i]);
+            let sb_idx = sb_start + i;
+            if let Some(row) = self.scrollback.get(sb_idx) {
+                result.push(row);
             }
         }
 
@@ -859,10 +1459,12 @@ impl TerminalGrid {
         }
         self.alt_cells = Some(self.cells.clone());
         self.alt_cursor = Some(self.cursor.clone());
+        self.alt_line_flags = Some(self.line_flags.clone());
         // Clear the screen for the alt buffer.
         self.cells = (0..self.rows)
             .map(|_| self.new_row())
             .collect();
+        self.line_flags = vec![LineFlags::default(); self.rows];
         self.cursor = CursorState::default();
         self.pending_wrap = false;
         self.dirty = true;
@@ -876,6 +1478,9 @@ impl TerminalGrid {
         if let Some(cursor) = self.alt_cursor.take() {
             self.cursor = cursor;
         }
+        if let Some(flags) = self.alt_line_flags.take() {
+            self.line_flags = flags;
+        }
         self.pending_wrap = false;
         self.dirty = true;
     }
@@ -884,7 +1489,8 @@ impl TerminalGrid {
     pub fn reset(&mut self) {
         let rows = self.rows;
         let cols = self.cols;
-        *self = Self::new(rows, cols);
+        let max_scrollback = self.max_scrollback;
+        *self = Self::with_scrollback(rows, cols, max_scrollback);
     }
 
     /// Set cursor visible/hidden.
@@ -901,6 +1507,162 @@ impl TerminalGrid {
     /// Returns true if bracketed paste mode is active.
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste_mode
+    }
+
+    /// Set application cursor keys mode (DECCKM, mode 1).
+    pub fn set_application_cursor_keys(&mut self, enabled: bool) {
+        self.application_cursor_keys = enabled;
+    }
+
+    /// Returns true if application cursor keys mode is active.
+    pub fn application_cursor_keys(&self) -> bool {
+        self.application_cursor_keys
+    }
+
+    /// Set application keypad mode (DECKPAM).
+    pub fn set_application_keypad(&mut self, enabled: bool) {
+        self.application_keypad = enabled;
+    }
+
+    /// Returns true if application keypad mode is active.
+    pub fn application_keypad(&self) -> bool {
+        self.application_keypad
+    }
+
+    // -- Origin mode (DECOM) --
+
+    /// Set origin mode (DECOM, DECSET mode 6).
+    /// When enabled, cursor positioning is relative to the scroll region
+    /// and the cursor is constrained to the scroll region.
+    pub fn set_origin_mode(&mut self, enabled: bool) {
+        self.origin_mode = enabled;
+        // When origin mode is set or reset, the cursor moves to the home position.
+        if enabled {
+            self.cursor.row = self.scroll_top;
+        } else {
+            self.cursor.row = 0;
+        }
+        self.cursor.col = 0;
+        self.pending_wrap = false;
+        self.dirty = true;
+    }
+
+    /// Returns true if origin mode (DECOM) is active.
+    pub fn origin_mode(&self) -> bool {
+        self.origin_mode
+    }
+
+    // -- Auto-wrap mode (DECAWM) --
+
+    /// Set auto-wrap mode (DECAWM, DECSET mode 7).
+    pub fn set_auto_wrap(&mut self, enabled: bool) {
+        self.auto_wrap = enabled;
+    }
+
+    /// Returns true if auto-wrap mode is active.
+    pub fn auto_wrap(&self) -> bool {
+        self.auto_wrap
+    }
+
+    // -- Tab stop management --
+
+    /// Set a tab stop at the current cursor column (HTS - ESC H).
+    pub fn set_tab_stop(&mut self) {
+        let col = self.cursor.col;
+        if col < self.tab_stops.len() {
+            self.tab_stops[col] = true;
+        }
+    }
+
+    /// Clear tab stop(s).
+    /// mode 0: clear tab stop at current column.
+    /// mode 3: clear all tab stops.
+    pub fn clear_tab_stop(&mut self, mode: u8) {
+        match mode {
+            0 => {
+                let col = self.cursor.col;
+                if col < self.tab_stops.len() {
+                    self.tab_stops[col] = false;
+                }
+            }
+            3 => {
+                for stop in &mut self.tab_stops {
+                    *stop = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Find the next tab stop after `from_col`. Returns the column of the
+    /// next tab stop, or the last column if none is found.
+    pub fn next_tab_stop(&self, from_col: usize) -> usize {
+        for i in (from_col + 1)..self.cols {
+            if self.tab_stops.get(i).copied().unwrap_or(false) {
+                return i;
+            }
+        }
+        // No tab stop found - return last column.
+        self.cols - 1
+    }
+
+    /// Find the previous tab stop before `from_col`. Returns the column of
+    /// the previous tab stop, or 0 if none is found.
+    pub fn prev_tab_stop(&self, from_col: usize) -> usize {
+        if from_col == 0 {
+            return 0;
+        }
+        for i in (0..from_col).rev() {
+            if self.tab_stops.get(i).copied().unwrap_or(false) {
+                return i;
+            }
+        }
+        0
+    }
+
+    // -- Focus reporting (mode 1004) --
+
+    /// Set focus event reporting mode (DECSET mode 1004).
+    /// When enabled, the UI layer should send ESC[I (focus in) and
+    /// ESC[O (focus out) when the terminal gains/loses focus.
+    pub fn set_focus_reporting(&mut self, enabled: bool) {
+        self.focus_reporting = enabled;
+    }
+
+    /// Returns true if focus event reporting is active.
+    pub fn focus_reporting(&self) -> bool {
+        self.focus_reporting
+    }
+
+    // -- Synchronized output (mode 2026) --
+
+    /// Set synchronized output mode (mode 2026).
+    /// When enabled, the UI should buffer screen updates and only flush
+    /// when this mode is turned off. This prevents flicker during large
+    /// batched screen updates.
+    pub fn set_synchronized_output(&mut self, enabled: bool) {
+        self.synchronized_output = enabled;
+        self.dirty = true;
+    }
+
+    /// Returns true if synchronized output mode is active.
+    pub fn synchronized_output(&self) -> bool {
+        self.synchronized_output
+    }
+
+    // -- Response channel --
+
+    /// Set the response channel sender for writing responses back to the PTY.
+    pub fn set_response_tx(&mut self, tx: std::sync::mpsc::Sender<Vec<u8>>) {
+        self.response_tx = Some(tx);
+    }
+
+    /// Send a response back to the PTY (e.g., DSR cursor position report).
+    /// Does nothing if no response channel is set.
+    pub fn write_response(&self, data: Vec<u8>) {
+        if let Some(ref tx) = self.response_tx {
+            let _ = tx.send(data);
+        }
     }
 
     /// Reverse Index - move cursor up one line, scrolling down if at top of
@@ -972,6 +1734,19 @@ impl TerminalGrid {
         self.dirty = true;
     }
 
+    /// Start a block/rectangular selection (Alt+click) at the given display position.
+    /// In block mode, the selection forms a rectangle defined by two corners.
+    pub fn start_block_selection(&mut self, col: usize, row: usize) {
+        let pos = GridPos::new(col, row);
+        self.selection = Some(SelectionState {
+            start: pos,
+            end: pos,
+            active: true,
+            kind: SelectionKind::Block,
+        });
+        self.dirty = true;
+    }
+
     /// Start a word selection (double-click): expand to word boundaries.
     pub fn start_word_selection(&mut self, col: usize, row: usize) {
         let visible = self.visible_rows();
@@ -1007,7 +1782,7 @@ impl TerminalGrid {
                 return;
             }
             match sel.kind {
-                SelectionKind::Simple | SelectionKind::Word => {
+                SelectionKind::Simple | SelectionKind::Word | SelectionKind::Block => {
                     sel.end = GridPos::new(col, row);
                 }
                 SelectionKind::Line => {
@@ -1043,6 +1818,16 @@ impl TerminalGrid {
             None => return false,
         };
 
+        // Block/rectangular selection: the selected region is a rectangle
+        // defined by two corners, independent of stream order.
+        if sel.kind == SelectionKind::Block {
+            let min_row = sel.start.row.min(sel.end.row);
+            let max_row = sel.start.row.max(sel.end.row);
+            let min_col = sel.start.col.min(sel.end.col);
+            let max_col = sel.start.col.max(sel.end.col);
+            return row >= min_row && row <= max_row && col >= min_col && col <= max_col;
+        }
+
         let (start, end) = if sel.start <= sel.end {
             (sel.start, sel.end)
         } else {
@@ -1067,13 +1852,50 @@ impl TerminalGrid {
     /// Extract the selected text as a string.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
+        let visible = self.visible_rows();
+
+        // Block/rectangular selection: extract the same column range from each row.
+        if sel.kind == SelectionKind::Block {
+            let min_row = sel.start.row.min(sel.end.row);
+            let max_row = sel.start.row.max(sel.end.row);
+            let min_col = sel.start.col.min(sel.end.col);
+            let max_col = sel.start.col.max(sel.end.col);
+
+            let mut lines = Vec::new();
+            for row_idx in min_row..=max_row {
+                if row_idx >= visible.len() {
+                    break;
+                }
+                let row_cells = visible[row_idx];
+                let mut line = String::new();
+                for ci in min_col..=max_col.min(row_cells.len().saturating_sub(1)) {
+                    // Skip spacer cells (second half of wide chars).
+                    if row_cells[ci].wide == CellWidth::Spacer {
+                        continue;
+                    }
+                    line.push(row_cells[ci].c);
+                    // Append any combining characters.
+                    for &comb in &row_cells[ci].combining {
+                        line.push(comb);
+                    }
+                }
+                lines.push(line.trim_end().to_string());
+            }
+
+            let text = lines.join("\n");
+            if text.is_empty() {
+                return None;
+            }
+            return Some(text);
+        }
+
+        // Stream selection (Simple, Word, Line).
         let (start, end) = if sel.start <= sel.end {
             (sel.start, sel.end)
         } else {
             (sel.end, sel.start)
         };
 
-        let visible = self.visible_rows();
         let mut text = String::new();
 
         for row_idx in start.row..=end.row {
@@ -1090,7 +1912,15 @@ impl TerminalGrid {
 
             let mut line = String::new();
             for ci in col_start..=col_end.min(row_cells.len().saturating_sub(1)) {
+                // Skip spacer cells (second half of wide chars).
+                if row_cells[ci].wide == CellWidth::Spacer {
+                    continue;
+                }
                 line.push(row_cells[ci].c);
+                // Append any combining characters.
+                for &comb in &row_cells[ci].combining {
+                    line.push(comb);
+                }
             }
             // Trim trailing spaces from each line
             let trimmed = line.trim_end();
@@ -1158,12 +1988,32 @@ impl TerminalGrid {
         };
 
         for (ri, row) in visible.iter().enumerate() {
-            let line: String = row.iter().map(|c| c.c).collect();
+            // Build the line text skipping spacer cells, and track the
+            // mapping from character-index-in-string to column-index.
+            let mut line = String::new();
+            let mut char_to_col: Vec<usize> = Vec::new();
+            for (ci, cell) in row.iter().enumerate() {
+                if cell.wide == CellWidth::Spacer {
+                    continue;
+                }
+                char_to_col.push(ci);
+                line.push(cell.c);
+                for &comb in &cell.combining {
+                    line.push(comb);
+                }
+            }
             for m in re.find_iter(&line) {
+                let start_char = m.start();
+                let end_char = m.end();
+                let col = if start_char < char_to_col.len() {
+                    char_to_col[start_char]
+                } else {
+                    continue;
+                };
                 matches.push(SearchMatch {
                     row: ri,
-                    col: m.start(),
-                    len: m.end() - m.start(),
+                    col,
+                    len: end_char - start_char,
                 });
             }
         }
@@ -1190,15 +2040,24 @@ impl TerminalGrid {
     /// Find word boundaries around `col` in a row of cells.
     /// Returns (start_col, end_col) inclusive.
     fn word_bounds(row: &[Cell], col: usize) -> (usize, usize) {
-        let col = col.min(row.len().saturating_sub(1));
+        let mut col = col.min(row.len().saturating_sub(1));
+        // If clicking on a Spacer, move to its Wide cell.
+        if row[col].wide == CellWidth::Spacer && col > 0 {
+            col -= 1;
+        }
         let is_word_char = |c: char| -> bool {
             c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
         };
 
         let anchor = row[col].c;
         if !is_word_char(anchor) && anchor != ' ' {
-            // Single punctuation char
-            return (col, col);
+            // Single punctuation char (or wide char that's not a word char)
+            let end = if row[col].wide == CellWidth::Wide && col + 1 < row.len() {
+                col + 1
+            } else {
+                col
+            };
+            return (col, end);
         }
 
         // If clicking on whitespace, select the whitespace run
@@ -1209,14 +2068,36 @@ impl TerminalGrid {
         };
 
         let mut start = col;
-        while start > 0 && check(row[start - 1].c) {
+        while start > 0 && row[start - 1].wide != CellWidth::Spacer && check(row[start - 1].c) {
             start -= 1;
         }
         let mut end = col;
-        while end + 1 < row.len() && check(row[end + 1].c) {
-            end += 1;
+        while end + 1 < row.len() {
+            // Skip over spacers when scanning forward.
+            if row[end + 1].wide == CellWidth::Spacer {
+                end += 1;
+                continue;
+            }
+            if check(row[end + 1].c) {
+                end += 1;
+            } else {
+                break;
+            }
         }
         (start, end)
+    }
+
+    // -- OSC palette --
+
+    /// Set a custom palette color override (OSC 4).
+    pub fn set_palette_color(&mut self, index: u8, r: u8, g: u8, b: u8) {
+        self.palette_overrides.insert(index, (r, g, b));
+        self.dirty = true;
+    }
+
+    /// Get a palette color override, if any.
+    pub fn get_palette_color(&self, index: u8) -> Option<(u8, u8, u8)> {
+        self.palette_overrides.get(&index).copied()
     }
 
     // -- Internal helpers --
@@ -1240,10 +2121,8 @@ impl TerminalGrid {
     /// fill with the current SGR background color.
     fn bce_cell(&self) -> Cell {
         Cell {
-            c: ' ',
-            fg: TermColor::Default,
             bg: self.current_bg,
-            attrs: CellAttributes::default(),
+            ..Cell::default()
         }
     }
 

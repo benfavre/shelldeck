@@ -17,4 +17,5 @@ parking_lot = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 smallvec = { workspace = true }
+unicode-width = "0.2"
 regex = "1"

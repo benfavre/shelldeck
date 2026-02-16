@@ -38,14 +38,22 @@ impl TerminalSession {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
+        // Create a response channel so the VTE parser can send responses
+        // (e.g., DSR cursor position, DA reports) back to the PTY.
+        let (response_tx, response_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        grid.lock().set_response_tx(response_tx);
+
         let (pty, reader) = LocalPty::spawn(shell, rows, cols)?;
 
         // Split PTY: writer goes to the writer thread, master stays for resize.
         let (mut writer, master) = pty.into_parts();
 
         let grid_clone = grid.clone();
+        let response_input_tx = input_tx.clone();
 
         // Spawn reader thread: reads PTY output and feeds to VTE parser.
+        // Also drains any pending responses from the parser and forwards
+        // them to the writer thread via input_tx.
         std::thread::Builder::new()
             .name("pty-reader".into())
             .spawn(move || {
@@ -59,6 +67,11 @@ impl TerminalSession {
                         Ok(0) => break,
                         Ok(n) => {
                             processor.process_bytes(&mut parser, &buf[..n]);
+                            // Drain any responses queued by the parser (DSR, DA, etc.)
+                            // and forward them to the PTY writer.
+                            while let Ok(response) = response_rx.try_recv() {
+                                let _ = response_input_tx.send(response);
+                            }
                         }
                         Err(e) => {
                             tracing::debug!("PTY reader error: {}", e);
@@ -122,9 +135,17 @@ impl TerminalSession {
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (data_tx, mut data_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        let grid_clone = grid.clone();
+        // Create a response channel so the VTE parser can send responses
+        // (e.g., DSR cursor position, DA reports) back to the SSH channel.
+        let (response_tx, response_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        grid.lock().set_response_tx(response_tx);
 
-        // Spawn reader thread: receives SSH channel data and feeds to VTE parser → grid
+        let grid_clone = grid.clone();
+        let response_input_tx = input_tx.clone();
+
+        // Spawn reader thread: receives SSH channel data and feeds to VTE parser → grid.
+        // Also drains any pending responses from the parser and forwards
+        // them via input_tx back to the SSH channel's stdin.
         std::thread::Builder::new()
             .name("ssh-reader".into())
             .spawn(move || {
@@ -133,6 +154,11 @@ impl TerminalSession {
 
                 while let Some(data) = data_rx.blocking_recv() {
                     processor.process_bytes(&mut parser, &data);
+                    // Drain any responses queued by the parser (DSR, DA, etc.)
+                    // and forward them to the SSH channel's stdin.
+                    while let Ok(response) = response_rx.try_recv() {
+                        let _ = response_input_tx.send(response);
+                    }
                 }
                 tracing::debug!("SSH reader thread exiting");
             })

@@ -1,4 +1,4 @@
-use crate::grid::Cell;
+use crate::grid::{Cell, CellWidth};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -79,7 +79,10 @@ pub fn detect_urls(visible_rows: &[&Vec<Cell>]) -> Vec<UrlMatch> {
     let mut matches = Vec::new();
 
     for (ri, row) in visible_rows.iter().enumerate() {
-        let line: String = row.iter().map(|c| c.c).collect();
+        let line: String = row.iter()
+            .filter(|c| c.wide != CellWidth::Spacer)
+            .map(|c| c.c)
+            .collect();
         for m in re.find_iter(&line) {
             let raw = m.as_str();
             let trimmed = trim_trailing(raw);
