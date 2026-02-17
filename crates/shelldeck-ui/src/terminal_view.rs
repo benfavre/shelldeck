@@ -676,6 +676,8 @@ pub enum TerminalEvent {
     },
     /// Run a script by ID (emitted from the toolbar script dropdown).
     RunScriptRequested(Uuid),
+    /// Toggle pin/unpin a script on the toolbar.
+    TogglePinScript(Uuid),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -800,12 +802,23 @@ pub struct TerminalView {
     favorite_scripts: Vec<(Uuid, String, String)>,
     /// Recently run scripts for toolbar dropdown.
     recent_scripts: Vec<(Uuid, String, String)>,
+    /// Scripts pinned directly to the toolbar for one-click execution.
+    pinned_scripts: Vec<PinnedScript>,
     /// Current blink phase: true = cursor visible, false = cursor hidden.
     cursor_blink_on: bool,
     /// Async task that toggles `cursor_blink_on` every 530ms.
     cursor_blink_timer: Option<gpui::Task<()>>,
     /// Whether the terminal grid currently has focus (tracked for hollow cursor).
     has_focus: bool,
+}
+
+/// A script pinned to the terminal toolbar for one-click execution.
+#[derive(Debug, Clone)]
+pub struct PinnedScript {
+    pub id: Uuid,
+    pub name: String,
+    pub badge: String,
+    pub badge_color: (u8, u8, u8),
 }
 
 #[derive(Debug, Clone)]
@@ -858,6 +871,7 @@ impl TerminalView {
             script_dropdown_open: false,
             favorite_scripts: Vec::new(),
             recent_scripts: Vec::new(),
+            pinned_scripts: Vec::new(),
             cursor_blink_on: true,
             cursor_blink_timer: None,
             has_focus: false,
@@ -878,6 +892,11 @@ impl TerminalView {
             .into_iter()
             .map(|(id, name, lang)| (id, name, lang.badge().to_string()))
             .collect();
+    }
+
+    /// Update pinned scripts for the toolbar buttons.
+    pub fn set_pinned_scripts(&mut self, pinned: Vec<PinnedScript>) {
+        self.pinned_scripts = pinned;
     }
 
     /// Update the sidebar width used for coordinate mapping.
@@ -1976,6 +1995,7 @@ impl TerminalView {
                         let script_id = *id;
                         let name = name.clone();
                         let badge = lang_badge.clone();
+                        let is_pinned = self.pinned_scripts.iter().any(|p| p.id == script_id);
                         dropdown = dropdown.child(
                             div()
                                 .id(ElementId::from(SharedString::from(format!(
@@ -2007,9 +2027,35 @@ impl TerminalView {
                                 )
                                 .child(
                                     div()
+                                        .flex_grow()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
                                         .text_size(px(11.0))
                                         .text_color(ShellDeckColors::text_primary())
                                         .child(name),
+                                )
+                                // Pin/unpin toggle
+                                .child(
+                                    div()
+                                        .id(ElementId::from(SharedString::from(format!(
+                                            "pin-fav-{}",
+                                            script_id
+                                        ))))
+                                        .cursor_pointer()
+                                        .text_size(px(11.0))
+                                        .text_color(if is_pinned {
+                                            ShellDeckColors::primary()
+                                        } else {
+                                            ShellDeckColors::text_muted()
+                                        })
+                                        .hover(|el| el.text_color(ShellDeckColors::primary()))
+                                        .on_click(cx.listener(
+                                            move |_this, _: &ClickEvent, _, cx| {
+                                                cx.emit(TerminalEvent::TogglePinScript(script_id));
+                                            },
+                                        ))
+                                        .child(if is_pinned { "\u{25C9}" } else { "\u{25CB}" }),
                                 ),
                         );
                     }
@@ -2084,6 +2130,102 @@ impl TerminalView {
             }
 
             toolbar = toolbar.child(scripts_wrapper);
+        }
+
+        // Pinned script buttons
+        if !self.pinned_scripts.is_empty() {
+            // Separator before pinned scripts
+            toolbar = toolbar.child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .mx(px(4.0))
+                    .bg(ShellDeckColors::border()),
+            );
+
+            let max_visible = 6;
+            let visible_count = self.pinned_scripts.len().min(max_visible);
+            for pinned in self.pinned_scripts.iter().take(max_visible) {
+                let script_id = pinned.id;
+                let badge_text = pinned.badge.clone();
+                let script_name = pinned.name.clone();
+                let (r, g, b) = pinned.badge_color;
+                let badge_color =
+                    rgba(((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | 0xFF);
+                let badge_bg_color =
+                    rgba(((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | 0x33);
+
+                toolbar = toolbar.child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "pinned-{}",
+                            script_id
+                        ))))
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                        .on_click(cx.listener(move |_this, _, _, cx| {
+                            cx.emit(TerminalEvent::RunScriptRequested(script_id));
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |_this, _, _, cx| {
+                                cx.emit(TerminalEvent::TogglePinScript(script_id));
+                            }),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(8.0))
+                                .px(px(3.0))
+                                .py(px(1.0))
+                                .rounded(px(3.0))
+                                .bg(badge_bg_color)
+                                .text_color(badge_color)
+                                .font_weight(FontWeight::BOLD)
+                                .child(badge_text),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(80.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(script_name),
+                        ),
+                );
+            }
+
+            // Overflow indicator
+            if self.pinned_scripts.len() > max_visible {
+                let overflow = self.pinned_scripts.len() - max_visible;
+                toolbar = toolbar.child(
+                    div()
+                        .id("pinned-overflow")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .px(px(4.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .cursor_pointer()
+                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.script_dropdown_open = !this.script_dropdown_open;
+                            cx.notify();
+                        }))
+                        .child(format!("+{}", overflow)),
+                );
+            }
+
+            let _ = visible_count;
         }
 
         // Spacer

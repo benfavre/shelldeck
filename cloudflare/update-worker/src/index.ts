@@ -58,7 +58,7 @@ interface DownloadInfo {
 }
 
 async function getDownloadInfo(env: Env): Promise<DownloadInfo> {
-  const fallback: DownloadInfo = { version: "0.1.2" };
+  const fallback: DownloadInfo = { version: "0.1.6" };
   try {
     const raw = await env.SHELLDECK_KV.get("latest-release");
     if (!raw) return fallback;
@@ -811,7 +811,7 @@ function switchInstallTab(tab) {
 }
 
 async function renderInstallSh(env: Env): Promise<Response> {
-  let version = "0.1.2";
+  let version = "0.1.6";
   let linuxX86Url = "";
   let linuxX86Sha = "";
   let darwinArm64Url = "";
@@ -1015,7 +1015,7 @@ echo ""
 }
 
 async function renderInstallPs1(env: Env): Promise<Response> {
-  let version = "0.1.2";
+  let version = "0.1.6";
   let windowsUrl = "";
   let windowsSha = "";
 

@@ -19,7 +19,7 @@ fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("Starting ShellDeck v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Starting ShellDeck v{}", shelldeck_core::VERSION);
 
     // Load configuration
     let config = AppConfig::load().unwrap_or_else(|e| {

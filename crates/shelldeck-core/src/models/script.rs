@@ -375,6 +375,8 @@ pub struct Script {
     #[serde(default)]
     pub is_favorite: bool,
     #[serde(default)]
+    pub pinned_to_toolbar: bool,
+    #[serde(default)]
     pub last_run: Option<DateTime<Utc>>,
     #[serde(default)]
     pub run_count: u32,
@@ -402,6 +404,7 @@ impl Script {
             category: ScriptCategory::Uncategorized,
             dependencies: Vec::new(),
             is_favorite: false,
+            pinned_to_toolbar: false,
             last_run: None,
             run_count: 0,
             is_template: false,

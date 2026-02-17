@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// The running application version, set at compile time.
+/// The running application version, set at compile time from workspace Cargo.toml.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Base URL of the update server (Cloudflare Worker).

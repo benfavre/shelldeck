@@ -19,6 +19,7 @@ pub enum ScriptEvent {
     UpdateScript(Script),
     ClearOutput,
     ToggleFavorite(Uuid),
+    TogglePinToToolbar(Uuid),
     DeleteScript(Uuid),
     ImportTemplate(String),
     RunScriptById(Uuid),
@@ -581,6 +582,7 @@ impl ScriptEditorView {
                 ScriptTarget::AskOnRun => "Ask",
             };
             let is_favorite = script.is_favorite;
+            let is_pinned = script.pinned_to_toolbar;
             let lang = script.language.clone();
 
             let mut item_el = div()
@@ -650,6 +652,26 @@ impl ScriptEditorView {
                             cx.emit(ScriptEvent::ToggleFavorite(script_id));
                         }))
                         .child(if is_favorite { "*" } else { "" }),
+                )
+                // Pin to toolbar toggle
+                .child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "pin-{}",
+                            script_id
+                        ))))
+                        .cursor_pointer()
+                        .text_size(px(11.0))
+                        .text_color(if is_pinned {
+                            ShellDeckColors::primary()
+                        } else {
+                            ShellDeckColors::text_muted()
+                        })
+                        .hover(|el| el.text_color(ShellDeckColors::primary()))
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.emit(ScriptEvent::TogglePinToToolbar(script_id));
+                        }))
+                        .child(if is_pinned { "\u{25C9}" } else { "\u{25CB}" }),
                 );
 
             // Row 2: target badge + run button (on hover)

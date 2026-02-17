@@ -134,7 +134,7 @@ impl Render for StatusBar {
                             (notif.clone(), ShellDeckColors::text_muted())
                         } else {
                             (
-                                format!("ShellDeck v{}", env!("CARGO_PKG_VERSION")),
+                                format!("ShellDeck v{}", shelldeck_core::VERSION),
                                 ShellDeckColors::text_muted(),
                             )
                         };

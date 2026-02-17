@@ -623,7 +623,7 @@ impl SettingsView {
                 div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                    .child(format!("Version {}", shelldeck_core::VERSION)),
             )
             .child(
                 div()

@@ -33,7 +33,7 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::StatusBar;
 use crate::template_browser::{TemplateBrowser, TemplateBrowserEvent};
-use crate::terminal_view::{SplitDirection, TerminalEvent, TerminalView};
+use crate::terminal_view::{PinnedScript, SplitDirection, TerminalEvent, TerminalView};
 use crate::theme::ShellDeckColors;
 use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::{VariablePrompt, VariablePromptEvent};
@@ -521,6 +521,26 @@ impl Workspace {
                     self.handle_script_event(&ScriptEvent::RunScript(script), cx);
                 }
             }
+            TerminalEvent::TogglePinScript(id) => {
+                let id = *id;
+                self.scripts.update(cx, |editor, _| {
+                    if let Some(s) = editor.scripts.iter_mut().find(|s| s.id == id) {
+                        s.pinned_to_toolbar = !s.pinned_to_toolbar;
+                    }
+                });
+                if let Some(s) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                {
+                    let _ = self.store.update_script(s);
+                }
+                self.sync_scripts_to_terminal_toolbar(cx);
+                cx.notify();
+            }
         }
     }
 
@@ -844,6 +864,26 @@ impl Workspace {
                 self.scripts.update(cx, |editor, _| {
                     if let Some(s) = editor.scripts.iter_mut().find(|s| s.id == id) {
                         s.is_favorite = !s.is_favorite;
+                    }
+                });
+                if let Some(s) = self
+                    .scripts
+                    .read(cx)
+                    .scripts
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                {
+                    let _ = self.store.update_script(s);
+                }
+                self.sync_scripts_to_terminal_toolbar(cx);
+                cx.notify();
+            }
+            ScriptEvent::TogglePinToToolbar(id) => {
+                let id = *id;
+                self.scripts.update(cx, |editor, _| {
+                    if let Some(s) = editor.scripts.iter_mut().find(|s| s.id == id) {
+                        s.pinned_to_toolbar = !s.pinned_to_toolbar;
                     }
                 });
                 if let Some(s) = self
@@ -1339,8 +1379,20 @@ impl Workspace {
             .map(|s| (s.id, s.name.clone(), s.language.clone()))
             .collect();
 
+        let pinned: Vec<PinnedScript> = scripts
+            .iter()
+            .filter(|s| s.pinned_to_toolbar)
+            .map(|s| PinnedScript {
+                id: s.id,
+                name: s.name.clone(),
+                badge: s.language.badge().to_string(),
+                badge_color: s.language.badge_color(),
+            })
+            .collect();
+
         self.terminal.update(cx, |tv, _| {
             tv.set_scripts(favorites, recent);
+            tv.set_pinned_scripts(pinned);
         });
     }
 
@@ -3973,7 +4025,12 @@ impl Workspace {
                     .text_color(title_color)
                     .child("ShellDeck"),
             )
-            .child(div().text_xs().text_color(title_dim).child(concat!("v", env!("CARGO_PKG_VERSION"))));
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(title_dim)
+                    .child(format!("v{}", shelldeck_core::VERSION)),
+            );
 
         // Minimize button
         let minimize_btn = div()
