@@ -599,39 +599,174 @@ impl SettingsView {
             ))
     }
 
-    fn render_about() -> impl IntoElement {
+    fn render_about_section(title: &str) -> Div {
         div()
+            .text_size(px(11.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ShellDeckColors::text_muted())
+            .mt(px(20.0))
+            .mb(px(6.0))
+            .child(title.to_string())
+    }
+
+    fn render_about_row(label: &str, value: &str) -> impl IntoElement {
+        div()
+            .flex()
+            .justify_between()
+            .w_full()
+            .py(px(4.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(value.to_string()),
+            )
+    }
+
+    fn render_about() -> impl IntoElement {
+        let tech_stack = [
+            ("UI Framework", "GPUI (GPU-accelerated)"),
+            ("Components", "adabraka-ui"),
+            ("Terminal", "portable-pty + vte"),
+            ("SSH", "russh (async, tokio)"),
+            ("Language", "Rust (nightly)"),
+        ];
+
+        let shortcuts = [
+            ("New Terminal", "Ctrl+T"),
+            ("Close Tab", "Ctrl+W"),
+            ("Toggle Sidebar", "Ctrl+B"),
+            ("Command Palette", "Ctrl+Shift+P"),
+            ("Settings", "Ctrl+,"),
+            ("Search", "Ctrl+F"),
+            ("Zoom In/Out", "Ctrl++ / Ctrl+-"),
+            ("Quit", "Ctrl+Q"),
+        ];
+
+        let mut root = div()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(16.0))
-            .py(px(32.0))
+            .w_full()
+            .py(px(24.0))
+            .gap(px(4.0));
+
+        // Header: app name + tagline
+        root = root
             .child(
                 div()
-                    .text_size(px(24.0))
+                    .text_size(px(28.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::primary())
                     .child("ShellDeck"),
             )
             .child(
                 div()
-                    .text_size(px(14.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child("Desktop SSH & Terminal Companion"),
-            )
-            .child(
-                div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("Version {}", shelldeck_core::VERSION)),
+                    .child("GPU-accelerated Terminal & SSH Companion"),
             )
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .mt(px(16.0))
-                    .child("Built with Rust, GPUI, and adabraka-ui"),
-            )
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .mt(px(4.0))
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(4.0))
+                            .bg(ShellDeckColors::primary().opacity(0.15))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::primary())
+                            .child(format!("v{}", shelldeck_core::VERSION)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("MIT License"),
+                    ),
+            );
+
+        // Content card
+        let mut card = div()
+            .w(px(420.0))
+            .mt(px(16.0))
+            .p(px(20.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .flex()
+            .flex_col();
+
+        // Tech stack section
+        card = card.child(Self::render_about_section("TECH STACK"));
+        for (label, value) in &tech_stack {
+            card = card.child(Self::render_about_row(label, value));
+        }
+
+        // Keyboard shortcuts section
+        card = card.child(Self::render_about_section("KEYBOARD SHORTCUTS"));
+        for (label, key) in &shortcuts {
+            card = card.child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .w_full()
+                    .py(px(3.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .px(px(6.0))
+                            .py(px(1.0))
+                            .rounded(px(3.0))
+                            .bg(ShellDeckColors::hint_bg())
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(key.to_string()),
+                    ),
+            );
+        }
+
+        // Links section
+        card = card.child(Self::render_about_section("LINKS"));
+        card = card
+            .child(Self::render_about_row(
+                "GitHub",
+                "github.com/nickarrow/shelldeck",
+            ))
+            .child(Self::render_about_row(
+                "Website",
+                "shelldeck.1clic.pro",
+            ));
+
+        root = root.child(card);
+
+        // Footer
+        root = root.child(
+            div()
+                .mt(px(12.0))
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child("Made with Rust"),
+        );
+
+        root
     }
 }
 
