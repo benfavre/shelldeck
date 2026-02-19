@@ -22,6 +22,9 @@ const STATUS_BAR_HEIGHT: f32 = 22.0;
 const REPLACE_BAR_HEIGHT: f32 = 32.0;
 const DRAG_HANDLE_WIDTH: f32 = 4.0;
 const SCROLLBAR_WIDTH: f32 = 8.0;
+const MINIMAP_WIDTH: f32 = 80.0;
+const MINIMAP_LINE_HEIGHT: f32 = 2.0;
+const MINIMAP_CHAR_WIDTH: f32 = 1.2;
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -314,6 +317,10 @@ pub struct FileEditorView {
     pub(crate) context_menu_position: (f32, f32),
     // Interactive scrollbar
     pub(crate) scrollbar_dragging: bool,
+    // Minimap
+    pub(crate) minimap_visible: bool,
+    pub(crate) minimap_dragging: bool,
+    pub(crate) minimap_origin_y: std::sync::Arc<std::sync::atomic::AtomicU32>,
     // Mouse click origin for dead zone (prevents micro-movements from changing cursor)
     pub(crate) mouse_click_origin: Option<(f32, f32)>,
     // Unsaved changes warning
@@ -357,6 +364,9 @@ impl FileEditorView {
             context_menu_visible: false,
             context_menu_position: (0.0, 0.0),
             scrollbar_dragging: false,
+            minimap_visible: true,
+            minimap_dragging: false,
+            minimap_origin_y: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             mouse_click_origin: None,
             pending_close_tab: None,
             font_family: "JetBrains Mono".to_string(),
@@ -1133,6 +1143,23 @@ impl FileEditorView {
             Some((sl, sv, el, ev))
         });
 
+        // Word highlighting: find all occurrences of the word under cursor
+        let word_highlight_coords: Vec<(usize, usize, usize, usize)> = {
+            if let Some(word) = buffer.word_at_cursor() {
+                let occurrences = buffer.find_word_occurrences(&word, first_visible, last_visible);
+                occurrences
+                    .into_iter()
+                    .map(|(line, sc, ec)| {
+                        let sv = buffer.char_col_to_visual_col(line, sc);
+                        let ev = buffer.char_col_to_visual_col(line, ec);
+                        (line, sv, line, ev)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
+
         // Convert search matches from char ranges to (start_line, start_visual_col, end_line, end_visual_col)
         // Only keep matches that overlap the visible range
         // Re-borrow buffer immutably for search match coordinate conversion
@@ -1208,6 +1235,7 @@ impl FileEditorView {
                             this.mouse_selecting = false;
                             this.mouse_click_origin = None;
                             this.scrollbar_dragging = false;
+                            this.minimap_dragging = false;
                             cx.notify();
                         });
                     }
@@ -1245,6 +1273,7 @@ impl FileEditorView {
                         search_current_coord,
                         tab_size,
                         bracket_match,
+                        word_highlight_coords,
                     )
                 },
                 move |bounds,
@@ -1264,6 +1293,7 @@ impl FileEditorView {
                     search_current_coord,
                     tab_size,
                     bracket_match,
+                    word_highlight_coords,
                 ),
                       window,
                       cx| {
@@ -1284,6 +1314,7 @@ impl FileEditorView {
                         search_current_coord,
                         tab_size,
                         bracket_match,
+                        &word_highlight_coords,
                         window,
                         cx,
                     );
@@ -1316,6 +1347,7 @@ impl FileEditorView {
         search_current_coord: Option<usize>,
         tab_size: usize,
         bracket_match: Option<(usize, usize)>,
+        word_highlight_coords: &[(usize, usize, usize, usize)],
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1327,6 +1359,7 @@ impl FileEditorView {
         let sel_color = hsla(0.58, 0.6, 0.5, 0.35);
         let search_color = hsla(0.12, 0.8, 0.5, 0.35);
         let search_current_color = hsla(0.12, 0.9, 0.55, 0.55);
+        let word_highlight_color = hsla(0.58, 0.3, 0.5, 0.2);
 
         // Paint gutter background
         window.paint_quad(fill(
@@ -1340,6 +1373,74 @@ impl FileEditorView {
         } else {
             (total_lines as f64).log10().floor() as usize + 1
         };
+
+        let indent_guide_color = hsla(0.0, 0.0, 0.5, 0.12);
+        let indent_guide_active_color = hsla(0.0, 0.0, 0.5, 0.25);
+
+        // Indent guides: compute max indent depth per visible line, then draw vertical lines
+        {
+            // For each line, count leading spaces to determine indent level
+            let tab_w = cell_w * tab_size as f32;
+            for (ri, line_text) in line_texts.iter().enumerate() {
+                let y = bounds.origin.y + cell_h * ri as f32;
+                let abs_line = first_visible + ri;
+
+                // Count leading whitespace columns
+                let mut leading_vcols = 0usize;
+                for ch in line_text.chars() {
+                    if ch == ' ' {
+                        leading_vcols += 1;
+                    } else if ch == '\t' {
+                        leading_vcols += tab_size - (leading_vcols % tab_size);
+                    } else {
+                        break;
+                    }
+                }
+
+                // For blank lines, look at surrounding lines to infer indent depth
+                let effective_indent = if line_text.trim().is_empty() {
+                    // Use max of prev/next non-blank line indent
+                    let prev_indent = if ri > 0 {
+                        count_leading_vcols(&line_texts[ri - 1], tab_size)
+                    } else {
+                        0
+                    };
+                    let next_indent = if ri + 1 < line_texts.len() {
+                        count_leading_vcols(&line_texts[ri + 1], tab_size)
+                    } else {
+                        0
+                    };
+                    prev_indent.min(next_indent)
+                } else {
+                    leading_vcols
+                };
+
+                let indent_levels = effective_indent / tab_size;
+
+                // Determine which indent level the cursor is in (for active highlight)
+                let cursor_indent_level = if abs_line == cursor_line {
+                    Some(cursor_col / tab_size)
+                } else {
+                    None
+                };
+
+                for level in 1..=indent_levels {
+                    let guide_x = bounds.origin.x + gutter_px + tab_w * level as f32 - tab_w;
+                    let color = if cursor_indent_level == Some(level.saturating_sub(1)) {
+                        indent_guide_active_color
+                    } else {
+                        indent_guide_color
+                    };
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(guide_x, y),
+                            size(px(1.0), cell_h),
+                        ),
+                        color,
+                    ));
+                }
+            }
+        }
 
         // Pass 1: Paint line backgrounds, line numbers, search highlights, selection
         for (ri, line_text) in line_texts.iter().enumerate() {
@@ -1355,6 +1456,24 @@ impl FileEditorView {
                     ),
                     ShellDeckColors::cursor_line_bg(),
                 ));
+            }
+
+            // Word occurrence highlights (behind text, behind search)
+            for &(wh_sl, wh_sc, wh_el, wh_ec) in word_highlight_coords {
+                if abs_line < wh_sl || abs_line > wh_el {
+                    continue;
+                }
+                let line_visual_len = visual_line_width(line_text, tab_size);
+                let sc = if abs_line == wh_sl { wh_sc } else { 0 };
+                let ec = if abs_line == wh_el { wh_ec } else { line_visual_len };
+                if sc < ec {
+                    let sx = bounds.origin.x + gutter_px + cell_w * sc as f32;
+                    let sw = cell_w * (ec - sc) as f32;
+                    window.paint_quad(fill(
+                        Bounds::new(point(sx, y), size(sw, cell_h)),
+                        word_highlight_color,
+                    ));
+                }
             }
 
             // Search match highlights (behind text)
@@ -1655,7 +1774,11 @@ impl FileEditorView {
 
         let extend = event.modifiers.shift;
 
-        if event.click_count == 2 {
+        if event.click_count >= 3 {
+            // Triple-click: select entire line
+            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, 0, false);
+            self.tabs[tab_idx].buffer_mut().unwrap().select_line();
+        } else if event.click_count == 2 {
             self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, false);
             self.tabs[tab_idx].buffer_mut().unwrap().select_word_at_cursor();
         } else {
@@ -1776,6 +1899,191 @@ impl FileEditorView {
 
     pub fn is_file_browser_resizing(&self) -> bool {
         self.file_browser_resizing
+    }
+
+    // -----------------------------------------------------------------------
+    // Minimap
+    // -----------------------------------------------------------------------
+
+    fn render_minimap(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+        let tab_idx = self.active_tab_index;
+        let tab = match self.tabs.get(tab_idx) {
+            Some(t) => t,
+            None => return div().id("minimap-empty"),
+        };
+
+        let buffer = match tab.buffer() {
+            Some(b) => b,
+            None => return div().id("minimap-non-text"),
+        };
+
+        let total_lines = buffer.len_lines();
+        let scroll_offset = tab.scroll_offset;
+        let scroll_lines_per_page = self.scroll_lines_per_page;
+
+        // Collect line visual lengths for the minimap (no full-file syntax highlighting
+        // to avoid invalidating the editor's highlight cache).
+        let minimap_max_lines = total_lines.min(5000);
+        let tab_size = buffer.tab_size();
+
+        let mut line_lengths: Vec<usize> = Vec::with_capacity(minimap_max_lines);
+        for line_idx in 0..minimap_max_lines {
+            let line_text = buffer.line_text(line_idx);
+            let visual_len = visual_line_width(&line_text, tab_size);
+            line_lengths.push(visual_len);
+        }
+
+        let handle = cx.entity().downgrade();
+        let h_down = handle.clone();
+        let h_move = handle.clone();
+        let h_up = handle.clone();
+        let minimap_oy_arc = self.minimap_origin_y.clone();
+
+        div()
+            .id("minimap-container")
+            .w(px(MINIMAP_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .bg(ShellDeckColors::bg_primary())
+            .border_l_1()
+            .border_color(ShellDeckColors::border())
+            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
+                if let Some(view) = h_down.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.minimap_dragging = true;
+                        let y = event.position.y.to_f64() as f32;
+                        this.handle_minimap_click(y, cx);
+                    });
+                }
+            })
+            .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+                if let Some(view) = h_move.upgrade() {
+                    view.update(cx, |this, cx| {
+                        if this.minimap_dragging {
+                            let y = event.position.y.to_f64() as f32;
+                            this.handle_minimap_click(y, cx);
+                        }
+                    });
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                if let Some(view) = h_up.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.minimap_dragging = false;
+                        cx.notify();
+                    });
+                }
+            })
+            .child(canvas(
+                move |bounds, _window, _cx| {
+                    // Store the minimap canvas origin Y for accurate click handling
+                    let oy = bounds.origin.y.to_f64() as f32;
+                    minimap_oy_arc.store(oy.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    (line_lengths, total_lines, scroll_offset, scroll_lines_per_page)
+                },
+                move |bounds,
+                      (line_lengths, total_lines, scroll_offset, scroll_lines_per_page),
+                      window,
+                      _cx| {
+                    Self::paint_minimap(
+                        bounds,
+                        &line_lengths,
+                        total_lines,
+                        scroll_offset,
+                        scroll_lines_per_page,
+                        window,
+                    );
+                },
+            ).size_full())
+    }
+
+    fn handle_minimap_click(&mut self, window_y: f32, cx: &mut Context<Self>) {
+        let tab_idx = self.active_tab_index;
+        let total_lines = self.tabs.get(tab_idx)
+            .and_then(|t| t.buffer())
+            .map_or(0, |b| b.len_lines());
+        if total_lines == 0 {
+            return;
+        }
+
+        // Use stored minimap canvas origin for accurate positioning
+        let origin_y = f32::from_bits(
+            self.minimap_origin_y.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        let rel_y = (window_y - origin_y).max(0.0);
+
+        // Calculate which line in the minimap was clicked
+        let clicked_line = (rel_y / MINIMAP_LINE_HEIGHT) as usize;
+        let half_page = self.scroll_lines_per_page / 2;
+
+        if let Some(tab) = self.tabs.get_mut(tab_idx) {
+            tab.scroll_offset = clicked_line.saturating_sub(half_page) as f32;
+        }
+        self.clamp_scroll();
+        cx.notify();
+    }
+
+    fn paint_minimap(
+        bounds: Bounds<Pixels>,
+        line_lengths: &[usize],
+        total_lines: usize,
+        scroll_offset: f32,
+        scroll_lines_per_page: usize,
+        window: &mut Window,
+    ) {
+        let line_h = px(MINIMAP_LINE_HEIGHT);
+        let char_w = px(MINIMAP_CHAR_WIDTH);
+        let code_color = hsla(0.0, 0.0, 0.6, 0.35);
+        let viewport_bg = hsla(0.58, 0.3, 0.5, 0.15);
+        let viewport_border = hsla(0.58, 0.4, 0.5, 0.3);
+
+        // Paint viewport indicator
+        let vp_y = bounds.origin.y + line_h * scroll_offset;
+        let vp_h = line_h * scroll_lines_per_page as f32;
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.origin.x, vp_y),
+                size(bounds.size.width, vp_h),
+            ),
+            viewport_bg,
+        ));
+        // Top and bottom border of viewport
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.origin.x, vp_y),
+                size(bounds.size.width, px(1.0)),
+            ),
+            viewport_border,
+        ));
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.origin.x, vp_y + vp_h - px(1.0)),
+                size(bounds.size.width, px(1.0)),
+            ),
+            viewport_border,
+        ));
+
+        // Paint lines as simple blocks showing code density
+        let max_render_lines = (bounds.size.height.to_f64() as f32 / MINIMAP_LINE_HEIGHT) as usize;
+        let render_count = line_lengths.len().min(max_render_lines).min(total_lines);
+
+        for (line_idx, &visual_len) in line_lengths.iter().enumerate().take(render_count) {
+            if visual_len == 0 {
+                continue;
+            }
+            let y = bounds.origin.y + line_h * line_idx as f32;
+            if y > bounds.origin.y + bounds.size.height {
+                break;
+            }
+            let w = char_w * (visual_len as f32).min(60.0);
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(bounds.origin.x + px(4.0), y),
+                    size(w, line_h),
+                ),
+                code_color,
+            ));
+        }
     }
 }
 
@@ -2087,6 +2395,11 @@ impl Render for FileEditorView {
         if is_text_tab {
             let canvas_area = self.render_editor_canvas(window, cx);
             editor_area = editor_area.child(canvas_area);
+            // Minimap
+            if self.minimap_visible {
+                let minimap = self.render_minimap(window, cx);
+                editor_area = editor_area.child(minimap);
+            }
         } else {
             // Extract data needed for non-text rendering before calling render methods
             let tab = self.active_tab().unwrap();
@@ -2604,6 +2917,21 @@ fn format_file_size(bytes: u64) -> String {
     } else {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
+}
+
+/// Count leading whitespace visual columns.
+fn count_leading_vcols(line: &str, tab_size: usize) -> usize {
+    let mut vcol = 0;
+    for ch in line.chars() {
+        if ch == ' ' {
+            vcol += 1;
+        } else if ch == '\t' {
+            vcol += tab_size - (vcol % tab_size);
+        } else {
+            break;
+        }
+    }
+    vcol
 }
 
 /// Compute the visual width of a line accounting for tab expansion.

@@ -102,7 +102,7 @@ impl FileEditorView {
                     cx.notify();
                     return;
                 }
-                "d" => {
+                "d" if !shift => {
                     if let Some(tab) = self.active_tab_mut() {
                         let (buf, hl) = tab.text_parts_mut();
                         buf.duplicate_line();
@@ -211,6 +211,11 @@ impl FileEditorView {
                     cx.notify();
                     return;
                 }
+                "m" => {
+                    self.minimap_visible = !self.minimap_visible;
+                    cx.notify();
+                    return;
+                }
                 "w" => {
                     let idx = self.active_tab_index;
                     self.close_tab(idx, cx);
@@ -240,8 +245,8 @@ impl FileEditorView {
             // Ctrl+Shift shortcuts
             if shift {
                 match ks.key.as_str() {
-                    "k" => {
-                        // Delete line
+                    "k" | "d" => {
+                        // Delete line (Ctrl+Shift+K or Ctrl+Shift+D)
                         if let Some(tab) = self.active_tab_mut() {
                             let (buf, hl) = tab.text_parts_mut();
                             buf.delete_line();
@@ -250,6 +255,7 @@ impl FileEditorView {
                                 hl.parse_incremental(buf.rope(), &pending);
                             }
                         }
+                        self.ensure_cursor_visible();
                         cx.notify();
                         return;
                     }
@@ -433,8 +439,9 @@ impl FileEditorView {
             "backspace" => {
                 if let Some(tab) = self.active_tab_mut() {
                     let (buf, hl) = tab.text_parts_mut();
-                    // Try pair-aware backspace first, then normal
-                    if !buf.try_backspace_pair() {
+                    if ctrl {
+                        buf.delete_word_left();
+                    } else if !buf.try_backspace_pair() {
                         buf.backspace();
                     }
                     let pending = buf.take_pending_edits();
@@ -449,7 +456,11 @@ impl FileEditorView {
             "delete" => {
                 if let Some(tab) = self.active_tab_mut() {
                     let (buf, hl) = tab.text_parts_mut();
-                    buf.delete();
+                    if ctrl {
+                        buf.delete_word_right();
+                    } else {
+                        buf.delete();
+                    }
                     let pending = buf.take_pending_edits();
                     if !pending.is_empty() {
                         hl.parse_incremental(buf.rope(), &pending);

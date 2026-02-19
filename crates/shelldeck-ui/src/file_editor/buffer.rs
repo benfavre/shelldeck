@@ -447,11 +447,36 @@ impl RopeBuffer {
         let line_text = self.line_text(line);
         let indent: String = line_text.chars().take_while(|c| c.is_whitespace()).collect();
 
-        let text = format!("\n{}", indent);
+        // Smart bracket indent: check if char before cursor is an opening bracket
+        let char_before = if self.cursor > 0 { self.char_at(self.cursor - 1) } else { None };
+        let char_after = self.char_at(self.cursor);
+        let extra_indent = matches!(char_before, Some('{') | Some('[') | Some('('));
+        let between_brackets = extra_indent
+            && matches!(
+                (char_before, char_after),
+                (Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
+            );
+
+        let spaces = " ".repeat(self.tab_size);
+        let text = if between_brackets {
+            // Cursor between brackets: add indented line + closing bracket line
+            format!("\n{}{}\n{}", indent, spaces, indent)
+        } else if extra_indent {
+            format!("\n{}{}", indent, spaces)
+        } else {
+            format!("\n{}", indent)
+        };
+
         let pos = self.cursor;
         self.rope.insert(pos, &text);
         self.record_input_edit_insert(pos, &text);
-        self.cursor = pos + text.chars().count();
+
+        if between_brackets {
+            // Place cursor on the middle line (indented line)
+            self.cursor = pos + 1 + indent.chars().count() + self.tab_size;
+        } else {
+            self.cursor = pos + text.chars().count();
+        }
 
         self.record_op(EditOp::Insert { pos, text });
         self.desired_col = None;
@@ -521,6 +546,105 @@ impl RopeBuffer {
             pos: line_start,
             text: deleted,
         });
+        self.desired_col = None;
+    }
+
+    pub fn delete_word_left(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
+        if self.cursor == 0 {
+            return;
+        }
+        self.start_or_extend_transaction(true);
+
+        let start = self.cursor;
+        let mut pos = start;
+
+        // Skip whitespace backwards
+        while pos > 0 && self.char_at(pos - 1).map_or(false, |c| c.is_whitespace()) {
+            pos -= 1;
+        }
+
+        // Now skip based on character class at pos-1
+        if pos > 0 {
+            let ch = self.char_at(pos - 1).unwrap_or(' ');
+            if ch.is_alphanumeric() || ch == '_' {
+                // Skip word chars backwards
+                while pos > 0
+                    && self
+                        .char_at(pos - 1)
+                        .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                {
+                    pos -= 1;
+                }
+            } else {
+                // Punctuation: delete just that one char
+                pos -= 1;
+            }
+        }
+
+        // Ensure we delete at least one char
+        if pos == start {
+            pos = start - 1;
+        }
+
+        let deleted: String = self.rope.slice(pos..start).to_string();
+        self.record_input_edit_delete(pos, start);
+        self.rope.remove(pos..start);
+        self.cursor = pos;
+        self.record_op(EditOp::Delete { pos, text: deleted });
+        self.desired_col = None;
+    }
+
+    pub fn delete_word_right(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
+        let len = self.rope.len_chars();
+        if self.cursor >= len {
+            return;
+        }
+        self.start_or_extend_transaction(true);
+
+        let start = self.cursor;
+        let mut pos = start;
+        let ch = self.char_at(pos).unwrap_or(' ');
+
+        if ch.is_alphanumeric() || ch == '_' {
+            // On a word char: skip word, then trailing whitespace
+            while pos < len
+                && self
+                    .char_at(pos)
+                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+            {
+                pos += 1;
+            }
+            // Skip trailing whitespace
+            while pos < len && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+                pos += 1;
+            }
+        } else if ch.is_whitespace() {
+            // On whitespace: skip whitespace, then next word
+            while pos < len && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+                pos += 1;
+            }
+            while pos < len
+                && self
+                    .char_at(pos)
+                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+            {
+                pos += 1;
+            }
+        } else {
+            // Punctuation: delete just that one char
+            pos += 1;
+        }
+
+        let deleted: String = self.rope.slice(start..pos).to_string();
+        self.record_input_edit_delete(start, pos);
+        self.rope.remove(start..pos);
+        self.record_op(EditOp::Delete { pos: start, text: deleted });
         self.desired_col = None;
     }
 
@@ -844,6 +968,79 @@ impl RopeBuffer {
             });
             self.cursor = end;
         }
+    }
+
+    /// Get the word under the cursor (for word highlighting).
+    /// Returns None if cursor is not on a word character or selection is active.
+    pub fn word_at_cursor(&self) -> Option<String> {
+        if self.selection.as_ref().map_or(false, |s| !s.is_empty()) {
+            return None;
+        }
+        let len = self.rope.len_chars();
+        if len == 0 {
+            return None;
+        }
+        let pos = self.cursor.min(len.saturating_sub(1));
+        let ch = self.rope.char(pos);
+        if !ch.is_alphanumeric() && ch != '_' {
+            return None;
+        }
+        let mut start = pos;
+        while start > 0 && self.char_at(start - 1).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            start -= 1;
+        }
+        let mut end = pos + 1;
+        while end < len && self.char_at(end).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            end += 1;
+        }
+        let word: String = self.rope.slice(start..end).to_string();
+        // Don't highlight single-char words or very short identifiers
+        if word.len() >= 2 {
+            Some(word)
+        } else {
+            None
+        }
+    }
+
+    /// Find all occurrences of a word within a line range (whole-word match).
+    /// Returns Vec<(line, char_col_start, char_col_end)>.
+    pub fn find_word_occurrences(
+        &self,
+        word: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Vec<(usize, usize, usize)> {
+        let mut results = Vec::new();
+        let word_len = word.chars().count();
+        for line_idx in start_line..end_line.min(self.rope.len_lines()) {
+            let line_text = self.line_text(line_idx);
+            let mut search_start = 0;
+            while let Some(byte_pos) = line_text[search_start..].find(word) {
+                let abs_byte = search_start + byte_pos;
+                let char_col = line_text[..abs_byte].chars().count();
+
+                // Whole-word boundary check
+                let before_ok = if abs_byte == 0 {
+                    true
+                } else {
+                    let prev = line_text[..abs_byte].chars().last().unwrap_or(' ');
+                    !prev.is_alphanumeric() && prev != '_'
+                };
+                let after_byte = abs_byte + word.len();
+                let after_ok = if after_byte >= line_text.len() {
+                    true
+                } else {
+                    let next = line_text[after_byte..].chars().next().unwrap_or(' ');
+                    !next.is_alphanumeric() && next != '_'
+                };
+
+                if before_ok && after_ok {
+                    results.push((line_idx, char_col, char_col + word_len));
+                }
+                search_start = abs_byte + word.len().max(1);
+            }
+        }
+        results
     }
 
     // -----------------------------------------------------------------------
