@@ -2,6 +2,8 @@ pub mod command_palette;
 pub mod connection_form;
 pub mod dashboard;
 pub mod editor_buffer;
+pub mod file_editor;
+pub mod glyph_cache;
 pub mod port_forward_form;
 pub mod port_forward_view;
 pub mod script_editor;

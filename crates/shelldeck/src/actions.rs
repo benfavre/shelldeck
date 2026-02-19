@@ -2,7 +2,8 @@ use gpui::*;
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
-    CloseTab, NewTerminal, NextTab, OpenQuickConnect, OpenSettings, PrevTab, Quit, ToggleSidebar,
+    CloseTab, NewTerminal, NextTab, OpenFileEditorView, OpenQuickConnect, OpenSettings, PrevTab,
+    Quit, ToggleSidebar,
 };
 
 // Re-export terminal view actions
@@ -46,6 +47,8 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("secondary-0", ZoomReset, None),
         // Command palette: Cmd+Shift+P / Ctrl+Shift+P
         KeyBinding::new("secondary-shift-p", ToggleCommandPalette, None),
+        // File editor: Cmd+E (macOS) / Ctrl+E (Linux/Win)
+        KeyBinding::new("secondary-e", OpenFileEditorView, None),
         // Toggle split focus: Alt+[ (all platforms)
         KeyBinding::new("alt-[", ToggleSplitFocus, None),
         // Quit: Cmd+Q (macOS) / Ctrl+Q (Linux/Win)

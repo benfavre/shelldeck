@@ -33,6 +33,7 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::StatusBar;
 use crate::template_browser::{TemplateBrowser, TemplateBrowserEvent};
+use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{PinnedScript, SplitDirection, TerminalEvent, TerminalView};
 use crate::theme::ShellDeckColors;
 use crate::toast::{ToastContainer, ToastLevel};
@@ -48,6 +49,7 @@ pub enum ActiveView {
     PortForwards,
     ServerSync,
     Sites,
+    FileEditor,
     Settings,
 }
 
@@ -67,6 +69,7 @@ actions!(
         NewScript,
         OpenServerSync,
         OpenSites,
+        OpenFileEditorView,
     ]
 );
 
@@ -102,6 +105,7 @@ pub struct Workspace {
     port_forwards: Entity<PortForwardView>,
     server_sync: Entity<ServerSyncView>,
     sites: Entity<SitesView>,
+    file_editor: Entity<FileEditorView>,
     settings: Entity<SettingsView>,
     status_bar: Entity<StatusBar>,
     command_palette: Entity<CommandPalette>,
@@ -128,6 +132,7 @@ pub struct Workspace {
     _forwards_sub: Subscription,
     _server_sync_sub: Subscription,
     _sites_sub: Subscription,
+    _file_editor_sub: Subscription,
     _form_sub: Option<Subscription>,
     _pf_form_sub: Option<Subscription>,
     _dashboard_sub: Subscription,
@@ -185,6 +190,7 @@ impl Workspace {
             view.set_sites(store.managed_sites.clone());
             view
         });
+        let file_editor = cx.new(FileEditorView::new);
         let auto_update_enabled = config.general.auto_update;
         let settings = cx.new(|_| SettingsView::new(config));
         let status_bar = cx.new(|_| StatusBar::new());
@@ -216,6 +222,11 @@ impl Workspace {
                 PaletteAction::new("New Script", None, Box::new(NewScript)),
                 PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
                 PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
+                PaletteAction::new(
+                    "Open File Editor",
+                    Some("Ctrl+E"),
+                    Box::new(OpenFileEditorView),
+                ),
             ]);
             palette
         });
@@ -272,6 +283,12 @@ impl Workspace {
             this.handle_sites_event(event, cx);
         });
 
+        // Subscribe to file editor events
+        let file_editor_sub =
+            cx.subscribe(&file_editor, |_this, _view, _event: &FileEditorEvent, cx| {
+                cx.notify();
+            });
+
         // Subscribe to dashboard events
         let dashboard_sub = cx.subscribe(
             &dashboard,
@@ -321,6 +338,7 @@ impl Workspace {
             port_forwards,
             server_sync,
             sites,
+            file_editor,
             settings,
             status_bar,
             command_palette,
@@ -344,6 +362,7 @@ impl Workspace {
             _forwards_sub: forwards_sub,
             _server_sync_sub: server_sync_sub,
             _sites_sub: sites_sub,
+            _file_editor_sub: file_editor_sub,
             _dashboard_sub: dashboard_sub,
             _form_sub: None,
             _pf_form_sub: None,
@@ -3615,6 +3634,7 @@ impl Workspace {
             SidebarSection::PortForwards => ActiveView::PortForwards,
             SidebarSection::ServerSync => ActiveView::ServerSync,
             SidebarSection::Sites => ActiveView::Sites,
+            SidebarSection::FileEditor => ActiveView::FileEditor,
             SidebarSection::Settings => ActiveView::Settings,
         };
     }
@@ -4170,6 +4190,9 @@ impl Render for Workspace {
             ActiveView::Sites => {
                 content = content.child(self.sites.clone());
             }
+            ActiveView::FileEditor => {
+                content = content.child(self.file_editor.clone());
+            }
             ActiveView::Settings => {
                 content = content.child(self.settings.clone());
             }
@@ -4190,6 +4213,7 @@ impl Render for Workspace {
         let h11 = handle.clone();
         let h12 = handle.clone();
         let h13 = handle.clone();
+        let h14 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -4294,6 +4318,14 @@ impl Render for Workspace {
                 if let Some(ws) = h13.upgrade() {
                     ws.update(cx, |ws, cx| {
                         ws.set_active_view(ActiveView::Sites);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_action(move |_: &OpenFileEditorView, _window, cx| {
+                if let Some(ws) = h14.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.set_active_view(ActiveView::FileEditor);
                         cx.notify();
                     });
                 }

@@ -81,6 +81,7 @@ pub enum SidebarSection {
     PortForwards,
     ServerSync,
     Sites,
+    FileEditor,
     Settings,
 }
 
@@ -674,6 +675,7 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::PortForwards, "Port Forwards", None, cx))
             .child(self.render_nav_item(SidebarSection::ServerSync, "Server Sync", None, cx))
             .child(self.render_nav_item(SidebarSection::Sites, "Sites", None, cx))
+            .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx))
             .child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 
         // Scrollable host list (fills remaining space)
