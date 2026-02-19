@@ -314,13 +314,17 @@ pub struct FileEditorView {
     pub(crate) context_menu_position: (f32, f32),
     // Interactive scrollbar
     pub(crate) scrollbar_dragging: bool,
+    // Mouse click origin for dead zone (prevents micro-movements from changing cursor)
+    pub(crate) mouse_click_origin: Option<(f32, f32)>,
     // Unsaved changes warning
     pub(crate) pending_close_tab: Option<usize>,
     // Cached layout
     pub(crate) font_family: String,
     pub(crate) font_size: f32,
-    // Canvas bounds origin (set during paint, used by mouse handlers)
+    // Canvas bounds origin (set during prepaint, used by mouse handlers)
     pub(crate) canvas_origin: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    // Canvas height in pixels (set during prepaint, used for scroll_lines_per_page)
+    pub(crate) canvas_height: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditorView {}
@@ -353,10 +357,12 @@ impl FileEditorView {
             context_menu_visible: false,
             context_menu_position: (0.0, 0.0),
             scrollbar_dragging: false,
+            mouse_click_origin: None,
             pending_close_tab: None,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
             canvas_origin: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            canvas_height: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         // Start with one empty tab
         view.tabs.push(EditorTab::new_empty());
@@ -1150,6 +1156,7 @@ impl FileEditorView {
         let handle = cx.entity().downgrade();
         let focus = self.focus_handle.clone();
         let origin_arc = self.canvas_origin.clone();
+        let height_arc = self.canvas_height.clone();
 
         // Mouse handlers
         let h_down = handle.clone();
@@ -1199,6 +1206,7 @@ impl FileEditorView {
                     if let Some(view) = h_up.upgrade() {
                         view.update(cx, |this, cx| {
                             this.mouse_selecting = false;
+                            this.mouse_click_origin = None;
                             this.scrollbar_dragging = false;
                             cx.notify();
                         });
@@ -1214,11 +1222,13 @@ impl FileEditorView {
             })
             .child(canvas(
                 move |bounds, _window, _cx| {
-                    // Store canvas origin for mouse coordinate conversion
+                    // Store canvas origin and height for mouse handlers
                     let ox = bounds.origin.x.to_f64() as f32;
                     let oy = bounds.origin.y.to_f64() as f32;
                     let packed = ((ox.to_bits() as u64) << 32) | (oy.to_bits() as u64);
                     origin_arc.store(packed, std::sync::atomic::Ordering::Relaxed);
+                    let h = bounds.size.height.to_f64() as f32;
+                    height_arc.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     (
                         cache,
                         line_texts,
@@ -1619,7 +1629,7 @@ impl FileEditorView {
         let canvas_w = _window.viewport_size().width.to_f64() as f32 - canvas_ox;
         if rel_x >= canvas_w - SCROLLBAR_WIDTH {
             // Scrollbar click
-            let canvas_h = _window.viewport_size().height.to_f64() as f32 - canvas_oy - STATUS_BAR_HEIGHT;
+            let canvas_h = f32::from_bits(self.canvas_height.load(std::sync::atomic::Ordering::Relaxed));
             if canvas_h > 0.0 && total_lines > 0 {
                 let ratio = rel_y / canvas_h;
                 if let Some(tab) = self.tabs.get_mut(tab_idx) {
@@ -1639,7 +1649,8 @@ impl FileEditorView {
 
         let visual_col = (text_x / cell_w) as usize;
         let row = (rel_y / cell_h) as usize;
-        let abs_line = row + self.tabs[tab_idx].scroll_offset as usize;
+        let scroll = self.tabs[tab_idx].scroll_offset;
+        let abs_line = row + scroll as usize;
         let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
 
         let extend = event.modifiers.shift;
@@ -1650,8 +1661,11 @@ impl FileEditorView {
         } else {
             self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, extend);
             self.mouse_selecting = true;
+            self.mouse_click_origin = Some((pos.x.to_f64() as f32, pos.y.to_f64() as f32));
         }
 
+        self.ensure_cursor_visible();
+        self.reset_cursor_blink(cx);
         cx.notify();
     }
 
@@ -1692,6 +1706,20 @@ impl FileEditorView {
 
         if !self.mouse_selecting {
             return;
+        }
+
+        // Dead zone: ignore small movements near the click origin to prevent
+        // accidental cursor displacement during a click
+        if let Some((ox, oy)) = self.mouse_click_origin {
+            let mx = event.position.x.to_f64() as f32;
+            let my = event.position.y.to_f64() as f32;
+            let dist_sq = (mx - ox) * (mx - ox) + (my - oy) * (my - oy);
+            if dist_sq < 9.0 {
+                // Less than 3px movement — ignore
+                return;
+            }
+            // Beyond dead zone — clear origin so we don't check again
+            self.mouse_click_origin = None;
         }
 
         let cache = match self.glyph_cache.as_ref() {
@@ -1760,10 +1788,17 @@ impl Render for FileEditorView {
         if let Some(ref cache) = self.glyph_cache {
             let cell_h = cache.cell_height.to_f64() as f32;
             if cell_h > 0.0 {
-                let viewport_h = window.viewport_size().height.to_f64() as f32;
-                let chrome_h = self.header_height() + STATUS_BAR_HEIGHT;
-                let editor_h = (viewport_h - chrome_h).max(cell_h);
-                self.scroll_lines_per_page = (editor_h / cell_h) as usize;
+                // Use actual canvas height from prepaint (accurate, includes workspace chrome)
+                let stored_h = f32::from_bits(self.canvas_height.load(std::sync::atomic::Ordering::Relaxed));
+                if stored_h > 0.0 {
+                    self.scroll_lines_per_page = (stored_h / cell_h) as usize;
+                } else {
+                    // Fallback before first paint: estimate from viewport
+                    let viewport_h = window.viewport_size().height.to_f64() as f32;
+                    let chrome_h = self.header_height() + STATUS_BAR_HEIGHT;
+                    let editor_h = (viewport_h - chrome_h).max(cell_h);
+                    self.scroll_lines_per_page = (editor_h / cell_h) as usize;
+                }
             }
         }
 
