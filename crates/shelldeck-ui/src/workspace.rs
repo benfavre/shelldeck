@@ -31,7 +31,7 @@ use crate::server_sync_view::{PanelSide, ServerSyncEvent, ServerSyncView, LOCAL_
 use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
-use crate::status_bar::StatusBar;
+use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::template_browser::{TemplateBrowser, TemplateBrowserEvent};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{PinnedScript, SplitDirection, TerminalEvent, TerminalView};
@@ -142,6 +142,7 @@ pub struct Workspace {
     _git_poll_task: Option<gpui::Task<()>>,
     auto_updater: Entity<AutoUpdater>,
     _update_sub: Subscription,
+    _status_bar_sub: Subscription,
     /// Connection ID pending deletion (requires second click to confirm).
     pending_delete: Option<Uuid>,
 }
@@ -305,6 +306,16 @@ impl Workspace {
             },
         );
 
+        // Subscribe to status bar events (update click)
+        let status_bar_sub = cx.subscribe(
+            &status_bar,
+            |this, _bar, event: &StatusBarEvent, cx| match event {
+                StatusBarEvent::UpdateClicked => {
+                    this.auto_updater.update(cx, |u, cx| u.trigger_update(cx));
+                }
+            },
+        );
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -372,6 +383,7 @@ impl Workspace {
             _git_poll_task: Some(git_poll_task),
             auto_updater,
             _update_sub: update_sub,
+            _status_bar_sub: status_bar_sub,
             pending_delete: None,
         }
     }

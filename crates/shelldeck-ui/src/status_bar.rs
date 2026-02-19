@@ -2,6 +2,11 @@ use gpui::*;
 
 use crate::theme::ShellDeckColors;
 
+#[derive(Debug, Clone)]
+pub enum StatusBarEvent {
+    UpdateClicked,
+}
+
 pub struct StatusBar {
     pub active_connections: usize,
     pub active_forwards: usize,
@@ -10,6 +15,8 @@ pub struct StatusBar {
     pub git_status: Option<String>,
     pub update_status: Option<String>,
 }
+
+impl EventEmitter<StatusBarEvent> for StatusBar {}
 
 impl Default for StatusBar {
     fn default() -> Self {
@@ -50,7 +57,7 @@ impl StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_shrink_0()
@@ -128,17 +135,33 @@ impl Render for StatusBar {
                             ),
                     )
                     .child({
-                        let (text, color) = if let Some(ref update) = self.update_status {
-                            (update.clone(), ShellDeckColors::primary())
-                        } else if let Some(ref notif) = self.notification {
-                            (notif.clone(), ShellDeckColors::text_muted())
+                        let (text, color, is_update) =
+                            if let Some(ref update) = self.update_status {
+                                (update.clone(), ShellDeckColors::primary(), true)
+                            } else if let Some(ref notif) = self.notification {
+                                (notif.clone(), ShellDeckColors::text_muted(), false)
+                            } else {
+                                (
+                                    format!("ShellDeck v{}", shelldeck_core::VERSION),
+                                    ShellDeckColors::text_muted(),
+                                    false,
+                                )
+                            };
+                        let el = div()
+                            .id("update-status")
+                            .text_size(px(11.0))
+                            .text_color(color)
+                            .child(text);
+                        if is_update {
+                            el.cursor_pointer()
+                                .on_click(cx.listener(
+                                    |_this, _event: &ClickEvent, _window, cx| {
+                                        cx.emit(StatusBarEvent::UpdateClicked);
+                                    },
+                                ))
                         } else {
-                            (
-                                format!("ShellDeck v{}", shelldeck_core::VERSION),
-                                ShellDeckColors::text_muted(),
-                            )
-                        };
-                        div().text_size(px(11.0)).text_color(color).child(text)
+                            el
+                        }
                     }),
             )
     }

@@ -79,6 +79,7 @@ pub struct AutoUpdater {
     pub status: AutoUpdateStatus,
     enabled: bool,
     check_interval: Duration,
+    latest_release: Option<ReleaseInfo>,
     _poll_task: Option<Task<()>>,
 }
 
@@ -96,6 +97,7 @@ impl AutoUpdater {
             status: AutoUpdateStatus::Idle,
             enabled: false,
             check_interval: DEFAULT_CHECK_INTERVAL,
+            latest_release: None,
             _poll_task: None,
         }
     }
@@ -196,10 +198,14 @@ impl AutoUpdater {
                 CURRENT_VERSION,
                 release.version
             );
+            self.latest_release = Some(release.clone());
             self.set_status(
                 AutoUpdateStatus::UpdateAvailable(release.version.clone()),
                 cx,
             );
+            if self.enabled {
+                self.download_and_install(release, cx);
+            }
         } else {
             tracing::info!("Already up to date ({})", CURRENT_VERSION);
             self.set_status(AutoUpdateStatus::Idle, cx);
@@ -272,6 +278,13 @@ impl AutoUpdater {
             }
         })
         .detach();
+    }
+
+    /// Manually trigger the download/install of a previously detected update.
+    pub fn trigger_update(&mut self, cx: &mut Context<Self>) {
+        if let Some(release) = self.latest_release.take() {
+            self.download_and_install(release, cx);
+        }
     }
 
     /// Enable or disable auto-update polling.
