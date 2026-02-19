@@ -847,6 +847,492 @@ impl RopeBuffer {
     }
 
     // -----------------------------------------------------------------------
+    // Auto-closing pairs
+    // -----------------------------------------------------------------------
+
+    fn closing_pair(ch: char) -> Option<char> {
+        match ch {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            '`' => Some('`'),
+            _ => None,
+        }
+    }
+
+    fn is_closing_pair(ch: char) -> bool {
+        matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
+    }
+
+    /// Try to handle auto-pairing for the given char.
+    /// Returns true if the char was handled (either paired or skipped over).
+    pub fn try_auto_pair(&mut self, ch: char) -> bool {
+        // If typing a closing char and it matches what's under the cursor, skip over it
+        if Self::is_closing_pair(ch) {
+            if let Some(under) = self.char_at(self.cursor) {
+                if under == ch {
+                    // For quotes, only skip if there's a matching opener before
+                    self.start_or_extend_transaction(false);
+                    self.cursor += 1;
+                    self.desired_col = None;
+                    return true;
+                }
+            }
+        }
+
+        // If typing an opening char, insert both and position cursor between
+        if let Some(closer) = Self::closing_pair(ch) {
+            // For quotes, don't auto-pair if char before cursor is alphanumeric
+            if matches!(ch, '"' | '\'' | '`') {
+                if self.cursor > 0 {
+                    if let Some(prev) = self.char_at(self.cursor - 1) {
+                        if prev.is_alphanumeric() || prev == '_' {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            self.start_or_extend_transaction(false);
+            self.delete_selection();
+
+            let pos = self.cursor;
+            let pair = format!("{}{}", ch, closer);
+            self.rope.insert(pos, &pair);
+            self.record_input_edit_insert(pos, &pair);
+            self.cursor = pos + 1; // Between the pair
+
+            self.record_op(EditOp::Insert {
+                pos,
+                text: pair,
+            });
+            self.desired_col = None;
+            return true;
+        }
+
+        false
+    }
+
+    /// Try pair-aware backspace. Returns true if handled.
+    /// Deletes both chars if cursor is between an empty pair like `(|)`.
+    pub fn try_backspace_pair(&mut self) -> bool {
+        if self.selection.is_some() || self.cursor == 0 {
+            return false;
+        }
+        let before = self.char_at(self.cursor - 1);
+        let after = self.char_at(self.cursor);
+        if let (Some(b), Some(a)) = (before, after) {
+            if Self::closing_pair(b) == Some(a) {
+                self.start_or_extend_transaction(false);
+                let del_start = self.cursor - 1;
+                let del_end = self.cursor + 1;
+                let deleted: String = self.rope.slice(del_start..del_end).to_string();
+                self.record_input_edit_delete(del_start, del_end);
+                self.rope.remove(del_start..del_end);
+                self.cursor = del_start;
+                self.record_op(EditOp::Delete {
+                    pos: del_start,
+                    text: deleted,
+                });
+                self.desired_col = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    // -----------------------------------------------------------------------
+    // Move line up/down
+    // -----------------------------------------------------------------------
+
+    pub fn move_line_up(&mut self) {
+        let (line, col) = self.cursor_line_col();
+        if line == 0 {
+            return;
+        }
+
+        self.finalize_transaction();
+        self.start_or_extend_transaction(true);
+
+        let cur_start = self.rope.line_to_char(line);
+        let cur_end = if line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        let cur_text: String = self.rope.slice(cur_start..cur_end).to_string();
+
+        let prev_start = self.rope.line_to_char(line - 1);
+        let prev_text: String = self.rope.slice(prev_start..cur_start).to_string();
+
+        // Delete both lines
+        self.record_input_edit_delete(prev_start, cur_end);
+        self.rope.remove(prev_start..cur_end);
+        self.record_op(EditOp::Delete {
+            pos: prev_start,
+            text: format!("{}{}", prev_text, cur_text),
+        });
+
+        // Re-insert in swapped order
+        let insert_text = format!("{}{}", cur_text, prev_text);
+        self.rope.insert(prev_start, &insert_text);
+        self.record_input_edit_insert(prev_start, &insert_text);
+        self.record_op(EditOp::Insert {
+            pos: prev_start,
+            text: insert_text,
+        });
+
+        // Position cursor on the moved line
+        self.cursor = self.line_col_to_char(line - 1, col);
+        self.selection = None;
+        self.desired_col = None;
+    }
+
+    pub fn move_line_down(&mut self) {
+        let (line, col) = self.cursor_line_col();
+        if line >= self.rope.len_lines().saturating_sub(1) {
+            return;
+        }
+
+        self.finalize_transaction();
+        self.start_or_extend_transaction(true);
+
+        let cur_start = self.rope.line_to_char(line);
+        let next_start = self.rope.line_to_char(line + 1);
+        let next_end = if line + 2 < self.rope.len_lines() {
+            self.rope.line_to_char(line + 2)
+        } else {
+            self.rope.len_chars()
+        };
+
+        let cur_text: String = self.rope.slice(cur_start..next_start).to_string();
+        let next_text: String = self.rope.slice(next_start..next_end).to_string();
+
+        // Delete both lines
+        self.record_input_edit_delete(cur_start, next_end);
+        self.rope.remove(cur_start..next_end);
+        self.record_op(EditOp::Delete {
+            pos: cur_start,
+            text: format!("{}{}", cur_text, next_text),
+        });
+
+        // Re-insert in swapped order, ensuring newline handling
+        let insert_text = if next_text.ends_with('\n') {
+            format!("{}{}", next_text, cur_text)
+        } else {
+            // Last line has no trailing newline - add one
+            format!("{}\n{}", next_text, cur_text.trim_end_matches('\n'))
+        };
+        self.rope.insert(cur_start, &insert_text);
+        self.record_input_edit_insert(cur_start, &insert_text);
+        self.record_op(EditOp::Insert {
+            pos: cur_start,
+            text: insert_text,
+        });
+
+        self.cursor = self.line_col_to_char(line + 1, col);
+        self.selection = None;
+        self.desired_col = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-line indent/dedent
+    // -----------------------------------------------------------------------
+
+    /// Indent all lines in the current selection. Returns true if handled.
+    pub fn indent_selection(&mut self) -> bool {
+        let sel = match &self.selection {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+        let range = sel.range();
+        let (start_line, _) = self.char_to_line_col(range.start);
+        let (end_line, end_col) = self.char_to_line_col(range.end);
+        // Only multi-line
+        if start_line == end_line {
+            return false;
+        }
+        // If selection ends at col 0 of a line, don't include that line
+        let actual_end_line = if end_col == 0 && end_line > start_line {
+            end_line - 1
+        } else {
+            end_line
+        };
+
+        self.finalize_transaction();
+        self.start_or_extend_transaction(true);
+        let spaces = " ".repeat(self.tab_size);
+
+        for line in start_line..=actual_end_line {
+            // rope.line_to_char already reflects prior insertions
+            let line_start = self.rope.line_to_char(line);
+            self.rope.insert(line_start, &spaces);
+            self.record_input_edit_insert(line_start, &spaces);
+            self.record_op(EditOp::Insert {
+                pos: line_start,
+                text: spaces.clone(),
+            });
+        }
+
+        // Adjust selection to cover the indented lines
+        let new_start = self.rope.line_to_char(start_line);
+        let new_end = if actual_end_line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(actual_end_line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        self.selection = Some(Selection {
+            anchor: new_start,
+            head: new_end,
+        });
+        self.cursor = new_end;
+        self.desired_col = None;
+        true
+    }
+
+    /// Dedent all lines in the current selection. Returns true if handled.
+    pub fn dedent_selection(&mut self) -> bool {
+        let sel = match &self.selection {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+        let range = sel.range();
+        let (start_line, _) = self.char_to_line_col(range.start);
+        let (end_line, end_col) = self.char_to_line_col(range.end);
+        if start_line == end_line {
+            return false;
+        }
+        let actual_end_line = if end_col == 0 && end_line > start_line {
+            end_line - 1
+        } else {
+            end_line
+        };
+
+        self.finalize_transaction();
+        self.start_or_extend_transaction(true);
+
+        for line in start_line..=actual_end_line {
+            // rope.line_to_char already reflects prior deletions
+            let line_start = self.rope.line_to_char(line);
+            let line_text = self.line_text(line);
+            let leading: usize = line_text
+                .chars()
+                .take(self.tab_size)
+                .take_while(|c| *c == ' ')
+                .count();
+            let to_remove = if leading > 0 {
+                leading
+            } else if line_text.starts_with('\t') {
+                1
+            } else {
+                continue;
+            };
+            let del_end = line_start + to_remove;
+            let deleted: String = self.rope.slice(line_start..del_end).to_string();
+            self.record_input_edit_delete(line_start, del_end);
+            self.rope.remove(line_start..del_end);
+            self.record_op(EditOp::Delete {
+                pos: line_start,
+                text: deleted,
+            });
+        }
+
+        // Re-select the affected lines
+        let new_start = self.rope.line_to_char(start_line);
+        let new_end = if actual_end_line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(actual_end_line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        self.selection = Some(Selection {
+            anchor: new_start,
+            head: new_end,
+        });
+        self.cursor = new_end;
+        self.desired_col = None;
+        true
+    }
+
+    // -----------------------------------------------------------------------
+    // Select line
+    // -----------------------------------------------------------------------
+
+    /// Select the current line. Repeated calls extend selection to the next line.
+    pub fn select_line(&mut self) {
+        let (line, _) = self.cursor_line_col();
+
+        // Check if we already have a line selection ending at this line's end
+        let extend = if let Some(sel) = &self.selection {
+            let range = sel.range();
+            let (_, end_col) = self.char_to_line_col(range.end);
+            let (end_line, _) = self.char_to_line_col(range.end.saturating_sub(1));
+            end_col == 0 && range.end > range.start && end_line + 1 <= self.rope.len_lines()
+        } else {
+            false
+        };
+
+        if extend {
+            // Extend selection to include next line
+            let sel = self.selection.as_ref().unwrap();
+            let (end_line, _) = self.char_to_line_col(sel.range().end);
+            let new_end = if end_line + 1 < self.rope.len_lines() {
+                self.rope.line_to_char(end_line + 1)
+            } else {
+                self.rope.len_chars()
+            };
+            self.selection = Some(Selection {
+                anchor: sel.range().start,
+                head: new_end,
+            });
+            self.cursor = new_end;
+        } else {
+            // Select current line
+            let line_start = self.rope.line_to_char(line);
+            let line_end = if line + 1 < self.rope.len_lines() {
+                self.rope.line_to_char(line + 1)
+            } else {
+                self.rope.len_chars()
+            };
+            self.selection = Some(Selection {
+                anchor: line_start,
+                head: line_end,
+            });
+            self.cursor = line_end;
+        }
+        self.desired_col = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Toggle line comment
+    // -----------------------------------------------------------------------
+
+    /// Toggle comment prefix on selected lines (or current line if no selection).
+    pub fn toggle_line_comment(&mut self, prefix: &str) {
+        let (start_line, end_line) = if let Some(sel) = &self.selection {
+            let range = sel.range();
+            let (sl, _) = self.char_to_line_col(range.start);
+            let (el, ec) = self.char_to_line_col(range.end);
+            let actual_end = if ec == 0 && el > sl { el - 1 } else { el };
+            (sl, actual_end)
+        } else {
+            let (line, _) = self.cursor_line_col();
+            (line, line)
+        };
+
+        // Check if all lines are commented
+        let all_commented = (start_line..=end_line).all(|line| {
+            let text = self.line_text(line);
+            text.trim_start().starts_with(prefix.trim_end())
+        });
+
+        self.finalize_transaction();
+        self.start_or_extend_transaction(true);
+
+        if all_commented {
+            // Remove comments
+            for line in start_line..=end_line {
+                // rope.line_to_char already reflects prior deletions
+                let line_start = self.rope.line_to_char(line);
+                let text = self.line_text(line);
+                let indent_len = text.chars().take_while(|c| c.is_whitespace()).count();
+                let prefix_start = line_start + indent_len;
+                let trimmed = &text[text.chars().take(indent_len).map(|c| c.len_utf8()).sum::<usize>()..];
+                if trimmed.starts_with(prefix) {
+                    let del_end = prefix_start + prefix.len();
+                    let deleted: String = self.rope.slice(prefix_start..del_end).to_string();
+                    self.record_input_edit_delete(prefix_start, del_end);
+                    self.rope.remove(prefix_start..del_end);
+                    self.record_op(EditOp::Delete {
+                        pos: prefix_start,
+                        text: deleted,
+                    });
+                } else if trimmed.starts_with(prefix.trim_end()) {
+                    let trimmed_prefix = prefix.trim_end();
+                    let del_end = prefix_start + trimmed_prefix.len();
+                    let deleted: String = self.rope.slice(prefix_start..del_end).to_string();
+                    self.record_input_edit_delete(prefix_start, del_end);
+                    self.rope.remove(prefix_start..del_end);
+                    self.record_op(EditOp::Delete {
+                        pos: prefix_start,
+                        text: deleted,
+                    });
+                }
+            }
+        } else {
+            // Add comments
+            for line in start_line..=end_line {
+                // rope.line_to_char already reflects prior insertions
+                let line_start = self.rope.line_to_char(line);
+                let text = self.line_text(line);
+                let indent_len = text.chars().take_while(|c| c.is_whitespace()).count();
+                let insert_pos = line_start + indent_len;
+                self.rope.insert(insert_pos, prefix);
+                self.record_input_edit_insert(insert_pos, prefix);
+                self.record_op(EditOp::Insert {
+                    pos: insert_pos,
+                    text: prefix.to_string(),
+                });
+            }
+        }
+
+        self.desired_col = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Matching bracket
+    // -----------------------------------------------------------------------
+
+    /// Find the matching bracket for the char at or before the cursor.
+    /// Returns (line, visual_col) of the matching bracket, or None.
+    pub fn find_matching_bracket(&self) -> Option<(usize, usize)> {
+        let len = self.rope.len_chars();
+        if len == 0 {
+            return None;
+        }
+
+        // Check char at cursor, then char before cursor
+        let positions = [self.cursor, self.cursor.wrapping_sub(1)];
+        for &pos in &positions {
+            if pos >= len {
+                continue;
+            }
+            let ch = self.rope.char(pos);
+            let (target, direction) = match ch {
+                '(' => (')', 1i32),
+                '[' => (']', 1),
+                '{' => ('}', 1),
+                ')' => ('(', -1),
+                ']' => ('[', -1),
+                '}' => ('{', -1),
+                _ => continue,
+            };
+
+            let mut depth = 0i32;
+            let mut scan = pos as i64;
+            while scan >= 0 && (scan as usize) < len {
+                let c = self.rope.char(scan as usize);
+                if c == ch {
+                    depth += 1;
+                } else if c == target {
+                    depth -= 1;
+                    if depth == 0 {
+                        let match_pos = scan as usize;
+                        let (line, char_col) = self.char_to_line_col(match_pos);
+                        let vcol = self.char_col_to_visual_col(line, char_col);
+                        return Some((line, vcol));
+                    }
+                }
+                scan += direction as i64;
+            }
+            // If we found a bracket char but no match, don't check the other position
+            return None;
+        }
+        None
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 

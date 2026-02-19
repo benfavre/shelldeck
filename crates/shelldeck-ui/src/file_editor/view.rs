@@ -19,7 +19,9 @@ const TAB_BAR_HEIGHT: f32 = 36.0;
 const SEARCH_BAR_HEIGHT: f32 = 32.0;
 const GOTO_LINE_BAR_HEIGHT: f32 = 32.0;
 const STATUS_BAR_HEIGHT: f32 = 22.0;
+const REPLACE_BAR_HEIGHT: f32 = 32.0;
 const DRAG_HANDLE_WIDTH: f32 = 4.0;
+const SCROLLBAR_WIDTH: f32 = 8.0;
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -41,6 +43,36 @@ actions!(
         ToggleFileBrowser,
     ]
 );
+
+// ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Undo,
+    Redo,
+    ToggleComment,
+}
+
+struct ContextMenuItem {
+    label: &'static str,
+    shortcut: &'static str,
+    action: ContextMenuAction,
+}
+
+const CONTEXT_MENU_ITEMS: &[ContextMenuItem] = &[
+    ContextMenuItem { label: "Undo", shortcut: "Ctrl+Z", action: ContextMenuAction::Undo },
+    ContextMenuItem { label: "Redo", shortcut: "Ctrl+Y", action: ContextMenuAction::Redo },
+    ContextMenuItem { label: "Cut", shortcut: "Ctrl+X", action: ContextMenuAction::Cut },
+    ContextMenuItem { label: "Copy", shortcut: "Ctrl+C", action: ContextMenuAction::Copy },
+    ContextMenuItem { label: "Paste", shortcut: "Ctrl+V", action: ContextMenuAction::Paste },
+    ContextMenuItem { label: "Select All", shortcut: "Ctrl+A", action: ContextMenuAction::SelectAll },
+    ContextMenuItem { label: "Toggle Comment", shortcut: "Ctrl+/", action: ContextMenuAction::ToggleComment },
+];
 
 // ---------------------------------------------------------------------------
 // Events
@@ -128,9 +160,21 @@ pub struct FileEditorView {
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<std::ops::Range<usize>>,
     pub(crate) search_current_idx: Option<usize>,
+    pub(crate) search_case_sensitive: bool,
+    // Replace
+    pub(crate) replace_visible: bool,
+    pub(crate) replace_query: String,
+    pub(crate) search_focus_replace: bool,
     // Go-to-line
     pub(crate) goto_line_visible: bool,
     pub(crate) goto_line_query: String,
+    // Context menu
+    pub(crate) context_menu_visible: bool,
+    pub(crate) context_menu_position: (f32, f32),
+    // Interactive scrollbar
+    pub(crate) scrollbar_dragging: bool,
+    // Unsaved changes warning
+    pub(crate) pending_close_tab: Option<usize>,
     // Cached layout
     pub(crate) font_family: String,
     pub(crate) font_size: f32,
@@ -157,8 +201,16 @@ impl FileEditorView {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current_idx: None,
+            search_case_sensitive: false,
+            replace_visible: false,
+            replace_query: String::new(),
+            search_focus_replace: false,
             goto_line_visible: false,
             goto_line_query: String::new(),
+            context_menu_visible: false,
+            context_menu_position: (0.0, 0.0),
+            scrollbar_dragging: false,
+            pending_close_tab: None,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
         };
@@ -231,8 +283,20 @@ impl FileEditorView {
     }
 
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        // Check for unsaved changes
+        if let Some(tab) = self.tabs.get(index) {
+            if tab.buffer.is_dirty() && self.pending_close_tab.is_none() {
+                self.pending_close_tab = Some(index);
+                cx.notify();
+                return;
+            }
+        }
+        self.force_close_tab(index, cx);
+    }
+
+    pub fn force_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.pending_close_tab = None;
         if self.tabs.len() <= 1 {
-            // Replace with empty tab instead of removing the last one
             self.tabs[0] = EditorTab::new_empty();
             self.active_tab_index = 0;
         } else {
@@ -243,6 +307,27 @@ impl FileEditorView {
         }
         cx.emit(FileEditorEvent::TabsChanged);
         cx.notify();
+    }
+
+    pub fn save_and_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        // Save first
+        if let Some(tab) = self.tabs.get_mut(index) {
+            if let Some(ref path) = tab.path {
+                let content = tab.buffer.text();
+                match std::fs::write(path, &content) {
+                    Ok(()) => {
+                        tab.buffer.set_dirty(false);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to save file: {}", e);
+                        self.pending_close_tab = None;
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        }
+        self.force_close_tab(index, cx);
     }
 
     // -----------------------------------------------------------------------
@@ -320,8 +405,10 @@ impl FileEditorView {
     }
 
     pub(crate) fn clamp_scroll(&mut self) {
+        let half_page = (self.scroll_lines_per_page / 2) as f32;
         if let Some(tab) = self.active_tab_mut() {
-            let max = tab.buffer.len_lines().saturating_sub(1) as f32;
+            // Allow scrolling past end by half a page
+            let max = tab.buffer.len_lines().saturating_sub(1) as f32 + half_page;
             tab.scroll_offset = tab.scroll_offset.clamp(0.0, max);
         }
     }
@@ -341,18 +428,30 @@ impl FileEditorView {
         if let Some(tab) = self.active_tab() {
             let text = tab.buffer.text();
             let query = &self.search_query;
-            let query_lower = query.to_lowercase();
             let query_char_len = query.chars().count();
-            let text_lower = text.to_lowercase();
 
-            // Find byte positions then convert to char positions
-            let mut byte_start = 0;
-            while let Some(byte_pos) = text_lower[byte_start..].find(&query_lower) {
-                let abs_byte = byte_start + byte_pos;
-                let char_start = text[..abs_byte].chars().count();
-                self.search_matches
-                    .push(char_start..char_start + query_char_len);
-                byte_start = abs_byte + query_lower.len();
+            if self.search_case_sensitive {
+                // Case-sensitive search
+                let mut byte_start = 0;
+                while let Some(byte_pos) = text[byte_start..].find(query.as_str()) {
+                    let abs_byte = byte_start + byte_pos;
+                    let char_start = text[..abs_byte].chars().count();
+                    self.search_matches
+                        .push(char_start..char_start + query_char_len);
+                    byte_start = abs_byte + query.len();
+                }
+            } else {
+                // Case-insensitive search
+                let query_lower = query.to_lowercase();
+                let text_lower = text.to_lowercase();
+                let mut byte_start = 0;
+                while let Some(byte_pos) = text_lower[byte_start..].find(&query_lower) {
+                    let abs_byte = byte_start + byte_pos;
+                    let char_start = text[..abs_byte].chars().count();
+                    self.search_matches
+                        .push(char_start..char_start + query_char_len);
+                    byte_start = abs_byte + query_lower.len();
+                }
             }
             if !self.search_matches.is_empty() {
                 self.search_current_idx = Some(0);
@@ -399,6 +498,84 @@ impl FileEditorView {
             }
             self.ensure_cursor_visible();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Replace
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn replace_next(&mut self, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let idx = self.search_current_idx.unwrap_or(0);
+        let match_range = match self.search_matches.get(idx) {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let tab_idx = self.active_tab_index;
+        if let Some(tab) = self.tabs.get_mut(tab_idx) {
+            // Set selection to the match and delete it, then insert replacement
+            tab.buffer.set_cursor_from_position(
+                tab.buffer.char_to_line_col(match_range.start).0,
+                tab.buffer.char_to_line_col(match_range.start).1,
+                false,
+            );
+            tab.buffer.set_cursor_from_position(
+                tab.buffer.char_to_line_col(match_range.end).0,
+                tab.buffer.char_to_line_col(match_range.end).1,
+                true,
+            );
+            tab.buffer.delete_selection();
+            tab.buffer.insert_str(&self.replace_query);
+            tab.highlighter.parse_full(tab.buffer.rope());
+        }
+
+        // Re-run search to update matches
+        self.perform_search();
+        // Try to keep the same index (it will point to the next match)
+        if !self.search_matches.is_empty() {
+            let new_idx = idx.min(self.search_matches.len() - 1);
+            self.search_current_idx = Some(new_idx);
+        }
+        self.ensure_cursor_visible();
+        cx.notify();
+    }
+
+    pub(crate) fn replace_all(&mut self, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+
+        let tab_idx = self.active_tab_index;
+        let replace_text = self.replace_query.clone();
+
+        if let Some(tab) = self.tabs.get_mut(tab_idx) {
+            // Replace from end to start to preserve earlier positions
+            let mut matches: Vec<std::ops::Range<usize>> = self.search_matches.clone();
+            matches.reverse();
+
+            tab.buffer.flush_transaction();
+            for m in &matches {
+                tab.buffer.set_cursor_from_position(
+                    tab.buffer.char_to_line_col(m.start).0,
+                    tab.buffer.char_to_line_col(m.start).1,
+                    false,
+                );
+                tab.buffer.set_cursor_from_position(
+                    tab.buffer.char_to_line_col(m.end).0,
+                    tab.buffer.char_to_line_col(m.end).1,
+                    true,
+                );
+                tab.buffer.delete_selection();
+                tab.buffer.insert_str(&replace_text);
+            }
+            tab.highlighter.parse_full(tab.buffer.rope());
+        }
+
+        self.perform_search();
+        cx.notify();
     }
 
     // -----------------------------------------------------------------------
@@ -511,6 +688,24 @@ impl FileEditorView {
             .map(|i| format!("{}/{}", i + 1, match_count))
             .unwrap_or_else(|| format!("0/{}", match_count));
 
+        let search_focused = !self.search_focus_replace;
+        let search_border = if search_focused {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::border()
+        };
+
+        let case_label = if self.search_case_sensitive {
+            "[Aa]"
+        } else {
+            "[aa]"
+        };
+        let case_color = if self.search_case_sensitive {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::text_muted()
+        };
+
         div()
             .flex()
             .items_center()
@@ -533,6 +728,8 @@ impl FileEditorView {
                     .px(px(4.0))
                     .py(px(2.0))
                     .rounded(px(3.0))
+                    .border_1()
+                    .border_color(search_border)
                     .bg(ShellDeckColors::bg_primary())
                     .text_color(ShellDeckColors::text_primary())
                     .child(if self.search_query.is_empty() {
@@ -543,8 +740,96 @@ impl FileEditorView {
             )
             .child(
                 div()
+                    .text_color(case_color)
+                    .text_size(px(10.0))
+                    .child(case_label),
+            )
+            .child(
+                div()
                     .text_color(ShellDeckColors::text_muted())
                     .child(current),
+            )
+    }
+
+    fn render_replace_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let h_next = cx.entity().downgrade();
+        let h_all = cx.entity().downgrade();
+        let replace_focused = self.search_focus_replace;
+        let replace_border = if replace_focused {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::border()
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(REPLACE_BAR_HEIGHT))
+            .bg(ShellDeckColors::bg_surface())
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .px(px(8.0))
+            .gap(px(6.0))
+            .text_size(px(12.0))
+            .child(
+                div()
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Replace:"),
+            )
+            .child(
+                div()
+                    .flex_grow()
+                    .px(px(4.0))
+                    .py(px(2.0))
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(replace_border)
+                    .bg(ShellDeckColors::bg_primary())
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(if self.replace_query.is_empty() {
+                        "Replace with...".to_string()
+                    } else {
+                        self.replace_query.clone()
+                    }),
+            )
+            .child(
+                div()
+                    .id("replace-next-btn")
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(3.0))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()).text_color(ShellDeckColors::text_primary()))
+                    .child("Replace")
+                    .on_click(move |_event, _window, cx| {
+                        if let Some(view) = h_next.upgrade() {
+                            view.update(cx, |this, cx| {
+                                this.replace_next(cx);
+                            });
+                        }
+                    }),
+            )
+            .child(
+                div()
+                    .id("replace-all-btn")
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(3.0))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()).text_color(ShellDeckColors::text_primary()))
+                    .child("All")
+                    .on_click(move |_event, _window, cx| {
+                        if let Some(view) = h_all.upgrade() {
+                            view.update(cx, |this, cx| {
+                                this.replace_all(cx);
+                            });
+                        }
+                    }),
             )
     }
 
@@ -643,6 +928,9 @@ impl FileEditorView {
         let char_width = cache.cell_width.to_f64() as f32;
         let gutter_w = (digits as f32 + 2.0) * char_width;
 
+        // Bracket match
+        let bracket_match: Option<(usize, usize)> = tab.buffer.find_matching_bracket();
+
         // Selection as (start_line, start_visual_col, end_line, end_visual_col) for canvas
         let sel_coords: Option<(usize, usize, usize, usize)> = selection.as_ref().and_then(|s| {
             let range = s.range();
@@ -678,6 +966,7 @@ impl FileEditorView {
 
         // Mouse handlers
         let h_down = handle.clone();
+        let h_right = handle.clone();
         let h_move = handle.clone();
         let h_up = handle.clone();
         let h_scroll = handle.clone();
@@ -700,6 +989,16 @@ impl FileEditorView {
                     }
                 },
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                move |event: &MouseDownEvent, _window, cx| {
+                    if let Some(view) = h_right.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.handle_right_click(event, cx);
+                        });
+                    }
+                },
+            )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 if let Some(view) = h_move.upgrade() {
                     view.update(cx, |this, cx| {
@@ -713,6 +1012,7 @@ impl FileEditorView {
                     if let Some(view) = h_up.upgrade() {
                         view.update(cx, |this, cx| {
                             this.mouse_selecting = false;
+                            this.scrollbar_dragging = false;
                             cx.notify();
                         });
                     }
@@ -742,6 +1042,7 @@ impl FileEditorView {
                         search_match_coords,
                         search_current_coord,
                         tab_size,
+                        bracket_match,
                     )
                 },
                 move |bounds,
@@ -760,6 +1061,7 @@ impl FileEditorView {
                     search_match_coords,
                     search_current_coord,
                     tab_size,
+                    bracket_match,
                 ),
                       window,
                       cx| {
@@ -779,6 +1081,7 @@ impl FileEditorView {
                         &search_match_coords,
                         search_current_coord,
                         tab_size,
+                        bracket_match,
                         window,
                         cx,
                     );
@@ -810,6 +1113,7 @@ impl FileEditorView {
         search_match_coords: &[(usize, usize, usize, usize)],
         search_current_coord: Option<usize>,
         tab_size: usize,
+        bracket_match: Option<(usize, usize)>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -997,9 +1301,23 @@ impl FileEditorView {
             }
         }
 
+        // Paint matching bracket highlight
+        if let Some((match_line, match_vcol)) = bracket_match {
+            if match_line >= first_visible && match_line < first_visible + line_texts.len() {
+                let vis_row = match_line - first_visible;
+                let bx = bounds.origin.x + gutter_px + cell_w * match_vcol as f32;
+                let by = bounds.origin.y + cell_h * vis_row as f32;
+                let bracket_bg = hsla(0.58, 0.4, 0.5, 0.25);
+                window.paint_quad(fill(
+                    Bounds::new(point(bx, by), size(cell_w, cell_h)),
+                    bracket_bg,
+                ));
+            }
+        }
+
         // Paint scrollbar
         if total_lines > 0 {
-            let scrollbar_width = px(8.0);
+            let scrollbar_width = px(SCROLLBAR_WIDTH);
             let scrollbar_x = bounds.origin.x + bounds.size.width - scrollbar_width;
             let viewport_lines = line_texts.len().max(1) as f32;
             let thumb_height = (viewport_lines / total_lines as f32) * bounds.size.height;
@@ -1045,7 +1363,22 @@ impl FileEditorView {
     // Mouse handlers
     // -----------------------------------------------------------------------
 
+    fn header_height(&self) -> f32 {
+        TAB_BAR_HEIGHT
+            + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
+            + if self.replace_visible { REPLACE_BAR_HEIGHT } else { 0.0 }
+            + if self.goto_line_visible { GOTO_LINE_BAR_HEIGHT } else { 0.0 }
+            + if self.pending_close_tab.is_some() { 32.0 } else { 0.0 }
+    }
+
     fn handle_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Dismiss context menu on any click
+        if self.context_menu_visible {
+            self.context_menu_visible = false;
+            cx.notify();
+            return;
+        }
+
         self.reset_cursor_blink(cx);
 
         let cache = match self.glyph_cache.as_ref() {
@@ -1061,25 +1394,45 @@ impl FileEditorView {
         let cell_w = cache.cell_width.to_f64() as f32;
         let cell_h = cache.cell_height.to_f64() as f32;
 
-        // Compute gutter width inline
         let total_lines = self.tabs[tab_idx].buffer.len_lines();
         let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
         let pos = event.position;
-        let header_height = TAB_BAR_HEIGHT
-            + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
-            + if self.goto_line_visible { GOTO_LINE_BAR_HEIGHT } else { 0.0 };
+        let header_height = self.header_height();
 
         let browser_offset = if self.file_browser_visible {
             self.file_browser_width + DRAG_HANDLE_WIDTH
         } else {
             0.0
         };
-        let rel_x = pos.x.to_f64() as f32 - gutter_w - browser_offset;
+
+        let abs_x = pos.x.to_f64() as f32 - browser_offset;
         let rel_y = pos.y.to_f64() as f32 - header_height;
 
-        if rel_x < 0.0 || rel_y < 0.0 {
+        if rel_y < 0.0 {
+            return;
+        }
+
+        // Check if click is in scrollbar area
+        let viewport_w = _window.viewport_size().width.to_f64() as f32 - browser_offset;
+        if abs_x >= viewport_w - SCROLLBAR_WIDTH {
+            // Scrollbar click
+            let viewport_h = _window.viewport_size().height.to_f64() as f32 - header_height - STATUS_BAR_HEIGHT;
+            if viewport_h > 0.0 && total_lines > 0 {
+                let ratio = rel_y / viewport_h;
+                if let Some(tab) = self.tabs.get_mut(tab_idx) {
+                    tab.scroll_offset = ratio * total_lines as f32;
+                }
+                self.clamp_scroll();
+                self.scrollbar_dragging = true;
+                cx.notify();
+            }
+            return;
+        }
+
+        let rel_x = abs_x - gutter_w;
+        if rel_x < 0.0 {
             return;
         }
 
@@ -1091,7 +1444,6 @@ impl FileEditorView {
         let extend = event.modifiers.shift;
 
         if event.click_count == 2 {
-            // Double click: select word
             self.tabs[tab_idx].buffer.set_cursor_from_position(abs_line, char_col, false);
             self.tabs[tab_idx].buffer.select_word_at_cursor();
         } else {
@@ -1102,7 +1454,43 @@ impl FileEditorView {
         cx.notify();
     }
 
+    fn handle_right_click(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        let x = event.position.x.to_f64() as f32;
+        let y = event.position.y.to_f64() as f32;
+        self.context_menu_position = (x, y);
+        self.context_menu_visible = true;
+        cx.notify();
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // Handle scrollbar dragging
+        if self.scrollbar_dragging {
+            let tab_idx = self.active_tab_index;
+            if tab_idx < self.tabs.len() {
+                let header_height = self.header_height();
+                let browser_offset = if self.file_browser_visible {
+                    self.file_browser_width + DRAG_HANDLE_WIDTH
+                } else {
+                    0.0
+                };
+                let _ = browser_offset; // used in viewport calculation
+                let rel_y = (event.position.y.to_f64() as f32 - header_height).max(0.0);
+                let total_lines = self.tabs[tab_idx].buffer.len_lines();
+                // Use approximate viewport height
+                let cell_h = self.glyph_cache.as_ref()
+                    .map(|c| c.cell_height.to_f64() as f32)
+                    .unwrap_or(20.0);
+                let viewport_h = (self.scroll_lines_per_page as f32 * cell_h).max(1.0);
+                if total_lines > 0 {
+                    let ratio = rel_y / viewport_h;
+                    self.tabs[tab_idx].scroll_offset = ratio * total_lines as f32;
+                    self.clamp_scroll();
+                }
+            }
+            cx.notify();
+            return;
+        }
+
         if !self.mouse_selecting {
             return;
         }
@@ -1124,9 +1512,7 @@ impl FileEditorView {
         let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
-        let header_height = TAB_BAR_HEIGHT
-            + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
-            + if self.goto_line_visible { GOTO_LINE_BAR_HEIGHT } else { 0.0 };
+        let header_height = self.header_height();
         let browser_offset = if self.file_browser_visible {
             self.file_browser_width + DRAG_HANDLE_WIDTH
         } else {
@@ -1182,9 +1568,7 @@ impl Render for FileEditorView {
             let cell_h = cache.cell_height.to_f64() as f32;
             if cell_h > 0.0 {
                 let viewport_h = window.viewport_size().height.to_f64() as f32;
-                let chrome_h = TAB_BAR_HEIGHT + STATUS_BAR_HEIGHT
-                    + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
-                    + if self.goto_line_visible { GOTO_LINE_BAR_HEIGHT } else { 0.0 };
+                let chrome_h = self.header_height() + STATUS_BAR_HEIGHT;
                 let editor_h = (viewport_h - chrome_h).max(cell_h);
                 self.scroll_lines_per_page = (editor_h / cell_h) as usize;
             }
@@ -1219,9 +1603,105 @@ impl Render for FileEditorView {
             container = container.child(self.render_search_bar());
         }
 
+        // Replace bar
+        if self.replace_visible {
+            container = container.child(self.render_replace_bar(cx));
+        }
+
         // Go-to-line bar
         if self.goto_line_visible {
             container = container.child(self.render_goto_line_bar());
+        }
+
+        // Unsaved changes warning bar
+        if let Some(pending_idx) = self.pending_close_tab {
+            let tab_name = self.tabs.get(pending_idx)
+                .map(|t| t.display_name())
+                .unwrap_or_else(|| "untitled".to_string());
+            let h_save = cx.entity().downgrade();
+            let h_discard = cx.entity().downgrade();
+            let h_cancel = cx.entity().downgrade();
+
+            let warning_bar = div()
+                .flex()
+                .items_center()
+                .w_full()
+                .h(px(32.0))
+                .bg(hsla(0.08, 0.7, 0.5, 0.2))
+                .border_b_1()
+                .border_color(hsla(0.08, 0.7, 0.5, 0.4))
+                .px(px(10.0))
+                .gap(px(8.0))
+                .text_size(px(12.0))
+                .child(
+                    div()
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(format!("\"{}\" has unsaved changes.", tab_name)),
+                )
+                .child(div().flex_grow())
+                .child(
+                    div()
+                        .id("save-close-btn")
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(3.0))
+                        .bg(ShellDeckColors::primary())
+                        .text_color(ShellDeckColors::bg_primary())
+                        .text_size(px(11.0))
+                        .cursor_pointer()
+                        .child("Save & Close")
+                        .on_click(move |_event, _window, cx| {
+                            if let Some(view) = h_save.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    if let Some(idx) = this.pending_close_tab {
+                                        this.save_and_close_tab(idx, cx);
+                                    }
+                                });
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .id("discard-btn")
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(3.0))
+                        .text_color(hsla(0.0, 0.7, 0.6, 1.0))
+                        .text_size(px(11.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                        .child("Discard")
+                        .on_click(move |_event, _window, cx| {
+                            if let Some(view) = h_discard.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    if let Some(idx) = this.pending_close_tab {
+                                        this.force_close_tab(idx, cx);
+                                    }
+                                });
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .id("cancel-close-btn")
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(3.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .text_size(px(11.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                        .child("Cancel")
+                        .on_click(move |_event, _window, cx| {
+                            if let Some(view) = h_cancel.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    this.pending_close_tab = None;
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                );
+            container = container.child(warning_bar);
         }
 
         // Main editor area: file browser + editor canvas
@@ -1385,11 +1865,137 @@ impl Render for FileEditorView {
         let status = self.render_status_bar();
         container = container.child(status);
 
+        // Context menu overlay
+        if self.context_menu_visible {
+            container = container.child(self.render_context_menu(cx));
+        }
+
         container
     }
 }
 
 impl FileEditorView {
+    fn render_context_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (menu_x, menu_y) = self.context_menu_position;
+        let handle = cx.entity().downgrade();
+
+        let mut menu = div()
+            .absolute()
+            .top(px(menu_y))
+            .left(px(menu_x))
+            .w(px(200.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(4.0))
+            .shadow_md()
+            .py(px(4.0))
+            .text_size(px(12.0));
+
+        for (i, item) in CONTEXT_MENU_ITEMS.iter().enumerate() {
+            let h = handle.clone();
+            let action = item.action;
+
+            let row = div()
+                .id(SharedString::from(format!("ctx-menu-{}", i)))
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .h(px(26.0))
+                .px(px(12.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                .child(
+                    div()
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(item.label),
+                )
+                .child(
+                    div()
+                        .text_color(ShellDeckColors::text_muted())
+                        .text_size(px(10.0))
+                        .child(item.shortcut),
+                )
+                .on_click(move |_event, _window, cx| {
+                    if let Some(view) = h.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.context_menu_visible = false;
+                            this.execute_context_action(action, cx);
+                        });
+                    }
+                });
+
+            menu = menu.child(row);
+        }
+
+        menu
+    }
+
+    fn execute_context_action(&mut self, action: ContextMenuAction, cx: &mut Context<Self>) {
+        match action {
+            ContextMenuAction::Undo => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.buffer.undo();
+                    tab.highlighter.parse_full(tab.buffer.rope());
+                }
+            }
+            ContextMenuAction::Redo => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.buffer.redo();
+                    tab.highlighter.parse_full(tab.buffer.rope());
+                }
+            }
+            ContextMenuAction::Cut => {
+                if let Some(tab) = self.active_tab() {
+                    if let Some(text) = tab.buffer.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                }
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.buffer.delete_selection();
+                    tab.highlighter.parse_full(tab.buffer.rope());
+                }
+            }
+            ContextMenuAction::Copy => {
+                if let Some(tab) = self.active_tab() {
+                    if let Some(text) = tab.buffer.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                }
+            }
+            ContextMenuAction::Paste => {
+                if let Some(item) = cx.read_from_clipboard() {
+                    if let Some(text) = item.text() {
+                        if let Some(tab) = self.active_tab_mut() {
+                            tab.buffer.insert_str(&text);
+                            tab.highlighter.parse_full(tab.buffer.rope());
+                        }
+                    }
+                }
+            }
+            ContextMenuAction::SelectAll => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.buffer.select_all();
+                }
+            }
+            ContextMenuAction::ToggleComment => {
+                if let Some(prefix) = self
+                    .active_tab()
+                    .and_then(|t| t.language.comment_prefix())
+                    .map(|s| s.to_string())
+                {
+                    if let Some(tab) = self.active_tab_mut() {
+                        tab.buffer.toggle_line_comment(&prefix);
+                        tab.highlighter.parse_full(tab.buffer.rope());
+                    }
+                }
+            }
+        }
+        self.ensure_cursor_visible();
+        cx.notify();
+    }
+
     fn render_status_bar(&self) -> impl IntoElement {
         let (line, col) = self
             .active_tab()

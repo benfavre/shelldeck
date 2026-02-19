@@ -13,9 +13,20 @@ impl FileEditorView {
         let ks = &event.keystroke;
         let shift = ks.modifiers.shift;
         let ctrl = ks.modifiers.control || ks.modifiers.secondary();
+        let alt = ks.modifiers.alt;
 
-        // ---- Search mode: capture keystrokes ----
-        if self.search_visible {
+        // ---- Unsaved warning mode: capture keystrokes ----
+        if self.pending_close_tab.is_some() {
+            // Only allow Escape to cancel, or specific keys handled by the warning bar buttons
+            if ks.key.as_str() == "escape" {
+                self.pending_close_tab = None;
+                cx.notify();
+            }
+            return;
+        }
+
+        // ---- Search/Replace mode: capture keystrokes ----
+        if self.search_visible || self.replace_visible {
             if self.handle_search_key(event, ctrl, cx) {
                 return;
             }
@@ -24,6 +35,15 @@ impl FileEditorView {
         // ---- Go-to-line mode ----
         if self.goto_line_visible {
             if self.handle_goto_line_key(event, ctrl, cx) {
+                return;
+            }
+        }
+
+        // ---- Context menu: dismiss on any key ----
+        if self.context_menu_visible {
+            self.context_menu_visible = false;
+            cx.notify();
+            if ks.key.as_str() == "escape" {
                 return;
             }
         }
@@ -70,6 +90,15 @@ impl FileEditorView {
                                 .parse_incremental(tab.buffer.rope(), &pending);
                         }
                     }
+                    cx.notify();
+                    return;
+                }
+                "l" => {
+                    // Select line
+                    if let Some(tab) = self.active_tab_mut() {
+                        tab.buffer.select_line();
+                    }
+                    self.ensure_cursor_visible();
                     cx.notify();
                     return;
                 }
@@ -125,6 +154,22 @@ impl FileEditorView {
                         self.search_query.clear();
                         self.search_matches.clear();
                         self.search_current_idx = None;
+                        self.replace_visible = false;
+                        self.replace_query.clear();
+                        self.search_focus_replace = false;
+                    }
+                    self.goto_line_visible = false;
+                    cx.notify();
+                    return;
+                }
+                "h" => {
+                    // Toggle replace bar (opens search too if not visible)
+                    self.replace_visible = !self.replace_visible;
+                    if self.replace_visible {
+                        self.search_visible = true;
+                    } else {
+                        self.replace_query.clear();
+                        self.search_focus_replace = false;
                     }
                     self.goto_line_visible = false;
                     cx.notify();
@@ -136,6 +181,7 @@ impl FileEditorView {
                         self.goto_line_query.clear();
                     }
                     self.search_visible = false;
+                    self.replace_visible = false;
                     cx.notify();
                     return;
                 }
@@ -147,6 +193,22 @@ impl FileEditorView {
                 "w" => {
                     let idx = self.active_tab_index;
                     self.close_tab(idx, cx);
+                    return;
+                }
+                "/" => {
+                    // Toggle line comment
+                    if let Some(prefix) = self
+                        .active_tab()
+                        .and_then(|t| t.language.comment_prefix())
+                        .map(|s| s.to_string())
+                    {
+                        if let Some(tab) = self.active_tab_mut() {
+                            tab.buffer.toggle_line_comment(&prefix);
+                            tab.highlighter.parse_full(tab.buffer.rope());
+                        }
+                        self.ensure_cursor_visible();
+                        cx.notify();
+                    }
                     return;
                 }
                 _ => {}
@@ -185,6 +247,35 @@ impl FileEditorView {
                     if let Some(tab) = self.active_tab_mut() {
                         tab.buffer.move_word_right(shift);
                     }
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // ---- Alt shortcuts ----
+        if alt && !ctrl {
+            match ks.key.as_str() {
+                "up" => {
+                    // Move line up
+                    if let Some(tab) = self.active_tab_mut() {
+                        tab.buffer.move_line_up();
+                        tab.highlighter.parse_full(tab.buffer.rope());
+                    }
+                    self.ensure_cursor_visible();
+                    self.reset_cursor_blink(cx);
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    // Move line down
+                    if let Some(tab) = self.active_tab_mut() {
+                        tab.buffer.move_line_down();
+                        tab.highlighter.parse_full(tab.buffer.rope());
+                    }
+                    self.ensure_cursor_visible();
+                    self.reset_cursor_blink(cx);
                     cx.notify();
                     return;
                 }
@@ -282,8 +373,11 @@ impl FileEditorView {
             }
             "tab" => {
                 if shift {
+                    // Dedent: try multi-line first, then single-line
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.dedent();
+                        if !tab.buffer.dedent_selection() {
+                            tab.buffer.dedent();
+                        }
                         let pending = tab.buffer.take_pending_edits();
                         if !pending.is_empty() {
                             tab.highlighter
@@ -293,8 +387,11 @@ impl FileEditorView {
                     self.ensure_cursor_visible();
                     self.reset_cursor_blink(cx);
                 } else {
+                    // Indent: try multi-line first, then single-line
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.insert_tab();
+                        if !tab.buffer.indent_selection() {
+                            tab.buffer.insert_tab();
+                        }
                         let pending = tab.buffer.take_pending_edits();
                         if !pending.is_empty() {
                             tab.highlighter
@@ -308,7 +405,10 @@ impl FileEditorView {
             }
             "backspace" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.backspace();
+                    // Try pair-aware backspace first, then normal
+                    if !tab.buffer.try_backspace_pair() {
+                        tab.buffer.backspace();
+                    }
                     let pending = tab.buffer.take_pending_edits();
                     if !pending.is_empty() {
                         tab.highlighter
@@ -336,9 +436,12 @@ impl FileEditorView {
                 // Dismiss search or goto-line
                 if self.search_visible {
                     self.search_visible = false;
+                    self.replace_visible = false;
                     self.search_query.clear();
+                    self.replace_query.clear();
                     self.search_matches.clear();
                     self.search_current_idx = None;
+                    self.search_focus_replace = false;
                     cx.notify();
                 } else if self.goto_line_visible {
                     self.goto_line_visible = false;
@@ -348,12 +451,15 @@ impl FileEditorView {
             }
             _ => {
                 // Printable character input
-                if !ctrl && !ks.modifiers.alt {
+                if !ctrl && !alt {
                     if let Some(ref key_char) = ks.key_char {
                         for ch in key_char.chars() {
                             if !ch.is_control() {
                                 if let Some(tab) = self.active_tab_mut() {
-                                    tab.buffer.insert_char(ch);
+                                    // Try auto-pair first, then normal insert
+                                    if !tab.buffer.try_auto_pair(ch) {
+                                        tab.buffer.insert_char(ch);
+                                    }
                                     let pending = tab.buffer.take_pending_edits();
                                     if !pending.is_empty() {
                                         tab.highlighter
@@ -372,7 +478,7 @@ impl FileEditorView {
     }
 
     // -----------------------------------------------------------------------
-    // Search key handling
+    // Search key handling (also handles replace bar input)
     // -----------------------------------------------------------------------
 
     fn handle_search_key(
@@ -386,14 +492,23 @@ impl FileEditorView {
         match ks.key.as_str() {
             "escape" => {
                 self.search_visible = false;
+                self.replace_visible = false;
                 self.search_query.clear();
+                self.replace_query.clear();
                 self.search_matches.clear();
                 self.search_current_idx = None;
+                self.search_focus_replace = false;
                 cx.notify();
                 true
             }
             "enter" => {
-                if ks.modifiers.shift {
+                if ctrl && ks.modifiers.shift {
+                    // Ctrl+Shift+Enter = replace all
+                    self.replace_all(cx);
+                } else if self.search_focus_replace && self.replace_visible {
+                    // Enter in replace field = replace next
+                    self.replace_next(cx);
+                } else if ks.modifiers.shift {
                     self.search_prev();
                 } else {
                     self.search_next();
@@ -401,30 +516,69 @@ impl FileEditorView {
                 cx.notify();
                 true
             }
+            "tab" => {
+                // Toggle focus between search and replace fields
+                if self.replace_visible {
+                    self.search_focus_replace = !self.search_focus_replace;
+                    cx.notify();
+                }
+                true
+            }
             "backspace" => {
-                self.search_query.pop();
-                self.perform_search();
+                if self.search_focus_replace && self.replace_visible {
+                    self.replace_query.pop();
+                } else {
+                    self.search_query.pop();
+                    self.perform_search();
+                }
                 cx.notify();
                 true
             }
             "f" if ctrl => {
                 // Ctrl+F again closes search
                 self.search_visible = false;
+                self.replace_visible = false;
                 self.search_query.clear();
+                self.replace_query.clear();
                 self.search_matches.clear();
                 self.search_current_idx = None;
+                self.search_focus_replace = false;
+                cx.notify();
+                true
+            }
+            "h" if ctrl => {
+                // Ctrl+H toggles replace bar
+                self.replace_visible = !self.replace_visible;
+                if !self.replace_visible {
+                    self.replace_query.clear();
+                    self.search_focus_replace = false;
+                }
                 cx.notify();
                 true
             }
             _ => {
+                // Alt+C toggles case sensitivity
+                if ks.modifiers.alt && ks.key.as_str() == "c" {
+                    self.search_case_sensitive = !self.search_case_sensitive;
+                    self.perform_search();
+                    cx.notify();
+                    return true;
+                }
+
                 if !ctrl && !ks.modifiers.alt {
                     if let Some(ref key_char) = ks.key_char {
                         for ch in key_char.chars() {
                             if !ch.is_control() {
-                                self.search_query.push(ch);
+                                if self.search_focus_replace && self.replace_visible {
+                                    self.replace_query.push(ch);
+                                } else {
+                                    self.search_query.push(ch);
+                                }
                             }
                         }
-                        self.perform_search();
+                        if !self.search_focus_replace {
+                            self.perform_search();
+                        }
                         cx.notify();
                         return true;
                     }

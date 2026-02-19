@@ -65,6 +65,16 @@ impl EditorLanguage {
         }
     }
 
+    pub fn comment_prefix(&self) -> Option<&'static str> {
+        match self {
+            Self::Rust | Self::JavaScript | Self::TypeScript | Self::Css | Self::Sql => {
+                Some("// ")
+            }
+            Self::Python | Self::Bash | Self::Toml | Self::Yaml => Some("# "),
+            Self::Html | Self::Json | Self::PlainText => None,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Rust => "Rust",
