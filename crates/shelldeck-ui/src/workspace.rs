@@ -512,6 +512,7 @@ impl Workspace {
                 tracing::info!("New terminal tab created");
                 self.active_view = ActiveView::Terminal;
                 self.update_dashboard_stats(cx);
+                self.sync_terminal_tab_count(cx);
                 cx.notify();
             }
             TerminalEvent::TabSelected(id) => {
@@ -520,6 +521,7 @@ impl Workspace {
             TerminalEvent::TabClosed(id) => {
                 tracing::info!("Terminal tab closed: {}", id);
                 self.update_dashboard_stats(cx);
+                self.sync_terminal_tab_count(cx);
                 cx.notify();
             }
             TerminalEvent::SplitRequested {
@@ -3642,6 +3644,7 @@ impl Workspace {
     pub fn switch_to_section(&mut self, section: SidebarSection) {
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
+            SidebarSection::Terminals => ActiveView::Terminal,
             SidebarSection::Scripts => ActiveView::Scripts,
             SidebarSection::PortForwards => ActiveView::PortForwards,
             SidebarSection::ServerSync => ActiveView::ServerSync,
@@ -3649,6 +3652,13 @@ impl Workspace {
             SidebarSection::FileEditor => ActiveView::FileEditor,
             SidebarSection::Settings => ActiveView::Settings,
         };
+    }
+
+    fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
+        let count = self.terminal.read(cx).tabs.len();
+        self.sidebar.update(cx, |sidebar, _| {
+            sidebar.set_terminal_tab_count(count);
+        });
     }
 
     pub fn next_tab(&mut self, cx: &mut Context<Self>) {
@@ -3674,6 +3684,7 @@ impl Workspace {
             cx.notify();
         });
         self.update_dashboard_stats(cx);
+        self.sync_terminal_tab_count(cx);
     }
 
     pub fn open_new_terminal(&mut self, cx: &mut Context<Self>) {
@@ -3682,6 +3693,7 @@ impl Workspace {
         });
         self.active_view = ActiveView::Terminal;
         self.update_dashboard_stats(cx);
+        self.sync_terminal_tab_count(cx);
     }
 
     /// Start periodic git status polling (every 5 seconds).
@@ -3754,6 +3766,7 @@ impl Workspace {
             terminal.ensure_refresh_running(cx);
             cx.notify();
         });
+        self.sync_terminal_tab_count(cx);
 
         // Mark as connecting
         self.set_connection_status(conn_id, ConnectionStatus::Connecting, cx);

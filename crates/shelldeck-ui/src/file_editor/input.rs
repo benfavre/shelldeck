@@ -25,6 +25,25 @@ impl FileEditorView {
             return;
         }
 
+        // ---- Non-text tabs: only allow Ctrl+W (close) and Ctrl+B (file browser toggle) ----
+        if !self.active_tab().map_or(false, |t| t.is_text()) {
+            if ctrl {
+                match ks.key.as_str() {
+                    "w" => {
+                        self.close_tab(self.active_tab_index, cx);
+                        return;
+                    }
+                    "b" => {
+                        self.file_browser_visible = !self.file_browser_visible;
+                        cx.notify();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         // ---- Search/Replace mode: capture keystrokes ----
         if self.search_visible || self.replace_visible {
             if self.handle_search_key(event, ctrl, cx) {
@@ -58,8 +77,9 @@ impl FileEditorView {
                 }
                 "z" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.undo();
-                        tab.highlighter.parse_full(tab.buffer.rope());
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.undo();
+                        hl.parse_full(buf.rope());
                     }
                     self.ensure_cursor_visible();
                     cx.notify();
@@ -67,8 +87,9 @@ impl FileEditorView {
                 }
                 "y" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.redo();
-                        tab.highlighter.parse_full(tab.buffer.rope());
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.redo();
+                        hl.parse_full(buf.rope());
                     }
                     self.ensure_cursor_visible();
                     cx.notify();
@@ -76,18 +97,18 @@ impl FileEditorView {
                 }
                 "a" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.select_all();
+                        tab.buffer_mut().unwrap().select_all();
                     }
                     cx.notify();
                     return;
                 }
                 "d" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.duplicate_line();
-                        let pending = tab.buffer.take_pending_edits();
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.duplicate_line();
+                        let pending = buf.take_pending_edits();
                         if !pending.is_empty() {
-                            tab.highlighter
-                                .parse_incremental(tab.buffer.rope(), &pending);
+                            hl.parse_incremental(buf.rope(), &pending);
                         }
                     }
                     cx.notify();
@@ -96,7 +117,7 @@ impl FileEditorView {
                 "l" => {
                     // Select line
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.select_line();
+                        tab.buffer_mut().unwrap().select_line();
                     }
                     self.ensure_cursor_visible();
                     cx.notify();
@@ -105,7 +126,7 @@ impl FileEditorView {
                 "c" => {
                     // Copy
                     if let Some(tab) = self.active_tab() {
-                        if let Some(text) = tab.buffer.selected_text() {
+                        if let Some(text) = tab.buffer().and_then(|b| b.selected_text()) {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
                         }
                     }
@@ -114,16 +135,16 @@ impl FileEditorView {
                 "x" => {
                     // Cut
                     if let Some(tab) = self.active_tab() {
-                        if let Some(text) = tab.buffer.selected_text() {
+                        if let Some(text) = tab.buffer().and_then(|b| b.selected_text()) {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
                         }
                     }
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.delete_selection();
-                        let pending = tab.buffer.take_pending_edits();
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.delete_selection();
+                        let pending = buf.take_pending_edits();
                         if !pending.is_empty() {
-                            tab.highlighter
-                                .parse_incremental(tab.buffer.rope(), &pending);
+                            hl.parse_incremental(buf.rope(), &pending);
                         }
                     }
                     cx.notify();
@@ -134,11 +155,11 @@ impl FileEditorView {
                     if let Some(item) = cx.read_from_clipboard() {
                         if let Some(text) = item.text() {
                             if let Some(tab) = self.active_tab_mut() {
-                                tab.buffer.insert_str(&text);
-                                let pending = tab.buffer.take_pending_edits();
+                                let (buf, hl) = tab.text_parts_mut();
+                                buf.insert_str(&text);
+                                let pending = buf.take_pending_edits();
                                 if !pending.is_empty() {
-                                    tab.highlighter
-                                        .parse_incremental(tab.buffer.rope(), &pending);
+                                    hl.parse_incremental(buf.rope(), &pending);
                                 }
                             }
                             self.ensure_cursor_visible();
@@ -199,12 +220,14 @@ impl FileEditorView {
                     // Toggle line comment
                     if let Some(prefix) = self
                         .active_tab()
-                        .and_then(|t| t.language.comment_prefix())
+                        .and_then(|t| t.language())
+                        .and_then(|l| l.comment_prefix())
                         .map(|s| s.to_string())
                     {
                         if let Some(tab) = self.active_tab_mut() {
-                            tab.buffer.toggle_line_comment(&prefix);
-                            tab.highlighter.parse_full(tab.buffer.rope());
+                            let (buf, hl) = tab.text_parts_mut();
+                            buf.toggle_line_comment(&prefix);
+                            hl.parse_full(buf.rope());
                         }
                         self.ensure_cursor_visible();
                         cx.notify();
@@ -220,11 +243,11 @@ impl FileEditorView {
                     "k" => {
                         // Delete line
                         if let Some(tab) = self.active_tab_mut() {
-                            tab.buffer.delete_line();
-                            let pending = tab.buffer.take_pending_edits();
+                            let (buf, hl) = tab.text_parts_mut();
+                            buf.delete_line();
+                            let pending = buf.take_pending_edits();
                             if !pending.is_empty() {
-                                tab.highlighter
-                                    .parse_incremental(tab.buffer.rope(), &pending);
+                                hl.parse_incremental(buf.rope(), &pending);
                             }
                         }
                         cx.notify();
@@ -238,14 +261,14 @@ impl FileEditorView {
             match ks.key.as_str() {
                 "left" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.move_word_left(shift);
+                        tab.buffer_mut().unwrap().move_word_left(shift);
                     }
                     cx.notify();
                     return;
                 }
                 "right" => {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.move_word_right(shift);
+                        tab.buffer_mut().unwrap().move_word_right(shift);
                     }
                     cx.notify();
                     return;
@@ -260,8 +283,9 @@ impl FileEditorView {
                 "up" => {
                     // Move line up
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.move_line_up();
-                        tab.highlighter.parse_full(tab.buffer.rope());
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.move_line_up();
+                        hl.parse_full(buf.rope());
                     }
                     self.ensure_cursor_visible();
                     self.reset_cursor_blink(cx);
@@ -271,8 +295,9 @@ impl FileEditorView {
                 "down" => {
                     // Move line down
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.move_line_down();
-                        tab.highlighter.parse_full(tab.buffer.rope());
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.move_line_down();
+                        hl.parse_full(buf.rope());
                     }
                     self.ensure_cursor_visible();
                     self.reset_cursor_blink(cx);
@@ -287,7 +312,7 @@ impl FileEditorView {
         match ks.key.as_str() {
             "left" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.move_left(shift);
+                    tab.buffer_mut().unwrap().move_left(shift);
                 }
                 self.ensure_cursor_visible();
                 self.reset_cursor_blink(cx);
@@ -295,7 +320,7 @@ impl FileEditorView {
             }
             "right" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.move_right(shift);
+                    tab.buffer_mut().unwrap().move_right(shift);
                 }
                 self.ensure_cursor_visible();
                 self.reset_cursor_blink(cx);
@@ -303,7 +328,7 @@ impl FileEditorView {
             }
             "up" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.move_up(shift);
+                    tab.buffer_mut().unwrap().move_up(shift);
                 }
                 self.ensure_cursor_visible();
                 self.reset_cursor_blink(cx);
@@ -311,7 +336,7 @@ impl FileEditorView {
             }
             "down" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.move_down(shift);
+                    tab.buffer_mut().unwrap().move_down(shift);
                 }
                 self.ensure_cursor_visible();
                 self.reset_cursor_blink(cx);
@@ -319,10 +344,11 @@ impl FileEditorView {
             }
             "home" => {
                 if let Some(tab) = self.active_tab_mut() {
+                    let buf = tab.buffer_mut().unwrap();
                     if ctrl {
-                        tab.buffer.move_to_start(shift);
+                        buf.move_to_start(shift);
                     } else {
-                        tab.buffer.move_home(shift);
+                        buf.move_home(shift);
                     }
                 }
                 self.ensure_cursor_visible();
@@ -330,10 +356,11 @@ impl FileEditorView {
             }
             "end" => {
                 if let Some(tab) = self.active_tab_mut() {
+                    let buf = tab.buffer_mut().unwrap();
                     if ctrl {
-                        tab.buffer.move_to_end(shift);
+                        buf.move_to_end(shift);
                     } else {
-                        tab.buffer.move_end(shift);
+                        buf.move_end(shift);
                     }
                 }
                 self.ensure_cursor_visible();
@@ -342,7 +369,7 @@ impl FileEditorView {
             "pageup" => {
                 let lines = self.scroll_lines_per_page;
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.page_up(lines, shift);
+                    tab.buffer_mut().unwrap().page_up(lines, shift);
                     tab.scroll_offset = (tab.scroll_offset - lines as f32).max(0.0);
                 }
                 self.ensure_cursor_visible();
@@ -351,7 +378,7 @@ impl FileEditorView {
             "pagedown" => {
                 let lines = self.scroll_lines_per_page;
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.page_down(lines, shift);
+                    tab.buffer_mut().unwrap().page_down(lines, shift);
                     tab.scroll_offset += lines as f32;
                 }
                 self.clamp_scroll();
@@ -360,11 +387,11 @@ impl FileEditorView {
             }
             "enter" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.insert_newline();
-                    let pending = tab.buffer.take_pending_edits();
+                    let (buf, hl) = tab.text_parts_mut();
+                    buf.insert_newline();
+                    let pending = buf.take_pending_edits();
                     if !pending.is_empty() {
-                        tab.highlighter
-                            .parse_incremental(tab.buffer.rope(), &pending);
+                        hl.parse_incremental(buf.rope(), &pending);
                     }
                 }
                 self.ensure_cursor_visible();
@@ -375,13 +402,13 @@ impl FileEditorView {
                 if shift {
                     // Dedent: try multi-line first, then single-line
                     if let Some(tab) = self.active_tab_mut() {
-                        if !tab.buffer.dedent_selection() {
-                            tab.buffer.dedent();
+                        let (buf, hl) = tab.text_parts_mut();
+                        if !buf.dedent_selection() {
+                            buf.dedent();
                         }
-                        let pending = tab.buffer.take_pending_edits();
+                        let pending = buf.take_pending_edits();
                         if !pending.is_empty() {
-                            tab.highlighter
-                                .parse_incremental(tab.buffer.rope(), &pending);
+                            hl.parse_incremental(buf.rope(), &pending);
                         }
                     }
                     self.ensure_cursor_visible();
@@ -389,13 +416,13 @@ impl FileEditorView {
                 } else {
                     // Indent: try multi-line first, then single-line
                     if let Some(tab) = self.active_tab_mut() {
-                        if !tab.buffer.indent_selection() {
-                            tab.buffer.insert_tab();
+                        let (buf, hl) = tab.text_parts_mut();
+                        if !buf.indent_selection() {
+                            buf.insert_tab();
                         }
-                        let pending = tab.buffer.take_pending_edits();
+                        let pending = buf.take_pending_edits();
                         if !pending.is_empty() {
-                            tab.highlighter
-                                .parse_incremental(tab.buffer.rope(), &pending);
+                            hl.parse_incremental(buf.rope(), &pending);
                         }
                     }
                     self.ensure_cursor_visible();
@@ -405,14 +432,14 @@ impl FileEditorView {
             }
             "backspace" => {
                 if let Some(tab) = self.active_tab_mut() {
+                    let (buf, hl) = tab.text_parts_mut();
                     // Try pair-aware backspace first, then normal
-                    if !tab.buffer.try_backspace_pair() {
-                        tab.buffer.backspace();
+                    if !buf.try_backspace_pair() {
+                        buf.backspace();
                     }
-                    let pending = tab.buffer.take_pending_edits();
+                    let pending = buf.take_pending_edits();
                     if !pending.is_empty() {
-                        tab.highlighter
-                            .parse_incremental(tab.buffer.rope(), &pending);
+                        hl.parse_incremental(buf.rope(), &pending);
                     }
                 }
                 self.ensure_cursor_visible();
@@ -421,11 +448,11 @@ impl FileEditorView {
             }
             "delete" => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.delete();
-                    let pending = tab.buffer.take_pending_edits();
+                    let (buf, hl) = tab.text_parts_mut();
+                    buf.delete();
+                    let pending = buf.take_pending_edits();
                     if !pending.is_empty() {
-                        tab.highlighter
-                            .parse_incremental(tab.buffer.rope(), &pending);
+                        hl.parse_incremental(buf.rope(), &pending);
                     }
                 }
                 self.ensure_cursor_visible();
@@ -456,14 +483,14 @@ impl FileEditorView {
                         for ch in key_char.chars() {
                             if !ch.is_control() {
                                 if let Some(tab) = self.active_tab_mut() {
+                                    let (buf, hl) = tab.text_parts_mut();
                                     // Try auto-pair first, then normal insert
-                                    if !tab.buffer.try_auto_pair(ch) {
-                                        tab.buffer.insert_char(ch);
+                                    if !buf.try_auto_pair(ch) {
+                                        buf.insert_char(ch);
                                     }
-                                    let pending = tab.buffer.take_pending_edits();
+                                    let pending = buf.take_pending_edits();
                                     if !pending.is_empty() {
-                                        tab.highlighter
-                                            .parse_incremental(tab.buffer.rope(), &pending);
+                                        hl.parse_incremental(buf.rope(), &pending);
                                     }
                                 }
                             }
@@ -610,7 +637,9 @@ impl FileEditorView {
             "enter" => {
                 if let Ok(line_num) = self.goto_line_query.parse::<usize>() {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.goto_line(line_num);
+                        if let Some(buf) = tab.buffer_mut() {
+                            buf.goto_line(line_num);
+                        }
                     }
                     self.ensure_cursor_visible();
                 }

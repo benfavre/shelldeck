@@ -77,6 +77,7 @@ fn render_highlighted_text(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
     Connections,
+    Terminals,
     Scripts,
     PortForwards,
     ServerSync,
@@ -106,6 +107,8 @@ pub struct SidebarView {
     width: f32,
     /// Whether the user is currently dragging the resize handle.
     resizing: bool,
+    /// Number of open terminal tabs (shown as badge)
+    terminal_tab_count: usize,
     /// Host search query
     search_query: String,
     search_focused: bool,
@@ -121,6 +124,7 @@ impl SidebarView {
             collapsed: false,
             width: 260.0,
             resizing: false,
+            terminal_tab_count: 0,
             search_query: String::new(),
             search_focused: false,
             focus_handle: cx.focus_handle(),
@@ -145,6 +149,10 @@ impl SidebarView {
 
     pub fn set_connections(&mut self, connections: Vec<Connection>) {
         self.connections = connections;
+    }
+
+    pub fn set_terminal_tab_count(&mut self, count: usize) {
+        self.terminal_tab_count = count;
     }
 
     pub fn toggle_collapsed(&mut self) {
@@ -669,6 +677,12 @@ impl Render for SidebarView {
                 SidebarSection::Connections,
                 "Connections",
                 Some(connected_count),
+                cx,
+            ))
+            .child(self.render_nav_item(
+                SidebarSection::Terminals,
+                "Terminals",
+                if self.terminal_tab_count > 0 { Some(self.terminal_tab_count) } else { None },
                 cx,
             ))
             .child(self.render_nav_item(SidebarSection::Scripts, "Scripts", None, cx))

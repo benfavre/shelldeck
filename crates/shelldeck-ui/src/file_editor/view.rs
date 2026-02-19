@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::buffer::RopeBuffer;
 use super::file_browser::FileBrowserPanel;
 use super::highlighter::{HighlightSpan, SyntaxHighlighter};
-use super::EditorLanguage;
+use super::{EditorLanguage, FileKind};
 use crate::glyph_cache::GlyphCache;
 use crate::theme::ShellDeckColors;
 
@@ -83,15 +83,46 @@ pub enum FileEditorEvent {
 }
 
 // ---------------------------------------------------------------------------
+// TabContent
+// ---------------------------------------------------------------------------
+
+pub struct PdfInfo {
+    pub page_count: usize,
+    pub file_size: u64,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub creator: Option<String>,
+}
+
+pub struct BinaryInfo {
+    pub file_size: u64,
+}
+
+pub enum TabContent {
+    Text {
+        buffer: RopeBuffer,
+        highlighter: SyntaxHighlighter,
+        language: EditorLanguage,
+    },
+    Image {
+        image_path: PathBuf,
+    },
+    Pdf {
+        info: PdfInfo,
+    },
+    Binary {
+        info: BinaryInfo,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // EditorTab
 // ---------------------------------------------------------------------------
 pub struct EditorTab {
     pub id: Uuid,
     pub path: Option<PathBuf>,
     pub filename: String,
-    pub buffer: RopeBuffer,
-    pub highlighter: SyntaxHighlighter,
-    pub language: EditorLanguage,
+    pub content: TabContent,
     pub scroll_offset: f32,
 }
 
@@ -104,9 +135,11 @@ impl EditorTab {
             id: Uuid::new_v4(),
             path: None,
             filename: "untitled".to_string(),
-            buffer,
-            highlighter,
-            language,
+            content: TabContent::Text {
+                buffer,
+                highlighter,
+                language,
+            },
             scroll_offset: 0.0,
         }
     }
@@ -125,15 +158,123 @@ impl EditorTab {
             id: Uuid::new_v4(),
             path: Some(path),
             filename,
-            buffer,
-            highlighter,
-            language,
+            content: TabContent::Text {
+                buffer,
+                highlighter,
+                language,
+            },
             scroll_offset: 0.0,
         }
     }
 
+    pub fn from_image(path: PathBuf) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Self {
+            id: Uuid::new_v4(),
+            path: Some(path.clone()),
+            filename,
+            content: TabContent::Image { image_path: path },
+            scroll_offset: 0.0,
+        }
+    }
+
+    pub fn from_pdf(path: PathBuf, info: PdfInfo) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Self {
+            id: Uuid::new_v4(),
+            path: Some(path),
+            filename,
+            content: TabContent::Pdf { info },
+            scroll_offset: 0.0,
+        }
+    }
+
+    pub fn from_binary(path: PathBuf, info: BinaryInfo) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Self {
+            id: Uuid::new_v4(),
+            path: Some(path),
+            filename,
+            content: TabContent::Binary { info },
+            scroll_offset: 0.0,
+        }
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self.content, TabContent::Text { .. })
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        match &self.content {
+            TabContent::Text { buffer, .. } => buffer.is_dirty(),
+            _ => false,
+        }
+    }
+
+    pub fn buffer(&self) -> Option<&RopeBuffer> {
+        match &self.content {
+            TabContent::Text { buffer, .. } => Some(buffer),
+            _ => None,
+        }
+    }
+
+    pub fn buffer_mut(&mut self) -> Option<&mut RopeBuffer> {
+        match &mut self.content {
+            TabContent::Text { buffer, .. } => Some(buffer),
+            _ => None,
+        }
+    }
+
+    pub fn highlighter_mut(&mut self) -> Option<&mut SyntaxHighlighter> {
+        match &mut self.content {
+            TabContent::Text { highlighter, .. } => Some(highlighter),
+            _ => None,
+        }
+    }
+
+    pub fn language(&self) -> Option<EditorLanguage> {
+        match &self.content {
+            TabContent::Text { language, .. } => Some(*language),
+            _ => None,
+        }
+    }
+
+    /// Returns mutable references to buffer and highlighter.
+    /// Panics if not a text tab — only call after an `is_text()` guard.
+    pub fn text_parts_mut(&mut self) -> (&mut RopeBuffer, &mut SyntaxHighlighter) {
+        match &mut self.content {
+            TabContent::Text {
+                buffer,
+                highlighter,
+                ..
+            } => (buffer, highlighter),
+            _ => panic!("text_parts_mut called on non-text tab"),
+        }
+    }
+
+    pub fn content_type_name(&self) -> &str {
+        match &self.content {
+            TabContent::Text { language, .. } => language.display_name(),
+            TabContent::Image { .. } => "Image",
+            TabContent::Pdf { .. } => "PDF",
+            TabContent::Binary { .. } => "Binary",
+        }
+    }
+
     fn display_name(&self) -> String {
-        let dirty = if self.buffer.is_dirty() { " *" } else { "" };
+        let dirty = if self.is_dirty() { " *" } else { "" };
         format!("{}{}", self.filename, dirty)
     }
 }
@@ -241,37 +382,65 @@ impl FileEditorView {
             }
         }
 
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let tab = EditorTab::from_file(path, &content);
-                // Replace empty untitled tab instead of adding alongside it
-                let replace_empty = self.tabs.len() == 1
-                    && self.tabs[0].path.is_none()
-                    && !self.tabs[0].buffer.is_dirty()
-                    && self.tabs[0].buffer.len_chars() == 0;
-                if replace_empty {
-                    self.tabs[0] = tab;
-                    self.active_tab_index = 0;
-                } else {
-                    self.tabs.push(tab);
-                    self.active_tab_index = self.tabs.len() - 1;
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let kind = FileKind::from_filename(filename);
+
+        let tab = match kind {
+            FileKind::Image => EditorTab::from_image(path),
+            FileKind::Pdf => {
+                match Self::load_pdf_info(&path) {
+                    Some(info) => EditorTab::from_pdf(path, info),
+                    None => {
+                        // Fallback to binary if PDF parsing fails
+                        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        EditorTab::from_binary(path, BinaryInfo { file_size })
+                    }
                 }
-                cx.emit(FileEditorEvent::TabsChanged);
-                cx.notify();
             }
-            Err(e) => {
-                tracing::error!("Failed to open file: {}", e);
+            FileKind::Binary => {
+                let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                EditorTab::from_binary(path, BinaryInfo { file_size })
             }
+            FileKind::Text => {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => EditorTab::from_file(path, &content),
+                    Err(_) => {
+                        // UTF-8 decode failed — treat as binary
+                        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        EditorTab::from_binary(path, BinaryInfo { file_size })
+                    }
+                }
+            }
+        };
+
+        // Replace empty untitled tab instead of adding alongside it
+        let replace_empty = self.tabs.len() == 1
+            && self.tabs[0].path.is_none()
+            && !self.tabs[0].is_dirty()
+            && self.tabs[0].buffer().map_or(true, |b| b.len_chars() == 0);
+        if replace_empty {
+            self.tabs[0] = tab;
+            self.active_tab_index = 0;
+        } else {
+            self.tabs.push(tab);
+            self.active_tab_index = self.tabs.len() - 1;
         }
+        cx.emit(FileEditorEvent::TabsChanged);
+        cx.notify();
     }
 
     pub fn save_file(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
-            if let Some(ref path) = tab.path {
-                let content = tab.buffer.text();
+            if let (Some(ref path), TabContent::Text { buffer, .. }) =
+                (&tab.path, &mut tab.content)
+            {
+                let content = buffer.text();
                 match std::fs::write(path, &content) {
                     Ok(()) => {
-                        tab.buffer.set_dirty(false);
+                        buffer.set_dirty(false);
                         cx.notify();
                     }
                     Err(e) => {
@@ -285,7 +454,7 @@ impl FileEditorView {
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         // Check for unsaved changes
         if let Some(tab) = self.tabs.get(index) {
-            if tab.buffer.is_dirty() && self.pending_close_tab.is_none() {
+            if tab.is_dirty() && self.pending_close_tab.is_none() {
                 self.pending_close_tab = Some(index);
                 cx.notify();
                 return;
@@ -310,13 +479,15 @@ impl FileEditorView {
     }
 
     pub fn save_and_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        // Save first
+        // Save first (only for text tabs)
         if let Some(tab) = self.tabs.get_mut(index) {
-            if let Some(ref path) = tab.path {
-                let content = tab.buffer.text();
+            if let (Some(ref path), TabContent::Text { buffer, .. }) =
+                (&tab.path, &mut tab.content)
+            {
+                let content = buffer.text();
                 match std::fs::write(path, &content) {
                     Ok(()) => {
-                        tab.buffer.set_dirty(false);
+                        buffer.set_dirty(false);
                     }
                     Err(e) => {
                         tracing::error!("Failed to save file: {}", e);
@@ -393,7 +564,11 @@ impl FileEditorView {
             Some(t) => t,
             None => return,
         };
-        let (cursor_line, _) = tab.buffer.cursor_line_col();
+        let buffer = match tab.buffer() {
+            Some(b) => b,
+            None => return,
+        };
+        let (cursor_line, _) = buffer.cursor_line_col();
         let first_visible = tab.scroll_offset as usize;
         let last_visible = first_visible + lines_per_page.saturating_sub(1);
 
@@ -407,9 +582,11 @@ impl FileEditorView {
     pub(crate) fn clamp_scroll(&mut self) {
         let half_page = (self.scroll_lines_per_page / 2) as f32;
         if let Some(tab) = self.active_tab_mut() {
-            // Allow scrolling past end by half a page
-            let max = tab.buffer.len_lines().saturating_sub(1) as f32 + half_page;
-            tab.scroll_offset = tab.scroll_offset.clamp(0.0, max);
+            if let Some(buffer) = tab.buffer() {
+                // Allow scrolling past end by half a page
+                let max = buffer.len_lines().saturating_sub(1) as f32 + half_page;
+                tab.scroll_offset = tab.scroll_offset.clamp(0.0, max);
+            }
         }
     }
 
@@ -425,8 +602,8 @@ impl FileEditorView {
             return;
         }
 
-        if let Some(tab) = self.active_tab() {
-            let text = tab.buffer.text();
+        if let Some(buffer) = self.active_tab().and_then(|t| t.buffer()) {
+            let text = buffer.text();
             let query = &self.search_query;
             let query_char_len = query.chars().count();
 
@@ -472,8 +649,10 @@ impl FileEditorView {
         if let Some(pos) = char_pos {
             let tab_idx = self.active_tab_index;
             if let Some(tab) = self.tabs.get_mut(tab_idx) {
-                let (line, col) = tab.buffer.char_to_line_col(pos);
-                tab.buffer.set_cursor_from_position(line, col, false);
+                if let Some(buffer) = tab.buffer_mut() {
+                    let (line, col) = buffer.char_to_line_col(pos);
+                    buffer.set_cursor_from_position(line, col, false);
+                }
             }
             self.ensure_cursor_visible();
         }
@@ -493,8 +672,10 @@ impl FileEditorView {
         if let Some(pos) = char_pos {
             let tab_idx = self.active_tab_index;
             if let Some(tab) = self.tabs.get_mut(tab_idx) {
-                let (line, col) = tab.buffer.char_to_line_col(pos);
-                tab.buffer.set_cursor_from_position(line, col, false);
+                if let Some(buffer) = tab.buffer_mut() {
+                    let (line, col) = buffer.char_to_line_col(pos);
+                    buffer.set_cursor_from_position(line, col, false);
+                }
             }
             self.ensure_cursor_visible();
         }
@@ -516,20 +697,16 @@ impl FileEditorView {
 
         let tab_idx = self.active_tab_index;
         if let Some(tab) = self.tabs.get_mut(tab_idx) {
-            // Set selection to the match and delete it, then insert replacement
-            tab.buffer.set_cursor_from_position(
-                tab.buffer.char_to_line_col(match_range.start).0,
-                tab.buffer.char_to_line_col(match_range.start).1,
-                false,
-            );
-            tab.buffer.set_cursor_from_position(
-                tab.buffer.char_to_line_col(match_range.end).0,
-                tab.buffer.char_to_line_col(match_range.end).1,
-                true,
-            );
-            tab.buffer.delete_selection();
-            tab.buffer.insert_str(&self.replace_query);
-            tab.highlighter.parse_full(tab.buffer.rope());
+            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                // Set selection to the match and delete it, then insert replacement
+                let (sl, sc) = buffer.char_to_line_col(match_range.start);
+                let (el, ec) = buffer.char_to_line_col(match_range.end);
+                buffer.set_cursor_from_position(sl, sc, false);
+                buffer.set_cursor_from_position(el, ec, true);
+                buffer.delete_selection();
+                buffer.insert_str(&self.replace_query);
+                highlighter.parse_full(buffer.rope());
+            }
         }
 
         // Re-run search to update matches
@@ -552,26 +729,22 @@ impl FileEditorView {
         let replace_text = self.replace_query.clone();
 
         if let Some(tab) = self.tabs.get_mut(tab_idx) {
-            // Replace from end to start to preserve earlier positions
-            let mut matches: Vec<std::ops::Range<usize>> = self.search_matches.clone();
-            matches.reverse();
+            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                // Replace from end to start to preserve earlier positions
+                let mut matches: Vec<std::ops::Range<usize>> = self.search_matches.clone();
+                matches.reverse();
 
-            tab.buffer.flush_transaction();
-            for m in &matches {
-                tab.buffer.set_cursor_from_position(
-                    tab.buffer.char_to_line_col(m.start).0,
-                    tab.buffer.char_to_line_col(m.start).1,
-                    false,
-                );
-                tab.buffer.set_cursor_from_position(
-                    tab.buffer.char_to_line_col(m.end).0,
-                    tab.buffer.char_to_line_col(m.end).1,
-                    true,
-                );
-                tab.buffer.delete_selection();
-                tab.buffer.insert_str(&replace_text);
+                buffer.flush_transaction();
+                for m in &matches {
+                    let (sl, sc) = buffer.char_to_line_col(m.start);
+                    let (el, ec) = buffer.char_to_line_col(m.end);
+                    buffer.set_cursor_from_position(sl, sc, false);
+                    buffer.set_cursor_from_position(el, ec, true);
+                    buffer.delete_selection();
+                    buffer.insert_str(&replace_text);
+                }
+                highlighter.parse_full(buffer.rope());
             }
-            tab.highlighter.parse_full(tab.buffer.rope());
         }
 
         self.perform_search();
@@ -637,7 +810,7 @@ impl FileEditorView {
             tab_el = tab_el.child(name);
 
             // Close button
-            if self.tabs.len() > 1 || tab.buffer.is_dirty() {
+            if self.tabs.len() > 1 || tab.is_dirty() {
                 let close_btn = div()
                     .id(SharedString::from(format!("close-tab-{}", i)))
                     .text_size(px(10.0))
@@ -670,7 +843,7 @@ impl FileEditorView {
                 .text_size(px(11.0))
                 .text_color(ShellDeckColors::text_muted())
                 .px(px(8.0))
-                .child(tab.language.display_name());
+                .child(tab.content_type_name().to_string());
             tab_bar = tab_bar.child(spacer).child(lang_label);
         }
 
@@ -891,32 +1064,39 @@ impl FileEditorView {
             None => return div().id("editor-canvas-empty2"),
         };
 
+        let (buffer, highlighter) = match &mut tab.content {
+            TabContent::Text {
+                buffer,
+                highlighter,
+                ..
+            } => (buffer, highlighter),
+            _ => return div().id("editor-canvas-non-text"),
+        };
+
         // Process pending edits for tree-sitter
-        let pending = tab.buffer.take_pending_edits();
+        let pending = buffer.take_pending_edits();
         if !pending.is_empty() {
-            tab.highlighter.parse_incremental(tab.buffer.rope(), &pending);
+            highlighter.parse_incremental(buffer.rope(), &pending);
         }
 
         // Compute visible range
         let first_visible = tab.scroll_offset as usize;
-        let last_visible = (first_visible + scroll_lines_per_page + 1).min(tab.buffer.len_lines());
+        let last_visible = (first_visible + scroll_lines_per_page + 1).min(buffer.len_lines());
 
         // Get highlights for visible range
-        let highlights = tab
-            .highlighter
-            .highlights_for_range(tab.buffer.rope(), first_visible, last_visible);
+        let highlights = highlighter.highlights_for_range(buffer.rope(), first_visible, last_visible);
 
         // Collect lines text
         let mut line_texts: Vec<String> = Vec::with_capacity(last_visible - first_visible);
         for line_idx in first_visible..last_visible {
-            line_texts.push(tab.buffer.line_text(line_idx));
+            line_texts.push(buffer.line_text(line_idx));
         }
 
-        let total_lines = tab.buffer.len_lines();
-        let tab_size = tab.buffer.tab_size();
-        let (cursor_line, cursor_char_col) = tab.buffer.cursor_line_col();
-        let cursor_col = tab.buffer.char_col_to_visual_col(cursor_line, cursor_char_col);
-        let selection = tab.buffer.selection().cloned();
+        let total_lines = buffer.len_lines();
+        let tab_size = buffer.tab_size();
+        let (cursor_line, cursor_char_col) = buffer.cursor_line_col();
+        let cursor_col = buffer.char_col_to_visual_col(cursor_line, cursor_char_col);
+        let selection = buffer.selection().cloned();
 
         // Compute gutter width inline to avoid borrowing self
         let line_count = total_lines;
@@ -929,7 +1109,7 @@ impl FileEditorView {
         let gutter_w = (digits as f32 + 2.0) * char_width;
 
         // Bracket match
-        let bracket_match: Option<(usize, usize)> = tab.buffer.find_matching_bracket();
+        let bracket_match: Option<(usize, usize)> = buffer.find_matching_bracket();
 
         // Selection as (start_line, start_visual_col, end_line, end_visual_col) for canvas
         let sel_coords: Option<(usize, usize, usize, usize)> = selection.as_ref().and_then(|s| {
@@ -937,26 +1117,29 @@ impl FileEditorView {
             if range.is_empty() {
                 return None;
             }
-            let (sl, sc) = tab.buffer.char_to_line_col(range.start);
-            let (el, ec) = tab.buffer.char_to_line_col(range.end);
-            let sv = tab.buffer.char_col_to_visual_col(sl, sc);
-            let ev = tab.buffer.char_col_to_visual_col(el, ec);
+            let (sl, sc) = buffer.char_to_line_col(range.start);
+            let (el, ec) = buffer.char_to_line_col(range.end);
+            let sv = buffer.char_col_to_visual_col(sl, sc);
+            let ev = buffer.char_col_to_visual_col(el, ec);
             Some((sl, sv, el, ev))
         });
 
         // Convert search matches from char ranges to (start_line, start_visual_col, end_line, end_visual_col)
         // Only keep matches that overlap the visible range
+        // Re-borrow buffer immutably for search match coordinate conversion
+        let tab = &self.tabs[tab_idx];
+        let buffer = tab.buffer().unwrap();
         let mut search_match_coords: Vec<(usize, usize, usize, usize)> = Vec::new();
         let mut search_current_coord: Option<usize> = None;
         for (mi, m) in self.search_matches.iter().enumerate() {
-            let (sl, sc) = tab.buffer.char_to_line_col(m.start);
-            let (el, ec) = tab.buffer.char_to_line_col(m.end);
+            let (sl, sc) = buffer.char_to_line_col(m.start);
+            let (el, ec) = buffer.char_to_line_col(m.end);
             if el >= first_visible && sl < last_visible {
                 if Some(mi) == self.search_current_idx {
                     search_current_coord = Some(search_match_coords.len());
                 }
-                let sv = tab.buffer.char_col_to_visual_col(sl, sc);
-                let ev = tab.buffer.char_col_to_visual_col(el, ec);
+                let sv = buffer.char_col_to_visual_col(sl, sc);
+                let ev = buffer.char_col_to_visual_col(el, ec);
                 search_match_coords.push((sl, sv, el, ev));
             }
         }
@@ -1379,6 +1562,11 @@ impl FileEditorView {
             return;
         }
 
+        // Non-text tabs: no text interaction
+        if !self.active_tab().map_or(false, |t| t.is_text()) {
+            return;
+        }
+
         self.reset_cursor_blink(cx);
 
         let cache = match self.glyph_cache.as_ref() {
@@ -1394,7 +1582,7 @@ impl FileEditorView {
         let cell_w = cache.cell_width.to_f64() as f32;
         let cell_h = cache.cell_height.to_f64() as f32;
 
-        let total_lines = self.tabs[tab_idx].buffer.len_lines();
+        let total_lines = self.tabs[tab_idx].buffer().unwrap().len_lines();
         let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
@@ -1439,15 +1627,15 @@ impl FileEditorView {
         let visual_col = (rel_x / cell_w) as usize;
         let row = (rel_y / cell_h) as usize;
         let abs_line = row + self.tabs[tab_idx].scroll_offset as usize;
-        let char_col = self.tabs[tab_idx].buffer.visual_col_to_char_col(abs_line, visual_col);
+        let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
 
         let extend = event.modifiers.shift;
 
         if event.click_count == 2 {
-            self.tabs[tab_idx].buffer.set_cursor_from_position(abs_line, char_col, false);
-            self.tabs[tab_idx].buffer.select_word_at_cursor();
+            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, false);
+            self.tabs[tab_idx].buffer_mut().unwrap().select_word_at_cursor();
         } else {
-            self.tabs[tab_idx].buffer.set_cursor_from_position(abs_line, char_col, extend);
+            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, extend);
             self.mouse_selecting = true;
         }
 
@@ -1455,6 +1643,10 @@ impl FileEditorView {
     }
 
     fn handle_right_click(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        // No context menu for non-text tabs
+        if !self.active_tab().map_or(false, |t| t.is_text()) {
+            return;
+        }
         let x = event.position.x.to_f64() as f32;
         let y = event.position.y.to_f64() as f32;
         self.context_menu_position = (x, y);
@@ -1475,7 +1667,7 @@ impl FileEditorView {
                 };
                 let _ = browser_offset; // used in viewport calculation
                 let rel_y = (event.position.y.to_f64() as f32 - header_height).max(0.0);
-                let total_lines = self.tabs[tab_idx].buffer.len_lines();
+                let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
                 // Use approximate viewport height
                 let cell_h = self.glyph_cache.as_ref()
                     .map(|c| c.cell_height.to_f64() as f32)
@@ -1508,7 +1700,7 @@ impl FileEditorView {
         let cell_w = cache.cell_width.to_f64() as f32;
         let cell_h = cache.cell_height.to_f64() as f32;
 
-        let total_lines = self.tabs[tab_idx].buffer.len_lines();
+        let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
         let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
@@ -1526,9 +1718,9 @@ impl FileEditorView {
         let row = (rel_y / cell_h) as usize;
         let scroll = self.tabs[tab_idx].scroll_offset as usize;
         let abs_line = row + scroll;
-        let char_col = self.tabs[tab_idx].buffer.visual_col_to_char_col(abs_line, visual_col);
+        let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
 
-        self.tabs[tab_idx].buffer.set_cursor_from_position(abs_line, char_col, true);
+        self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, true);
 
         cx.notify();
     }
@@ -1598,19 +1790,18 @@ impl Render for FileEditorView {
         // Tab bar
         container = container.child(self.render_tab_bar(cx));
 
-        // Search bar
-        if self.search_visible {
-            container = container.child(self.render_search_bar());
-        }
-
-        // Replace bar
-        if self.replace_visible {
-            container = container.child(self.render_replace_bar(cx));
-        }
-
-        // Go-to-line bar
-        if self.goto_line_visible {
-            container = container.child(self.render_goto_line_bar());
+        // Search/replace/goto-line bars (text tabs only)
+        let active_is_text = self.active_tab().map_or(true, |t| t.is_text());
+        if active_is_text {
+            if self.search_visible {
+                container = container.child(self.render_search_bar());
+            }
+            if self.replace_visible {
+                container = container.child(self.render_replace_bar(cx));
+            }
+            if self.goto_line_visible {
+                container = container.child(self.render_goto_line_bar());
+            }
         }
 
         // Unsaved changes warning bar
@@ -1855,9 +2046,45 @@ impl Render for FileEditorView {
             editor_area = editor_area.child(drag_handle);
         }
 
-        // Editor canvas
-        let canvas_area = self.render_editor_canvas(window, cx);
-        editor_area = editor_area.child(canvas_area);
+        // Editor canvas / non-text content
+        let is_text_tab = self.active_tab().map_or(true, |t| t.is_text());
+        if is_text_tab {
+            let canvas_area = self.render_editor_canvas(window, cx);
+            editor_area = editor_area.child(canvas_area);
+        } else {
+            // Extract data needed for non-text rendering before calling render methods
+            let tab = self.active_tab().unwrap();
+            match &tab.content {
+                TabContent::Image { image_path } => {
+                    let path = image_path.clone();
+                    editor_area = editor_area.child(Self::render_image_viewer(&path));
+                }
+                TabContent::Pdf { info } => {
+                    let filename = tab.filename.clone();
+                    let path = tab.path.clone();
+                    let page_count = info.page_count;
+                    let file_size = info.file_size;
+                    let title = info.title.clone();
+                    let author = info.author.clone();
+                    let creator = info.creator.clone();
+                    let h = cx.entity().downgrade();
+                    editor_area = editor_area.child(Self::render_pdf_info(
+                        &filename, path.as_deref(), page_count, file_size,
+                        title.as_deref(), author.as_deref(), creator.as_deref(), h,
+                    ));
+                }
+                TabContent::Binary { info } => {
+                    let filename = tab.filename.clone();
+                    let path = tab.path.clone();
+                    let file_size = info.file_size;
+                    let h = cx.entity().downgrade();
+                    editor_area = editor_area.child(Self::render_binary_info(
+                        &filename, path.as_deref(), file_size, h,
+                    ));
+                }
+                TabContent::Text { .. } => unreachable!(),
+            }
+        }
 
         container = container.child(editor_area);
 
@@ -1936,30 +2163,36 @@ impl FileEditorView {
         match action {
             ContextMenuAction::Undo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.undo();
-                    tab.highlighter.parse_full(tab.buffer.rope());
+                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                        buffer.undo();
+                        highlighter.parse_full(buffer.rope());
+                    }
                 }
             }
             ContextMenuAction::Redo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.redo();
-                    tab.highlighter.parse_full(tab.buffer.rope());
+                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                        buffer.redo();
+                        highlighter.parse_full(buffer.rope());
+                    }
                 }
             }
             ContextMenuAction::Cut => {
                 if let Some(tab) = self.active_tab() {
-                    if let Some(text) = tab.buffer.selected_text() {
+                    if let Some(text) = tab.buffer().and_then(|b| b.selected_text()) {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
                 }
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.delete_selection();
-                    tab.highlighter.parse_full(tab.buffer.rope());
+                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                        buffer.delete_selection();
+                        highlighter.parse_full(buffer.rope());
+                    }
                 }
             }
             ContextMenuAction::Copy => {
                 if let Some(tab) = self.active_tab() {
-                    if let Some(text) = tab.buffer.selected_text() {
+                    if let Some(text) = tab.buffer().and_then(|b| b.selected_text()) {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
                 }
@@ -1968,26 +2201,33 @@ impl FileEditorView {
                 if let Some(item) = cx.read_from_clipboard() {
                     if let Some(text) = item.text() {
                         if let Some(tab) = self.active_tab_mut() {
-                            tab.buffer.insert_str(&text);
-                            tab.highlighter.parse_full(tab.buffer.rope());
+                            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                                buffer.insert_str(&text);
+                                highlighter.parse_full(buffer.rope());
+                            }
                         }
                     }
                 }
             }
             ContextMenuAction::SelectAll => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.buffer.select_all();
+                    if let Some(buffer) = tab.buffer_mut() {
+                        buffer.select_all();
+                    }
                 }
             }
             ContextMenuAction::ToggleComment => {
                 if let Some(prefix) = self
                     .active_tab()
-                    .and_then(|t| t.language.comment_prefix())
+                    .and_then(|t| t.language())
+                    .and_then(|l| l.comment_prefix())
                     .map(|s| s.to_string())
                 {
                     if let Some(tab) = self.active_tab_mut() {
-                        tab.buffer.toggle_line_comment(&prefix);
-                        tab.highlighter.parse_full(tab.buffer.rope());
+                        if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                            buffer.toggle_line_comment(&prefix);
+                            highlighter.parse_full(buffer.rope());
+                        }
                     }
                 }
             }
@@ -1997,31 +2237,14 @@ impl FileEditorView {
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
-        let (line, col) = self
-            .active_tab()
-            .map(|t| {
-                let (l, c) = t.buffer.cursor_line_col();
-                let vc = t.buffer.char_col_to_visual_col(l, c);
-                (l + 1, vc + 1)
-            })
-            .unwrap_or((1, 1));
+        let tab = self.active_tab();
+        let is_text = tab.map_or(false, |t| t.is_text());
 
-        let total_lines = self
-            .active_tab()
-            .map(|t| t.buffer.len_lines())
-            .unwrap_or(0);
+        let type_name = tab
+            .map(|t| t.content_type_name().to_string())
+            .unwrap_or_else(|| "Plain Text".to_string());
 
-        let lang_name = self
-            .active_tab()
-            .map(|t| t.language.display_name())
-            .unwrap_or("Plain Text");
-
-        let tab_info = self
-            .active_tab()
-            .map(|t| format!("Spaces: {}", t.buffer.tab_size()))
-            .unwrap_or_default();
-
-        div()
+        let mut bar = div()
             .flex()
             .items_center()
             .w_full()
@@ -2032,12 +2255,318 @@ impl FileEditorView {
             .px(px(10.0))
             .gap(px(16.0))
             .text_size(px(11.0))
-            .text_color(ShellDeckColors::text_muted())
-            .child(format!("Ln {}, Col {}", line, col))
-            .child(div().flex_grow())
-            .child(tab_info)
-            .child(lang_name)
-            .child(format!("{} lines", total_lines))
+            .text_color(ShellDeckColors::text_muted());
+
+        if is_text {
+            let (line, col) = tab
+                .and_then(|t| t.buffer())
+                .map(|b| {
+                    let (l, c) = b.cursor_line_col();
+                    let vc = b.char_col_to_visual_col(l, c);
+                    (l + 1, vc + 1)
+                })
+                .unwrap_or((1, 1));
+
+            let total_lines = tab
+                .and_then(|t| t.buffer())
+                .map(|b| b.len_lines())
+                .unwrap_or(0);
+
+            let tab_info = tab
+                .and_then(|t| t.buffer())
+                .map(|b| format!("Spaces: {}", b.tab_size()))
+                .unwrap_or_default();
+
+            bar = bar
+                .child(format!("Ln {}, Col {}", line, col))
+                .child(div().flex_grow())
+                .child(tab_info)
+                .child(type_name)
+                .child(format!("{} lines", total_lines));
+        } else {
+            bar = bar
+                .child(type_name)
+                .child(div().flex_grow());
+        }
+
+        bar
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-text tab rendering + PDF loader
+// ---------------------------------------------------------------------------
+
+impl FileEditorView {
+    fn render_image_viewer(path: &std::path::Path) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_grow()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .bg(ShellDeckColors::bg_primary())
+            .child(
+                img(path.to_string_lossy().to_string())
+                    .object_fit(ObjectFit::Contain)
+                    .max_w_full()
+                    .max_h_full(),
+            )
+    }
+
+    fn render_pdf_info(
+        filename: &str,
+        path: Option<&std::path::Path>,
+        page_count: usize,
+        file_size: u64,
+        title: Option<&str>,
+        author: Option<&str>,
+        creator: Option<&str>,
+        _handle: WeakEntity<Self>,
+    ) -> impl IntoElement {
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.0))
+            .p(px(32.0))
+            .max_w(px(420.0))
+            .rounded(px(8.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border());
+
+        // PDF icon badge
+        card = card.child(
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .rounded(px(4.0))
+                .bg(hsla(0.0, 0.7, 0.55, 0.15))
+                .text_color(hsla(0.0, 0.7, 0.55, 1.0))
+                .text_size(px(13.0))
+                .font_weight(FontWeight::BOLD)
+                .child("PDF"),
+        );
+
+        // Filename
+        card = card.child(
+            div()
+                .text_size(px(15.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(filename.to_string()),
+        );
+
+        // Info rows
+        card = card.child(Self::info_row("Pages", &page_count.to_string()));
+        card = card.child(Self::info_row("Size", &format_file_size(file_size)));
+        if let Some(t) = title {
+            if !t.is_empty() {
+                card = card.child(Self::info_row("Title", t));
+            }
+        }
+        if let Some(a) = author {
+            if !a.is_empty() {
+                card = card.child(Self::info_row("Author", a));
+            }
+        }
+        if let Some(c) = creator {
+            if !c.is_empty() {
+                card = card.child(Self::info_row("Creator", c));
+            }
+        }
+
+        // Open externally button
+        if let Some(p) = path {
+            let path_owned = p.to_path_buf();
+            card = card.child(
+                div()
+                    .id("open-pdf-external")
+                    .mt(px(8.0))
+                    .px(px(16.0))
+                    .py(px(6.0))
+                    .rounded(px(4.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_color(ShellDeckColors::bg_primary())
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .child("Open in External Viewer")
+                    .on_click(move |_event, _window, _cx| {
+                        let _ = open::that(&path_owned);
+                    }),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_grow()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .bg(ShellDeckColors::bg_primary())
+            .child(card)
+    }
+
+    fn render_binary_info(
+        filename: &str,
+        path: Option<&std::path::Path>,
+        file_size: u64,
+        _handle: WeakEntity<Self>,
+    ) -> impl IntoElement {
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("BIN")
+            .to_uppercase();
+
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.0))
+            .p(px(32.0))
+            .max_w(px(420.0))
+            .rounded(px(8.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border());
+
+        // Extension badge
+        card = card.child(
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .rounded(px(4.0))
+                .bg(hsla(0.0, 0.0, 0.5, 0.15))
+                .text_color(ShellDeckColors::text_muted())
+                .text_size(px(13.0))
+                .font_weight(FontWeight::BOLD)
+                .child(ext),
+        );
+
+        // Filename
+        card = card.child(
+            div()
+                .text_size(px(15.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(filename.to_string()),
+        );
+
+        // Message
+        card = card.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child("This file cannot be displayed as text."),
+        );
+
+        // Info
+        card = card.child(Self::info_row("Size", &format_file_size(file_size)));
+        if let Some(p) = path {
+            card = card.child(Self::info_row("Path", &p.to_string_lossy()));
+        }
+
+        // Open externally button
+        if let Some(p) = path {
+            let path_owned = p.to_path_buf();
+            card = card.child(
+                div()
+                    .id("open-binary-external")
+                    .mt(px(8.0))
+                    .px(px(16.0))
+                    .py(px(6.0))
+                    .rounded(px(4.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_color(ShellDeckColors::bg_primary())
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .child("Open with System Application")
+                    .on_click(move |_event, _window, _cx| {
+                        let _ = open::that(&path_owned);
+                    }),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_grow()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .bg(ShellDeckColors::bg_primary())
+            .child(card)
+    }
+
+    fn info_row(label: &str, value: &str) -> impl IntoElement {
+        div()
+            .flex()
+            .w_full()
+            .gap(px(8.0))
+            .text_size(px(12.0))
+            .child(
+                div()
+                    .w(px(60.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!("{}:", label)),
+            )
+            .child(
+                div()
+                    .flex_grow()
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(value.to_string()),
+            )
+    }
+
+    fn load_pdf_info(path: &std::path::Path) -> Option<PdfInfo> {
+        let file_size = std::fs::metadata(path).ok()?.len();
+        let doc = lopdf::Document::load(path).ok()?;
+        let page_count = doc.get_pages().len();
+
+        let (title, author, creator) = if let Ok(info_dict) = doc
+            .trailer
+            .get(b"Info")
+            .and_then(|v| doc.dereference(v))
+            .and_then(|(_, v)| v.as_dict())
+        {
+            let get_str = |key: &[u8]| -> Option<String> {
+                info_dict
+                    .get(key)
+                    .ok()
+                    .and_then(|v| match v {
+                        lopdf::Object::String(bytes, _) => {
+                            String::from_utf8(bytes.clone()).ok()
+                        }
+                        _ => None,
+                    })
+            };
+            (get_str(b"Title"), get_str(b"Author"), get_str(b"Creator"))
+        } else {
+            (None, None, None)
+        };
+
+        Some(PdfInfo {
+            page_count,
+            file_size,
+            title,
+            author,
+            creator,
+        })
+    }
+}
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 

@@ -6,6 +6,51 @@ pub mod view;
 
 use std::path::Path;
 
+/// Classification of a file before opening it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Image,
+    Pdf,
+    Binary,
+    Text,
+}
+
+impl FileKind {
+    /// Classify by file extension.
+    pub fn from_extension(ext: &str) -> Self {
+        match ext.to_lowercase().as_str() {
+            // Image formats supported by GPUI
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "tif" | "tiff"
+            | "avif" | "tga" | "qoi" => Self::Image,
+            // PDF
+            "pdf" => Self::Pdf,
+            // Known binary formats
+            "exe" | "dll" | "so" | "dylib" | "o" | "a" | "lib" | "bin" | "class" | "pyc"
+            | "pyd" | "wasm" | "zip" | "tar" | "gz" | "bz2" | "xz" | "zst" | "7z" | "rar"
+            | "iso" | "dmg" | "deb" | "rpm" | "mp3" | "mp4" | "mkv" | "avi" | "mov" | "flac"
+            | "wav" | "ogg" | "m4a" | "aac" | "ttf" | "otf" | "woff" | "woff2" | "eot"
+            | "sqlite" | "db" | "dat" => Self::Binary,
+            // Everything else: attempt as text
+            _ => Self::Text,
+        }
+    }
+
+    /// Classify by full filename, handling special cases then falling back to extension.
+    pub fn from_filename(name: &str) -> Self {
+        let basename = Path::new(name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name);
+
+        if let Some(ext) = Path::new(basename).extension().and_then(|e| e.to_str()) {
+            Self::from_extension(ext)
+        } else {
+            // No extension — treat as text (Makefile, Dockerfile, etc.)
+            Self::Text
+        }
+    }
+}
+
 /// Supported editor languages with tree-sitter grammar support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorLanguage {
