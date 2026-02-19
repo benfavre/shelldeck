@@ -319,6 +319,8 @@ pub struct FileEditorView {
     // Cached layout
     pub(crate) font_family: String,
     pub(crate) font_size: f32,
+    // Canvas bounds origin (set during paint, used by mouse handlers)
+    pub(crate) canvas_origin: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditorView {}
@@ -354,6 +356,7 @@ impl FileEditorView {
             pending_close_tab: None,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            canvas_origin: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         // Start with one empty tab
         view.tabs.push(EditorTab::new_empty());
@@ -1146,6 +1149,7 @@ impl FileEditorView {
 
         let handle = cx.entity().downgrade();
         let focus = self.focus_handle.clone();
+        let origin_arc = self.canvas_origin.clone();
 
         // Mouse handlers
         let h_down = handle.clone();
@@ -1209,7 +1213,12 @@ impl FileEditorView {
                 }
             })
             .child(canvas(
-                move |_bounds, _window, _cx| {
+                move |bounds, _window, _cx| {
+                    // Store canvas origin for mouse coordinate conversion
+                    let ox = bounds.origin.x.to_f64() as f32;
+                    let oy = bounds.origin.y.to_f64() as f32;
+                    let packed = ((ox.to_bits() as u64) << 32) | (oy.to_bits() as u64);
+                    origin_arc.store(packed, std::sync::atomic::Ordering::Relaxed);
                     (
                         cache,
                         line_texts,
@@ -1546,6 +1555,14 @@ impl FileEditorView {
     // Mouse handlers
     // -----------------------------------------------------------------------
 
+    /// Get the canvas origin (x, y) in window coordinates, set during paint.
+    fn canvas_origin_xy(&self) -> (f32, f32) {
+        let packed = self.canvas_origin.load(std::sync::atomic::Ordering::Relaxed);
+        let ox = f32::from_bits((packed >> 32) as u32);
+        let oy = f32::from_bits(packed as u32);
+        (ox, oy)
+    }
+
     fn header_height(&self) -> f32 {
         TAB_BAR_HEIGHT
             + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
@@ -1587,28 +1604,24 @@ impl FileEditorView {
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
         let pos = event.position;
-        let header_height = self.header_height();
+        let (canvas_ox, canvas_oy) = self.canvas_origin_xy();
 
-        let browser_offset = if self.file_browser_visible {
-            self.file_browser_width + DRAG_HANDLE_WIDTH
-        } else {
-            0.0
-        };
+        // Position relative to canvas origin
+        let rel_x = pos.x.to_f64() as f32 - canvas_ox;
+        let rel_y = pos.y.to_f64() as f32 - canvas_oy;
 
-        let abs_x = pos.x.to_f64() as f32 - browser_offset;
-        let rel_y = pos.y.to_f64() as f32 - header_height;
-
-        if rel_y < 0.0 {
+        if rel_y < 0.0 || rel_x < 0.0 {
             return;
         }
 
         // Check if click is in scrollbar area
-        let viewport_w = _window.viewport_size().width.to_f64() as f32 - browser_offset;
-        if abs_x >= viewport_w - SCROLLBAR_WIDTH {
+        // Canvas fills from canvas_ox to the right edge of the viewport
+        let canvas_w = _window.viewport_size().width.to_f64() as f32 - canvas_ox;
+        if rel_x >= canvas_w - SCROLLBAR_WIDTH {
             // Scrollbar click
-            let viewport_h = _window.viewport_size().height.to_f64() as f32 - header_height - STATUS_BAR_HEIGHT;
-            if viewport_h > 0.0 && total_lines > 0 {
-                let ratio = rel_y / viewport_h;
+            let canvas_h = _window.viewport_size().height.to_f64() as f32 - canvas_oy - STATUS_BAR_HEIGHT;
+            if canvas_h > 0.0 && total_lines > 0 {
+                let ratio = rel_y / canvas_h;
                 if let Some(tab) = self.tabs.get_mut(tab_idx) {
                     tab.scroll_offset = ratio * total_lines as f32;
                 }
@@ -1619,12 +1632,12 @@ impl FileEditorView {
             return;
         }
 
-        let rel_x = abs_x - gutter_w;
-        if rel_x < 0.0 {
+        let text_x = rel_x - gutter_w;
+        if text_x < 0.0 {
             return;
         }
 
-        let visual_col = (rel_x / cell_w) as usize;
+        let visual_col = (text_x / cell_w) as usize;
         let row = (rel_y / cell_h) as usize;
         let abs_line = row + self.tabs[tab_idx].scroll_offset as usize;
         let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
@@ -1659,14 +1672,8 @@ impl FileEditorView {
         if self.scrollbar_dragging {
             let tab_idx = self.active_tab_index;
             if tab_idx < self.tabs.len() {
-                let header_height = self.header_height();
-                let browser_offset = if self.file_browser_visible {
-                    self.file_browser_width + DRAG_HANDLE_WIDTH
-                } else {
-                    0.0
-                };
-                let _ = browser_offset; // used in viewport calculation
-                let rel_y = (event.position.y.to_f64() as f32 - header_height).max(0.0);
+                let (_, canvas_oy) = self.canvas_origin_xy();
+                let rel_y = (event.position.y.to_f64() as f32 - canvas_oy).max(0.0);
                 let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
                 // Use approximate viewport height
                 let cell_h = self.glyph_cache.as_ref()
@@ -1704,15 +1711,9 @@ impl FileEditorView {
         let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
-        let header_height = self.header_height();
-        let browser_offset = if self.file_browser_visible {
-            self.file_browser_width + DRAG_HANDLE_WIDTH
-        } else {
-            0.0
-        };
-
-        let rel_x = (event.position.x.to_f64() as f32 - gutter_w - browser_offset).max(0.0);
-        let rel_y = (event.position.y.to_f64() as f32 - header_height).max(0.0);
+        let (canvas_ox, canvas_oy) = self.canvas_origin_xy();
+        let rel_x = (event.position.x.to_f64() as f32 - canvas_ox - gutter_w).max(0.0);
+        let rel_y = (event.position.y.to_f64() as f32 - canvas_oy).max(0.0);
 
         let visual_col = (rel_x / cell_w) as usize;
         let row = (rel_y / cell_h) as usize;
