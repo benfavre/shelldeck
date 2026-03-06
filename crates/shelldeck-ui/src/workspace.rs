@@ -3754,7 +3754,13 @@ impl Workspace {
         let (rows, cols) = self.terminal.read(cx).grid_size();
 
         let (mut session, data_tx, input_rx) =
-            TerminalSession::spawn_ssh(title.clone(), rows, cols);
+            match TerminalSession::spawn_ssh(title.clone(), rows, cols) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to create SSH session: {}", e);
+                    return;
+                }
+            };
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {
@@ -3908,7 +3914,13 @@ impl Workspace {
         let (rows, cols) = self.terminal.read(cx).grid_size();
 
         let (mut session, data_tx, input_rx) =
-            TerminalSession::spawn_ssh(title.clone(), rows, cols);
+            match TerminalSession::spawn_ssh(title.clone(), rows, cols) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to create SSH split session: {}", e);
+                    return;
+                }
+            };
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {

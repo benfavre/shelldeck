@@ -79,8 +79,12 @@ impl AppConfig {
         match Self::project_dirs() {
             Ok(dirs) => dirs.config_dir().to_path_buf(),
             Err(_) => {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".config").join("shelldeck")
+                if let Some(home) = crate::util::home_dir() {
+                    home.join(".config").join("shelldeck")
+                } else {
+                    tracing::warn!("HOME not set and ProjectDirs unavailable; using current dir for config");
+                    PathBuf::from(".shelldeck")
+                }
             }
         }
     }

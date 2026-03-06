@@ -93,12 +93,17 @@ impl client::Handler for ClientHandler {
                 Ok(false)
             }
             KnownHostResult::NotFound => {
-                tracing::info!(
-                    "New host {} — adding {} key to known_hosts (TOFU)",
+                tracing::warn!(
+                    "New host {} — automatically trusting {} key (TOFU). \
+                     Verify the host key fingerprint if connecting over an untrusted network.",
                     self.hostname,
                     key_type
                 );
                 known_hosts::add_known_host(&self.hostname, self.port, key_type, &key_base64);
+                self.send_event(SshEvent::Banner(format!(
+                    "Warning: Automatically trusted new host key for {} (TOFU)\r\n",
+                    self.hostname
+                )));
                 Ok(true)
             }
         }

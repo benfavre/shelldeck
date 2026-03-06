@@ -20,8 +20,8 @@ impl Default for ConfigWatcher {
 impl ConfigWatcher {
     /// Create a new ConfigWatcher targeting the default ~/.ssh/config.
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        let ssh_config_path = PathBuf::from(home).join(".ssh").join("config");
+        let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        let ssh_config_path = home.join(".ssh").join("config");
 
         Self {
             ssh_config_path,

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::script::{PackageManager, Script, ScriptLanguage, ToolDependency};
+pub use crate::util::shell_escape;
 
 /// The result of building a command from a script — provides both a
 /// single-string SSH command and local binary+args.
@@ -14,13 +15,6 @@ pub struct ScriptCommand {
     pub local_args: Vec<String>,
     /// Environment variables to set.
     pub env_vars: Vec<(String, String)>,
-}
-
-/// Shell-escape a string for safe embedding in single quotes.
-pub fn shell_escape(s: &str) -> String {
-    // Replace all single quotes with '\'' (end quote, escaped quote, start quote)
-    let escaped = s.replace('\'', "'\\''");
-    format!("'{}'", escaped)
 }
 
 /// Replace `{{name}}` and `{{name:default}}` placeholders in `body` with values from `values`.

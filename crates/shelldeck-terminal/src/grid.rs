@@ -1006,18 +1006,27 @@ impl TerminalGrid {
             return;
         }
         let n = n.min(self.scroll_bottom - row + 1);
-        for _ in 0..n {
-            if self.scroll_bottom < self.cells.len() {
-                self.cells.remove(self.scroll_bottom);
-            }
-            if self.scroll_bottom < self.line_flags.len() {
-                self.line_flags.remove(self.scroll_bottom);
-            }
-            self.cells.insert(row, self.bce_row());
-            let flags_row = row.min(self.line_flags.len());
-            self.line_flags.insert(flags_row, LineFlags::default());
+
+        // Drain n lines from the bottom of the scroll region (O(n)).
+        let drain_start = self.scroll_bottom + 1 - n;
+        let drain_end = (self.scroll_bottom + 1).min(self.cells.len());
+        if drain_start < drain_end {
+            self.cells.drain(drain_start..drain_end);
         }
-        // Ensure we still have the right number of rows.
+        let flags_drain_end = (self.scroll_bottom + 1).min(self.line_flags.len());
+        if drain_start < flags_drain_end {
+            self.line_flags.drain(drain_start..flags_drain_end);
+        }
+
+        // Insert n blank rows at cursor position.
+        let new_rows: Vec<Vec<Cell>> = (0..n).map(|_| self.bce_row()).collect();
+        let new_flags: Vec<LineFlags> = vec![LineFlags::default(); n];
+        let cells_insert = row.min(self.cells.len());
+        let flags_insert = row.min(self.line_flags.len());
+        self.cells.splice(cells_insert..cells_insert, new_rows);
+        self.line_flags
+            .splice(flags_insert..flags_insert, new_flags);
+
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
         }
@@ -1036,19 +1045,26 @@ impl TerminalGrid {
             return;
         }
         let n = n.min(self.scroll_bottom - row + 1);
-        for _ in 0..n {
-            if row < self.cells.len() {
-                self.cells.remove(row);
-            }
-            if row < self.line_flags.len() {
-                self.line_flags.remove(row);
-            }
-            let insert_pos = self.scroll_bottom.min(self.cells.len());
-            self.cells.insert(insert_pos, self.bce_row());
-            let flags_insert_pos = insert_pos.min(self.line_flags.len());
-            self.line_flags
-                .insert(flags_insert_pos, LineFlags::default());
+
+        // Drain n lines at cursor position (O(n)).
+        let drain_end = (row + n).min(self.cells.len());
+        if row < drain_end {
+            self.cells.drain(row..drain_end);
         }
+        let flags_drain_end = (row + n).min(self.line_flags.len());
+        if row < flags_drain_end {
+            self.line_flags.drain(row..flags_drain_end);
+        }
+
+        // Insert n blank rows at the bottom of the scroll region.
+        let insert_pos = (self.scroll_bottom + 1 - n).min(self.cells.len());
+        let new_rows: Vec<Vec<Cell>> = (0..n).map(|_| self.bce_row()).collect();
+        let new_flags: Vec<LineFlags> = vec![LineFlags::default(); n];
+        let flags_insert = insert_pos.min(self.line_flags.len());
+        self.cells.splice(insert_pos..insert_pos, new_rows);
+        self.line_flags
+            .splice(flags_insert..flags_insert, new_flags);
+
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
         }
@@ -1070,17 +1086,19 @@ impl TerminalGrid {
         // If we're deleting from the middle of a wide char, clear both halves first.
         self.clear_wide_pair_at(row, col);
         let n = n.min(self.cols - col);
-        let bce = self.bce_cell();
-        for _ in 0..n {
-            if col < self.cells[row].len() {
-                // If the cell being removed is one half of a wide pair, clear the other.
-                self.clear_wide_pair_at(row, col);
-                self.cells[row].remove(col);
-            }
-            self.cells[row].push(bce.clone());
+        // Clear wide pairs at the boundary of the drain range.
+        let drain_end = (col + n).min(self.cells[row].len());
+        if drain_end > col {
+            self.clear_wide_pair_at(row, drain_end.saturating_sub(1));
         }
-        // Ensure row length stays correct.
-        self.cells[row].truncate(self.cols);
+        // Drain n cells at once (O(n) instead of O(n²)).
+        let actual_drain = drain_end.min(self.cells[row].len());
+        if col < actual_drain {
+            self.cells[row].drain(col..actual_drain);
+        }
+        // Fill blanks at the end.
+        let bce = self.bce_cell();
+        self.cells[row].resize(self.cols, bce);
         self.dirty = true;
     }
 
@@ -1097,9 +1115,9 @@ impl TerminalGrid {
         self.clear_wide_pair_at(row, col);
         let n = n.min(self.cols - col);
         let bce = self.bce_cell();
-        for _ in 0..n {
-            self.cells[row].insert(col, bce.clone());
-        }
+        // Splice n blank cells at once (O(n) instead of O(n²)).
+        let blanks: Vec<Cell> = vec![bce; n];
+        self.cells[row].splice(col..col, blanks);
         self.cells[row].truncate(self.cols);
         // If truncation split a wide char at the right edge, clear the orphan.
         if self.cols > 0 && self.cells[row][self.cols - 1].wide == CellWidth::Wide {
@@ -1140,29 +1158,37 @@ impl TerminalGrid {
             return;
         }
         let n = n.min(bottom - top + 1);
-        for _ in 0..n {
-            let row = self.cells[top].clone();
-            let flags = if top < self.line_flags.len() {
-                self.line_flags[top]
-            } else {
-                LineFlags::default()
-            };
-            // Only add to scrollback if we're scrolling from the very top.
-            if top == 0 {
-                // Ring buffer auto-evicts oldest when full.
-                self.scrollback.push(row);
+
+        // Save to scrollback before draining (only when scrolling from top).
+        if top == 0 {
+            for i in top..top + n {
+                let flags = if i < self.line_flags.len() {
+                    self.line_flags[i]
+                } else {
+                    LineFlags::default()
+                };
+                self.scrollback.push(self.cells[i].clone());
                 self.scrollback_line_flags.push(flags);
             }
-            self.cells.remove(top);
-            if top < self.line_flags.len() {
-                self.line_flags.remove(top);
-            }
-            let insert_at = bottom.min(self.cells.len());
-            self.cells.insert(insert_at, self.bce_row());
-            let flags_insert_at = insert_at.min(self.line_flags.len());
-            self.line_flags
-                .insert(flags_insert_at, LineFlags::default());
         }
+
+        // Drain top n rows and their flags in one O(n) operation each.
+        self.cells.drain(top..top + n);
+        let flags_end = (top + n).min(self.line_flags.len());
+        if top < flags_end {
+            self.line_flags.drain(top..flags_end);
+        }
+
+        // Insert n blank rows at the bottom of the scroll region.
+        let insert_at = bottom + 1 - n;
+        let new_rows: Vec<Vec<Cell>> = (0..n).map(|_| self.bce_row()).collect();
+        let new_flags: Vec<LineFlags> = vec![LineFlags::default(); n];
+        let cells_insert = insert_at.min(self.cells.len());
+        let flags_insert = insert_at.min(self.line_flags.len());
+        self.cells.splice(cells_insert..cells_insert, new_rows);
+        self.line_flags
+            .splice(flags_insert..flags_insert, new_flags);
+
         // Ensure we still have the right row count.
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
@@ -1182,18 +1208,27 @@ impl TerminalGrid {
             return;
         }
         let n = n.min(bottom - top + 1);
-        for _ in 0..n {
-            if bottom < self.cells.len() {
-                self.cells.remove(bottom);
-            }
-            if bottom < self.line_flags.len() {
-                self.line_flags.remove(bottom);
-            }
-            self.cells.insert(top, self.bce_row());
-            let flags_insert_at = top.min(self.line_flags.len());
-            self.line_flags
-                .insert(flags_insert_at, LineFlags::default());
+
+        // Drain bottom n rows in one O(n) operation.
+        let drain_start = bottom + 1 - n;
+        let drain_end = (bottom + 1).min(self.cells.len());
+        if drain_start < drain_end {
+            self.cells.drain(drain_start..drain_end);
         }
+        let flags_drain_end = (bottom + 1).min(self.line_flags.len());
+        if drain_start < flags_drain_end {
+            self.line_flags.drain(drain_start..flags_drain_end);
+        }
+
+        // Insert n blank rows at the top of the scroll region.
+        let new_rows: Vec<Vec<Cell>> = (0..n).map(|_| self.bce_row()).collect();
+        let new_flags: Vec<LineFlags> = vec![LineFlags::default(); n];
+        let cells_insert = top.min(self.cells.len());
+        let flags_insert = top.min(self.line_flags.len());
+        self.cells.splice(cells_insert..cells_insert, new_rows);
+        self.line_flags
+            .splice(flags_insert..flags_insert, new_flags);
+
         while self.cells.len() < self.rows {
             self.cells.push(self.bce_row());
         }

@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 /// Parse the default ~/.ssh/config file.
 pub fn parse_ssh_config() -> Result<Vec<Connection>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let config_path = PathBuf::from(home).join(".ssh").join("config");
+    let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+    let config_path = home.join(".ssh").join("config");
     if !config_path.exists() {
         return Ok(Vec::new());
     }
@@ -53,7 +53,7 @@ pub fn parse_ssh_config_file(path: &Path) -> Result<Vec<Connection>> {
         let user = params
             .user
             .clone()
-            .unwrap_or_else(|| whoami().unwrap_or_else(|| "root".to_string()));
+            .unwrap_or_else(|| crate::util::current_username().unwrap_or_else(|| "root".to_string()));
         let port = params.port.unwrap_or(22);
         let identity_file = params
             .identity_file
@@ -98,18 +98,11 @@ fn is_wildcard_only(pattern: &str) -> bool {
 fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(stripped) = s.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        PathBuf::from(home).join(stripped)
+        let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        home.join(stripped)
     } else {
         path.to_path_buf()
     }
-}
-
-/// Get the current username.
-fn whoami() -> Option<String> {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .ok()
 }
 
 /// Extra fields per host that ssh2_config doesn't expose.

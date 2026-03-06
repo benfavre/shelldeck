@@ -130,11 +130,11 @@ impl TerminalSession {
         title: String,
         rows: u16,
         cols: u16,
-    ) -> (
+    ) -> crate::Result<(
         Self,
         mpsc::UnboundedSender<Vec<u8>>,
         mpsc::UnboundedReceiver<Vec<u8>>,
-    ) {
+    )> {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (data_tx, mut data_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -166,7 +166,9 @@ impl TerminalSession {
                 }
                 tracing::debug!("SSH reader thread exiting");
             })
-            .expect("Failed to spawn SSH reader thread");
+            .map_err(|e| {
+                crate::TerminalError::Pty(format!("Failed to spawn SSH reader thread: {}", e))
+            })?;
 
         let session = Self {
             id: Uuid::new_v4(),
@@ -178,7 +180,7 @@ impl TerminalSession {
             resize_fn: None,
         };
 
-        (session, data_tx, input_rx)
+        Ok((session, data_tx, input_rx))
     }
 
     /// Send input data to the terminal (e.g., keyboard input).

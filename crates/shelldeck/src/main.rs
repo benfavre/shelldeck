@@ -104,7 +104,7 @@ fn main() -> Result<()> {
             ..Default::default()
         };
 
-        cx.open_window(window_options, |window, cx| {
+        match cx.open_window(window_options, |window, cx| {
             let workspace = cx.new(|cx| {
                 Workspace::new(
                     cx,
@@ -198,8 +198,13 @@ fn main() -> Result<()> {
             }
 
             workspace
-        })
-        .expect("Failed to open main window");
+        }) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Failed to open main window: {}", e);
+                cx.quit();
+            }
+        }
 
         tracing::info!("ShellDeck window opened");
     });
