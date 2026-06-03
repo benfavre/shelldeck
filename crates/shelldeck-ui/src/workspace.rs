@@ -548,6 +548,26 @@ impl Workspace {
                 self.sync_terminal_tab_count(cx);
                 cx.notify();
             }
+            TerminalEvent::DuplicateTabRequested(connection_id) => {
+                let connection_id = *connection_id;
+                if let Some(conn) = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == connection_id)
+                    .cloned()
+                {
+                    tracing::info!("Duplicating connection tab: {}", conn.display_name());
+                    self.connect_ssh(conn, cx);
+                    self.active_view = ActiveView::Terminal;
+                    self.sync_terminal_tab_count(cx);
+                    cx.notify();
+                } else {
+                    tracing::error!(
+                        "Duplicate requested for unknown connection {}",
+                        connection_id
+                    );
+                }
+            }
             TerminalEvent::SplitRequested {
                 connection_id,
                 direction,

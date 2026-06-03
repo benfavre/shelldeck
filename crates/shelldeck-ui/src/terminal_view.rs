@@ -573,6 +573,9 @@ pub enum TerminalEvent {
     TabSelected(Uuid),
     TabClosed(Uuid),
     NewTabRequested,
+    /// Duplicate a connection-backed tab: the workspace should open a new SSH
+    /// session for the given connection.
+    DuplicateTabRequested(Uuid),
     /// The user requested a split pane. If connection_id is Some, the workspace
     /// should open an SSH session for the split; otherwise a local terminal was
     /// already spawned.
@@ -685,6 +688,8 @@ pub struct TerminalView {
     _hovered_url: Option<usize>,
     /// Context menu state (position + whether visible).
     context_menu: Option<ContextMenuState>,
+    /// Right-click context menu state for a terminal tab.
+    tab_context_menu: Option<TabMenuState>,
     /// Active split view for the current tab (two panes displayed simultaneously).
     split_view: Option<SplitViewState>,
     /// Stored split views for inactive tabs, keyed by tab ID.
@@ -734,6 +739,15 @@ struct ContextMenuState {
     url: Option<String>,
 }
 
+/// State for a right-click context menu on a terminal tab.
+#[derive(Debug, Clone)]
+struct TabMenuState {
+    /// Window-relative position of the click.
+    position: Point<Pixels>,
+    /// The tab the menu was opened on.
+    tab_id: Uuid,
+}
+
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
@@ -765,6 +779,7 @@ impl TerminalView {
             detected_urls: Vec::new(),
             _hovered_url: None,
             context_menu: None,
+            tab_context_menu: None,
             split_view: None,
             stored_splits: HashMap::new(),
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
@@ -968,6 +983,58 @@ impl TerminalView {
                 self._refresh_task = None;
             }
         }
+    }
+
+    /// Duplicate a tab. Connection-backed tabs ask the workspace to open a new
+    /// SSH session for the same connection; local tabs spawn a fresh shell.
+    pub fn duplicate_tab(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let connection_id = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.connection_id);
+        if let Some(connection_id) = connection_id {
+            cx.emit(TerminalEvent::DuplicateTabRequested(connection_id));
+        } else {
+            self.spawn_local_terminal(cx);
+            cx.emit(TerminalEvent::NewTabRequested);
+        }
+    }
+
+    /// Close every tab positioned to the right of the given tab.
+    pub fn close_tabs_to_right(&mut self, id: Uuid) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
+            let ids: Vec<Uuid> = self.tabs.iter().skip(pos + 1).map(|t| t.id).collect();
+            for tab_id in ids {
+                self.close_tab(tab_id);
+            }
+        }
+    }
+
+    /// Close every tab positioned to the left of the given tab.
+    pub fn close_tabs_to_left(&mut self, id: Uuid) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
+            let ids: Vec<Uuid> = self.tabs.iter().take(pos).map(|t| t.id).collect();
+            for tab_id in ids {
+                self.close_tab(tab_id);
+            }
+        }
+    }
+
+    /// Whether the given tab has any tabs to its right.
+    fn tab_has_right(&self, id: Uuid) -> bool {
+        self.tabs
+            .iter()
+            .position(|t| t.id == id)
+            .is_some_and(|pos| pos + 1 < self.tabs.len())
+    }
+
+    /// Whether the given tab has any tabs to its left.
+    fn tab_has_left(&self, id: Uuid) -> bool {
+        self.tabs
+            .iter()
+            .position(|t| t.id == id)
+            .is_some_and(|pos| pos > 0)
     }
 
     /// Find a tab that belongs to the given connection, if any.
@@ -1546,6 +1613,17 @@ impl TerminalView {
                     cx.emit(TerminalEvent::TabSelected(tab_id));
                     cx.notify();
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                        this.context_menu = None;
+                        this.tab_context_menu = Some(TabMenuState {
+                            position: event.position,
+                            tab_id,
+                        });
+                        cx.notify();
+                    }),
+                )
                 // Status dot
                 .child(
                     div()
@@ -3642,6 +3720,154 @@ impl TerminalView {
         menu
     }
 
+    /// Render the right-click context menu for a terminal tab, plus a
+    /// transparent backdrop that dismisses it on any outside click.
+    fn render_tab_context_menu(
+        &self,
+        state: &TabMenuState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let tab_id = state.tab_id;
+        let has_left = self.tab_has_left(tab_id);
+        let has_right = self.tab_has_right(tab_id);
+
+        // Convert the window-relative click x into terminal-view-local x
+        // (the view starts just right of the sidebar). The menu drops down
+        // just below the tab bar.
+        let left = state.position.x - px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+
+        // Enabled menu item.
+        let item = |id: &str, label: &str| {
+            div()
+                .id(ElementId::from(SharedString::from(id.to_string())))
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .child(label.to_string())
+        };
+        // Disabled (greyed, non-interactive) menu item.
+        let disabled_item = |label: &str| {
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_muted().opacity(0.5))
+                .child(label.to_string())
+        };
+        let separator = || {
+            div()
+                .h(px(1.0))
+                .mx(px(8.0))
+                .my(px(4.0))
+                .bg(ShellDeckColors::border())
+        };
+
+        let mut menu = div()
+            .id("tab-context-menu")
+            .absolute()
+            .left(left)
+            .top(px(TAB_BAR_HEIGHT))
+            .min_w(px(190.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(8.0))
+            .shadow_lg()
+            .py(px(4.0))
+            .flex()
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+            .on_mouse_down(MouseButton::Right, |_, _, _| {});
+
+        menu = menu
+            .child(
+                item("tab-ctx-new", "New Terminal").on_click(cx.listener(
+                    |this, _, window, cx| {
+                        this.tab_context_menu = None;
+                        this.spawn_local_terminal(cx);
+                        this.focus_handle.focus(window);
+                        cx.emit(TerminalEvent::NewTabRequested);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                item("tab-ctx-duplicate", "Duplicate").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.duplicate_tab(tab_id, cx);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(separator())
+            .child(
+                item("tab-ctx-close", "Close Tab").on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    this.close_tab(tab_id);
+                    cx.emit(TerminalEvent::TabClosed(tab_id));
+                    cx.notify();
+                })),
+            );
+
+        if has_left {
+            menu = menu.child(
+                item("tab-ctx-close-left", "Close Tabs to the Left").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.close_tabs_to_left(tab_id);
+                        cx.emit(TerminalEvent::TabClosed(tab_id));
+                        cx.notify();
+                    },
+                )),
+            );
+        } else {
+            menu = menu.child(disabled_item("Close Tabs to the Left"));
+        }
+
+        if has_right {
+            menu = menu.child(
+                item("tab-ctx-close-right", "Close Tabs to the Right").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.close_tabs_to_right(tab_id);
+                        cx.emit(TerminalEvent::TabClosed(tab_id));
+                        cx.notify();
+                    },
+                )),
+            );
+        } else {
+            menu = menu.child(disabled_item("Close Tabs to the Right"));
+        }
+
+        // Transparent backdrop captures outside clicks to dismiss the menu.
+        let backdrop = div()
+            .id("tab-context-backdrop")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    cx.notify();
+                }),
+            );
+
+        div().child(backdrop).child(menu)
+    }
+
     /// Render a read-only grid for the unfocused split pane.
     /// Clicking anywhere on it toggles focus to this pane.
     fn render_split_passive_grid(
@@ -4066,7 +4292,7 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut container = div().flex().flex_col().size_full();
+        let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
             container = container.child(self.render_empty_state(cx));
@@ -4420,6 +4646,11 @@ impl Render for TerminalView {
 
                     container = container.child(grid_wrapper);
                 }
+            }
+
+            // Tab context menu overlays the whole terminal view.
+            if let Some(state) = self.tab_context_menu.clone() {
+                container = container.child(self.render_tab_context_menu(&state, cx));
             }
         }
 
