@@ -2495,7 +2495,8 @@ impl TerminalView {
                                 ScrollDelta::Lines(pt) => pt.y,
                                 ScrollDelta::Pixels(pt) => pt.y / px(cell_height_f),
                             };
-                            let button = if delta_y < 0.0 { 64u8 } else { 65u8 };
+                            // Wheel up (delta_y > 0) → button 64, wheel down → 65.
+                            let button = if delta_y > 0.0 { 64u8 } else { 65u8 };
                             let bytes = Self::encode_mouse(mouse_encoding, button, col, row, true);
                             if let Some(s) = this.active_session() {
                                 s.write_input(&bytes);
@@ -2514,7 +2515,8 @@ impl TerminalView {
                         let lines = delta_y.abs().ceil() as usize;
                         if let Some(session) = this.active_session() {
                             let mut grid = session.grid.lock();
-                            if delta_y < 0.0 {
+                            // Wheel up (delta_y > 0) scrolls back into history.
+                            if delta_y > 0.0 {
                                 grid.scroll_view_up(lines);
                             } else {
                                 grid.scroll_view_down(lines);
