@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;

@@ -195,6 +195,15 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |action: &ApplyTerminalTheme, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            let name = action.name.clone();
+                            ws.update(cx, |ws, cx| ws.apply_terminal_theme_by_name(&name, cx));
+                        }
+                    }
+                });
             }
 
             workspace

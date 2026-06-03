@@ -410,6 +410,14 @@ struct TerminalPalette {
     foreground: [u8; 3],
     /// Default background (r, g, b).
     background: [u8; 3],
+    /// Cursor color.
+    cursor: Hsla,
+    /// Selection background.
+    selection: Hsla,
+    /// Search match highlight background.
+    search_match: Hsla,
+    /// Current (focused) search match background.
+    search_current: Hsla,
 }
 
 impl Default for TerminalPalette {
@@ -418,26 +426,51 @@ impl Default for TerminalPalette {
     }
 }
 
+/// Parse a `#rrggbb` hex string to RGB bytes, tolerating a missing `#` and
+/// malformed input (which falls back to black).
+fn parse_hex_rgb(hex: &str) -> [u8; 3] {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return [0, 0, 0];
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    [r, g, b]
+}
+
+/// Convert RGB bytes to an opaque `Hsla`.
+#[inline]
+fn rgb_to_hsla(rgb: [u8; 3]) -> Hsla {
+    Hsla::from(rgba(
+        (rgb[0] as u32) << 24 | (rgb[1] as u32) << 16 | (rgb[2] as u32) << 8 | 0xFF,
+    ))
+}
+
 impl TerminalPalette {
     fn from_theme(theme: &TerminalTheme) -> Self {
-        let parse = |hex: &str| -> [u8; 3] {
-            let hex = hex.trim_start_matches('#');
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            [r, g, b]
-        };
-
         let mut ansi = [[0u8; 3]; 16];
         for (i, hex) in theme.ansi_colors.iter().enumerate() {
-            ansi[i] = parse(hex);
+            ansi[i] = parse_hex_rgb(hex);
         }
 
         Self {
             ansi,
-            foreground: parse(&theme.foreground),
-            background: parse(&theme.background),
+            foreground: parse_hex_rgb(&theme.foreground),
+            background: parse_hex_rgb(&theme.background),
+            cursor: rgb_to_hsla(parse_hex_rgb(&theme.cursor)),
+            // Selection / search highlights are translucent so the glyphs
+            // underneath stay legible.
+            selection: rgb_to_hsla(parse_hex_rgb(&theme.selection)).opacity(0.45),
+            search_match: rgb_to_hsla(parse_hex_rgb(&theme.search_match)).opacity(0.55),
+            search_current: rgb_to_hsla(parse_hex_rgb(&theme.search_current)).opacity(0.75),
         }
+    }
+
+    /// The theme's default background as an opaque `Hsla`.
+    #[inline]
+    fn background_color(&self) -> Hsla {
+        rgb_to_hsla(self.background)
     }
 
     /// Resolve a `TermColor` to an HSLA value using this palette.
@@ -1340,6 +1373,26 @@ impl TerminalView {
         self.ensure_refresh_running(cx);
     }
 
+    /// Start the Claude Code CLI by running `claude --dangerously-skip-permissions`.
+    ///
+    /// Runs in the currently active terminal session if there is one; otherwise
+    /// opens a fresh local terminal first. The bytes are queued on the PTY input
+    /// channel immediately; the shell's line discipline buffers them until the
+    /// prompt is ready, so the command runs as soon as the shell is.
+    pub fn launch_claude(&mut self, cx: &mut Context<Self>) {
+        // Reuse the open terminal; only spawn one when none exists.
+        if self.active_session().is_none() {
+            self.spawn_local_terminal(cx);
+        }
+
+        if let Some(session) = self.active_session() {
+            session.write_input(b"claude --dangerously-skip-permissions\n");
+        }
+
+        tracing::info!("Launched Claude Code in the active terminal");
+        cx.notify();
+    }
+
     /// Start the periodic refresh loop if it is not already running.
     ///
     /// Polls at ~120 Hz but only triggers a repaint when the grid is
@@ -1680,6 +1733,38 @@ impl TerminalView {
             .bg(ShellDeckColors::bg_sidebar())
             .border_b_1()
             .border_color(ShellDeckColors::border());
+
+        // Claude launcher (leftmost, branded)
+        toolbar = toolbar
+            .child(
+                div()
+                    .id("tb-claude")
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .pl(px(5.0))
+                    .pr(px(9.0))
+                    .py(px(3.0))
+                    .rounded(px(5.0))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(Self::claude_orange())
+                    .bg(Self::claude_orange().opacity(0.12))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Self::claude_orange().opacity(0.2)))
+                    .child(Self::claude_logo(18.0))
+                    .child("Claude")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.launch_claude(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .mx(px(6.0))
+                    .bg(ShellDeckColors::border()),
+            );
 
         // Left group: search, copy, paste
         toolbar = toolbar
@@ -2675,7 +2760,7 @@ impl TerminalView {
                 }
             })
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .p(px(4.0))
             .overflow_hidden()
             // Direct glyph-painting canvas
@@ -2745,9 +2830,9 @@ impl TerminalView {
                 let grid = grid.lock();
                 let visible = grid.visible_rows();
 
-                let sel_color = hsla(0.58, 0.6, 0.5, 0.35);
-                let search_color = hsla(0.0, 0.0, 0.5, 0.3);
-                let search_current_color = hsla(0.1, 0.9, 0.5, 0.7);
+                let sel_color = palette.selection;
+                let search_color = palette.search_match;
+                let search_current_color = palette.search_current;
 
                 for (ri, row) in visible.iter().enumerate() {
                     let y = bounds.origin.y + cell_h * ri as f32;
@@ -2996,7 +3081,7 @@ impl TerminalView {
                 if should_draw_cursor {
                     let cx_x = bounds.origin.x + cell_w * cursor.col as f32;
                     let cx_y = bounds.origin.y + cell_h * cursor.row as f32;
-                    let cursor_color = ShellDeckColors::text_primary();
+                    let cursor_color = palette.cursor;
 
                     // Determine cursor width: 2 cells for wide chars, 1 for normal.
                     let cursor_w = if let Some(row) = visible.get(cursor.row) {
@@ -3050,7 +3135,7 @@ impl TerminalView {
                                     if let Some(cell) = row.get(cursor.col) {
                                         let ch = cell.c;
                                         if ch != ' ' && ch != '\0' {
-                                            let bg = ShellDeckColors::terminal_bg();
+                                            let bg = palette.background_color();
                                             if let Some((fid, gid)) =
                                                 cache.lookup(ch, cell.attrs.bold, cell.attrs.italic)
                                             {
@@ -3575,7 +3660,7 @@ impl TerminalView {
             .id("terminal-grid-passive")
             .relative()
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .p(px(4.0))
             .overflow_hidden()
             .cursor_pointer()
@@ -3791,7 +3876,33 @@ impl TerminalView {
         }
     }
 
-    fn render_empty_state(&self) -> impl IntoElement {
+    /// Claude brand orange (#D97757).
+    fn claude_orange() -> gpui::Hsla {
+        gpui::rgb(0xD97757).into()
+    }
+
+    /// A rounded badge bearing the Claude "sunburst" mark, sized to `size`.
+    /// Used by the launch button and the empty-state call to action.
+    fn claude_logo(size: f32) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(size))
+            .h(px(size))
+            .rounded(px(size * 0.26))
+            .bg(Self::claude_orange())
+            .child(
+                div()
+                    .text_size(px(size * 0.62))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(gpui::white())
+                    // U+2733 EIGHT SPOKED ASTERISK — the Claude sunburst mark.
+                    .child("\u{2733}"),
+            )
+    }
+
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (ctrl, cmd) = if cfg!(target_os = "macos") {
             ("\u{2318}", "\u{2318}")
         } else {
@@ -3838,7 +3949,7 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .gap(px(24.0))
             // Icon + heading
             .child(
@@ -3868,6 +3979,44 @@ impl TerminalView {
                                 cmd
                             )),
                     ),
+            )
+            // Primary call to action: launch Claude Code
+            .child(
+                div()
+                    .id("empty-launch-claude")
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pl(px(10.0))
+                    .pr(px(16.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(Self::claude_orange())
+                    .shadow_sm()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Self::claude_orange().opacity(0.88)))
+                    .child(Self::claude_logo(26.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(gpui::white())
+                                    .child("Launch Claude Code"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(gpui::white().opacity(0.85))
+                                    .child("claude --dangerously-skip-permissions"),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.launch_claude(cx);
+                    })),
             )
             // Keyboard shortcuts reference
             .child(
@@ -3920,7 +4069,7 @@ impl Render for TerminalView {
         let mut container = div().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
-            container = container.child(self.render_empty_state());
+            container = container.child(self.render_empty_state(cx));
         } else {
             if self.needs_focus {
                 self.needs_focus = false;

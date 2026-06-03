@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;

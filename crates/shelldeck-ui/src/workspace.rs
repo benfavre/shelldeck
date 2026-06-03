@@ -19,7 +19,7 @@ use std::ops::DerefMut;
 use uuid::Uuid;
 
 use crate::command_palette::{
-    CommandPalette, CommandPaletteEvent, PaletteAction, ToggleCommandPalette,
+    ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, PaletteAction, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
@@ -118,6 +118,10 @@ pub struct Workspace {
     active_view: ActiveView,
     sidebar_visible: bool,
     sidebar_width: f32,
+    /// Application UI font family ("System Default" means no override).
+    ui_font_family: String,
+    /// Application UI base font size in pixels.
+    ui_font_size: f32,
     pub focus_handle: FocusHandle,
     /// Active tunnels keyed by the PortForward model ID (not the TunnelHandle internal id).
     active_tunnels: HashMap<Uuid, ActiveTunnel>,
@@ -193,6 +197,15 @@ impl Workspace {
         });
         let file_editor = cx.new(FileEditorView::new);
         let auto_update_enabled = config.general.auto_update;
+        let ui_font_family = config.general.ui_font_family.clone();
+        let ui_font_size = config.general.ui_font_size;
+
+        // Apply the persisted terminal color theme to the freshly-created view.
+        {
+            let theme = TerminalTheme::by_name(&config.terminal.theme);
+            terminal.update(cx, |t, _| t.set_terminal_theme(&theme));
+        }
+
         let settings = cx.new(|_| SettingsView::new(config));
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
@@ -207,7 +220,7 @@ impl Workspace {
         // Create command palette with registered actions
         let command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
-            palette.set_actions(vec![
+            let mut actions = vec![
                 PaletteAction::new("New Terminal", Some("Ctrl+T"), Box::new(NewTerminal)),
                 PaletteAction::new("Toggle Sidebar", Some("Ctrl+B"), Box::new(ToggleSidebar)),
                 PaletteAction::new("Open Settings", Some("Ctrl+,"), Box::new(OpenSettings)),
@@ -228,7 +241,16 @@ impl Workspace {
                     Some("Ctrl+E"),
                     Box::new(OpenFileEditorView),
                 ),
-            ]);
+            ];
+            // One entry per built-in terminal color theme — switches live.
+            for theme in TerminalTheme::builtins() {
+                actions.push(PaletteAction::new(
+                    &format!("Terminal Theme: {}", theme.name),
+                    None,
+                    Box::new(ApplyTerminalTheme { name: theme.name }),
+                ));
+            }
+            palette.set_actions(actions);
             palette
         });
 
@@ -362,6 +384,8 @@ impl Workspace {
             active_view: ActiveView::Dashboard,
             sidebar_visible: true,
             sidebar_width: 260.0,
+            ui_font_family,
+            ui_font_size,
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
@@ -619,10 +643,12 @@ impl Workspace {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
                 // Apply terminal settings to running view
+                let terminal_theme = TerminalTheme::by_name(&config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
                     terminal.set_font_size(config.terminal.font_size);
                     terminal.set_font_family(config.terminal.font_family.clone());
                     terminal.set_cursor_style(&config.terminal.cursor_style);
+                    terminal.set_terminal_theme(&terminal_theme);
                     cx.notify();
                 });
                 // Apply sidebar width
@@ -630,6 +656,9 @@ impl Workspace {
                 self.terminal.update(cx, |terminal, _cx| {
                     terminal.set_sidebar_width(config.general.sidebar_width);
                 });
+                // Apply application UI font (cascades to all child views on re-render)
+                self.ui_font_family = config.general.ui_font_family.clone();
+                self.ui_font_size = config.general.ui_font_size;
                 // Apply auto-update preference
                 let auto_update = config.general.auto_update;
                 self.auto_updater.update(cx, |updater, cx| {
@@ -652,16 +681,9 @@ impl Workspace {
                 };
                 install_theme(cx.deref_mut(), ui_theme);
 
-                // Apply a terminal theme matching the preference
-                let terminal_theme = if is_dark {
-                    TerminalTheme::dark()
-                } else {
-                    TerminalTheme::light()
-                };
-                self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_terminal_theme(&terminal_theme);
-                    cx.notify();
-                });
+                // Terminal color theme is configured independently (Appearance
+                // tab / command palette) and persisted, so it is intentionally
+                // left untouched when the app light/dark preference changes.
 
                 // Notify all child views to re-render with new colors
                 self.sidebar.update(cx, |_, cx| cx.notify());
@@ -675,15 +697,17 @@ impl Workspace {
                 self.toasts.update(cx, |_, cx| cx.notify());
                 cx.notify();
             }
-            SettingsEvent::TerminalThemeChanged(theme) => {
-                tracing::info!("Terminal theme changed to: {}", theme.name);
-                self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_terminal_theme(theme);
-                    cx.notify();
-                });
-                cx.notify();
-            }
         }
+    }
+
+    /// Apply a terminal color theme by name: persist it (which repaints the
+    /// live terminal via `ConfigChanged`) and surface a confirmation toast.
+    /// Used by the command palette's theme entries.
+    pub fn apply_terminal_theme_by_name(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, cx| {
+            settings.select_terminal_theme(name, cx);
+        });
+        self.show_toast(format!("Terminal theme: {}", name), ToastLevel::Info, cx);
     }
 
     fn handle_script_event(&mut self, event: &ScriptEvent, cx: &mut Context<Self>) {
@@ -4176,6 +4200,16 @@ impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         _window.set_client_inset(px(5.0));
 
+        // Drive proportional UI scaling from the App Font Size setting. Every
+        // view that styles via `crate::scale::px` (i.e. rems) tracks this rem
+        // size; the terminal grid and window chrome use absolute pixels and are
+        // intentionally unaffected.
+        {
+            use crate::scale::{rem_size_for_scale, scale_for_font_size};
+            let scale = scale_for_font_size(self.ui_font_size);
+            _window.set_rem_size(px(rem_size_for_scale(scale)));
+        }
+
         // Check if script editor wants to open the template browser
         if self.scripts.read(_cx).template_browser_open && self.template_browser.is_none() {
             self.scripts.update(_cx, |editor, _| {
@@ -4251,6 +4285,7 @@ impl Render for Workspace {
         let h12 = handle.clone();
         let h13 = handle.clone();
         let h14 = handle.clone();
+        let h15 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -4366,7 +4401,23 @@ impl Render for Workspace {
                         cx.notify();
                     });
                 }
+            })
+            .on_action(move |action: &ApplyTerminalTheme, _window, cx| {
+                if let Some(ws) = h15.upgrade() {
+                    let name = action.name.clone();
+                    ws.update(cx, |ws, cx| {
+                        ws.apply_terminal_theme_by_name(&name, cx);
+                    });
+                }
             });
+
+        // Apply the configured application UI font family on the root so it
+        // cascades to every child view; "System Default" leaves GPUI's
+        // default font untouched. (UI scale is driven by the rem size set at
+        // the top of render.)
+        if self.ui_font_family != "System Default" {
+            root = root.font_family(self.ui_font_family.clone());
+        }
 
         // Sidebar resize drag
         if sidebar_resizing {

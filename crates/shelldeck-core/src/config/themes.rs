@@ -160,4 +160,12 @@ impl TerminalTheme {
             Self::high_contrast(),
         ]
     }
+
+    /// Look up a built-in theme by name, falling back to the dark theme.
+    pub fn by_name(name: &str) -> Self {
+        Self::builtins()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(Self::dark)
+    }
 }

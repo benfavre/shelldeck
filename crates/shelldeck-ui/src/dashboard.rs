@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use crate::theme::ShellDeckColors;
 

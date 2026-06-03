@@ -20,6 +20,7 @@ pub enum ThemePreference {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TerminalConfig {
     pub font_family: String,
     pub font_size: f32,
@@ -27,6 +28,9 @@ pub struct TerminalConfig {
     pub default_shell: Option<String>,
     pub cursor_style: String,
     pub cursor_blink: bool,
+    /// Name of the active terminal color theme (matches a `TerminalTheme`
+    /// built-in name, e.g. "Dark", "Light", "Pastel Dark", "High Contrast").
+    pub theme: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +42,10 @@ pub struct GeneralConfig {
     pub sidebar_width: f32,
     pub auto_attach_tmux: bool,
     pub auto_update: bool,
+    /// Font family for the application UI (sidebar, dashboard, forms, etc.).
+    pub ui_font_family: String,
+    /// Base font size in pixels for the application UI.
+    pub ui_font_size: f32,
 }
 
 impl Default for TerminalConfig {
@@ -49,6 +57,7 @@ impl Default for TerminalConfig {
             default_shell: None,
             cursor_style: "block".to_string(),
             cursor_blink: true,
+            theme: "Dark".to_string(),
         }
     }
 }
@@ -62,6 +71,8 @@ impl Default for GeneralConfig {
             sidebar_width: 260.0,
             auto_attach_tmux: false,
             auto_update: true,
+            ui_font_family: "System Default".to_string(),
+            ui_font_size: 14.0,
         }
     }
 }
