@@ -116,6 +116,11 @@ fn main() -> Result<()> {
             // Focus the workspace root so keyboard shortcuts dispatch correctly
             workspace.read(cx).focus_handle.focus(window);
 
+            // Restore the previous session's tabs when auto-connect-on-startup
+            // is enabled. No-op when the setting is off, keeping default startup
+            // (empty terminal view) unchanged.
+            workspace.update(cx, |ws, cx| ws.restore_session(cx));
+
             // Intercept window close to honor the `confirm_before_close` setting.
             {
                 let w = workspace.downgrade();

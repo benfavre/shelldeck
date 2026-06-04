@@ -1182,6 +1182,23 @@ impl TerminalView {
         self.tabs.len()
     }
 
+    /// Snapshot the open tabs for session persistence.
+    ///
+    /// Returns one entry per tab as `(title, connection_id)`. A `connection_id`
+    /// of `Some` marks an SSH tab (to reconnect on restore); `None` marks a
+    /// local shell tab. Read-only — does not mutate any state.
+    pub fn session_states(&self) -> Vec<(String, Option<Uuid>)> {
+        self.tabs
+            .iter()
+            .map(|t| (t.title.clone(), t.connection_id))
+            .collect()
+    }
+
+    /// Index of the currently active tab (for restoring focus).
+    pub fn active_tab_index(&self) -> usize {
+        self.pane.active_index
+    }
+
     /// Return the last computed grid dimensions, or a default if unknown.
     pub fn grid_size(&self) -> (u16, u16) {
         if self.last_grid_rows > 0 {

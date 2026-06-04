@@ -964,9 +964,55 @@ impl Workspace {
         });
     }
 
+    /// Persist the current set of open terminal tabs so they can be restored on
+    /// the next launch (when `auto_connect_on_startup` is enabled). Saved
+    /// unconditionally and best-effort: failures are logged, never fatal.
+    fn save_workspace_state(&self, cx: &Context<Self>) {
+        use shelldeck_core::config::workspace_state::{TabState, TabType};
+        use shelldeck_core::config::WorkspaceState;
+
+        let terminal = self.terminal.read(cx);
+        let sessions = terminal.session_states();
+        let active_tab = terminal.active_tab_index();
+
+        let tabs: Vec<TabState> = sessions
+            .into_iter()
+            .enumerate()
+            .map(|(i, (title, connection_id))| {
+                let tab_type = if connection_id.is_some() {
+                    TabType::Ssh
+                } else {
+                    TabType::Local
+                };
+                TabState {
+                    id: i.to_string(),
+                    title,
+                    tab_type,
+                    connection_id,
+                    // Local tabs are spawned with the default shell, which the
+                    // terminal session does not track, so leave this unset.
+                    shell: None,
+                }
+            })
+            .collect();
+
+        let state = WorkspaceState {
+            tabs,
+            active_tab,
+            sidebar_visible: self.sidebar_visible,
+        };
+
+        if let Err(e) = state.save() {
+            tracing::warn!("Failed to save workspace state: {}", e);
+        }
+    }
+
     /// Gracefully shut down: close all terminal sessions, stop tunnels, stop background tasks.
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
         tracing::info!("ShellDeck shutting down gracefully...");
+        // Persist open tabs before tearing sessions down so there is something
+        // to restore next launch. Best-effort; never blocks shutdown.
+        self.save_workspace_state(cx);
         // Stop all active tunnels
         for (fwd_id, tunnel) in self.active_tunnels.drain() {
             tracing::info!("Stopping tunnel for forward {}", fwd_id);
@@ -1067,6 +1113,83 @@ impl Workspace {
         });
         self.update_dashboard_stats(cx);
         self.sync_terminal_tab_count(cx);
+    }
+
+    /// Restore the previously-saved session on startup when
+    /// `auto_connect_on_startup` is enabled. Local tabs reopen a default-shell
+    /// terminal; SSH tabs reconnect via the existing `connect_ssh` path if the
+    /// connection still exists. No-op (and no behavior change) when the flag is
+    /// off or there is nothing to restore. Failures are logged, never fatal.
+    pub fn restore_session(&mut self, cx: &mut Context<Self>) {
+        use shelldeck_core::config::workspace_state::TabType;
+        use shelldeck_core::config::WorkspaceState;
+
+        if !self.app_config.general.auto_connect_on_startup {
+            return;
+        }
+
+        let state = match WorkspaceState::load() {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::warn!("Failed to load workspace state for restore: {}", e);
+                return;
+            }
+        };
+
+        if state.tabs.is_empty() {
+            // Nothing saved — leave the normal default (empty) startup untouched.
+            return;
+        }
+
+        let mut restored = 0usize;
+        for tab in &state.tabs {
+            match tab.tab_type {
+                TabType::Local => {
+                    self.terminal.update(cx, |terminal, cx| {
+                        terminal.spawn_local_terminal(cx);
+                    });
+                    restored += 1;
+                }
+                TabType::Ssh => {
+                    let Some(conn_id) = tab.connection_id else {
+                        tracing::warn!("Skipping SSH tab restore: missing connection id");
+                        continue;
+                    };
+                    if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id).cloned() {
+                        self.connect_ssh(conn, cx);
+                        restored += 1;
+                    } else {
+                        tracing::warn!(
+                            "Skipping SSH tab restore: connection {} no longer exists",
+                            conn_id
+                        );
+                    }
+                }
+            }
+        }
+
+        if restored == 0 {
+            return;
+        }
+
+        // Restore sidebar visibility if it differs from the current state.
+        if state.sidebar_visible != self.sidebar_visible {
+            self.toggle_sidebar(cx);
+        }
+
+        // Restore the active tab (clamped to the number of tabs actually
+        // recreated, since some saved tabs may have been skipped).
+        self.terminal.update(cx, |terminal, _| {
+            if let Some(tab) = terminal.tabs.get(state.active_tab.min(terminal.tabs.len() - 1)) {
+                let id = tab.id;
+                terminal.select_tab(id);
+            }
+        });
+
+        self.active_view = ActiveView::Terminal;
+        self.update_dashboard_stats(cx);
+        self.sync_terminal_tab_count(cx);
+        cx.notify();
     }
 
     pub fn open_new_terminal(&mut self, cx: &mut Context<Self>) {
