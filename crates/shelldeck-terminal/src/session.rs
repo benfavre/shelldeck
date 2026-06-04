@@ -18,6 +18,15 @@ pub enum SessionState {
 /// Callback to resize the underlying PTY or SSH channel.
 type ResizeFn = Box<dyn Fn(u16, u16) + Send>;
 
+/// Result of [`TerminalSession::spawn_ssh`]: the session plus the input sender
+/// (keyboard data into the SSH channel) and output receiver (channel data into
+/// the grid).
+type SshSpawn = (
+    TerminalSession,
+    mpsc::UnboundedSender<Vec<u8>>,
+    mpsc::UnboundedReceiver<Vec<u8>>,
+);
+
 pub struct TerminalSession {
     pub id: Uuid,
     pub title: String,
@@ -126,15 +135,7 @@ impl TerminalSession {
     /// - `input_rx` (`UnboundedReceiver<Vec<u8>>`): the caller reads
     ///   keyboard data from this receiver and forwards it to the SSH
     ///   channel's stdin.
-    pub fn spawn_ssh(
-        title: String,
-        rows: u16,
-        cols: u16,
-    ) -> crate::Result<(
-        Self,
-        mpsc::UnboundedSender<Vec<u8>>,
-        mpsc::UnboundedReceiver<Vec<u8>>,
-    )> {
+    pub fn spawn_ssh(title: String, rows: u16, cols: u16) -> crate::Result<SshSpawn> {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (data_tx, mut data_rx) = mpsc::unbounded_channel::<Vec<u8>>();

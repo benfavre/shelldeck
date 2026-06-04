@@ -26,7 +26,7 @@ impl FileEditorView {
         }
 
         // ---- Non-text tabs: only allow Ctrl+W (close) and Ctrl+B (file browser toggle) ----
-        if !self.active_tab().map_or(false, |t| t.is_text()) {
+        if !self.active_tab().is_some_and(|t| t.is_text()) {
             if ctrl {
                 match ks.key.as_str() {
                     "w" => {
@@ -45,18 +45,16 @@ impl FileEditorView {
         }
 
         // ---- Search/Replace mode: capture keystrokes ----
-        if self.search_visible || self.replace_visible {
-            if self.handle_search_key(event, ctrl, cx) {
+        if (self.search_visible || self.replace_visible)
+            && self.handle_search_key(event, ctrl, cx) {
                 return;
             }
-        }
 
         // ---- Go-to-line mode ----
-        if self.goto_line_visible {
-            if self.handle_goto_line_key(event, ctrl, cx) {
+        if self.goto_line_visible
+            && self.handle_goto_line_key(event, ctrl, cx) {
                 return;
             }
-        }
 
         // ---- Context menu: dismiss on any key ----
         if self.context_menu_visible {
@@ -238,24 +236,20 @@ impl FileEditorView {
             }
 
             // Ctrl+Shift shortcuts
-            if shift {
-                match ks.key.as_str() {
-                    "k" => {
-                        // Delete line
-                        if let Some(tab) = self.active_tab_mut() {
-                            let (buf, hl) = tab.text_parts_mut();
-                            buf.delete_line();
-                            let pending = buf.take_pending_edits();
-                            if !pending.is_empty() {
-                                hl.parse_incremental(buf.rope(), &pending);
-                            }
+            if shift
+                && ks.key.as_str() == "k" {
+                    // Delete line
+                    if let Some(tab) = self.active_tab_mut() {
+                        let (buf, hl) = tab.text_parts_mut();
+                        buf.delete_line();
+                        let pending = buf.take_pending_edits();
+                        if !pending.is_empty() {
+                            hl.parse_incremental(buf.rope(), &pending);
                         }
-                        cx.notify();
-                        return;
                     }
-                    _ => {}
+                    cx.notify();
+                    return;
                 }
-            }
 
             // Ctrl+Arrow for word movement
             match ks.key.as_str() {
