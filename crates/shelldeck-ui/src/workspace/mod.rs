@@ -197,11 +197,27 @@ impl Workspace {
         let auto_update_enabled = config.general.auto_update;
         let ui_font_family = config.general.ui_font_family.clone();
         let ui_font_size = config.general.ui_font_size;
+        let initial_sidebar_width = config.general.sidebar_width;
 
-        // Apply the persisted terminal color theme to the freshly-created view.
+        // Apply the persisted terminal settings to the freshly-created view so
+        // they take effect on launch (not just after a later ConfigChanged).
         {
             let theme = TerminalTheme::by_name(&config.terminal.theme);
-            terminal.update(cx, |t, _| t.set_terminal_theme(&theme));
+            let cfg = &config.terminal;
+            let font_family = cfg.font_family.clone();
+            let font_size = cfg.font_size;
+            let cursor_style = cfg.cursor_style.clone();
+            let cursor_blink = cfg.cursor_blink;
+            let scrollback = cfg.scrollback_lines;
+            terminal.update(cx, |t, _| {
+                t.set_terminal_theme(&theme);
+                t.set_font_size(font_size);
+                t.set_font_family(font_family);
+                t.set_cursor_style(&cursor_style);
+                t.set_cursor_blink(cursor_blink);
+                t.set_scrollback_lines(scrollback);
+                t.set_sidebar_width(initial_sidebar_width);
+            });
         }
 
         let settings = cx.new(|_| SettingsView::new(config));
@@ -381,7 +397,7 @@ impl Workspace {
             variable_prompt: None,
             active_view: ActiveView::Dashboard,
             sidebar_visible: true,
-            sidebar_width: 260.0,
+            sidebar_width: initial_sidebar_width,
             ui_font_family,
             ui_font_size,
             focus_handle: cx.focus_handle(),
@@ -666,6 +682,8 @@ impl Workspace {
                     terminal.set_font_size(config.terminal.font_size);
                     terminal.set_font_family(config.terminal.font_family.clone());
                     terminal.set_cursor_style(&config.terminal.cursor_style);
+                    terminal.set_cursor_blink(config.terminal.cursor_blink);
+                    terminal.set_scrollback_lines(config.terminal.scrollback_lines);
                     terminal.set_terminal_theme(&terminal_theme);
                     cx.notify();
                 });

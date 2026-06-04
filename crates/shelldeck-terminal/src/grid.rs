@@ -97,6 +97,38 @@ impl<T> RingBuffer<T> {
         self.len = 0;
     }
 
+    /// Resize the ring's capacity, preserving items in logical (oldest→newest)
+    /// order. When shrinking below the current length, the oldest items are
+    /// dropped to fit. A no-op when the capacity is unchanged.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        let capacity = capacity.max(1);
+        if capacity == self.capacity {
+            return;
+        }
+        // Drain current items oldest→newest into a temporary, then refill.
+        let mut items: Vec<T> = Vec::with_capacity(self.len);
+        for i in 0..self.len {
+            let real_idx = (self.start() + i) % self.capacity;
+            if let Some(item) = self.buf[real_idx].take() {
+                items.push(item);
+            }
+        }
+        // Keep only the newest `capacity` items if shrinking.
+        if items.len() > capacity {
+            let drop = items.len() - capacity;
+            items.drain(0..drop);
+        }
+        let mut buf = Vec::with_capacity(capacity);
+        buf.resize_with(capacity, || None);
+        self.buf = buf;
+        self.head = 0;
+        self.len = 0;
+        self.capacity = capacity;
+        for item in items {
+            self.push(item);
+        }
+    }
+
     /// Iterate from oldest to newest.
     pub fn iter(&self) -> RingBufferIter<'_, T> {
         RingBufferIter {
@@ -1548,6 +1580,23 @@ impl TerminalGrid {
         *self = Self::with_scrollback(rows, cols, max_scrollback);
     }
 
+    /// Adjust the maximum number of scrollback lines retained, preserving the
+    /// most recent existing lines. Used to apply the user's scrollback config
+    /// to a running session.
+    pub fn set_max_scrollback(&mut self, max_scrollback: usize) {
+        let max_scrollback = max_scrollback.max(1);
+        if max_scrollback == self.max_scrollback {
+            return;
+        }
+        self.max_scrollback = max_scrollback;
+        self.scrollback.set_capacity(max_scrollback);
+        self.scrollback_line_flags.set_capacity(max_scrollback);
+        // Clamp any active scrollback view to the new buffer length.
+        if self.scroll_offset > self.scrollback.len() {
+            self.scroll_offset = self.scrollback.len();
+        }
+    }
+
     /// Set cursor visible/hidden.
     pub fn set_cursor_visible(&mut self, visible: bool) {
         self.cursor.visible = visible;
@@ -2370,6 +2419,32 @@ mod tests {
             g.newline();
         }
         assert_eq!(g.scrollback_len(), 3);
+    }
+
+    #[test]
+    fn set_max_scrollback_shrinks_keeping_newest() {
+        let mut g = TerminalGrid::with_scrollback(2, 5, 10);
+        for _ in 0..6 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert_eq!(g.scrollback_len(), 6);
+        // Shrink: only the 3 newest lines survive.
+        g.set_max_scrollback(3);
+        assert_eq!(g.scrollback_len(), 3);
+        // Further scrolls remain capped at the new max.
+        for _ in 0..5 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert_eq!(g.scrollback_len(), 3);
+        // Growing allows more lines to accumulate again.
+        g.set_max_scrollback(8);
+        for _ in 0..10 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert_eq!(g.scrollback_len(), 8);
     }
 
     // ---- clear-screen / clear-line variants ----

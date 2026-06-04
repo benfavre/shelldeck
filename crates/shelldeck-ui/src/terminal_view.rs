@@ -719,6 +719,13 @@ pub struct TerminalView {
     cursor_blink_on: bool,
     /// Async task that toggles `cursor_blink_on` every 530ms.
     cursor_blink_timer: Option<gpui::Task<()>>,
+    /// User preference (from config) that gates cursor blinking entirely.
+    /// When `false`, the cursor stays steady regardless of the program's
+    /// DECSCUSR blink request.
+    cursor_blink_enabled: bool,
+    /// Configured scrollback buffer size (lines). Applied to live grids and to
+    /// newly added sessions.
+    configured_scrollback: usize,
     /// Whether the terminal grid currently has focus (tracked for hollow cursor).
     has_focus: bool,
 }
@@ -795,6 +802,8 @@ impl TerminalView {
             pinned_scripts: Vec::new(),
             cursor_blink_on: true,
             cursor_blink_timer: None,
+            cursor_blink_enabled: true,
+            configured_scrollback: 10_000,
             has_focus: false,
         }
     }
@@ -855,6 +864,32 @@ impl TerminalView {
         };
     }
 
+    /// Apply the configured scrollback size to every live session grid and
+    /// remember it for sessions created later.
+    pub fn set_scrollback_lines(&mut self, lines: usize) {
+        let lines = lines.max(1);
+        self.configured_scrollback = lines;
+        for session in &self.pane.sessions {
+            session.grid.lock().set_max_scrollback(lines);
+        }
+        if let Some(split) = &self.split_view {
+            split.secondary_session.grid.lock().set_max_scrollback(lines);
+        }
+    }
+
+    /// Apply the user's cursor-blink preference (from config). When disabled,
+    /// the cursor is forced steady; when enabled it resumes blinking if the
+    /// terminal currently wants it.
+    pub fn set_cursor_blink(&mut self, enabled: bool) {
+        if self.cursor_blink_enabled == enabled {
+            return;
+        }
+        self.cursor_blink_enabled = enabled;
+        if !enabled {
+            self.stop_cursor_blink();
+        }
+    }
+
     // ------------------------------------------------------------------
     // Cursor blink timer
     // ------------------------------------------------------------------
@@ -863,7 +898,12 @@ impl TerminalView {
     ///
     /// The cursor is made visible immediately and then toggled every 530 ms.
     /// Calling this while a timer is already running cancels the old one.
+    /// No-op when the user has disabled blinking via config.
     fn start_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        if !self.cursor_blink_enabled {
+            self.cursor_blink_on = true;
+            return;
+        }
         self.cursor_blink_on = true;
         let entity = cx.entity().downgrade();
         self.cursor_blink_timer = Some(cx.spawn(
@@ -917,6 +957,13 @@ impl TerminalView {
         session: TerminalSession,
         connection_id: Option<Uuid>,
     ) {
+        // Apply the configured scrollback size to the freshly-spawned grid
+        // (sessions are spawned with the engine default of 10k lines).
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+
         // Save the current tab's split before switching away
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;

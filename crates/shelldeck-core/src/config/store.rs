@@ -2,7 +2,7 @@ use crate::config::app_config::AppConfig;
 use crate::error::{Result, ShellDeckError};
 use crate::models::{Connection, ManagedSite, ManagedSiteType, PortForward, Script, SyncProfile};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
 use uuid::Uuid;
 
@@ -25,10 +25,18 @@ impl ConnectionStore {
 
     /// Load store from disk, or return empty defaults.
     pub fn load() -> Result<Self> {
-        let path = Self::store_path();
+        Self::load_from(&Self::store_path())
+    }
 
+    /// Save store to disk.
+    pub fn save(&self) -> Result<()> {
+        self.save_to(&Self::store_path())
+    }
+
+    /// Load store from a specific path, or create and save empty defaults there.
+    pub(crate) fn load_from(path: &Path) -> Result<Self> {
         if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
+            let content = std::fs::read_to_string(path)?;
             let store: Self = serde_json::from_str(&content).map_err(|e| {
                 ShellDeckError::Serialization(format!(
                     "Failed to parse store at {}: {}",
@@ -40,25 +48,24 @@ impl ConnectionStore {
             Ok(store)
         } else {
             let store = Self::default();
-            store.save()?;
+            store.save_to(path)?;
             info!("Created empty connection store at {}", path.display());
             Ok(store)
         }
     }
 
-    /// Save store to disk.
-    pub fn save(&self) -> Result<()> {
-        let path = Self::store_path();
-        let dir = AppConfig::config_dir();
-
-        if !dir.exists() {
-            std::fs::create_dir_all(&dir)?;
+    /// Save store to a specific path atomically.
+    pub(crate) fn save_to(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() && !dir.exists() {
+                std::fs::create_dir_all(dir)?;
+            }
         }
 
         let content = serde_json::to_string_pretty(self).map_err(|e| {
             ShellDeckError::Serialization(format!("Failed to serialize store: {}", e))
         })?;
-        std::fs::write(&path, content)?;
+        crate::util::atomic_write(path, content.as_bytes())?;
         info!("Saved connection store to {}", path.display());
 
         Ok(())
@@ -299,5 +306,97 @@ impl ConnectionStore {
             .iter()
             .filter(|s| s.connection_id == connection_id)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ForwardDirection, ScriptTarget};
+
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-store-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(name)
+    }
+
+    #[test]
+    fn round_trip_with_data() {
+        let path = temp_path("connections.json");
+
+        let mut store = ConnectionStore::default();
+        let conn = Connection::new_manual(
+            "prod".to_string(),
+            "example.com".to_string(),
+            "root".to_string(),
+        );
+        let conn_id = conn.id;
+        let fwd = PortForward::new_local(conn_id, 8080, "127.0.0.1", 80);
+        let fwd_id = fwd.id;
+        let script = Script::new(
+            "deploy".to_string(),
+            "echo deploying".to_string(),
+            ScriptTarget::Remote(conn_id),
+        );
+        let script_id = script.id;
+
+        store.connections.push(conn);
+        store.port_forwards.push(fwd);
+        store.scripts.push(script);
+
+        store.save_to(&path).expect("save_to");
+        let loaded = ConnectionStore::load_from(&path).expect("load_from");
+
+        assert_eq!(loaded.connections.len(), 1);
+        assert_eq!(loaded.connections[0].id, conn_id);
+        assert_eq!(loaded.connections[0].alias, "prod");
+        assert_eq!(loaded.connections[0].hostname, "example.com");
+
+        assert_eq!(loaded.port_forwards.len(), 1);
+        assert_eq!(loaded.port_forwards[0].id, fwd_id);
+        assert_eq!(loaded.port_forwards[0].local_port, 8080);
+        assert_eq!(
+            loaded.port_forwards[0].direction,
+            ForwardDirection::LocalToRemote
+        );
+
+        assert_eq!(loaded.scripts.len(), 1);
+        assert_eq!(loaded.scripts[0].id, script_id);
+        assert_eq!(loaded.scripts[0].name, "deploy");
+        assert_eq!(loaded.scripts[0].body, "echo deploying");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn load_from_missing_creates_empty() {
+        let path = temp_path("connections.json");
+        assert!(!path.exists());
+
+        let loaded = ConnectionStore::load_from(&path).expect("load_from");
+
+        assert!(loaded.connections.is_empty());
+        assert!(loaded.port_forwards.is_empty());
+        assert!(loaded.scripts.is_empty());
+        assert!(path.exists(), "load_from should create the file");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn load_from_corrupt_returns_err() {
+        let path = temp_path("connections.json");
+        std::fs::write(&path, b"{ this is not valid json ]").expect("seed garbage");
+
+        let result = ConnectionStore::load_from(&path);
+        assert!(result.is_err(), "corrupt store should error, not panic");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
