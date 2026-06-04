@@ -278,6 +278,87 @@ impl TunnelManager {
         Ok(id)
     }
 
+    /// Start a dynamic SOCKS5 port forward (SSH -D equivalent).
+    /// Binds a local SOCKS5 proxy on `local_host:local_port`; each accepted
+    /// connection performs a SOCKS5 handshake and CONNECT request, then is
+    /// tunneled to the requested target through an SSH `direct-tcpip` channel.
+    pub async fn start_socks_forward(
+        &mut self,
+        handle: SharedHandle,
+        local_host: String,
+        local_port: u16,
+    ) -> crate::Result<Uuid> {
+        if !Self::check_port_available(local_port).await {
+            return Err(SshError::PortInUse(local_port));
+        }
+
+        let id = Uuid::new_v4();
+        let status = Arc::new(ParkingMutex::new(TunnelStatus::Active));
+        let bytes_sent = Arc::new(AtomicU64::new(0));
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+        let status_clone = status.clone();
+        let bytes_sent_clone = bytes_sent.clone();
+        let bytes_received_clone = bytes_received.clone();
+
+        tokio::spawn(async move {
+            let bind_addr = format!("{}:{}", local_host, local_port);
+            let listener = match TcpListener::bind(&bind_addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!("Failed to bind SOCKS5 listener on {}: {}", bind_addr, e);
+                    *status_clone.lock() = TunnelStatus::Error;
+                    return;
+                }
+            };
+
+            tracing::info!("Dynamic forward: SOCKS5 proxy on {}", bind_addr);
+
+            loop {
+                tokio::select! {
+                    accept = listener.accept() => {
+                        match accept {
+                            Ok((stream, addr)) => {
+                                tracing::debug!("Accepted SOCKS5 connection from {}", addr);
+                                let handle = handle.clone();
+                                let bs = bytes_sent_clone.clone();
+                                let br = bytes_received_clone.clone();
+
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        handle_socks_connection(handle, stream, bs, br).await
+                                    {
+                                        tracing::error!("SOCKS5 connection error: {}", e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!("SOCKS5 accept error: {}", e);
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        tracing::info!("Stopping SOCKS5 forward on {}", bind_addr);
+                        break;
+                    }
+                }
+            }
+
+            *status_clone.lock() = TunnelStatus::Stopped;
+        });
+
+        self.tunnels.push(TunnelHandle {
+            id,
+            status,
+            bytes_sent,
+            bytes_received,
+            shutdown_tx,
+        });
+
+        Ok(id)
+    }
+
     /// Stop all active tunnels.
     pub fn stop_all(&self) {
         for tunnel in &self.tunnels {
@@ -453,5 +534,198 @@ async fn handle_remote_forward_connection(
     });
 
     let _ = tokio::join!(ssh_to_tcp, tcp_to_ssh);
+    Ok(())
+}
+
+// SOCKS5 protocol constants (RFC 1928).
+const SOCKS5_VERSION: u8 = 0x05;
+const SOCKS5_AUTH_NONE: u8 = 0x00;
+const SOCKS5_AUTH_NO_ACCEPTABLE: u8 = 0xFF;
+const SOCKS5_CMD_CONNECT: u8 = 0x01;
+const SOCKS5_ATYP_IPV4: u8 = 0x01;
+const SOCKS5_ATYP_DOMAIN: u8 = 0x03;
+const SOCKS5_ATYP_IPV6: u8 = 0x04;
+// Reply codes
+const SOCKS5_REP_SUCCESS: u8 = 0x00;
+const SOCKS5_REP_GENERAL_FAILURE: u8 = 0x01;
+const SOCKS5_REP_HOST_UNREACHABLE: u8 = 0x04;
+const SOCKS5_REP_CMD_NOT_SUPPORTED: u8 = 0x07;
+const SOCKS5_REP_ATYP_NOT_SUPPORTED: u8 = 0x08;
+
+/// Write a SOCKS5 reply with the given reply code and a bound address of
+/// `0.0.0.0:0` (BND.ADDR/BND.PORT are not meaningful for our CONNECT tunnel).
+async fn send_socks_reply<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    reply: u8,
+) -> std::io::Result<()> {
+    // VER, REP, RSV, ATYP(IPv4), BND.ADDR(0.0.0.0), BND.PORT(0)
+    let resp = [
+        SOCKS5_VERSION,
+        reply,
+        0x00,
+        SOCKS5_ATYP_IPV4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    writer.write_all(&resp).await?;
+    writer.flush().await
+}
+
+/// Handle a single SOCKS5 client connection: perform method negotiation and the
+/// CONNECT request, open an SSH `direct-tcpip` channel to the requested target,
+/// and pump bytes bidirectionally (mirroring `handle_local_forward_connection`).
+async fn handle_socks_connection(
+    handle: SharedHandle,
+    mut tcp_stream: TcpStream,
+    bytes_sent: Arc<AtomicU64>,
+    bytes_received: Arc<AtomicU64>,
+) -> anyhow::Result<()> {
+    // --- Method negotiation ---
+    // Client greeting: VER, NMETHODS, METHODS...
+    let mut head = [0u8; 2];
+    tcp_stream.read_exact(&mut head).await?;
+    if head[0] != SOCKS5_VERSION {
+        anyhow::bail!("Unsupported SOCKS version: {}", head[0]);
+    }
+    let nmethods = head[1] as usize;
+    let mut methods = vec![0u8; nmethods];
+    tcp_stream.read_exact(&mut methods).await?;
+
+    if !methods.contains(&SOCKS5_AUTH_NONE) {
+        // No acceptable methods.
+        tcp_stream
+            .write_all(&[SOCKS5_VERSION, SOCKS5_AUTH_NO_ACCEPTABLE])
+            .await?;
+        anyhow::bail!("Client offered no supported SOCKS5 auth method");
+    }
+    // Select "no authentication required".
+    tcp_stream
+        .write_all(&[SOCKS5_VERSION, SOCKS5_AUTH_NONE])
+        .await?;
+
+    // --- Request ---
+    // VER, CMD, RSV, ATYP
+    let mut req = [0u8; 4];
+    tcp_stream.read_exact(&mut req).await?;
+    if req[0] != SOCKS5_VERSION {
+        send_socks_reply(&mut tcp_stream, SOCKS5_REP_GENERAL_FAILURE).await?;
+        anyhow::bail!("Unsupported SOCKS version in request: {}", req[0]);
+    }
+    let cmd = req[1];
+    let atyp = req[3];
+
+    if cmd != SOCKS5_CMD_CONNECT {
+        // BIND (0x02) and UDP ASSOCIATE (0x03) are not supported.
+        send_socks_reply(&mut tcp_stream, SOCKS5_REP_CMD_NOT_SUPPORTED).await?;
+        anyhow::bail!("Unsupported SOCKS5 command: {}", cmd);
+    }
+
+    // Parse the target address.
+    let target_host = match atyp {
+        SOCKS5_ATYP_IPV4 => {
+            let mut addr = [0u8; 4];
+            tcp_stream.read_exact(&mut addr).await?;
+            std::net::Ipv4Addr::from(addr).to_string()
+        }
+        SOCKS5_ATYP_IPV6 => {
+            let mut addr = [0u8; 16];
+            tcp_stream.read_exact(&mut addr).await?;
+            std::net::Ipv6Addr::from(addr).to_string()
+        }
+        SOCKS5_ATYP_DOMAIN => {
+            let mut len = [0u8; 1];
+            tcp_stream.read_exact(&mut len).await?;
+            let mut domain = vec![0u8; len[0] as usize];
+            tcp_stream.read_exact(&mut domain).await?;
+            String::from_utf8(domain)
+                .map_err(|e| anyhow::anyhow!("Invalid SOCKS5 domain name: {}", e))?
+        }
+        other => {
+            send_socks_reply(&mut tcp_stream, SOCKS5_REP_ATYP_NOT_SUPPORTED).await?;
+            anyhow::bail!("Unsupported SOCKS5 address type: {}", other);
+        }
+    };
+
+    let mut port_buf = [0u8; 2];
+    tcp_stream.read_exact(&mut port_buf).await?;
+    let target_port = u16::from_be_bytes(port_buf);
+
+    tracing::debug!("SOCKS5 CONNECT -> {}:{}", target_host, target_port);
+
+    // Open a direct-tcpip channel to the requested target through SSH.
+    let channel = {
+        let h = handle.lock().await;
+        h.channel_open_direct_tcpip(
+            target_host.clone(),
+            target_port as u32,
+            "127.0.0.1", // originator address
+            0,           // originator port
+        )
+        .await
+    };
+
+    let channel = match channel {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                "SOCKS5: failed to open channel to {}:{}: {}",
+                target_host,
+                target_port,
+                e
+            );
+            send_socks_reply(&mut tcp_stream, SOCKS5_REP_HOST_UNREACHABLE).await?;
+            return Ok(());
+        }
+    };
+
+    // Tell the client the connection succeeded.
+    send_socks_reply(&mut tcp_stream, SOCKS5_REP_SUCCESS).await?;
+
+    // Convert SSH channel into an AsyncRead + AsyncWrite stream and pump bytes.
+    let ssh_stream = channel.into_stream();
+    let (mut ssh_read, mut ssh_write) = tokio::io::split(ssh_stream);
+    let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+
+    // Spawn TCP -> SSH copy
+    let bs = bytes_sent;
+    let tcp_to_ssh = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match tcp_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    bs.fetch_add(n as u64, Ordering::Relaxed);
+                    if ssh_write.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Spawn SSH -> TCP copy
+    let br = bytes_received;
+    let ssh_to_tcp = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match ssh_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    br.fetch_add(n as u64, Ordering::Relaxed);
+                    if tcp_write.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let _ = tokio::join!(tcp_to_ssh, ssh_to_tcp);
     Ok(())
 }

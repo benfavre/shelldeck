@@ -2189,3 +2189,524 @@ impl TerminalGrid {
         vec![self.bce_cell(); self.cols]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colors::{NamedColor, TermColor};
+
+    /// Collect the printable characters of a row into a String (spacers excluded).
+    fn row_text(grid: &TerminalGrid, row: usize) -> String {
+        grid.cells[row]
+            .iter()
+            .filter(|c| c.wide != CellWidth::Spacer)
+            .map(|c| c.c)
+            .collect()
+    }
+
+    fn write_str(grid: &mut TerminalGrid, s: &str) {
+        for c in s.chars() {
+            grid.write_char(c);
+        }
+    }
+
+    // ---- RingBuffer ----
+
+    #[test]
+    fn ring_buffer_evicts_oldest_when_full() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new(3);
+        for v in 0..5 {
+            rb.push(v);
+        }
+        assert_eq!(rb.len(), 3);
+        // Oldest two (0,1) evicted; remaining are 2,3,4 oldest-to-newest.
+        let collected: Vec<i32> = rb.iter().copied().collect();
+        assert_eq!(collected, vec![2, 3, 4]);
+        assert_eq!(rb.get(0), Some(&2));
+        assert_eq!(rb.get(2), Some(&4));
+        assert_eq!(rb.get(3), None);
+    }
+
+    #[test]
+    fn ring_buffer_pop_returns_newest() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new(4);
+        rb.push(10);
+        rb.push(20);
+        rb.push(30);
+        assert_eq!(rb.pop(), Some(30));
+        assert_eq!(rb.pop(), Some(20));
+        assert_eq!(rb.len(), 1);
+        assert_eq!(rb.get(0), Some(&10));
+    }
+
+    // ---- write_char / cursor advance ----
+
+    #[test]
+    fn write_char_advances_cursor_and_stores_glyph() {
+        let mut g = TerminalGrid::new(5, 10);
+        g.write_char('A');
+        assert_eq!(g.cells[0][0].c, 'A');
+        assert_eq!(g.cursor.col, 1);
+        assert_eq!(g.cursor.row, 0);
+    }
+
+    #[test]
+    fn write_string_fills_cells_in_order() {
+        let mut g = TerminalGrid::new(5, 10);
+        write_str(&mut g, "Hello");
+        assert_eq!(&row_text(&g, 0)[..5], "Hello");
+        assert_eq!(g.cursor.col, 5);
+    }
+
+    #[test]
+    fn line_wraps_at_right_edge() {
+        let mut g = TerminalGrid::new(5, 4);
+        // Write exactly cols chars -> last char enters pending_wrap, cursor stays.
+        write_str(&mut g, "abcd");
+        assert_eq!(g.cursor.row, 0);
+        assert_eq!(g.cursor.col, 3); // clamped at last col, pending wrap
+        // Next char triggers the actual wrap.
+        g.write_char('e');
+        assert_eq!(g.cursor.row, 1);
+        assert_eq!(g.cursor.col, 1);
+        assert_eq!(g.cells[1][0].c, 'e');
+        assert_eq!(g.cells[0][3].c, 'd');
+        // Wrapped line should be marked soft-wrapped.
+        assert!(g.line_flags[1].soft_wrapped);
+    }
+
+    #[test]
+    fn auto_wrap_disabled_overwrites_last_column() {
+        let mut g = TerminalGrid::new(3, 4);
+        g.set_auto_wrap(false);
+        write_str(&mut g, "abcdef");
+        // With wrapping off, all writes pile onto the last column of row 0.
+        assert_eq!(g.cursor.row, 0);
+        assert_eq!(g.cursor.col, 3);
+        assert_eq!(g.cells[0][3].c, 'f');
+    }
+
+    #[test]
+    fn wide_char_occupies_two_cells() {
+        let mut g = TerminalGrid::new(3, 10);
+        g.write_char('世'); // width 2
+        assert_eq!(g.cells[0][0].wide, CellWidth::Wide);
+        assert_eq!(g.cells[0][1].wide, CellWidth::Spacer);
+        assert_eq!(g.cursor.col, 2);
+    }
+
+    #[test]
+    fn combining_char_attaches_to_previous_cell() {
+        let mut g = TerminalGrid::new(3, 10);
+        g.write_char('e');
+        g.write_char('\u{0301}'); // combining acute accent (width 0)
+        assert_eq!(g.cells[0][0].c, 'e');
+        assert_eq!(g.cells[0][0].combining.as_slice(), &['\u{0301}']);
+        // Combining char does not advance the cursor.
+        assert_eq!(g.cursor.col, 1);
+    }
+
+    // ---- newline / carriage return / backspace / tab ----
+
+    #[test]
+    fn newline_moves_down_carriage_return_resets_col() {
+        let mut g = TerminalGrid::new(5, 10);
+        write_str(&mut g, "abc");
+        g.newline();
+        assert_eq!(g.cursor.row, 1);
+        assert_eq!(g.cursor.col, 3); // newline does not change column
+        g.carriage_return();
+        assert_eq!(g.cursor.col, 0);
+    }
+
+    #[test]
+    fn backspace_does_not_wrap_past_col_zero() {
+        let mut g = TerminalGrid::new(5, 10);
+        g.backspace();
+        assert_eq!(g.cursor.col, 0);
+        write_str(&mut g, "ab");
+        g.backspace();
+        assert_eq!(g.cursor.col, 1);
+    }
+
+    #[test]
+    fn tab_advances_to_next_eight_stop() {
+        let mut g = TerminalGrid::new(5, 40);
+        g.tab();
+        assert_eq!(g.cursor.col, 8);
+        g.cursor.col = 9;
+        g.tab();
+        assert_eq!(g.cursor.col, 16);
+    }
+
+    // ---- scroll-up when passing bottom + scrollback accumulation ----
+
+    #[test]
+    fn newline_at_bottom_scrolls_and_accumulates_scrollback() {
+        let mut g = TerminalGrid::new(3, 10);
+        write_str(&mut g, "row0");
+        g.newline();
+        g.carriage_return();
+        write_str(&mut g, "row1");
+        g.newline();
+        g.carriage_return();
+        write_str(&mut g, "row2");
+        // Cursor at bottom row now; another newline scrolls.
+        assert_eq!(g.cursor.row, 2);
+        assert_eq!(g.scrollback_len(), 0);
+        g.newline();
+        assert_eq!(g.cursor.row, 2); // stays at bottom
+        assert_eq!(g.scrollback_len(), 1);
+        // "row0" scrolled into scrollback; top visible row is now "row1".
+        assert_eq!(&row_text(&g, 0)[..4], "row1");
+    }
+
+    #[test]
+    fn scrollback_capped_by_max_scrollback() {
+        let mut g = TerminalGrid::with_scrollback(2, 5, 3);
+        // Force many scrolls.
+        for _ in 0..20 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert_eq!(g.scrollback_len(), 3);
+    }
+
+    // ---- clear-screen / clear-line variants ----
+
+    #[test]
+    fn erase_display_mode2_clears_everything() {
+        let mut g = TerminalGrid::new(3, 5);
+        write_str(&mut g, "abcde");
+        g.newline();
+        g.carriage_return();
+        write_str(&mut g, "fghij");
+        g.erase_display(2);
+        assert_eq!(row_text(&g, 0), "     ");
+        assert_eq!(row_text(&g, 1), "     ");
+    }
+
+    #[test]
+    fn erase_display_mode0_clears_cursor_to_end() {
+        let mut g = TerminalGrid::new(2, 5);
+        write_str(&mut g, "abcde");
+        g.cursor_to(0, 2);
+        g.erase_display(0);
+        assert_eq!(row_text(&g, 0), "ab   ");
+    }
+
+    #[test]
+    fn erase_display_mode1_clears_start_to_cursor() {
+        let mut g = TerminalGrid::new(2, 5);
+        write_str(&mut g, "abcde");
+        g.cursor_to(0, 2);
+        g.erase_display(1);
+        // cols 0..=2 cleared, 3..4 kept.
+        assert_eq!(row_text(&g, 0), "   de");
+    }
+
+    #[test]
+    fn erase_line_variants() {
+        let mut g = TerminalGrid::new(2, 5);
+        write_str(&mut g, "abcde");
+        g.cursor_to(0, 2);
+        g.erase_line(0); // cursor to end
+        assert_eq!(row_text(&g, 0), "ab   ");
+
+        g.cursor_to(0, 0);
+        write_str(&mut g, "ABCDE");
+        g.cursor_to(0, 2);
+        g.erase_line(1); // start to cursor
+        assert_eq!(row_text(&g, 0), "   DE");
+
+        g.erase_line(2); // whole line
+        assert_eq!(row_text(&g, 0), "     ");
+    }
+
+    #[test]
+    fn erase_display_mode3_clears_scrollback() {
+        let mut g = TerminalGrid::new(2, 5);
+        for _ in 0..5 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert!(g.scrollback_len() > 0);
+        g.erase_display(3);
+        assert_eq!(g.scrollback_len(), 0);
+        assert_eq!(g.scroll_offset(), 0);
+    }
+
+    // ---- cursor positioning (absolute & relative) with clamping ----
+
+    #[test]
+    fn cursor_to_clamps_to_bounds() {
+        let mut g = TerminalGrid::new(4, 6);
+        g.cursor_to(100, 100);
+        assert_eq!(g.cursor.row, 3);
+        assert_eq!(g.cursor.col, 5);
+        g.cursor_to(1, 2);
+        assert_eq!(g.cursor.row, 1);
+        assert_eq!(g.cursor.col, 2);
+    }
+
+    #[test]
+    fn relative_cursor_movement_clamps() {
+        let mut g = TerminalGrid::new(5, 8);
+        g.cursor_to(2, 3);
+        g.cursor_up(10);
+        assert_eq!(g.cursor.row, 0); // clamped to scroll_top
+        g.cursor_down(100);
+        assert_eq!(g.cursor.row, 4); // clamped to scroll_bottom
+        g.cursor_forward(100);
+        assert_eq!(g.cursor.col, 7);
+        g.cursor_backward(100);
+        assert_eq!(g.cursor.col, 0);
+    }
+
+    #[test]
+    fn origin_mode_makes_cursor_relative_to_scroll_region() {
+        let mut g = TerminalGrid::new(10, 8);
+        g.set_scroll_region(2, 6);
+        g.set_origin_mode(true);
+        // In origin mode, row 0 maps to scroll_top (2).
+        g.cursor_to(0, 0);
+        assert_eq!(g.cursor.row, 2);
+        // Row beyond region clamps to scroll_bottom.
+        g.cursor_to(100, 0);
+        assert_eq!(g.cursor.row, 6);
+    }
+
+    #[test]
+    fn save_and_restore_cursor() {
+        let mut g = TerminalGrid::new(6, 10);
+        g.cursor_to(3, 4);
+        g.save_cursor();
+        g.cursor_to(0, 0);
+        g.restore_cursor();
+        assert_eq!(g.cursor.row, 3);
+        assert_eq!(g.cursor.col, 4);
+    }
+
+    // ---- scroll region ----
+
+    #[test]
+    fn set_scroll_region_homes_cursor_and_bounds_scroll() {
+        let mut g = TerminalGrid::new(10, 5);
+        g.set_scroll_region(2, 5);
+        assert_eq!(g.cursor.row, 2);
+        assert_eq!(g.cursor.col, 0);
+        // Invalid region (top >= bottom) resets to full screen.
+        g.set_scroll_region(5, 3);
+        g.cursor_down(100);
+        assert_eq!(g.cursor.row, 9);
+    }
+
+    #[test]
+    fn scroll_region_confines_scrolling() {
+        let mut g = TerminalGrid::new(5, 4);
+        // Mark each row with a distinct char at col 0.
+        for r in 0..5 {
+            g.cursor_to(r, 0);
+            g.write_char((b'0' + r as u8) as char);
+        }
+        g.set_scroll_region(1, 3);
+        g.cursor_to(3, 0); // at scroll_bottom
+        g.index(); // scroll within region
+        // Row 0 (outside region) untouched, row 4 untouched.
+        assert_eq!(g.cells[0][0].c, '0');
+        assert_eq!(g.cells[4][0].c, '4');
+        // Inside region, content shifted up: old row2 -> row1.
+        assert_eq!(g.cells[1][0].c, '2');
+        assert_eq!(g.cells[3][0].c, ' '); // new blank line
+    }
+
+    // ---- insert/delete lines and chars ----
+
+    #[test]
+    fn insert_and_delete_chars() {
+        let mut g = TerminalGrid::new(2, 6);
+        write_str(&mut g, "abcdef");
+        g.cursor_to(0, 1);
+        g.insert_chars(2);
+        // "a" + 2 blanks + "bcd" (last 2 pushed off).
+        assert_eq!(row_text(&g, 0), "a  bcd");
+
+        g.cursor_to(0, 1);
+        g.delete_chars(2);
+        // delete the 2 blanks we inserted -> back to a bcd + blanks.
+        assert_eq!(row_text(&g, 0), "abcd  ");
+    }
+
+    #[test]
+    fn insert_and_delete_lines() {
+        let mut g = TerminalGrid::new(4, 4);
+        for r in 0..4 {
+            g.cursor_to(r, 0);
+            g.write_char((b'A' + r as u8) as char);
+        }
+        g.cursor_to(1, 0);
+        g.insert_lines(1);
+        // Row1 now blank, old row1 (B) shifted to row2.
+        assert_eq!(g.cells[0][0].c, 'A');
+        assert_eq!(g.cells[1][0].c, ' ');
+        assert_eq!(g.cells[2][0].c, 'B');
+
+        g.cursor_to(1, 0);
+        g.delete_lines(1);
+        // The blank line removed, B pulled back up to row1.
+        assert_eq!(g.cells[1][0].c, 'B');
+    }
+
+    #[test]
+    fn erase_chars_replaces_without_shift() {
+        let mut g = TerminalGrid::new(2, 6);
+        write_str(&mut g, "abcdef");
+        g.cursor_to(0, 1);
+        g.erase_chars(2);
+        assert_eq!(row_text(&g, 0), "a  def");
+    }
+
+    // ---- alt-screen switch preserves / restores ----
+
+    #[test]
+    fn alt_screen_preserves_and_restores_primary() {
+        let mut g = TerminalGrid::new(3, 6);
+        write_str(&mut g, "primary");
+        let primary_text = row_text(&g, 0);
+        g.enter_alt_screen();
+        // Alt screen starts blank.
+        assert_eq!(row_text(&g, 0), "      ");
+        write_str(&mut g, "alt");
+        assert_eq!(&row_text(&g, 0)[..3], "alt");
+        // Entering again is a no-op.
+        g.enter_alt_screen();
+        assert_eq!(&row_text(&g, 0)[..3], "alt");
+        g.leave_alt_screen();
+        // Primary content restored.
+        assert_eq!(row_text(&g, 0), primary_text);
+    }
+
+    // ---- resize ----
+
+    #[test]
+    fn resize_preserves_content_and_clamps_cursor() {
+        let mut g = TerminalGrid::new(4, 10);
+        write_str(&mut g, "hello");
+        g.cursor_to(3, 9);
+        g.resize(2, 6);
+        assert_eq!(g.rows, 2);
+        assert_eq!(g.cols, 6);
+        assert!(g.cursor.row < 2);
+        assert!(g.cursor.col < 6);
+        // Each row now has exactly new_cols cells.
+        assert!(g.cells.iter().all(|r| r.len() == 6));
+    }
+
+    #[test]
+    fn resize_grow_reflows_soft_wrapped_lines() {
+        let mut g = TerminalGrid::new(4, 4);
+        // Write 6 chars to force a soft wrap at col 4.
+        write_str(&mut g, "abcdef");
+        assert!(g.line_flags[1].soft_wrapped);
+        g.resize(4, 10);
+        // After growing, the wrapped continuation merges back into one line.
+        assert_eq!(&row_text(&g, 0)[..6], "abcdef");
+    }
+
+    // ---- index / reverse_index ----
+
+    #[test]
+    fn reverse_index_scrolls_down_at_top() {
+        let mut g = TerminalGrid::new(3, 4);
+        for r in 0..3 {
+            g.cursor_to(r, 0);
+            g.write_char((b'A' + r as u8) as char);
+        }
+        g.cursor_to(0, 0);
+        g.reverse_index();
+        // Content shifts down; top row blank, old row0 (A) now at row1.
+        assert_eq!(g.cells[0][0].c, ' ');
+        assert_eq!(g.cells[1][0].c, 'A');
+        assert_eq!(g.cursor.row, 0);
+    }
+
+    // ---- BCE (background color erase) ----
+
+    #[test]
+    fn erase_uses_current_background_color() {
+        let mut g = TerminalGrid::new(2, 4);
+        g.current_bg = TermColor::Named(NamedColor::Red);
+        g.erase_line(2);
+        assert!(g
+            .cells[0]
+            .iter()
+            .all(|c| c.bg == TermColor::Named(NamedColor::Red)));
+    }
+
+    // ---- dirty tracking ----
+
+    #[test]
+    fn dirty_tracking_clears_and_sets() {
+        let mut g = TerminalGrid::new(3, 4);
+        g.clear_dirty();
+        assert!(!g.is_any_dirty());
+        g.mark_row_dirty(1);
+        assert!(g.is_any_dirty());
+        assert!(g.is_row_dirty(1));
+        assert!(!g.is_row_dirty(0));
+    }
+
+    // ---- scrollback viewing ----
+
+    #[test]
+    fn scroll_view_up_and_to_bottom() {
+        let mut g = TerminalGrid::new(2, 4);
+        for _ in 0..5 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        assert!(g.is_at_bottom());
+        g.scroll_view_up(2);
+        assert_eq!(g.scroll_offset(), 2);
+        assert!(!g.is_at_bottom());
+        // Cannot scroll past available scrollback.
+        g.scroll_view_up(1000);
+        assert_eq!(g.scroll_offset(), g.scrollback_len());
+        g.scroll_view_to_bottom();
+        assert!(g.is_at_bottom());
+    }
+
+    // ---- reset ----
+
+    #[test]
+    fn reset_clears_grid_but_keeps_dimensions() {
+        let mut g = TerminalGrid::new(4, 8);
+        write_str(&mut g, "junk");
+        for _ in 0..5 {
+            g.cursor.row = g.rows - 1;
+            g.newline();
+        }
+        g.reset();
+        assert_eq!(g.rows, 4);
+        assert_eq!(g.cols, 8);
+        assert_eq!(g.scrollback_len(), 0);
+        assert_eq!(g.cursor.row, 0);
+        assert_eq!(g.cursor.col, 0);
+        assert_eq!(row_text(&g, 0), "        ");
+    }
+
+    // ---- selection ----
+
+    #[test]
+    fn simple_selection_membership_and_text() {
+        let mut g = TerminalGrid::new(2, 6);
+        write_str(&mut g, "hello");
+        g.start_selection(0, 0);
+        g.update_selection(2, 0);
+        g.end_selection();
+        assert!(g.is_selected(0, 0));
+        assert!(g.is_selected(2, 0));
+        assert!(!g.is_selected(3, 0));
+        assert_eq!(g.selected_text().as_deref(), Some("hel"));
+    }
+}

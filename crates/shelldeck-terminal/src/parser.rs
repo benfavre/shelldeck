@@ -1045,3 +1045,272 @@ impl vte::Perform for TerminalProcessor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colors::{NamedColor, TermColor};
+    use crate::grid::CellWidth;
+
+    /// Drive a byte stream through a real vte parser into a fresh grid.
+    fn run(rows: usize, cols: usize, input: &[u8]) -> Arc<Mutex<TerminalGrid>> {
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(rows, cols)));
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        processor.process_bytes(&mut parser, input);
+        grid
+    }
+
+    fn row_text(grid: &TerminalGrid, row: usize) -> String {
+        grid.cells[row]
+            .iter()
+            .filter(|c| c.wide != CellWidth::Spacer)
+            .map(|c| c.c)
+            .collect()
+    }
+
+    // ---- printable text reaches the grid ----
+
+    #[test]
+    fn printable_text_is_written() {
+        let g = run(3, 10, b"hi there");
+        let g = g.lock();
+        assert_eq!(&row_text(&g, 0)[..8], "hi there");
+        assert_eq!(g.cursor.col, 8);
+    }
+
+    #[test]
+    fn control_chars_newline_and_cr() {
+        let g = run(3, 10, b"ab\r\ncd");
+        let g = g.lock();
+        assert_eq!(&row_text(&g, 0)[..2], "ab");
+        assert_eq!(&row_text(&g, 1)[..2], "cd");
+    }
+
+    // ---- SGR attribute parsing ----
+
+    #[test]
+    fn sgr_bold_and_reset() {
+        let g = run(2, 10, b"\x1b[1mX\x1b[0mY");
+        let g = g.lock();
+        assert!(g.cells[0][0].attrs.bold); // 'X' bold
+        assert!(!g.cells[0][1].attrs.bold); // 'Y' reset
+    }
+
+    #[test]
+    fn sgr_multiple_attributes_in_one_sequence() {
+        let g = run(2, 10, b"\x1b[1;3;4mZ");
+        let g = g.lock();
+        let a = &g.cells[0][0].attrs;
+        assert!(a.bold);
+        assert!(a.italic);
+        assert_eq!(a.underline, UnderlineStyle::Single);
+    }
+
+    #[test]
+    fn sgr_named_fg_and_bg() {
+        let g = run(2, 10, b"\x1b[31;42mC");
+        let g = g.lock();
+        assert_eq!(g.cells[0][0].fg, TermColor::Named(NamedColor::Red));
+        assert_eq!(g.cells[0][0].bg, TermColor::Named(NamedColor::Green));
+    }
+
+    #[test]
+    fn sgr_256_color_foreground() {
+        let g = run(2, 10, b"\x1b[38;5;208mC");
+        let g = g.lock();
+        assert_eq!(g.cells[0][0].fg, TermColor::Indexed(208));
+    }
+
+    #[test]
+    fn sgr_truecolor_background() {
+        let g = run(2, 10, b"\x1b[48;2;10;20;30mC");
+        let g = g.lock();
+        assert_eq!(g.cells[0][0].bg, TermColor::Rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn sgr_curly_underline_colon_subparam() {
+        let g = run(2, 10, b"\x1b[4:3mC");
+        let g = g.lock();
+        assert_eq!(g.cells[0][0].attrs.underline, UnderlineStyle::Curly);
+    }
+
+    #[test]
+    fn sgr_empty_sequence_resets() {
+        // Set bold, then a bare `\x1b[m` should reset attributes.
+        let g = run(2, 10, b"\x1b[1mA\x1b[mB");
+        let g = g.lock();
+        assert!(g.cells[0][0].attrs.bold);
+        assert!(!g.cells[0][1].attrs.bold);
+    }
+
+    // ---- cursor movement CSI ----
+
+    #[test]
+    fn cup_positions_cursor_one_indexed() {
+        let g = run(10, 20, b"\x1b[3;5H");
+        let g = g.lock();
+        // CSI row;col H is 1-indexed -> 0-indexed (2,4).
+        assert_eq!(g.cursor.row, 2);
+        assert_eq!(g.cursor.col, 4);
+    }
+
+    #[test]
+    fn cursor_forward_and_up_csi() {
+        let g = run(10, 20, b"\x1b[5C\x1b[2B");
+        let g = g.lock();
+        assert_eq!(g.cursor.col, 5);
+        assert_eq!(g.cursor.row, 2);
+    }
+
+    #[test]
+    fn cha_sets_absolute_column() {
+        let g = run(5, 20, b"abc\x1b[10G");
+        let g = g.lock();
+        // CHA column 10 (1-indexed) -> col 9.
+        assert_eq!(g.cursor.col, 9);
+    }
+
+    #[test]
+    fn ed_erase_display_via_csi() {
+        let g = run(3, 5, b"hello\x1b[2J");
+        let g = g.lock();
+        assert_eq!(row_text(&g, 0), "     ");
+    }
+
+    #[test]
+    fn el_erase_line_via_csi() {
+        // Write, move cursor to col 2 (CSI 3 G), erase to end.
+        let g = run(2, 5, b"abcde\x1b[3G\x1b[0K");
+        let g = g.lock();
+        assert_eq!(row_text(&g, 0), "ab   ");
+    }
+
+    // ---- modes ----
+
+    #[test]
+    fn alt_screen_enter_leave_via_csi() {
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(3, 6)));
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        processor.process_bytes(&mut parser, b"main");
+        processor.process_bytes(&mut parser, b"\x1b[?1049h"); // enter alt
+        {
+            let g = grid.lock();
+            assert_eq!(row_text(&g, 0), "      ");
+        }
+        processor.process_bytes(&mut parser, b"\x1b[?1049l"); // leave alt
+        let g = grid.lock();
+        assert_eq!(&row_text(&g, 0)[..4], "main");
+    }
+
+    #[test]
+    fn cursor_visibility_mode_25() {
+        let g = run(3, 6, b"\x1b[?25l");
+        assert!(!g.lock().cursor.visible);
+        let g2 = run(3, 6, b"\x1b[?25l\x1b[?25h");
+        assert!(g2.lock().cursor.visible);
+    }
+
+    #[test]
+    fn bracketed_paste_mode_toggle() {
+        let g = run(3, 6, b"\x1b[?2004h");
+        assert!(g.lock().bracketed_paste());
+    }
+
+    #[test]
+    fn scroll_region_set_via_csi() {
+        let g = run(10, 8, b"\x1b[3;7r");
+        let g = g.lock();
+        // DECSTBM homes the cursor to the scroll-region top (row 2, 0-indexed).
+        assert_eq!(g.cursor.row, 2);
+        assert_eq!(g.cursor.col, 0);
+    }
+
+    // ---- OSC ----
+
+    #[test]
+    fn osc_sets_window_title() {
+        // OSC 0 ; title BEL
+        let g = run(3, 10, b"\x1b]0;My Title\x07");
+        assert_eq!(g.lock().title, "My Title");
+    }
+
+    #[test]
+    fn osc_2_sets_title_st_terminated() {
+        // OSC 2 ; title  ST (ESC \)
+        let g = run(3, 10, b"\x1b]2;Win\x1b\\");
+        assert_eq!(g.lock().title, "Win");
+    }
+
+    #[test]
+    fn osc_palette_color_override() {
+        let g = run(3, 10, b"\x1b]4;1;rgb:ff/00/00\x07");
+        assert_eq!(g.lock().get_palette_color(1), Some((255, 0, 0)));
+    }
+
+    #[test]
+    fn osc_133_prompt_marker() {
+        let g = run(3, 10, b"\x1b]133;A\x07");
+        let g = g.lock();
+        assert_eq!(g.prompt_mark, Some(PromptMark::PromptStart));
+        assert_eq!(g.prompt_lines, vec![0]);
+    }
+
+    // ---- ESC sequences ----
+
+    #[test]
+    fn esc_save_restore_cursor() {
+        let g = run(10, 20, b"\x1b[5;5H\x1b7\x1b[1;1H\x1b8");
+        let g = g.lock();
+        // After DECSC at (4,4), move home, DECRC restores to (4,4).
+        assert_eq!(g.cursor.row, 4);
+        assert_eq!(g.cursor.col, 4);
+    }
+
+    #[test]
+    fn esc_ris_full_reset() {
+        let g = run(3, 6, b"\x1b[1mjunk\x1bc");
+        let g = g.lock();
+        assert_eq!(row_text(&g, 0), "      ");
+        assert!(!g.current_attrs.bold);
+        assert_eq!(g.cursor.col, 0);
+    }
+
+    #[test]
+    fn dec_special_graphics_charset() {
+        // ESC ( 0 selects DEC special graphics for G0; 'q' becomes horizontal line.
+        let g = run(2, 6, b"\x1b(0q\x1b(B");
+        let g = g.lock();
+        assert_eq!(g.cells[0][0].c, '\u{2500}'); // ─
+    }
+
+    // ---- malformed / partial sequences do not panic ----
+
+    #[test]
+    fn partial_and_malformed_sequences_do_not_panic() {
+        // Incomplete CSI, garbage parameters, lone ESC, unknown final byte.
+        run(3, 10, b"\x1b[");
+        run(3, 10, b"\x1b[999999999m");
+        run(3, 10, b"\x1b[;;;;m");
+        run(3, 10, b"\x1b]");
+        run(3, 10, b"\x1b[38;5;");
+        run(3, 10, b"\x1b[\xff\xfe");
+        // If we reached here without a panic the test passes.
+    }
+
+    #[test]
+    fn cpr_response_sent_when_channel_present() {
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(10, 20)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        grid.lock().set_response_tx(tx);
+        let mut processor = TerminalProcessor::new(grid.clone());
+        let mut parser = vte::Parser::new();
+        // Move to (2,2) 0-indexed via CSI 3;3H, then request cursor position (DSR 6).
+        processor.process_bytes(&mut parser, b"\x1b[3;3H\x1b[6n");
+        let resp = rx.try_recv().expect("expected a CPR response");
+        // Response is 1-indexed: row 3, col 3.
+        assert_eq!(resp, b"\x1b[3;3R");
+    }
+}
