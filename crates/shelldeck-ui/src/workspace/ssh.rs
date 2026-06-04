@@ -41,6 +41,7 @@ impl Workspace {
         let conn_id = connection.id;
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
+        let attach_tmux = self.app_config.general.auto_attach_tmux;
 
         let (mut session, data_tx, input_rx) =
             match TerminalSession::spawn_ssh(title.clone(), rows, cols) {
@@ -117,6 +118,13 @@ impl Workspace {
                     let mut input_rx = input_rx;
                     let write_task = tokio::spawn(async move {
                         use tokio::io::AsyncWriteExt;
+                        // Auto-attach (or create) a tmux session at session start
+                        // when enabled. Runs exactly once before the input loop.
+                        if attach_tmux {
+                            let _ = channel_writer
+                                .write_all(b"tmux new-session -A -s main\n")
+                                .await;
+                        }
                         while let Some(data) = input_rx.recv().await {
                             if channel_writer.write_all(&data).await.is_err() {
                                 break;
@@ -221,6 +229,7 @@ impl Workspace {
         let conn_id = connection.id;
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
+        let attach_tmux = self.app_config.general.auto_attach_tmux;
 
         let (mut session, data_tx, input_rx) =
             match TerminalSession::spawn_ssh(title.clone(), rows, cols) {
@@ -282,6 +291,13 @@ impl Workspace {
                     let mut input_rx = input_rx;
                     let write_task = tokio::spawn(async move {
                         use tokio::io::AsyncWriteExt;
+                        // Auto-attach (or create) a tmux session at session start
+                        // when enabled. Runs exactly once before the input loop.
+                        if attach_tmux {
+                            let _ = channel_writer
+                                .write_all(b"tmux new-session -A -s main\n")
+                                .await;
+                        }
                         while let Some(data) = input_rx.recv().await {
                             if channel_writer.write_all(&data).await.is_err() {
                                 break;

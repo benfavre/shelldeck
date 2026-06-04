@@ -147,6 +147,12 @@ pub struct Workspace {
     _status_bar_sub: Subscription,
     /// Connection ID pending deletion (requires second click to confirm).
     pending_delete: Option<Uuid>,
+    /// In-memory copy of the loaded application config. Kept in sync on
+    /// `ConfigChanged` so runtime behavior reads the *current* values.
+    app_config: AppConfig,
+    /// True once the user has been warned about closing with active sessions;
+    /// the next close attempt is allowed through (two-step confirm).
+    pending_close_confirm: bool,
 }
 
 impl Workspace {
@@ -220,6 +226,7 @@ impl Workspace {
             });
         }
 
+        let app_config = config.clone();
         let settings = cx.new(|_| SettingsView::new(config));
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
@@ -423,7 +430,48 @@ impl Workspace {
             _update_sub: update_sub,
             _status_bar_sub: status_bar_sub,
             pending_delete: None,
+            app_config,
+            pending_close_confirm: false,
         }
+    }
+
+    /// Decide whether a window-close request should proceed.
+    ///
+    /// When `confirm_before_close` is enabled and there are active terminal
+    /// sessions or running tunnels, the first close attempt is intercepted: we
+    /// warn the user and require a second close to confirm (matching the
+    /// app's existing two-step "click again to confirm" pattern). Returns
+    /// `true` to allow the window to close, `false` to cancel.
+    pub fn confirm_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.app_config.general.confirm_before_close {
+            return true;
+        }
+
+        let active_terminals = self.terminal.read(cx).tab_count();
+        let active_tunnels = self.active_tunnels.len();
+        let active_scripts = self.active_scripts.len();
+        let has_activity = active_terminals > 0 || active_tunnels > 0 || active_scripts > 0;
+
+        if !has_activity {
+            return true;
+        }
+
+        if self.pending_close_confirm {
+            // Second attempt — allow the close to proceed.
+            return true;
+        }
+
+        self.pending_close_confirm = true;
+        // Push directly so this confirmation is shown even when general
+        // notifications are disabled — the user must see why close was blocked.
+        let warning = format!(
+            "{} active session(s)/tunnel(s) running — close the window again to confirm exit",
+            active_terminals + active_tunnels + active_scripts
+        );
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(warning, ToastLevel::Warning, cx);
+        });
+        false
     }
 
     fn handle_sidebar_event(&mut self, event: &SidebarEvent, cx: &mut Context<Self>) {
@@ -676,6 +724,9 @@ impl Workspace {
         match event {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
+                // Keep the in-memory config in sync so runtime behavior
+                // (notifications gate, tmux auto-attach, etc.) reads current values.
+                self.app_config = config.clone();
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
@@ -858,6 +909,11 @@ impl Workspace {
 
     /// Show a toast notification in the bottom-right corner of the workspace.
     pub fn show_toast(&self, msg: impl Into<String>, level: ToastLevel, cx: &mut Context<Self>) {
+        // When notifications are disabled, suppress informational toasts
+        // (Info/Success/Warning) but always surface errors so failures are seen.
+        if !self.app_config.general.show_notifications && level != ToastLevel::Error {
+            return;
+        }
         let message = msg.into();
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(message, level, cx);

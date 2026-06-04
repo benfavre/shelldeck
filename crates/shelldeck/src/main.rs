@@ -116,6 +116,18 @@ fn main() -> Result<()> {
             // Focus the workspace root so keyboard shortcuts dispatch correctly
             workspace.read(cx).focus_handle.focus(window);
 
+            // Intercept window close to honor the `confirm_before_close` setting.
+            {
+                let w = workspace.downgrade();
+                window.on_window_should_close(cx, move |_window, cx| {
+                    if let Some(ws) = w.upgrade() {
+                        ws.update(cx, |ws, cx| ws.confirm_window_close(cx))
+                    } else {
+                        true
+                    }
+                });
+            }
+
             // Register global action handlers as a fallback in case the
             // element-level dispatch tree doesn't route actions properly
             // (e.g. nothing focused, focus on wrong element, etc.).
