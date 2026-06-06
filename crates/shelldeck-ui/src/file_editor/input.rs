@@ -26,7 +26,7 @@ impl FileEditorView {
         }
 
         // ---- Non-text tabs: only allow Ctrl+W (close) and Ctrl+B (file browser toggle) ----
-        if !self.active_tab().map_or(false, |t| t.is_text()) {
+        if !self.active_tab().is_some_and(|t| t.is_text()) {
             if ctrl {
                 match ks.key.as_str() {
                     "w" => {
@@ -45,18 +45,16 @@ impl FileEditorView {
         }
 
         // ---- Search/Replace mode: capture keystrokes ----
-        if self.search_visible || self.replace_visible {
-            if self.handle_search_key(event, ctrl, cx) {
+        if (self.search_visible || self.replace_visible)
+            && self.handle_search_key(event, ctrl, cx) {
                 return;
             }
-        }
 
         // ---- Go-to-line mode ----
-        if self.goto_line_visible {
-            if self.handle_goto_line_key(event, ctrl, cx) {
+        if self.goto_line_visible
+            && self.handle_goto_line_key(event, ctrl, cx) {
                 return;
             }
-        }
 
         // ---- Context menu: dismiss on any key ----
         if self.context_menu_visible {

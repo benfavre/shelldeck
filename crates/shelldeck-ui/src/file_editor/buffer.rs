@@ -824,11 +824,11 @@ impl RopeBuffer {
         }
         let mut pos = self.cursor - 1;
         // Skip whitespace
-        while pos > 0 && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+        while pos > 0 && self.char_at(pos).is_some_and(|c| c.is_whitespace()) {
             pos -= 1;
         }
         // Skip word chars
-        while pos > 0 && self.char_at(pos - 1).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+        while pos > 0 && self.char_at(pos - 1).is_some_and(|c| c.is_alphanumeric() || c == '_') {
             pos -= 1;
         }
         self.cursor = pos;
@@ -844,11 +844,11 @@ impl RopeBuffer {
         }
         let mut pos = self.cursor;
         // Skip word chars
-        while pos < len && self.char_at(pos).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+        while pos < len && self.char_at(pos).is_some_and(|c| c.is_alphanumeric() || c == '_') {
             pos += 1;
         }
         // Skip whitespace
-        while pos < len && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+        while pos < len && self.char_at(pos).is_some_and(|c| c.is_whitespace()) {
             pos += 1;
         }
         self.cursor = pos;
@@ -950,7 +950,7 @@ impl RopeBuffer {
             while start > 0
                 && self
                     .char_at(start - 1)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
             {
                 start -= 1;
             }
@@ -958,7 +958,7 @@ impl RopeBuffer {
             while end < len
                 && self
                     .char_at(end)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
             {
                 end += 1;
             }
@@ -1082,15 +1082,14 @@ impl RopeBuffer {
         // If typing an opening char, insert both and position cursor between
         if let Some(closer) = Self::closing_pair(ch) {
             // For quotes, don't auto-pair if char before cursor is alphanumeric
-            if matches!(ch, '"' | '\'' | '`') {
-                if self.cursor > 0 {
+            if matches!(ch, '"' | '\'' | '`')
+                && self.cursor > 0 {
                     if let Some(prev) = self.char_at(self.cursor - 1) {
                         if prev.is_alphanumeric() || prev == '_' {
                             return false;
                         }
                     }
                 }
-            }
 
             self.start_or_extend_transaction(false);
             self.delete_selection();
@@ -1241,7 +1240,7 @@ impl RopeBuffer {
     /// Indent all lines in the current selection. Returns true if handled.
     pub fn indent_selection(&mut self) -> bool {
         let sel = match &self.selection {
-            Some(s) => s.clone(),
+            Some(s) => *s,
             None => return false,
         };
         let range = sel.range();
@@ -1292,7 +1291,7 @@ impl RopeBuffer {
     /// Dedent all lines in the current selection. Returns true if handled.
     pub fn dedent_selection(&mut self) -> bool {
         let sel = match &self.selection {
-            Some(s) => s.clone(),
+            Some(s) => *s,
             None => return false,
         };
         let range = sel.range();
@@ -1365,7 +1364,7 @@ impl RopeBuffer {
             let range = sel.range();
             let (_, end_col) = self.char_to_line_col(range.end);
             let (end_line, _) = self.char_to_line_col(range.end.saturating_sub(1));
-            end_col == 0 && range.end > range.start && end_line + 1 <= self.rope.len_lines()
+            end_col == 0 && range.end > range.start && end_line < self.rope.len_lines()
         } else {
             false
         };

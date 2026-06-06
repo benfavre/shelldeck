@@ -104,7 +104,7 @@ fn main() -> Result<()> {
             ..Default::default()
         };
 
-        cx.open_window(window_options, |window, cx| {
+        match cx.open_window(window_options, |window, cx| {
             let workspace = cx.new(|cx| {
                 Workspace::new(
                     cx,
@@ -115,6 +115,23 @@ fn main() -> Result<()> {
             });
             // Focus the workspace root so keyboard shortcuts dispatch correctly
             workspace.read(cx).focus_handle.focus(window);
+
+            // Restore the previous session's tabs when auto-connect-on-startup
+            // is enabled. No-op when the setting is off, keeping default startup
+            // (empty terminal view) unchanged.
+            workspace.update(cx, |ws, cx| ws.restore_session(cx));
+
+            // Intercept window close to honor the `confirm_before_close` setting.
+            {
+                let w = workspace.downgrade();
+                window.on_window_should_close(cx, move |_window, cx| {
+                    if let Some(ws) = w.upgrade() {
+                        ws.update(cx, |ws, cx| ws.confirm_window_close(cx))
+                    } else {
+                        true
+                    }
+                });
+            }
 
             // Register global action handlers as a fallback in case the
             // element-level dispatch tree doesn't route actions properly
@@ -195,11 +212,25 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |action: &ApplyTerminalTheme, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            let name = action.name.clone();
+                            ws.update(cx, |ws, cx| ws.apply_terminal_theme_by_name(&name, cx));
+                        }
+                    }
+                });
             }
 
             workspace
-        })
-        .expect("Failed to open main window");
+        }) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Failed to open main window: {}", e);
+                cx.quit();
+            }
+        }
 
         tracing::info!("ShellDeck window opened");
     });

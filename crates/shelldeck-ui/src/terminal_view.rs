@@ -410,6 +410,14 @@ struct TerminalPalette {
     foreground: [u8; 3],
     /// Default background (r, g, b).
     background: [u8; 3],
+    /// Cursor color.
+    cursor: Hsla,
+    /// Selection background.
+    selection: Hsla,
+    /// Search match highlight background.
+    search_match: Hsla,
+    /// Current (focused) search match background.
+    search_current: Hsla,
 }
 
 impl Default for TerminalPalette {
@@ -418,26 +426,51 @@ impl Default for TerminalPalette {
     }
 }
 
+/// Parse a `#rrggbb` hex string to RGB bytes, tolerating a missing `#` and
+/// malformed input (which falls back to black).
+fn parse_hex_rgb(hex: &str) -> [u8; 3] {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return [0, 0, 0];
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    [r, g, b]
+}
+
+/// Convert RGB bytes to an opaque `Hsla`.
+#[inline]
+fn rgb_to_hsla(rgb: [u8; 3]) -> Hsla {
+    Hsla::from(rgba(
+        (rgb[0] as u32) << 24 | (rgb[1] as u32) << 16 | (rgb[2] as u32) << 8 | 0xFF,
+    ))
+}
+
 impl TerminalPalette {
     fn from_theme(theme: &TerminalTheme) -> Self {
-        let parse = |hex: &str| -> [u8; 3] {
-            let hex = hex.trim_start_matches('#');
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            [r, g, b]
-        };
-
         let mut ansi = [[0u8; 3]; 16];
         for (i, hex) in theme.ansi_colors.iter().enumerate() {
-            ansi[i] = parse(hex);
+            ansi[i] = parse_hex_rgb(hex);
         }
 
         Self {
             ansi,
-            foreground: parse(&theme.foreground),
-            background: parse(&theme.background),
+            foreground: parse_hex_rgb(&theme.foreground),
+            background: parse_hex_rgb(&theme.background),
+            cursor: rgb_to_hsla(parse_hex_rgb(&theme.cursor)),
+            // Selection / search highlights are translucent so the glyphs
+            // underneath stay legible.
+            selection: rgb_to_hsla(parse_hex_rgb(&theme.selection)).opacity(0.45),
+            search_match: rgb_to_hsla(parse_hex_rgb(&theme.search_match)).opacity(0.55),
+            search_current: rgb_to_hsla(parse_hex_rgb(&theme.search_current)).opacity(0.75),
         }
+    }
+
+    /// The theme's default background as an opaque `Hsla`.
+    #[inline]
+    fn background_color(&self) -> Hsla {
+        rgb_to_hsla(self.background)
     }
 
     /// Resolve a `TermColor` to an HSLA value using this palette.
@@ -540,6 +573,9 @@ pub enum TerminalEvent {
     TabSelected(Uuid),
     TabClosed(Uuid),
     NewTabRequested,
+    /// Duplicate a connection-backed tab: the workspace should open a new SSH
+    /// session for the given connection.
+    DuplicateTabRequested(Uuid),
     /// The user requested a split pane. If connection_id is Some, the workspace
     /// should open an SSH session for the split; otherwise a local terminal was
     /// already spawned.
@@ -652,6 +688,8 @@ pub struct TerminalView {
     _hovered_url: Option<usize>,
     /// Context menu state (position + whether visible).
     context_menu: Option<ContextMenuState>,
+    /// Right-click context menu state for a terminal tab.
+    tab_context_menu: Option<TabMenuState>,
     /// Active split view for the current tab (two panes displayed simultaneously).
     split_view: Option<SplitViewState>,
     /// Stored split views for inactive tabs, keyed by tab ID.
@@ -681,6 +719,13 @@ pub struct TerminalView {
     cursor_blink_on: bool,
     /// Async task that toggles `cursor_blink_on` every 530ms.
     cursor_blink_timer: Option<gpui::Task<()>>,
+    /// User preference (from config) that gates cursor blinking entirely.
+    /// When `false`, the cursor stays steady regardless of the program's
+    /// DECSCUSR blink request.
+    cursor_blink_enabled: bool,
+    /// Configured scrollback buffer size (lines). Applied to live grids and to
+    /// newly added sessions.
+    configured_scrollback: usize,
     /// Whether the terminal grid currently has focus (tracked for hollow cursor).
     has_focus: bool,
 }
@@ -699,6 +744,15 @@ struct ContextMenuState {
     position: Point<Pixels>,
     /// URL under the right-click, if any.
     url: Option<String>,
+}
+
+/// State for a right-click context menu on a terminal tab.
+#[derive(Debug, Clone)]
+struct TabMenuState {
+    /// Window-relative position of the click.
+    position: Point<Pixels>,
+    /// The tab the menu was opened on.
+    tab_id: Uuid,
 }
 
 impl TerminalView {
@@ -732,6 +786,7 @@ impl TerminalView {
             detected_urls: Vec::new(),
             _hovered_url: None,
             context_menu: None,
+            tab_context_menu: None,
             split_view: None,
             stored_splits: HashMap::new(),
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
@@ -747,6 +802,8 @@ impl TerminalView {
             pinned_scripts: Vec::new(),
             cursor_blink_on: true,
             cursor_blink_timer: None,
+            cursor_blink_enabled: true,
+            configured_scrollback: 10_000,
             has_focus: false,
         }
     }
@@ -807,6 +864,32 @@ impl TerminalView {
         };
     }
 
+    /// Apply the configured scrollback size to every live session grid and
+    /// remember it for sessions created later.
+    pub fn set_scrollback_lines(&mut self, lines: usize) {
+        let lines = lines.max(1);
+        self.configured_scrollback = lines;
+        for session in &self.pane.sessions {
+            session.grid.lock().set_max_scrollback(lines);
+        }
+        if let Some(split) = &self.split_view {
+            split.secondary_session.grid.lock().set_max_scrollback(lines);
+        }
+    }
+
+    /// Apply the user's cursor-blink preference (from config). When disabled,
+    /// the cursor is forced steady; when enabled it resumes blinking if the
+    /// terminal currently wants it.
+    pub fn set_cursor_blink(&mut self, enabled: bool) {
+        if self.cursor_blink_enabled == enabled {
+            return;
+        }
+        self.cursor_blink_enabled = enabled;
+        if !enabled {
+            self.stop_cursor_blink();
+        }
+    }
+
     // ------------------------------------------------------------------
     // Cursor blink timer
     // ------------------------------------------------------------------
@@ -815,7 +898,12 @@ impl TerminalView {
     ///
     /// The cursor is made visible immediately and then toggled every 530 ms.
     /// Calling this while a timer is already running cancels the old one.
+    /// No-op when the user has disabled blinking via config.
     fn start_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        if !self.cursor_blink_enabled {
+            self.cursor_blink_on = true;
+            return;
+        }
         self.cursor_blink_on = true;
         let entity = cx.entity().downgrade();
         self.cursor_blink_timer = Some(cx.spawn(
@@ -869,6 +957,13 @@ impl TerminalView {
         session: TerminalSession,
         connection_id: Option<Uuid>,
     ) {
+        // Apply the configured scrollback size to the freshly-spawned grid
+        // (sessions are spawned with the engine default of 10k lines).
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+
         // Save the current tab's split before switching away
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
@@ -935,6 +1030,58 @@ impl TerminalView {
                 self._refresh_task = None;
             }
         }
+    }
+
+    /// Duplicate a tab. Connection-backed tabs ask the workspace to open a new
+    /// SSH session for the same connection; local tabs spawn a fresh shell.
+    pub fn duplicate_tab(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let connection_id = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.connection_id);
+        if let Some(connection_id) = connection_id {
+            cx.emit(TerminalEvent::DuplicateTabRequested(connection_id));
+        } else {
+            self.spawn_local_terminal(cx);
+            cx.emit(TerminalEvent::NewTabRequested);
+        }
+    }
+
+    /// Close every tab positioned to the right of the given tab.
+    pub fn close_tabs_to_right(&mut self, id: Uuid) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
+            let ids: Vec<Uuid> = self.tabs.iter().skip(pos + 1).map(|t| t.id).collect();
+            for tab_id in ids {
+                self.close_tab(tab_id);
+            }
+        }
+    }
+
+    /// Close every tab positioned to the left of the given tab.
+    pub fn close_tabs_to_left(&mut self, id: Uuid) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
+            let ids: Vec<Uuid> = self.tabs.iter().take(pos).map(|t| t.id).collect();
+            for tab_id in ids {
+                self.close_tab(tab_id);
+            }
+        }
+    }
+
+    /// Whether the given tab has any tabs to its right.
+    fn tab_has_right(&self, id: Uuid) -> bool {
+        self.tabs
+            .iter()
+            .position(|t| t.id == id)
+            .is_some_and(|pos| pos + 1 < self.tabs.len())
+    }
+
+    /// Whether the given tab has any tabs to its left.
+    fn tab_has_left(&self, id: Uuid) -> bool {
+        self.tabs
+            .iter()
+            .position(|t| t.id == id)
+            .is_some_and(|pos| pos > 0)
     }
 
     /// Find a tab that belongs to the given connection, if any.
@@ -1033,6 +1180,23 @@ impl TerminalView {
     /// Return the number of open terminal tabs.
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    /// Snapshot the open tabs for session persistence.
+    ///
+    /// Returns one entry per tab as `(title, connection_id)`. A `connection_id`
+    /// of `Some` marks an SSH tab (to reconnect on restore); `None` marks a
+    /// local shell tab. Read-only — does not mutate any state.
+    pub fn session_states(&self) -> Vec<(String, Option<Uuid>)> {
+        self.tabs
+            .iter()
+            .map(|t| (t.title.clone(), t.connection_id))
+            .collect()
+    }
+
+    /// Index of the currently active tab (for restoring focus).
+    pub fn active_tab_index(&self) -> usize {
+        self.pane.active_index
     }
 
     /// Return the last computed grid dimensions, or a default if unknown.
@@ -1340,6 +1504,26 @@ impl TerminalView {
         self.ensure_refresh_running(cx);
     }
 
+    /// Start the Claude Code CLI by running `claude --dangerously-skip-permissions`.
+    ///
+    /// Runs in the currently active terminal session if there is one; otherwise
+    /// opens a fresh local terminal first. The bytes are queued on the PTY input
+    /// channel immediately; the shell's line discipline buffers them until the
+    /// prompt is ready, so the command runs as soon as the shell is.
+    pub fn launch_claude(&mut self, cx: &mut Context<Self>) {
+        // Reuse the open terminal; only spawn one when none exists.
+        if self.active_session().is_none() {
+            self.spawn_local_terminal(cx);
+        }
+
+        if let Some(session) = self.active_session() {
+            session.write_input(b"claude --dangerously-skip-permissions\n");
+        }
+
+        tracing::info!("Launched Claude Code in the active terminal");
+        cx.notify();
+    }
+
     /// Start the periodic refresh loop if it is not already running.
     ///
     /// Polls at ~120 Hz but only triggers a repaint when the grid is
@@ -1493,6 +1677,17 @@ impl TerminalView {
                     cx.emit(TerminalEvent::TabSelected(tab_id));
                     cx.notify();
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                        this.context_menu = None;
+                        this.tab_context_menu = Some(TabMenuState {
+                            position: event.position,
+                            tab_id,
+                        });
+                        cx.notify();
+                    }),
+                )
                 // Status dot
                 .child(
                     div()
@@ -1680,6 +1875,38 @@ impl TerminalView {
             .bg(ShellDeckColors::bg_sidebar())
             .border_b_1()
             .border_color(ShellDeckColors::border());
+
+        // Claude launcher (leftmost, branded)
+        toolbar = toolbar
+            .child(
+                div()
+                    .id("tb-claude")
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .pl(px(5.0))
+                    .pr(px(9.0))
+                    .py(px(3.0))
+                    .rounded(px(5.0))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(Self::claude_orange())
+                    .bg(Self::claude_orange().opacity(0.12))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Self::claude_orange().opacity(0.2)))
+                    .child(Self::claude_logo(18.0))
+                    .child("Claude")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.launch_claude(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .mx(px(6.0))
+                    .bg(ShellDeckColors::border()),
+            );
 
         // Left group: search, copy, paste
         toolbar = toolbar
@@ -2332,7 +2559,8 @@ impl TerminalView {
                                 ScrollDelta::Lines(pt) => pt.y,
                                 ScrollDelta::Pixels(pt) => pt.y / px(cell_height_f),
                             };
-                            let button = if delta_y < 0.0 { 64u8 } else { 65u8 };
+                            // Wheel up (delta_y > 0) → button 64, wheel down → 65.
+                            let button = if delta_y > 0.0 { 64u8 } else { 65u8 };
                             let bytes = Self::encode_mouse(mouse_encoding, button, col, row, true);
                             if let Some(s) = this.active_session() {
                                 s.write_input(&bytes);
@@ -2351,7 +2579,8 @@ impl TerminalView {
                         let lines = delta_y.abs().ceil() as usize;
                         if let Some(session) = this.active_session() {
                             let mut grid = session.grid.lock();
-                            if delta_y < 0.0 {
+                            // Wheel up (delta_y > 0) scrolls back into history.
+                            if delta_y > 0.0 {
                                 grid.scroll_view_up(lines);
                             } else {
                                 grid.scroll_view_down(lines);
@@ -2675,7 +2904,7 @@ impl TerminalView {
                 }
             })
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .p(px(4.0))
             .overflow_hidden()
             // Direct glyph-painting canvas
@@ -2745,9 +2974,9 @@ impl TerminalView {
                 let grid = grid.lock();
                 let visible = grid.visible_rows();
 
-                let sel_color = hsla(0.58, 0.6, 0.5, 0.35);
-                let search_color = hsla(0.0, 0.0, 0.5, 0.3);
-                let search_current_color = hsla(0.1, 0.9, 0.5, 0.7);
+                let sel_color = palette.selection;
+                let search_color = palette.search_match;
+                let search_current_color = palette.search_current;
 
                 for (ri, row) in visible.iter().enumerate() {
                     let y = bounds.origin.y + cell_h * ri as f32;
@@ -2996,7 +3225,7 @@ impl TerminalView {
                 if should_draw_cursor {
                     let cx_x = bounds.origin.x + cell_w * cursor.col as f32;
                     let cx_y = bounds.origin.y + cell_h * cursor.row as f32;
-                    let cursor_color = ShellDeckColors::text_primary();
+                    let cursor_color = palette.cursor;
 
                     // Determine cursor width: 2 cells for wide chars, 1 for normal.
                     let cursor_w = if let Some(row) = visible.get(cursor.row) {
@@ -3050,7 +3279,7 @@ impl TerminalView {
                                     if let Some(cell) = row.get(cursor.col) {
                                         let ch = cell.c;
                                         if ch != ' ' && ch != '\0' {
-                                            let bg = ShellDeckColors::terminal_bg();
+                                            let bg = palette.background_color();
                                             if let Some((fid, gid)) =
                                                 cache.lookup(ch, cell.attrs.bold, cell.attrs.italic)
                                             {
@@ -3557,6 +3786,154 @@ impl TerminalView {
         menu
     }
 
+    /// Render the right-click context menu for a terminal tab, plus a
+    /// transparent backdrop that dismisses it on any outside click.
+    fn render_tab_context_menu(
+        &self,
+        state: &TabMenuState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let tab_id = state.tab_id;
+        let has_left = self.tab_has_left(tab_id);
+        let has_right = self.tab_has_right(tab_id);
+
+        // Convert the window-relative click x into terminal-view-local x
+        // (the view starts just right of the sidebar). The menu drops down
+        // just below the tab bar.
+        let left = state.position.x - px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+
+        // Enabled menu item.
+        let item = |id: &str, label: &str| {
+            div()
+                .id(ElementId::from(SharedString::from(id.to_string())))
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+                .child(label.to_string())
+        };
+        // Disabled (greyed, non-interactive) menu item.
+        let disabled_item = |label: &str| {
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_muted().opacity(0.5))
+                .child(label.to_string())
+        };
+        let separator = || {
+            div()
+                .h(px(1.0))
+                .mx(px(8.0))
+                .my(px(4.0))
+                .bg(ShellDeckColors::border())
+        };
+
+        let mut menu = div()
+            .id("tab-context-menu")
+            .absolute()
+            .left(left)
+            .top(px(TAB_BAR_HEIGHT))
+            .min_w(px(190.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(8.0))
+            .shadow_lg()
+            .py(px(4.0))
+            .flex()
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+            .on_mouse_down(MouseButton::Right, |_, _, _| {});
+
+        menu = menu
+            .child(
+                item("tab-ctx-new", "New Terminal").on_click(cx.listener(
+                    |this, _, window, cx| {
+                        this.tab_context_menu = None;
+                        this.spawn_local_terminal(cx);
+                        this.focus_handle.focus(window);
+                        cx.emit(TerminalEvent::NewTabRequested);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                item("tab-ctx-duplicate", "Duplicate").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.duplicate_tab(tab_id, cx);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(separator())
+            .child(
+                item("tab-ctx-close", "Close Tab").on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    this.close_tab(tab_id);
+                    cx.emit(TerminalEvent::TabClosed(tab_id));
+                    cx.notify();
+                })),
+            );
+
+        if has_left {
+            menu = menu.child(
+                item("tab-ctx-close-left", "Close Tabs to the Left").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.close_tabs_to_left(tab_id);
+                        cx.emit(TerminalEvent::TabClosed(tab_id));
+                        cx.notify();
+                    },
+                )),
+            );
+        } else {
+            menu = menu.child(disabled_item("Close Tabs to the Left"));
+        }
+
+        if has_right {
+            menu = menu.child(
+                item("tab-ctx-close-right", "Close Tabs to the Right").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.close_tabs_to_right(tab_id);
+                        cx.emit(TerminalEvent::TabClosed(tab_id));
+                        cx.notify();
+                    },
+                )),
+            );
+        } else {
+            menu = menu.child(disabled_item("Close Tabs to the Right"));
+        }
+
+        // Transparent backdrop captures outside clicks to dismiss the menu.
+        let backdrop = div()
+            .id("tab-context-backdrop")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    cx.notify();
+                }),
+            );
+
+        div().child(backdrop).child(menu)
+    }
+
     /// Render a read-only grid for the unfocused split pane.
     /// Clicking anywhere on it toggles focus to this pane.
     fn render_split_passive_grid(
@@ -3575,7 +3952,7 @@ impl TerminalView {
             .id("terminal-grid-passive")
             .relative()
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .p(px(4.0))
             .overflow_hidden()
             .cursor_pointer()
@@ -3791,7 +4168,33 @@ impl TerminalView {
         }
     }
 
-    fn render_empty_state(&self) -> impl IntoElement {
+    /// Claude brand orange (#D97757).
+    fn claude_orange() -> gpui::Hsla {
+        gpui::rgb(0xD97757).into()
+    }
+
+    /// A rounded badge bearing the Claude "sunburst" mark, sized to `size`.
+    /// Used by the launch button and the empty-state call to action.
+    fn claude_logo(size: f32) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(size))
+            .h(px(size))
+            .rounded(px(size * 0.26))
+            .bg(Self::claude_orange())
+            .child(
+                div()
+                    .text_size(px(size * 0.62))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(gpui::white())
+                    // U+2733 EIGHT SPOKED ASTERISK — the Claude sunburst mark.
+                    .child("\u{2733}"),
+            )
+    }
+
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (ctrl, cmd) = if cfg!(target_os = "macos") {
             ("\u{2318}", "\u{2318}")
         } else {
@@ -3838,7 +4241,7 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .size_full()
-            .bg(ShellDeckColors::terminal_bg())
+            .bg(self.palette.background_color())
             .gap(px(24.0))
             // Icon + heading
             .child(
@@ -3868,6 +4271,44 @@ impl TerminalView {
                                 cmd
                             )),
                     ),
+            )
+            // Primary call to action: launch Claude Code
+            .child(
+                div()
+                    .id("empty-launch-claude")
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pl(px(10.0))
+                    .pr(px(16.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(Self::claude_orange())
+                    .shadow_sm()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Self::claude_orange().opacity(0.88)))
+                    .child(Self::claude_logo(26.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(gpui::white())
+                                    .child("Launch Claude Code"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(gpui::white().opacity(0.85))
+                                    .child("claude --dangerously-skip-permissions"),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.launch_claude(cx);
+                    })),
             )
             // Keyboard shortcuts reference
             .child(
@@ -3917,10 +4358,10 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut container = div().flex().flex_col().size_full();
+        let mut container = div().relative().flex().flex_col().size_full();
 
         if self.pane.sessions.is_empty() {
-            container = container.child(self.render_empty_state());
+            container = container.child(self.render_empty_state(cx));
         } else {
             if self.needs_focus {
                 self.needs_focus = false;
@@ -4271,6 +4712,11 @@ impl Render for TerminalView {
 
                     container = container.child(grid_wrapper);
                 }
+            }
+
+            // Tab context menu overlays the whole terminal view.
+            if let Some(state) = self.tab_context_menu.clone() {
+                container = container.child(self.render_tab_context_menu(&state, cx));
             }
         }
 

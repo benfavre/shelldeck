@@ -101,6 +101,10 @@ pub struct BinaryInfo {
     pub file_size: u64,
 }
 
+// `Text` is the common, hot-path variant and is matched in many places by its
+// fields; boxing it to equalize variant size would add indirection to every
+// edit/render access for no real memory win (open tabs are few).
+#[allow(clippy::large_enum_variant)]
 pub enum TabContent {
     Text {
         buffer: RopeBuffer,
@@ -439,7 +443,7 @@ impl FileEditorView {
         let replace_empty = self.tabs.len() == 1
             && self.tabs[0].path.is_none()
             && !self.tabs[0].is_dirty()
-            && self.tabs[0].buffer().map_or(true, |b| b.len_chars() == 0);
+            && self.tabs[0].buffer().is_none_or(|b| b.len_chars() == 0);
         if replace_empty {
             self.tabs[0] = tab;
             self.active_tab_index = 0;
@@ -1193,7 +1197,9 @@ impl FileEditorView {
         let h_scroll = handle.clone();
         let focus_down = focus.clone();
 
-        let container = div()
+        
+
+        div()
             .flex_grow()
             .w_full()
             .min_h(px(0.0))
@@ -1320,9 +1326,7 @@ impl FileEditorView {
                     );
                 },
             )
-            .size_full());
-
-        container
+            .size_full())
     }
 
     // -----------------------------------------------------------------------
@@ -1709,7 +1713,7 @@ impl FileEditorView {
         }
 
         // Non-text tabs: no text interaction
-        if !self.active_tab().map_or(false, |t| t.is_text()) {
+        if !self.active_tab().is_some_and(|t| t.is_text()) {
             return;
         }
 
@@ -1794,7 +1798,7 @@ impl FileEditorView {
 
     fn handle_right_click(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
         // No context menu for non-text tabs
-        if !self.active_tab().map_or(false, |t| t.is_text()) {
+        if !self.active_tab().is_some_and(|t| t.is_text()) {
             return;
         }
         let x = event.position.x.to_f64() as f32;
@@ -2135,7 +2139,7 @@ impl Render for FileEditorView {
         container = container.child(self.render_tab_bar(cx));
 
         // Search/replace/goto-line bars (text tabs only)
-        let active_is_text = self.active_tab().map_or(true, |t| t.is_text());
+        let active_is_text = self.active_tab().is_none_or(|t| t.is_text());
         if active_is_text {
             if self.search_visible {
                 container = container.child(self.render_search_bar());
@@ -2391,7 +2395,7 @@ impl Render for FileEditorView {
         }
 
         // Editor canvas / non-text content
-        let is_text_tab = self.active_tab().map_or(true, |t| t.is_text());
+        let is_text_tab = self.active_tab().is_none_or(|t| t.is_text());
         if is_text_tab {
             let canvas_area = self.render_editor_canvas(window, cx);
             editor_area = editor_area.child(canvas_area);
@@ -2587,7 +2591,7 @@ impl FileEditorView {
 
     fn render_status_bar(&self) -> impl IntoElement {
         let tab = self.active_tab();
-        let is_text = tab.map_or(false, |t| t.is_text());
+        let is_text = tab.is_some_and(|t| t.is_text());
 
         let type_name = tab
             .map(|t| t.content_type_name().to_string())
@@ -2663,6 +2667,7 @@ impl FileEditorView {
             )
     }
 
+    #[allow(clippy::too_many_arguments)] // PDF metadata fields rendered as a flat list
     fn render_pdf_info(
         filename: &str,
         path: Option<&std::path::Path>,

@@ -1,4 +1,5 @@
 use gpui::*;
+use crate::scale::px;
 use std::time::Duration;
 
 use crate::theme::ShellDeckColors;

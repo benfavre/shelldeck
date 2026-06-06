@@ -1,9 +1,18 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use crate::theme::ShellDeckColors;
 
 actions!(shelldeck, [ToggleCommandPalette]);
+
+/// Apply a terminal color theme by name. Carried as data so a single action
+/// type can drive every built-in theme entry in the command palette.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = shelldeck, no_json)]
+pub struct ApplyTerminalTheme {
+    pub name: String,
+}
 
 /// A registered action with a display name and shortcut hint.
 #[derive(Debug)]

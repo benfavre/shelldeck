@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use adabraka_ui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 use shelldeck_core::models::execution::ExecutionRecord;
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;

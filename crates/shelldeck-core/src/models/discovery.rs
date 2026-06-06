@@ -5,6 +5,7 @@
 use super::server_sync::{
     DatabaseEngine, DiscoveredDatabase, DiscoveredSite, FileEntry, SyncOptions,
 };
+use crate::util::shell_escape;
 
 // ---------------------------------------------------------------------------
 // File listing
@@ -562,16 +563,6 @@ pub fn pg_sync_command(
             shell_escape(db)
         )
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Shell-escape a string using single quotes.
-fn shell_escape(s: &str) -> String {
-    let escaped = s.replace('\'', "'\\''");
-    format!("'{}'", escaped)
 }
 
 #[cfg(test)]

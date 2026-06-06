@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Validate that a port number is non-zero (valid for binding/connecting).
+pub fn validate_port(port: u16) -> Result<(), &'static str> {
+    if port == 0 {
+        Err("Port must be between 1 and 65535")
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ForwardDirection {
     LocalToRemote,

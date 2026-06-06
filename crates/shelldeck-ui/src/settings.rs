@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::themes::TerminalTheme;
@@ -20,7 +21,6 @@ pub enum SettingsTab {
 pub enum SettingsEvent {
     ConfigChanged(AppConfig),
     ThemeChanged(ThemePreference),
-    TerminalThemeChanged(TerminalTheme),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -42,6 +42,21 @@ impl SettingsView {
 
     fn mark_changed(&mut self) {
         self.unsaved_changes = true;
+    }
+
+    /// Select a terminal color theme by name and persist it immediately.
+    /// Emits `ConfigChanged` so the live terminal repaints with the new theme.
+    pub fn select_terminal_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.config.terminal.theme == name {
+            return;
+        }
+        self.config.terminal.theme = name.to_string();
+        self.save_config(cx);
+    }
+
+    /// The name of the currently selected terminal theme.
+    pub fn terminal_theme_name(&self) -> &str {
+        &self.config.terminal.theme
     }
 
     fn save_config(&mut self, cx: &mut Context<Self>) {
@@ -479,54 +494,108 @@ impl SettingsView {
         // Terminal theme picker (built-in themes)
         let mut theme_cards = div().flex().gap(px(8.0)).flex_wrap();
 
+        // Parse a "#rrggbb" string into a gpui color (falls back to black).
+        let hex_color = |hex: &str| -> Rgba {
+            let h = hex.trim_start_matches('#');
+            let v = u32::from_str_radix(h.get(0..6).unwrap_or("000000"), 16).unwrap_or(0);
+            rgb(v)
+        };
+
+        let active_theme = self.config.terminal.theme.clone();
+
         for terminal_theme in TerminalTheme::builtins() {
             let name = terminal_theme.name.clone();
-            let bg_hex = terminal_theme.background.clone();
-            let fg_hex = terminal_theme.foreground.clone();
+            let is_active = name == active_theme;
             let theme_name = name.clone();
 
-            theme_cards = theme_cards.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "theme-{}",
-                        name
-                    ))))
-                    .w(px(120.0))
-                    .h(px(70.0))
-                    .rounded(px(6.0))
-                    .border_1()
+            let bg = hex_color(&terminal_theme.background);
+            let fg = hex_color(&terminal_theme.foreground);
+            // A few representative ANSI swatches (red, green, blue, magenta).
+            let swatches = [
+                hex_color(&terminal_theme.ansi_colors[1]),
+                hex_color(&terminal_theme.ansi_colors[2]),
+                hex_color(&terminal_theme.ansi_colors[4]),
+                hex_color(&terminal_theme.ansi_colors[5]),
+            ];
+
+            // Live preview: a mini "terminal" rendered in the theme's own colors.
+            let mut preview = div()
+                .w_full()
+                .flex_grow()
+                .rounded(px(4.0))
+                .bg(bg)
+                .p(px(6.0))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(fg)
+                        .child("Aa Bb 123"),
+                );
+            let mut dots = div().flex().gap(px(3.0));
+            for s in swatches {
+                dots = dots.child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(s));
+            }
+            preview = preview.child(dots);
+
+            let mut card = div()
+                .id(ElementId::from(SharedString::from(format!("theme-{}", name))))
+                .w(px(124.0))
+                .h(px(82.0))
+                .rounded(px(6.0))
+                .border_1()
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .p(px(4.0));
+
+            if is_active {
+                card = card.border_color(ShellDeckColors::primary());
+            } else {
+                card = card
                     .border_color(ShellDeckColors::border())
-                    .cursor_pointer()
-                    .hover(|el| el.border_color(ShellDeckColors::primary()))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(4.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(9.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(format!("{} / {}", bg_hex, fg_hex)),
-                    )
-                    .on_click(cx.listener(move |_this, _, _, cx| {
-                        tracing::info!("Terminal theme selected: {}", theme_name);
-                        // Find the matching built-in theme and emit it
-                        if let Some(theme) = TerminalTheme::builtins()
-                            .into_iter()
-                            .find(|t| t.name == theme_name)
-                        {
-                            cx.emit(SettingsEvent::TerminalThemeChanged(theme));
-                        }
-                        cx.notify();
-                    })),
-            );
+                    .hover(|el| el.border_color(ShellDeckColors::primary()));
+            }
+
+            card = card
+                .child(preview)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(if is_active {
+                                    FontWeight::SEMIBOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if is_active {
+                                    ShellDeckColors::primary()
+                                } else {
+                                    ShellDeckColors::text_primary()
+                                })
+                                .child(name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::primary())
+                                .child(if is_active { "\u{2713}" } else { "" }),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_terminal_theme(&theme_name, cx);
+                    cx.notify();
+                }));
+
+            theme_cards = theme_cards.child(card);
         }
 
         div()
@@ -596,6 +665,98 @@ impl SettingsView {
                                 cx.notify();
                             })),
                     ),
+            ))
+            .child(Self::render_setting_row(
+                "App Font Size",
+                "Scales the entire UI proportionally (terminal has its own font size)",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("ui-font-size-down")
+                            .text_size(px(16.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .cursor_pointer()
+                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
+                            .child("-")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.general.ui_font_size =
+                                    (this.config.general.ui_font_size - 1.0).max(10.0);
+                                this.mark_changed();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(format!("{}px", self.config.general.ui_font_size)),
+                    )
+                    .child(
+                        div()
+                            .id("ui-font-size-up")
+                            .text_size(px(16.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .cursor_pointer()
+                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
+                            .child("+")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.general.ui_font_size =
+                                    (this.config.general.ui_font_size + 1.0).min(22.0);
+                                this.mark_changed();
+                                cx.notify();
+                            })),
+                    ),
+            ))
+            .child(Self::render_setting_row(
+                "App Font Family",
+                "Font for the application UI (sidebar, dashboard, forms)",
+                {
+                    let fonts = [
+                        "System Default",
+                        "Inter",
+                        "SF Pro Text",
+                        "Segoe UI",
+                        "Roboto",
+                        "Ubuntu",
+                        "JetBrains Mono",
+                    ];
+                    let current = self.config.general.ui_font_family.clone();
+                    let mut row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+                    for font_name in &fonts {
+                        let f = font_name.to_string();
+                        let is_active = current == f;
+                        let mut btn = div()
+                            .id(ElementId::from(SharedString::from(format!("ui-font-{}", f))))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .text_size(px(11.0))
+                            .cursor_pointer();
+
+                        if is_active {
+                            btn = btn
+                                .bg(ShellDeckColors::primary().opacity(0.2))
+                                .text_color(ShellDeckColors::primary());
+                        } else {
+                            btn = btn
+                                .text_color(ShellDeckColors::text_muted())
+                                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
+                        }
+
+                        let f_clone = f.clone();
+                        btn = btn.child(f).on_click(cx.listener(move |this, _, _, cx| {
+                            this.config.general.ui_font_family = f_clone.clone();
+                            this.mark_changed();
+                            cx.notify();
+                        }));
+
+                        row = row.child(btn);
+                    }
+                    row
+                },
             ))
     }
 

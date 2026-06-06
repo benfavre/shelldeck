@@ -6,6 +6,7 @@ pub mod file_editor;
 pub mod glyph_cache;
 pub mod port_forward_form;
 pub mod port_forward_view;
+pub mod scale;
 pub mod script_editor;
 pub mod script_form;
 pub mod server_sync_view;

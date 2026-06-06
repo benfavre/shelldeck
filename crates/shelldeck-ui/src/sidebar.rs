@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
@@ -774,7 +775,9 @@ impl Render for SidebarView {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .w(px(self.width))
+            // Real pixels: the terminal's grid_x_offset depends on this exact
+            // width, so it must not rem-scale with the rest of the sidebar.
+            .w(gpui::px(self.width))
             .h_full()
             .overflow_hidden()
             .bg(ShellDeckColors::bg_sidebar())

@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use crate::scale::px;
 
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;

@@ -1,7 +1,7 @@
 use crate::error::{Result, ShellDeckError};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -20,6 +20,7 @@ pub enum ThemePreference {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TerminalConfig {
     pub font_family: String,
     pub font_size: f32,
@@ -27,6 +28,9 @@ pub struct TerminalConfig {
     pub default_shell: Option<String>,
     pub cursor_style: String,
     pub cursor_blink: bool,
+    /// Name of the active terminal color theme (matches a `TerminalTheme`
+    /// built-in name, e.g. "Dark", "Light", "Pastel Dark", "High Contrast").
+    pub theme: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +42,10 @@ pub struct GeneralConfig {
     pub sidebar_width: f32,
     pub auto_attach_tmux: bool,
     pub auto_update: bool,
+    /// Font family for the application UI (sidebar, dashboard, forms, etc.).
+    pub ui_font_family: String,
+    /// Base font size in pixels for the application UI.
+    pub ui_font_size: f32,
 }
 
 impl Default for TerminalConfig {
@@ -49,6 +57,7 @@ impl Default for TerminalConfig {
             default_shell: None,
             cursor_style: "block".to_string(),
             cursor_blink: true,
+            theme: "Dark".to_string(),
         }
     }
 }
@@ -62,6 +71,8 @@ impl Default for GeneralConfig {
             sidebar_width: 260.0,
             auto_attach_tmux: false,
             auto_update: true,
+            ui_font_family: "System Default".to_string(),
+            ui_font_size: 14.0,
         }
     }
 }
@@ -79,8 +90,12 @@ impl AppConfig {
         match Self::project_dirs() {
             Ok(dirs) => dirs.config_dir().to_path_buf(),
             Err(_) => {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home).join(".config").join("shelldeck")
+                if let Some(home) = crate::util::home_dir() {
+                    home.join(".config").join("shelldeck")
+                } else {
+                    tracing::warn!("HOME not set and ProjectDirs unavailable; using current dir for config");
+                    PathBuf::from(".shelldeck")
+                }
             }
         }
     }
@@ -92,10 +107,18 @@ impl AppConfig {
 
     /// Load config from disk, or create and save defaults.
     pub fn load() -> Result<Self> {
-        let path = Self::config_path();
+        Self::load_from(&Self::config_path())
+    }
 
+    /// Save config to disk.
+    pub fn save(&self) -> Result<()> {
+        self.save_to(&Self::config_path())
+    }
+
+    /// Load config from a specific path, or create and save defaults there.
+    pub(crate) fn load_from(path: &Path) -> Result<Self> {
         if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
+            let content = std::fs::read_to_string(path)?;
             let config: Self = toml::from_str(&content).map_err(|e| {
                 ShellDeckError::Config(format!(
                     "Failed to parse config at {}: {}",
@@ -107,27 +130,98 @@ impl AppConfig {
             Ok(config)
         } else {
             let config = Self::default();
-            config.save()?;
+            config.save_to(path)?;
             info!("Created default config at {}", path.display());
             Ok(config)
         }
     }
 
-    /// Save config to disk.
-    pub fn save(&self) -> Result<()> {
-        let path = Self::config_path();
-        let dir = Self::config_dir();
-
-        if !dir.exists() {
-            std::fs::create_dir_all(&dir)?;
+    /// Save config to a specific path atomically.
+    pub(crate) fn save_to(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() && !dir.exists() {
+                std::fs::create_dir_all(dir)?;
+            }
         }
 
         let content = toml::to_string_pretty(self).map_err(|e| {
             ShellDeckError::Serialization(format!("Failed to serialize config: {}", e))
         })?;
-        std::fs::write(&path, content)?;
+        crate::util::atomic_write(path, content.as_bytes())?;
         info!("Saved config to {}", path.display());
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-appconfig-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(name)
+    }
+
+    #[test]
+    fn round_trip_non_default() {
+        let path = temp_path("config.toml");
+
+        let mut config = AppConfig::default();
+        config.theme = ThemePreference::Light;
+        config.terminal.font_family = "Fira Code".to_string();
+        config.terminal.font_size = 17.5;
+        config.terminal.scrollback_lines = 42;
+        config.terminal.default_shell = Some("/bin/zsh".to_string());
+        config.general.sidebar_width = 333.0;
+        config.general.auto_connect_on_startup = true;
+        config.general.ui_font_family = "Inter".to_string();
+
+        config.save_to(&path).expect("save_to");
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+
+        assert_eq!(loaded.theme, ThemePreference::Light);
+        assert_eq!(loaded.terminal.font_family, "Fira Code");
+        assert_eq!(loaded.terminal.font_size, 17.5);
+        assert_eq!(loaded.terminal.scrollback_lines, 42);
+        assert_eq!(loaded.terminal.default_shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(loaded.general.sidebar_width, 333.0);
+        assert!(loaded.general.auto_connect_on_startup);
+        assert_eq!(loaded.general.ui_font_family, "Inter");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn load_from_missing_creates_defaults() {
+        let path = temp_path("config.toml");
+        assert!(!path.exists());
+
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+
+        // Defaults round-tripped, and the file now exists.
+        assert_eq!(loaded.theme, ThemePreference::Dark);
+        assert_eq!(loaded.terminal.font_family, "JetBrains Mono");
+        assert!(path.exists(), "load_from should create the file");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn load_from_corrupt_returns_err() {
+        let path = temp_path("config.toml");
+        std::fs::write(&path, b"\xff\xfe not = valid = toml ][[[").expect("seed garbage");
+
+        let result = AppConfig::load_from(&path);
+        assert!(result.is_err(), "corrupt config should error, not panic");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
