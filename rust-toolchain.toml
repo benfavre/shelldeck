@@ -1,3 +1,7 @@
 [toolchain]
-channel = "nightly"
+# Pinned: a floating `nightly` broke the macOS build — a post-March 2026 nightly
+# removed the `simd_fmin`/`simd_fmax` intrinsics that `pathfinder_simd` (the
+# macOS font path) relies on. This is the nightly that built v0.2.5 cleanly on
+# all platforms. Bump deliberately and verify the release build before changing.
+channel = "nightly-2026-03-06"
 components = ["rustfmt", "clippy", "rust-src"]
