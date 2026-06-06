@@ -1,6 +1,7 @@
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
+use shelldeck_core::config::app_config::ThemePreference;
 
 use crate::theme::ShellDeckColors;
 
@@ -12,6 +13,14 @@ actions!(shelldeck, [ToggleCommandPalette]);
 #[action(namespace = shelldeck, no_json)]
 pub struct ApplyTerminalTheme {
     pub name: String,
+}
+
+/// Apply an application (UI) theme. Used by the command palette's theme entries
+/// so they can be previewed live as the selection moves and committed on enter.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = shelldeck, no_json)]
+pub struct ApplyAppTheme {
+    pub pref: ThemePreference,
 }
 
 /// A registered action with a display name and shortcut hint.
@@ -45,6 +54,9 @@ impl PaletteAction {
 /// Events emitted by the command palette.
 pub enum CommandPaletteEvent {
     ActionSelected(Box<dyn Action>),
+    /// The highlighted entry changed; carries the now-selected action so the
+    /// workspace can live-preview it (e.g. app themes) before it is committed.
+    SelectionPreviewed(Box<dyn Action>),
     Dismissed,
 }
 
@@ -52,6 +64,7 @@ impl std::fmt::Debug for CommandPaletteEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ActionSelected(_) => write!(f, "ActionSelected(...)"),
+            Self::SelectionPreviewed(_) => write!(f, "SelectionPreviewed(...)"),
             Self::Dismissed => write!(f, "Dismissed"),
         }
     }
@@ -138,6 +151,16 @@ impl CommandPalette {
             .and_then(|&i| self.actions.get(i))
     }
 
+    /// Emit a preview event for the currently-highlighted action so the
+    /// workspace can apply a live, uncommitted preview (used for app themes).
+    fn emit_selection_preview(&self, cx: &mut Context<Self>) {
+        if let Some(action) = self.selected_action() {
+            cx.emit(CommandPaletteEvent::SelectionPreviewed(
+                action.action.boxed_clone(),
+            ));
+        }
+    }
+
     /// Confirm the currently selected action.
     fn confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(action) = self.selected_action() {
@@ -163,15 +186,18 @@ impl CommandPalette {
             }
             "up" => {
                 self.select_prev();
+                self.emit_selection_preview(cx);
                 cx.notify();
             }
             "down" => {
                 self.select_next();
+                self.emit_selection_preview(cx);
                 cx.notify();
             }
             "backspace" => {
                 self.query.pop();
                 self.update_filter();
+                self.emit_selection_preview(cx);
                 cx.notify();
             }
             _ => {
@@ -179,6 +205,7 @@ impl CommandPalette {
                     if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
                         self.query.push_str(kc);
                         self.update_filter();
+                        self.emit_selection_preview(cx);
                         cx.notify();
                     }
                 } else if key.len() == 1
@@ -187,6 +214,7 @@ impl CommandPalette {
                 {
                     self.query.push_str(key);
                     self.update_filter();
+                    self.emit_selection_preview(cx);
                     cx.notify();
                 }
             }
@@ -258,6 +286,15 @@ impl Render for CommandPalette {
             }
 
             item = item.hover(|el| el.bg(ShellDeckColors::hover_bg()));
+
+            // Hovering an entry highlights it and previews it live.
+            item = item.on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                if *hovered && this.selected_index != fi {
+                    this.selected_index = fi;
+                    this.emit_selection_preview(cx);
+                    cx.notify();
+                }
+            }));
 
             let name = action.name.clone();
             let action_clone = action.action.boxed_clone();

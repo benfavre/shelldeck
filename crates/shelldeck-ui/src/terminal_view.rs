@@ -596,11 +596,16 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 // ---------------------------------------------------------------------------
 
 /// Height of the workspace titlebar in pixels (rendered outside terminal view).
-const TITLEBAR_HEIGHT: f32 = 38.0;
-/// Height of the terminal tab bar in pixels.
+/// Absolute — the workspace titlebar does not scale with the UI size.
+const TITLEBAR_HEIGHT: f32 = 40.0;
+/// Base height of the terminal tab bar in pixels (before UI scaling).
 const TAB_BAR_HEIGHT: f32 = 38.0;
-/// Height of the toolbar row below the tab bar.
+/// Base height of the toolbar row below the tab bar (before UI scaling).
 const TOOLBAR_HEIGHT: f32 = 32.0;
+/// Minimum / maximum per-tab width (before UI scaling). Tabs shrink toward the
+/// minimum as more are opened, then the tab strip scrolls.
+const MIN_TAB_WIDTH: f32 = 104.0;
+const MAX_TAB_WIDTH: f32 = 220.0;
 /// Height of the status bar at the bottom of the window.
 const STATUS_BAR_HEIGHT: f32 = 28.0;
 /// Width of the sidebar resize handle.
@@ -639,15 +644,296 @@ pub enum SplitDirection {
     Vertical,
 }
 
-/// Tracks an active split-pane view.
-/// The secondary session lives here, separate from the tab list.
-struct SplitViewState {
+/// Identifies one leaf pane within a tab's layout tree. `Primary` is the tab's
+/// session stored in `pane.sessions[active_index]`; `Extra(id)` is a split
+/// session stored in [`TabLayout::extra`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PaneId {
+    Primary,
+    Extra(Uuid),
+}
+
+/// A node in a tab's recursive pane layout. Leaves reference one session; an
+/// internal `Split` divides its area between two children at `ratio`.
+enum PaneNode {
+    Leaf(PaneId),
+    Split {
+        direction: SplitDirection,
+        /// Fraction of the parent given to child `a` (left/top). `b` gets the rest.
+        ratio: f32,
+        a: Box<PaneNode>,
+        b: Box<PaneNode>,
+    },
+}
+
+/// A rectangle in absolute window pixels.
+#[derive(Debug, Clone, Copy)]
+struct PaneRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+/// A divider between two children, with the tree path needed to adjust its
+/// ratio during a drag.
+struct DividerRect {
+    rect: PaneRect,
     direction: SplitDirection,
-    /// The secondary terminal session (not in tabs).
-    secondary_session: TerminalSession,
-    /// Whether the secondary pane currently has keyboard focus.
-    focus_secondary: bool,
-    ratio: f32,
+    path: Vec<bool>, // route from the root to the owning Split (false=a, true=b)
+}
+
+/// The full pane layout for one tab: the tree, which leaf has focus, and the
+/// extra (non-primary) sessions keyed by id.
+struct TabLayout {
+    tree: PaneNode,
+    focused: PaneId,
+    extra: HashMap<Uuid, TerminalSession>,
+}
+
+impl TabLayout {
+    /// A fresh layout with a single (primary) pane and no splits.
+    fn single() -> Self {
+        Self {
+            tree: PaneNode::Leaf(PaneId::Primary),
+            focused: PaneId::Primary,
+            extra: HashMap::new(),
+        }
+    }
+
+    /// Whether this tab is currently split into more than one pane.
+    fn is_split(&self) -> bool {
+        matches!(self.tree, PaneNode::Split { .. })
+    }
+
+    /// All leaf ids in left-to-right / top-to-bottom order.
+    fn leaves(&self) -> Vec<PaneId> {
+        fn walk(node: &PaneNode, out: &mut Vec<PaneId>) {
+            match node {
+                PaneNode::Leaf(id) => out.push(*id),
+                PaneNode::Split { a, b, .. } => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.tree, &mut out);
+        out
+    }
+
+    /// Replace the leaf `target` with a split of `[target, Extra(new_id)]`.
+    fn split_leaf(&mut self, target: PaneId, direction: SplitDirection, new_id: Uuid) {
+        fn walk(node: &mut PaneNode, target: PaneId, direction: SplitDirection, new_id: Uuid) {
+            match node {
+                PaneNode::Leaf(id) if *id == target => {
+                    let old = PaneNode::Leaf(*id);
+                    *node = PaneNode::Split {
+                        direction,
+                        ratio: 0.5,
+                        a: Box::new(old),
+                        b: Box::new(PaneNode::Leaf(PaneId::Extra(new_id))),
+                    };
+                }
+                PaneNode::Leaf(_) => {}
+                PaneNode::Split { a, b, .. } => {
+                    walk(a, target, direction, new_id);
+                    walk(b, target, direction, new_id);
+                }
+            }
+        }
+        walk(&mut self.tree, target, direction, new_id);
+    }
+
+    /// Remove the leaf `target`, collapsing its parent into the sibling.
+    /// Returns false if `target` is the only pane (caller closes the tab).
+    fn remove_leaf(&mut self, target: PaneId) -> bool {
+        // Recursively rebuild: if a Split has a child that *is* the target leaf,
+        // replace the whole Split with the other child.
+        fn rebuild(node: PaneNode, target: PaneId) -> PaneNode {
+            match node {
+                PaneNode::Leaf(id) => PaneNode::Leaf(id),
+                PaneNode::Split {
+                    direction,
+                    ratio,
+                    a,
+                    b,
+                } => {
+                    if matches!(*a, PaneNode::Leaf(id) if id == target) {
+                        return rebuild(*b, target);
+                    }
+                    if matches!(*b, PaneNode::Leaf(id) if id == target) {
+                        return rebuild(*a, target);
+                    }
+                    PaneNode::Split {
+                        direction,
+                        ratio,
+                        a: Box::new(rebuild(*a, target)),
+                        b: Box::new(rebuild(*b, target)),
+                    }
+                }
+            }
+        }
+        if matches!(self.tree, PaneNode::Leaf(id) if id == target) {
+            return false;
+        }
+        let tree = std::mem::replace(&mut self.tree, PaneNode::Leaf(PaneId::Primary));
+        self.tree = rebuild(tree, target);
+        true
+    }
+
+    /// Set the ratio of the Split located at `path` (clamped).
+    fn set_ratio_at(&mut self, path: &[bool], ratio: f32) {
+        let mut node = &mut self.tree;
+        for &go_b in path {
+            match node {
+                PaneNode::Split { a, b, .. } => {
+                    node = if go_b { b } else { a };
+                }
+                PaneNode::Leaf(_) => return,
+            }
+        }
+        if let PaneNode::Split { ratio: r, .. } = node {
+            *r = ratio.clamp(0.15, 0.85);
+        }
+    }
+
+    /// The rect of the Split node located at `path` within `area`.
+    fn node_rect(&self, path: &[bool], area: PaneRect, divider: f32) -> Option<PaneRect> {
+        let mut node = &self.tree;
+        let mut rect = area;
+        for &go_b in path {
+            match node {
+                PaneNode::Split {
+                    direction,
+                    ratio,
+                    a,
+                    b,
+                } => match direction {
+                    SplitDirection::Horizontal => {
+                        let aw = ((rect.w - divider) * *ratio).max(0.0);
+                        if go_b {
+                            rect = PaneRect {
+                                x: rect.x + aw + divider,
+                                w: (rect.w - divider - aw).max(0.0),
+                                ..rect
+                            };
+                            node = b;
+                        } else {
+                            rect = PaneRect { w: aw, ..rect };
+                            node = a;
+                        }
+                    }
+                    SplitDirection::Vertical => {
+                        let ah = ((rect.h - divider) * *ratio).max(0.0);
+                        if go_b {
+                            rect = PaneRect {
+                                y: rect.y + ah + divider,
+                                h: (rect.h - divider - ah).max(0.0),
+                                ..rect
+                            };
+                            node = b;
+                        } else {
+                            rect = PaneRect { h: ah, ..rect };
+                            node = a;
+                        }
+                    }
+                },
+                PaneNode::Leaf(_) => return None,
+            }
+        }
+        matches!(node, PaneNode::Split { .. }).then_some(rect)
+    }
+
+    /// Compute the absolute rect of every leaf and every divider for `area`.
+    fn compute(
+        &self,
+        area: PaneRect,
+        divider: f32,
+    ) -> (Vec<(PaneId, PaneRect)>, Vec<DividerRect>) {
+        fn walk(
+            node: &PaneNode,
+            rect: PaneRect,
+            divider: f32,
+            path: &mut Vec<bool>,
+            leaves: &mut Vec<(PaneId, PaneRect)>,
+            dividers: &mut Vec<DividerRect>,
+        ) {
+            match node {
+                PaneNode::Leaf(id) => leaves.push((*id, rect)),
+                PaneNode::Split {
+                    direction,
+                    ratio,
+                    a,
+                    b,
+                } => match direction {
+                    SplitDirection::Horizontal => {
+                        let aw = ((rect.w - divider) * *ratio).max(0.0);
+                        let bw = (rect.w - divider - aw).max(0.0);
+                        let a_rect = PaneRect {
+                            w: aw,
+                            ..rect
+                        };
+                        let div_rect = PaneRect {
+                            x: rect.x + aw,
+                            w: divider,
+                            ..rect
+                        };
+                        let b_rect = PaneRect {
+                            x: rect.x + aw + divider,
+                            w: bw,
+                            ..rect
+                        };
+                        dividers.push(DividerRect {
+                            rect: div_rect,
+                            direction: *direction,
+                            path: path.clone(),
+                        });
+                        path.push(false);
+                        walk(a, a_rect, divider, path, leaves, dividers);
+                        path.pop();
+                        path.push(true);
+                        walk(b, b_rect, divider, path, leaves, dividers);
+                        path.pop();
+                    }
+                    SplitDirection::Vertical => {
+                        let ah = ((rect.h - divider) * *ratio).max(0.0);
+                        let bh = (rect.h - divider - ah).max(0.0);
+                        let a_rect = PaneRect {
+                            h: ah,
+                            ..rect
+                        };
+                        let div_rect = PaneRect {
+                            y: rect.y + ah,
+                            h: divider,
+                            ..rect
+                        };
+                        let b_rect = PaneRect {
+                            y: rect.y + ah + divider,
+                            h: bh,
+                            ..rect
+                        };
+                        dividers.push(DividerRect {
+                            rect: div_rect,
+                            direction: *direction,
+                            path: path.clone(),
+                        });
+                        path.push(false);
+                        walk(a, a_rect, divider, path, leaves, dividers);
+                        path.pop();
+                        path.push(true);
+                        walk(b, b_rect, divider, path, leaves, dividers);
+                        path.pop();
+                    }
+                },
+            }
+        }
+        let mut leaves = Vec::new();
+        let mut dividers = Vec::new();
+        let mut path = Vec::new();
+        walk(&self.tree, area, divider, &mut path, &mut leaves, &mut dividers);
+        (leaves, dividers)
+    }
 }
 
 pub struct TerminalView {
@@ -690,17 +976,19 @@ pub struct TerminalView {
     context_menu: Option<ContextMenuState>,
     /// Right-click context menu state for a terminal tab.
     tab_context_menu: Option<TabMenuState>,
-    /// Active split view for the current tab (two panes displayed simultaneously).
-    split_view: Option<SplitViewState>,
-    /// Stored split views for inactive tabs, keyed by tab ID.
-    stored_splits: HashMap<Uuid, SplitViewState>,
+    /// Pane layout (tree of splits) for the *active* tab.
+    layout: TabLayout,
+    /// Stored pane layouts for inactive tabs, keyed by tab ID.
+    stored_layouts: HashMap<Uuid, TabLayout>,
     /// Dynamic pixel offsets for the active grid (set during render).
     grid_x_offset: f32,
     grid_y_offset: f32,
     /// Sidebar width in pixels (updated dynamically from workspace).
     sidebar_width: f32,
-    /// Whether the split divider is being dragged.
+    /// Whether a split divider is being dragged.
     split_dragging: bool,
+    /// The divider currently being dragged: (tree path to its split, is_horizontal).
+    active_divider: Option<(Vec<bool>, bool)>,
     /// Whether the scrollbar thumb is being dragged.
     scrollbar_dragging: bool,
     /// Active terminal color palette (set from theme).
@@ -787,12 +1075,13 @@ impl TerminalView {
             _hovered_url: None,
             context_menu: None,
             tab_context_menu: None,
-            split_view: None,
-            stored_splits: HashMap::new(),
+            layout: TabLayout::single(),
+            stored_layouts: HashMap::new(),
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
             grid_y_offset: GRID_TOP_OFFSET,
             sidebar_width: 260.0,
             split_dragging: false,
+            active_divider: None,
             scrollbar_dragging: false,
             palette: TerminalPalette::default(),
             cursor_style_override: None,
@@ -872,8 +1161,13 @@ impl TerminalView {
         for session in &self.pane.sessions {
             session.grid.lock().set_max_scrollback(lines);
         }
-        if let Some(split) = &self.split_view {
-            split.secondary_session.grid.lock().set_max_scrollback(lines);
+        for session in self.layout.extra.values() {
+            session.grid.lock().set_max_scrollback(lines);
+        }
+        for layout in self.stored_layouts.values() {
+            for session in layout.extra.values() {
+                session.grid.lock().set_max_scrollback(lines);
+            }
         }
     }
 
@@ -964,12 +1258,11 @@ impl TerminalView {
             .lock()
             .set_max_scrollback(self.configured_scrollback);
 
-        // Save the current tab's split before switching away
+        // Save the current tab's pane layout before switching away
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
-            if let Some(split) = self.split_view.take() {
-                self.stored_splits.insert(current_id, split);
-            }
+            let layout = std::mem::replace(&mut self.layout, TabLayout::single());
+            self.stored_layouts.insert(current_id, layout);
         }
 
         let tab = TerminalTab {
@@ -996,12 +1289,12 @@ impl TerminalView {
 
     pub fn close_tab(&mut self, id: Uuid) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
-            // Clear the tab's split — either from active split_view or stored_splits
+            // Drop the tab's entire pane layout (all its split sessions).
             let was_active = pos == self.pane.active_index;
             if was_active {
-                self.split_view = None;
+                self.layout = TabLayout::single();
             } else {
-                self.stored_splits.remove(&id);
+                self.stored_layouts.remove(&id);
             }
 
             self.tabs.remove(pos);
@@ -1012,10 +1305,10 @@ impl TerminalView {
                 self.pane.active_index = self.pane.sessions.len() - 1;
             }
 
-            // Restore the new active tab's split if it had one
+            // Restore the new active tab's layout if it had one stored.
             if was_active && !self.pane.sessions.is_empty() {
                 if let Some(tab) = self.tabs.get(self.pane.active_index) {
-                    self.split_view = self.stored_splits.remove(&tab.id);
+                    self.layout = self.stored_layouts.remove(&tab.id).unwrap_or_else(TabLayout::single);
                 }
             }
 
@@ -1025,8 +1318,8 @@ impl TerminalView {
 
             // Stop the refresh task when all sessions are closed (drop cancels the task)
             if self.pane.sessions.is_empty() {
-                self.split_view = None;
-                self.stored_splits.clear();
+                self.layout = TabLayout::single();
+                self.stored_layouts.clear();
                 self._refresh_task = None;
             }
         }
@@ -1093,13 +1386,12 @@ impl TerminalView {
     }
 
     pub fn select_tab(&mut self, id: Uuid) {
-        // Save the current tab's split (if any) before switching
+        // Save the current tab's pane layout before switching away.
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
             let current_id = current_tab.id;
             if current_id != id {
-                if let Some(split) = self.split_view.take() {
-                    self.stored_splits.insert(current_id, split);
-                }
+                let layout = std::mem::replace(&mut self.layout, TabLayout::single());
+                self.stored_layouts.insert(current_id, layout);
             }
         }
 
@@ -1110,25 +1402,40 @@ impl TerminalView {
             }
         }
 
-        // Restore the new tab's split (if it had one)
-        if self.split_view.is_none() {
-            self.split_view = self.stored_splits.remove(&id);
-        }
+        // Restore the new tab's layout (or a fresh single pane), focusing primary.
+        self.layout = self.stored_layouts.remove(&id).unwrap_or_else(TabLayout::single);
+        self.layout.focused = PaneId::Primary;
 
-        // Reset split focus to primary pane when switching tabs
-        if let Some(ref mut split) = self.split_view {
-            split.focus_secondary = false;
-        }
-
-        // Reset secondary dimensions so resize_if_needed picks up the new split
+        // Reset secondary dimensions so resize_if_needed picks up the new layout.
         self.last_secondary_rows = 0;
         self.last_secondary_cols = 0;
     }
 
-    /// Toggle focus between the primary (tab) and secondary (split) pane.
+    /// Cycle keyboard focus to the next pane in the active tab's layout.
     pub fn toggle_split_focus(&mut self) {
-        if let Some(ref mut split) = self.split_view {
-            split.focus_secondary = !split.focus_secondary;
+        let leaves = self.layout.leaves();
+        if leaves.len() <= 1 {
+            return;
+        }
+        let cur = leaves
+            .iter()
+            .position(|&p| p == self.layout.focused)
+            .unwrap_or(0);
+        self.layout.focused = leaves[(cur + 1) % leaves.len()];
+    }
+
+    /// Move focus to a specific pane (used by click-to-focus on a passive pane).
+    fn focus_pane(&mut self, id: PaneId) {
+        if self.layout.leaves().contains(&id) {
+            self.layout.focused = id;
+        }
+    }
+
+    /// Look up the session backing a pane id within the active tab.
+    fn session_for(&self, id: PaneId) -> Option<&TerminalSession> {
+        match id {
+            PaneId::Primary => self.pane.sessions.get(self.pane.active_index),
+            PaneId::Extra(uuid) => self.layout.extra.get(&uuid),
         }
     }
 
@@ -1157,20 +1464,14 @@ impl TerminalView {
     }
 
     pub fn active_session(&self) -> Option<&TerminalSession> {
-        // If split is active and focus is on the secondary pane, return that session
-        if let Some(ref split) = self.split_view {
-            if split.focus_secondary {
-                return Some(&split.secondary_session);
-            }
-        }
-        self.pane.sessions.get(self.pane.active_index)
+        self.session_for(self.layout.focused)
     }
 
     /// Close all terminal sessions for graceful shutdown.
     pub fn close_all_sessions(&mut self) {
         tracing::info!("Closing {} terminal sessions", self.pane.sessions.len());
-        self.split_view = None;
-        self.stored_splits.clear();
+        self.layout = TabLayout::single();
+        self.stored_layouts.clear();
         self.tabs.clear();
         self.pane.sessions.clear();
         self.pane.active_index = 0;
@@ -1390,97 +1691,64 @@ impl TerminalView {
     }
 
     /// Compute terminal grid dimensions (rows, cols) from the window viewport.
-    fn compute_grid_size(&self, window: &Window) -> (u16, u16) {
-        let viewport = window.viewport_size();
+    /// Current UI scale factor, derived from the window rem size set by the
+    /// workspace from the "App Font Size" setting. 1.0 at the default size.
+    fn ui_scale(window: &Window) -> f32 {
+        (window.rem_size().to_f64() as f32 / crate::scale::REM_BASE).clamp(0.6, 2.0)
+    }
+
+    /// Combined tab-bar + toolbar height in absolute pixels at the current UI
+    /// scale. This is the terminal grid's top offset within the content area.
+    fn chrome_top_offset(window: &Window) -> f32 {
+        (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) * Self::ui_scale(window)
+    }
+
+    /// Terminal cell size in pixels (width, height) at the effective font size.
+    fn cell_size(&self) -> (f32, f32) {
         let fs = self.effective_font_size();
-        let cell_width = fs * 0.6;
-        let cell_height = fs * 1.4;
+        (fs * 0.6, fs * 1.4)
+    }
 
-        let sidebar_px = px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH * 2.0);
-        let mut available_width = (viewport.width - sidebar_px).max(px(cell_width * 10.0));
-        let mut available_height = (viewport.height
-            - px(TITLEBAR_HEIGHT)
-            - px(TAB_BAR_HEIGHT)
-            - px(TOOLBAR_HEIGHT)
-            - px(STATUS_BAR_HEIGHT))
-        .max(px(cell_height * 2.0));
+    /// The full terminal content rectangle (in the grid offset convention:
+    /// x = right of the sidebar, y = below the scaled tab bar + toolbar).
+    fn content_area(&self, window: &Window) -> PaneRect {
+        let viewport = window.viewport_size();
+        let x = self.sidebar_width + SIDEBAR_HANDLE_WIDTH;
+        let y = Self::chrome_top_offset(window);
+        let w = (viewport.width.to_f64() as f32 - self.sidebar_width - SIDEBAR_HANDLE_WIDTH * 2.0)
+            .max(1.0);
+        let h = (viewport.height.to_f64() as f32
+            - TITLEBAR_HEIGHT
+            - Self::chrome_top_offset(window)
+            - STATUS_BAR_HEIGHT)
+            .max(1.0);
+        PaneRect { x, y, w, h }
+    }
 
-        // Account for split panes
-        if let Some(ref split) = self.split_view {
-            let divider = px(SPLIT_DIVIDER_SIZE);
-            match split.direction {
-                SplitDirection::Horizontal => {
-                    available_width =
-                        ((available_width - divider) * split.ratio).max(px(cell_width * 10.0));
-                }
-                SplitDirection::Vertical => {
-                    available_height =
-                        ((available_height - divider) * split.ratio).max(px(cell_height * 2.0));
-                }
-            }
-        }
-
-        let cols = (available_width / px(cell_width)).floor() as u16;
-        let rows = (available_height / px(cell_height)).floor() as u16;
-
+    /// Convert a pixel rect into grid (rows, cols).
+    fn rect_to_grid(&self, rect: PaneRect) -> (u16, u16) {
+        let (cw, ch) = self.cell_size();
+        let cols = (rect.w / cw).floor() as u16;
+        let rows = (rect.h / ch).floor() as u16;
         (rows.max(2), cols.max(10))
     }
 
-    /// Compute grid dimensions for the secondary split pane using `(1.0 - ratio)`.
-    fn compute_secondary_grid_size(&self, window: &Window) -> (u16, u16) {
-        let viewport = window.viewport_size();
-        let fs = self.effective_font_size();
-        let cell_width = fs * 0.6;
-        let cell_height = fs * 1.4;
-
-        let sidebar_px = px(self.sidebar_width + SIDEBAR_HANDLE_WIDTH * 2.0);
-        let mut available_width = (viewport.width - sidebar_px).max(px(cell_width * 10.0));
-        let mut available_height = (viewport.height
-            - px(TITLEBAR_HEIGHT)
-            - px(TAB_BAR_HEIGHT)
-            - px(TOOLBAR_HEIGHT)
-            - px(STATUS_BAR_HEIGHT))
-        .max(px(cell_height * 2.0));
-
-        if let Some(ref split) = self.split_view {
-            let divider = px(SPLIT_DIVIDER_SIZE);
-            match split.direction {
-                SplitDirection::Horizontal => {
-                    available_width = ((available_width - divider) * (1.0 - split.ratio))
-                        .max(px(cell_width * 10.0));
-                }
-                SplitDirection::Vertical => {
-                    available_height = ((available_height - divider) * (1.0 - split.ratio))
-                        .max(px(cell_height * 2.0));
-                }
-            }
-        }
-
-        let cols = (available_width / px(cell_width)).floor() as u16;
-        let rows = (available_height / px(cell_height)).floor() as u16;
-
-        (rows.max(2), cols.max(10))
-    }
-
-    /// Check if the viewport size changed and resize all sessions if needed.
+    /// Recompute every pane's grid size and resize its session to match.
     fn resize_if_needed(&mut self, window: &Window) {
-        let (rows, cols) = self.compute_grid_size(window);
-        if rows != self.last_grid_rows || cols != self.last_grid_cols {
+        let area = self.content_area(window);
+        let (leaves, _) = self.layout.compute(area, SPLIT_DIVIDER_SIZE);
+
+        // Track the focused pane's size for spawn defaults / `grid_size()`.
+        if let Some((_, rect)) = leaves.iter().find(|(id, _)| *id == self.layout.focused) {
+            let (rows, cols) = self.rect_to_grid(*rect);
             self.last_grid_rows = rows;
             self.last_grid_cols = cols;
-            for session in &self.pane.sessions {
-                session.resize(rows, cols);
-            }
         }
-        // Resize the split's secondary session with its own dimensions
-        if self.split_view.is_some() {
-            let (sec_rows, sec_cols) = self.compute_secondary_grid_size(window);
-            if sec_rows != self.last_secondary_rows || sec_cols != self.last_secondary_cols {
-                self.last_secondary_rows = sec_rows;
-                self.last_secondary_cols = sec_cols;
-                if let Some(ref split) = self.split_view {
-                    split.secondary_session.resize(sec_rows, sec_cols);
-                }
+
+        for (id, rect) in leaves {
+            let (rows, cols) = self.rect_to_grid(rect);
+            if let Some(session) = self.session_for(id) {
+                session.resize(rows, cols);
             }
         }
     }
@@ -1548,8 +1816,9 @@ impl TerminalView {
                                     any_sync = true;
                                 }
                             }
-                            if let Some(ref split) = this.split_view {
-                                let g = split.secondary_session.grid.lock();
+                            // Extra (split) panes of the active tab.
+                            for session in this.layout.extra.values() {
+                                let g = session.grid.lock();
                                 if g.dirty {
                                     any_dirty = true;
                                 }
@@ -1557,13 +1826,15 @@ impl TerminalView {
                                     any_sync = true;
                                 }
                             }
-                            // Also clear dirty flags on stored (background) splits so
-                            // they don't accumulate stale dirty state, but don't trigger
-                            // a repaint just for background splits.
-                            for split in this.stored_splits.values() {
-                                split.secondary_session.grid.lock().dirty = false;
+                            // Clear dirty flags on stored (background) tabs' split
+                            // sessions so they don't accumulate stale state, without
+                            // triggering a repaint for background tabs.
+                            for layout in this.stored_layouts.values() {
+                                for session in layout.extra.values() {
+                                    session.grid.lock().dirty = false;
+                                }
                             }
-                            // Handle OSC 52 clipboard requests from any session.
+                            // Handle OSC 52 clipboard requests from any visible session.
                             for session in this.pane.sessions.iter() {
                                 if let Some((_sel, text)) =
                                     session.grid.lock().clipboard_request.take()
@@ -1571,9 +1842,9 @@ impl TerminalView {
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }
                             }
-                            if let Some(ref split) = this.split_view {
+                            for session in this.layout.extra.values() {
                                 if let Some((_sel, text)) =
-                                    split.secondary_session.grid.lock().clipboard_request.take()
+                                    session.grid.lock().clipboard_request.take()
                                 {
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }
@@ -1605,17 +1876,32 @@ impl TerminalView {
         }
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Everything in the tab bar scales with the UI size. We render in
+        // absolute pixels multiplied by `scale` (rather than rems) so the
+        // grid-offset math, which is also absolute, stays perfectly in step.
+        let scale = Self::ui_scale(window);
+        let s = |v: f32| px(v * scale);
+
+        // Compute a per-tab width that shrinks toward MIN_TAB_WIDTH as more tabs
+        // open; once at the minimum, the strip scrolls (overflow_x_scroll).
+        let n = self.tabs.len().max(1) as f32;
+        let content_w = (window.viewport_size().width.to_f64() as f32)
+            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let reserve = 44.0 * scale; // new-tab button + bar padding
+        let usable = (content_w - reserve).max(MIN_TAB_WIDTH * scale);
+        let tab_w = (usable / n).clamp(MIN_TAB_WIDTH * scale, MAX_TAB_WIDTH * scale);
+
         let mut tab_bar = div()
             .flex()
             .items_center()
             .w_full()
-            .h(px(38.0))
+            .h(s(TAB_BAR_HEIGHT))
             .bg(ShellDeckColors::bg_sidebar())
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            .px(px(4.0))
-            .gap(px(1.0))
+            .px(s(4.0))
+            .gap(s(1.0))
             .id("terminal-tab-bar")
             .overflow_x_scroll();
 
@@ -1629,14 +1915,17 @@ impl TerminalView {
                 SessionState::Error(_) => ShellDeckColors::error(),
             };
 
-            // Tab outer container — visual styling only, no click handler
+            // Tab outer container — fixed (computed) width so tabs shrink as
+            // more open, then the strip scrolls. Visual styling only.
             let group_name = SharedString::from(format!("tab-group-{}", tab_id));
             let mut tab_el = div()
                 .group(group_name.clone())
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .rounded_t(px(6.0));
+                .w(px(tab_w))
+                .h(s(TAB_BAR_HEIGHT - 6.0))
+                .rounded_t(s(6.0));
 
             if is_active {
                 tab_el = tab_el
@@ -1648,10 +1937,10 @@ impl TerminalView {
             } else {
                 tab_el = tab_el
                     .text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()).rounded_t(px(6.0)));
+                    .hover(|el| el.bg(ShellDeckColors::hover_bg()).rounded_t(s(6.0)));
             }
 
-            // Truncate long titles in Rust (GPUI text truncation unreliable)
+            // Coarse char cap; the flex layout + overflow clip handles the rest.
             let max_chars = 28;
             let display_title = if tab.title.chars().count() > max_chars {
                 let truncated: String = tab.title.chars().take(max_chars).collect();
@@ -1660,17 +1949,21 @@ impl TerminalView {
                 tab.title.clone()
             };
 
-            // Clickable content area (dot + title) — selects the tab
+            // Clickable content area (dot + title) — selects the tab. Grows to
+            // fill the tab and clips its title when the tab is narrow.
             let mut tab_content = div()
                 .id(ElementId::from(SharedString::from(format!(
                     "tab-{}",
                     tab_id
                 ))))
                 .flex()
+                .flex_1()
+                .min_w(px(0.0))
                 .items_center()
-                .gap(px(6.0))
-                .px(px(10.0))
-                .py(px(5.0))
+                .gap(s(6.0))
+                .px(s(10.0))
+                .py(s(5.0))
+                .overflow_hidden()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                     this.select_tab(tab_id);
@@ -1691,8 +1984,8 @@ impl TerminalView {
                 // Status dot
                 .child(
                     div()
-                        .w(px(6.0))
-                        .h(px(6.0))
+                        .w(s(6.0))
+                        .h(s(6.0))
                         .rounded_full()
                         .bg(state_color)
                         .flex_shrink_0(),
@@ -1700,44 +1993,51 @@ impl TerminalView {
 
             // Split indicator — small icon next to the tab's status dot
             let tab_has_split = if is_active {
-                self.split_view.is_some()
+                self.layout.is_split()
             } else {
-                self.stored_splits.contains_key(&tab_id)
+                self.stored_layouts
+                    .get(&tab_id)
+                    .map(|l| l.is_split())
+                    .unwrap_or(false)
             };
             if tab_has_split {
                 tab_content = tab_content.child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(s(10.0))
                         .text_color(ShellDeckColors::primary())
                         .flex_shrink_0()
                         .child("\u{2ABF}"), // ⫿ vertical line with horizontal stroke
                 );
             }
 
-            // Title
+            // Title — grows, clips when narrow.
             let tab_content = tab_content.child(
                 div()
-                    .text_size(px(12.0))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_size(s(12.0))
                     .whitespace_nowrap()
                     .child(display_title),
             );
 
             tab_el = tab_el.child(tab_content);
 
-            // Close button — separate from content, no click overlap
+            // Close button — fixed, never shrinks away.
             let close_btn = div()
                 .id(ElementId::from(SharedString::from(format!(
                     "close-tab-{}",
                     tab_id
                 ))))
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .w(px(16.0))
-                .h(px(16.0))
-                .mr(px(4.0))
-                .rounded(px(4.0))
-                .text_size(px(10.0))
+                .w(s(16.0))
+                .h(s(16.0))
+                .mr(s(4.0))
+                .rounded(s(4.0))
+                .text_size(s(10.0))
                 .text_color(ShellDeckColors::text_muted())
                 .cursor_pointer()
                 .hover(|el| {
@@ -1767,19 +2067,20 @@ impl TerminalView {
             tab_bar = tab_bar.child(tab_el);
         }
 
-        // New tab button
+        // New tab button — fixed, stays visible past the scrolling strip.
         tab_bar = tab_bar.child(
             div()
                 .id("new-tab-btn")
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .w(px(28.0))
-                .h(px(28.0))
-                .ml(px(4.0))
+                .w(s(28.0))
+                .h(s(28.0))
+                .ml(s(4.0))
                 .cursor_pointer()
-                .rounded(px(6.0))
-                .text_size(px(14.0))
+                .rounded(s(6.0))
+                .text_size(s(14.0))
                 .text_color(ShellDeckColors::text_muted())
                 .hover(|el| {
                     el.bg(ShellDeckColors::hover_bg())
@@ -1798,7 +2099,13 @@ impl TerminalView {
     }
 
     /// Render the toolbar with action buttons between tab bar and terminal grid.
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Scale the whole toolbar with the UI size: shadow `px` with a
+        // scale-multiplying version so every dimension below tracks the setting.
+        // The toolbar has no mouse-coordinate math, so this is safe.
+        let scale = Self::ui_scale(window);
+        let px = |v: f32| gpui::px(v * scale);
+
         let zoom = self
             .tabs
             .get(self.pane.active_index)
@@ -1951,7 +2258,7 @@ impl TerminalView {
         );
 
         // Middle group: split
-        if self.split_view.is_some() {
+        if self.layout.is_split() {
             toolbar = toolbar
                 .child(
                     toolbar_btn("tb-rotate-split", "Rotate", "").on_click(cx.listener(
@@ -2918,6 +3225,7 @@ impl TerminalView {
                 self.palette.clone(),
                 self.has_focus,
                 self.cursor_blink_on,
+                Some(cx.entity().downgrade()),
             ));
 
         grid_el
@@ -2937,9 +3245,25 @@ impl TerminalView {
         palette: TerminalPalette,
         has_focus: bool,
         cursor_blink_on: bool,
+        capture: Option<WeakEntity<Self>>,
     ) -> impl IntoElement {
         canvas(
-            move |_bounds, _window, _cx| {
+            move |bounds, _window, cx| {
+                // The focused grid records its real painted origin so mouse-to-cell
+                // mapping uses the exact pixel position of cell (0,0) — correct at
+                // any UI scale, zoom, or chrome layout, with no analytical guessing.
+                if let Some(weak) = &capture {
+                    if let Some(view) = weak.upgrade() {
+                        let origin = (
+                            bounds.origin.x.to_f64() as f32,
+                            bounds.origin.y.to_f64() as f32,
+                        );
+                        view.update(cx, |this, _| {
+                            this.grid_x_offset = origin.0;
+                            this.grid_y_offset = origin.1;
+                        });
+                    }
+                }
                 (
                     cache,
                     grid,
@@ -3791,6 +4115,7 @@ impl TerminalView {
     fn render_tab_context_menu(
         &self,
         state: &TabMenuState,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let tab_id = state.tab_id;
@@ -3835,7 +4160,7 @@ impl TerminalView {
             .id("tab-context-menu")
             .absolute()
             .left(left)
-            .top(px(TAB_BAR_HEIGHT))
+            .top(px(TAB_BAR_HEIGHT * Self::ui_scale(window)))
             .min_w(px(190.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -3938,6 +4263,7 @@ impl TerminalView {
     /// Clicking anywhere on it toggles focus to this pane.
     fn render_split_passive_grid(
         &self,
+        focus_target: PaneId,
         grid_arc: Arc<parking_lot::Mutex<TerminalGrid>>,
         cache: Arc<GlyphCache>,
         cx: &mut Context<Self>,
@@ -3947,9 +4273,10 @@ impl TerminalView {
         let focus = self.focus_handle.clone();
 
         let focus2 = self.focus_handle.clone();
+        let target_id = ElementId::from(SharedString::from(format!("passive-{focus_target:?}")));
 
         div()
-            .id("terminal-grid-passive")
+            .id(target_id)
             .relative()
             .size_full()
             .bg(self.palette.background_color())
@@ -3959,7 +4286,7 @@ impl TerminalView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                    this.toggle_split_focus();
+                    this.focus_pane(focus_target);
                     this.needs_focus = true;
                     focus.focus(window);
                     cx.notify();
@@ -3968,7 +4295,7 @@ impl TerminalView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.toggle_split_focus();
+                    this.focus_pane(focus_target);
                     this.needs_focus = true;
                     focus2.focus(window);
                     this.context_menu = Some(ContextMenuState {
@@ -3988,6 +4315,7 @@ impl TerminalView {
                 self.palette.clone(),
                 false, // passive grid is never focused
                 true,  // cursor always visible (no blink) in passive pane
+                None,  // passive panes never drive the click offset
             ))
     }
 
@@ -4040,19 +4368,14 @@ impl TerminalView {
             return;
         }
 
-        // Don't allow nested splits for now
-        if self.split_view.is_some() {
-            return;
-        }
-
-        // Check if the current tab is an SSH connection
+        // SSH tabs ask the workspace to open another session for the connection;
+        // it then calls `set_split_session` to install it as a new pane.
         let connection_id = self
             .tabs
             .get(self.pane.active_index)
             .and_then(|t| t.connection_id);
 
         if let Some(conn_id) = connection_id {
-            // Emit event so the workspace can open an SSH session for the split
             cx.emit(TerminalEvent::SplitRequested {
                 connection_id: conn_id,
                 direction,
@@ -4060,11 +4383,11 @@ impl TerminalView {
             return;
         }
 
-        // Local terminal: spawn directly
+        // Local terminal: spawn directly.
         self.spawn_local_split(direction, cx);
     }
 
-    /// Spawn a local terminal as the split secondary pane.
+    /// Spawn a local terminal and add it as a new pane splitting the focused one.
     fn spawn_local_split(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
         let (rows, cols) = if self.last_grid_rows > 0 {
             (self.last_grid_rows, self.last_grid_cols)
@@ -4078,72 +4401,106 @@ impl TerminalView {
                 return;
             }
         };
-
-        self.split_view = Some(SplitViewState {
-            direction,
-            secondary_session: new_session,
-            focus_secondary: false,
-            ratio: 0.5,
-        });
-
+        self.install_split_pane(new_session, direction);
         self.ensure_refresh_running(cx);
         cx.notify();
     }
 
-    /// Set the split secondary session from an externally-created session
-    /// (e.g. an SSH session created by the workspace).
+    /// Install `session` as a new pane splitting the currently focused pane.
+    fn install_split_pane(&mut self, session: TerminalSession, direction: SplitDirection) {
+        let new_id = Uuid::new_v4();
+        let target = self.layout.focused;
+        session
+            .grid
+            .lock()
+            .set_max_scrollback(self.configured_scrollback);
+        self.layout.extra.insert(new_id, session);
+        self.layout.split_leaf(target, direction, new_id);
+        self.layout.focused = PaneId::Extra(new_id);
+        // Force a resize pass to size the new pane on next render.
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+    }
+
+    /// Set a split pane from an externally-created session (e.g. SSH), splitting
+    /// the currently focused pane.
     pub fn set_split_session(
         &mut self,
         session: TerminalSession,
         direction: SplitDirection,
         cx: &mut Context<Self>,
     ) {
-        // Don't overwrite an existing split
-        if self.split_view.is_some() {
-            return;
-        }
-
-        self.split_view = Some(SplitViewState {
-            direction,
-            secondary_session: session,
-            focus_secondary: false,
-            ratio: 0.5,
-        });
-
+        self.install_split_pane(session, direction);
         self.ensure_refresh_running(cx);
         cx.notify();
     }
 
-    /// Toggle the split direction between horizontal and vertical.
+    /// Flip the orientation of the split that holds the focused pane.
     fn toggle_split_direction(&mut self) {
-        if let Some(ref mut split) = self.split_view {
-            split.direction = match split.direction {
-                SplitDirection::Horizontal => SplitDirection::Vertical,
-                SplitDirection::Vertical => SplitDirection::Horizontal,
-            };
-        }
-    }
-
-    /// Close the current split, keeping the focused pane.
-    /// If the secondary pane is focused, swap it into the current tab slot.
-    fn close_split(&mut self) {
-        if let Some(split) = self.split_view.take() {
-            if split.focus_secondary {
-                // Replace the current tab's session with the secondary session
-                let idx = self.pane.active_index;
-                if idx < self.pane.sessions.len() {
-                    let new_session = split.secondary_session;
-                    // Update tab metadata to match the new session
-                    if let Some(tab) = self.tabs.get_mut(idx) {
-                        tab.id = new_session.id;
-                        tab.title = new_session.title.clone();
-                        tab.state = new_session.state.clone();
+        let target = self.layout.focused;
+        fn flip(node: &mut PaneNode, target: PaneId) -> bool {
+            match node {
+                PaneNode::Leaf(_) => false,
+                PaneNode::Split {
+                    direction, a, b, ..
+                } => {
+                    let child_is_target = matches!(**a, PaneNode::Leaf(id) if id == target)
+                        || matches!(**b, PaneNode::Leaf(id) if id == target);
+                    if child_is_target {
+                        *direction = match direction {
+                            SplitDirection::Horizontal => SplitDirection::Vertical,
+                            SplitDirection::Vertical => SplitDirection::Horizontal,
+                        };
+                        return true;
                     }
-                    self.pane.sessions[idx] = new_session;
+                    flip(a, target) || flip(b, target)
                 }
             }
-            // split is already taken; secondary dropped if not swapped
         }
+        flip(&mut self.layout.tree, target);
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
+    }
+
+    /// Close the focused pane. Extra panes are simply dropped; closing the
+    /// primary pane promotes another pane's session into the primary slot so the
+    /// tab keeps a valid `pane.sessions` entry. No-op if only one pane remains.
+    fn close_split(&mut self) {
+        let leaves = self.layout.leaves();
+        if leaves.len() <= 1 {
+            return;
+        }
+        match self.layout.focused {
+            PaneId::Extra(id) => {
+                self.layout.remove_leaf(PaneId::Extra(id));
+                self.layout.extra.remove(&id);
+            }
+            PaneId::Primary => {
+                // Promote the first extra pane into the primary slot.
+                let Some(successor) = leaves.iter().find_map(|p| match p {
+                    PaneId::Extra(id) => Some(*id),
+                    PaneId::Primary => None,
+                }) else {
+                    return;
+                };
+                if let Some(session) = self.layout.extra.remove(&successor) {
+                    let idx = self.pane.active_index;
+                    if idx < self.pane.sessions.len() {
+                        if let Some(tab) = self.tabs.get_mut(idx) {
+                            tab.title = session.title.clone();
+                            tab.state = session.state.clone();
+                        }
+                        self.pane.sessions[idx] = session;
+                    }
+                }
+                // The primary leaf now shows the promoted session; drop the
+                // successor's leaf from the tree.
+                self.layout.remove_leaf(PaneId::Extra(successor));
+            }
+        }
+        self.layout.focused = PaneId::Primary;
+        self.last_grid_rows = 0;
+        self.last_grid_cols = 0;
     }
 
     /// Encode a mouse event as a terminal escape sequence.
@@ -4404,8 +4761,8 @@ impl Render for TerminalView {
             self.resize_if_needed(window);
 
             container = container
-                .child(self.render_tab_bar(cx))
-                .child(self.render_toolbar(cx));
+                .child(self.render_tab_bar(window, cx))
+                .child(self.render_toolbar(window, cx));
 
             // Ensure glyph cache is ready
             self.ensure_glyph_cache(window);
@@ -4415,308 +4772,169 @@ impl Render for TerminalView {
                 .expect("ensure_glyph_cache called above")
                 .clone();
 
-            // Check for split view — extract state we need without cloning the session.
-            let split_info = self.split_view.as_ref().map(|s| {
-                (
-                    s.direction,
-                    s.focus_secondary,
-                    s.ratio,
-                    s.secondary_session.grid.clone(),
-                )
-            });
+            // ---- Pane layout rendering (recursive split tree) ----
+            let area = self.content_area(window);
+            let (leaves, dividers) = self.layout.compute(area, SPLIT_DIVIDER_SIZE);
 
-            if let Some((split_direction, focus_secondary, split_ratio, secondary_grid)) =
-                split_info
-            {
-                // ---- Split pane rendering ----
-                // Primary pane = active tab's session, secondary pane = split's session.
-                // "first" = primary (left/top), "second" = secondary (right/bottom).
-                let first_is_active = !focus_secondary;
+            // The focused pane drives the interactive coordinate offsets.
+            let focused_rect = leaves
+                .iter()
+                .find(|(id, _)| *id == self.layout.focused)
+                .map(|(_, r)| *r)
+                .unwrap_or(area);
+            self.grid_x_offset = focused_rect.x;
+            self.grid_y_offset = focused_rect.y;
 
-                // Clear dirty flags on both sessions
-                if let Some(s) = self.pane.sessions.get(self.pane.active_index) {
+            // Clear dirty flags on every visible pane this frame.
+            for (id, _) in &leaves {
+                if let Some(s) = self.session_for(*id) {
                     s.grid.lock().dirty = false;
                 }
-                secondary_grid.lock().dirty = false;
+            }
 
-                let primary_grid = self
-                    .pane
-                    .sessions
-                    .get(self.pane.active_index)
-                    .map(|s| s.grid.clone());
+            let multi = leaves.len() > 1;
+            let mut pane_layer = div()
+                .id("pane-layer")
+                .relative()
+                .flex_grow()
+                .size_full()
+                .overflow_hidden();
 
-                // Compute offsets for the active pane's coordinate mapping.
-                let viewport = window.viewport_size();
-                let sidebar_w: f32 = self.sidebar_width + SIDEBAR_HANDLE_WIDTH;
-                let top_offset: f32 = GRID_TOP_OFFSET;
-                let content_w = viewport.width.to_f64() as f32 - sidebar_w;
-                let content_h = viewport.height.to_f64() as f32 - top_offset - STATUS_BAR_HEIGHT;
-                let divider_f: f32 = SPLIT_DIVIDER_SIZE;
+            for (id, rect) in &leaves {
+                let id = *id;
+                let rect = *rect;
+                let grid_arc = match self.session_for(id) {
+                    Some(s) => s.grid.clone(),
+                    None => continue,
+                };
+                let local_x = rect.x - area.x;
+                let local_y = rect.y - area.y;
+                let is_focused = id == self.layout.focused;
 
-                // The interactive (focused) grid determines the coordinate offset
-                match split_direction {
-                    SplitDirection::Horizontal => {
-                        let first_w = (content_w - divider_f) * split_ratio;
-                        self.grid_x_offset = if first_is_active {
-                            sidebar_w
-                        } else {
-                            sidebar_w + first_w + divider_f
-                        };
-                        self.grid_y_offset = top_offset;
-                    }
-                    SplitDirection::Vertical => {
-                        let first_h = (content_h - divider_f) * split_ratio;
-                        self.grid_x_offset = sidebar_w;
-                        self.grid_y_offset = if first_is_active {
-                            top_offset
-                        } else {
-                            top_offset + first_h + divider_f
-                        };
-                    }
+                let mut wrapper = div()
+                    .absolute()
+                    .left(px(local_x))
+                    .top(px(local_y))
+                    .w(px(rect.w))
+                    .h(px(rect.h))
+                    .overflow_hidden();
+
+                // A focused-pane accent border is only drawn when split, so the
+                // single-pane layout stays pixel-identical to the unsplit grid
+                // (no 2px top border shifting the grid vs. the click offset).
+                if multi {
+                    wrapper = wrapper.border_t_2().border_color(if is_focused {
+                        ShellDeckColors::primary()
+                    } else {
+                        transparent_black()
+                    });
                 }
 
-                if let Some(primary_grid_arc) = primary_grid {
-                    // Determine which grid is active (interactive) and which is passive
-                    let (active_grid, passive_grid) = if first_is_active {
-                        (primary_grid_arc, secondary_grid)
-                    } else {
-                        (secondary_grid, primary_grid_arc)
-                    };
-
+                if is_focused {
                     let (mouse_mode, mouse_encoding, mut cursor) = {
-                        let g = active_grid.lock();
+                        let g = grid_arc.lock();
                         let visible = g.visible_rows();
                         self.detected_urls = detect_urls(&visible);
                         (g.mouse_mode, g.mouse_encoding, g.cursor.clone())
                     };
                     cursor.shape = self.effective_cursor_shape(cursor.shape);
-
-                    let active_grid_el = self.render_terminal_grid(
+                    wrapper = wrapper.child(self.render_terminal_grid(
                         mouse_mode,
                         mouse_encoding,
                         cursor,
                         cache.clone(),
-                        active_grid,
+                        grid_arc,
                         cx,
-                    );
-
-                    let passive_grid_el = self.render_split_passive_grid(passive_grid, cache, cx);
-
-                    let (first_el, second_el) = if first_is_active {
-                        (
-                            active_grid_el.into_any_element(),
-                            passive_grid_el.into_any_element(),
-                        )
-                    } else {
-                        (
-                            passive_grid_el.into_any_element(),
-                            active_grid_el.into_any_element(),
-                        )
-                    };
-
-                    // Build the split flex container
-                    let is_horizontal = matches!(split_direction, SplitDirection::Horizontal);
-                    let split_dragging = self.split_dragging;
-
-                    // Divider: only starts the drag. Move/up handled on split_container.
-                    let divider = if is_horizontal {
-                        div()
-                            .id("split-divider")
-                            .w(px(6.0))
-                            .h_full()
-                            .bg(ShellDeckColors::border())
-                            .flex_shrink_0()
-                            .cursor_col_resize()
-                            .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)))
-                            .when(split_dragging, |el| {
-                                el.bg(ShellDeckColors::primary().opacity(0.5))
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                                    this.split_dragging = true;
-                                    cx.notify();
-                                }),
-                            )
-                    } else {
-                        div()
-                            .id("split-divider")
-                            .h(px(6.0))
-                            .w_full()
-                            .bg(ShellDeckColors::border())
-                            .flex_shrink_0()
-                            .cursor_row_resize()
-                            .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)))
-                            .when(split_dragging, |el| {
-                                el.bg(ShellDeckColors::primary().opacity(0.5))
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                                    this.split_dragging = true;
-                                    cx.notify();
-                                }),
-                            )
-                    };
-
-                    let mut split_container = div()
-                        .id("split-container")
-                        .flex()
-                        .flex_grow()
-                        .size_full()
-                        .overflow_hidden();
-
-                    if !is_horizontal {
-                        split_container = split_container.flex_col();
+                    ));
+                    if self.search_visible {
+                        wrapper = wrapper.child(self.render_search_bar(cx));
                     }
+                    if let Some(state) = self.context_menu.clone() {
+                        wrapper = wrapper.child(self.render_context_menu(&state, cx));
+                    }
+                } else {
+                    wrapper = wrapper.child(
+                        self.render_split_passive_grid(id, grid_arc, cache.clone(), cx),
+                    );
+                }
 
-                    // Handle drag move/up on the split container so the mouse
-                    // can travel freely across both panes while dragging.
-                    if split_dragging {
-                        split_container = split_container
-                            .when(is_horizontal, |el| el.cursor_col_resize())
-                            .when(!is_horizontal, |el| el.cursor_row_resize())
-                            .on_mouse_move(cx.listener(
-                                move |this, event: &MouseMoveEvent, window, cx| {
-                                    if is_horizontal {
-                                        let viewport = window.viewport_size();
-                                        let sidebar_w = this.sidebar_width + SIDEBAR_HANDLE_WIDTH;
-                                        let content_w = viewport.width.to_f64() as f32 - sidebar_w;
-                                        let mouse_x = event.position.x.to_f64() as f32 - sidebar_w;
-                                        let new_ratio = (mouse_x / content_w).clamp(0.2, 0.8);
-                                        if let Some(ref mut split) = this.split_view {
-                                            split.ratio = new_ratio;
-                                        }
+                pane_layer = pane_layer.child(wrapper);
+            }
+
+            // Draggable dividers (each carries the path to its split node).
+            for d in &dividers {
+                let local_x = d.rect.x - area.x;
+                let local_y = d.rect.y - area.y;
+                let is_h = matches!(d.direction, SplitDirection::Horizontal);
+                let path = d.path.clone();
+                let mut div_el = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "split-divider-{}-{}",
+                        local_x as i32, local_y as i32
+                    ))))
+                    .absolute()
+                    .left(px(local_x))
+                    .top(px(local_y))
+                    .w(px(d.rect.w))
+                    .h(px(d.rect.h))
+                    .bg(ShellDeckColors::border())
+                    .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.5)));
+                div_el = if is_h {
+                    div_el.cursor_col_resize()
+                } else {
+                    div_el.cursor_row_resize()
+                };
+                if self.split_dragging {
+                    div_el = div_el.bg(ShellDeckColors::primary().opacity(0.5));
+                }
+                div_el = div_el.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
+                        this.split_dragging = true;
+                        this.active_divider = Some((path.clone(), is_h));
+                        cx.notify();
+                    }),
+                );
+                pane_layer = pane_layer.child(div_el);
+            }
+
+            // Global divider drag: let the mouse roam across panes while resizing.
+            if self.split_dragging {
+                if let Some((path, is_h)) = self.active_divider.clone() {
+                    pane_layer = pane_layer
+                        .on_mouse_move(cx.listener(
+                            move |this, event: &MouseMoveEvent, window, cx| {
+                                let area = this.content_area(window);
+                                if let Some(nr) =
+                                    this.layout.node_rect(&path, area, SPLIT_DIVIDER_SIZE)
+                                {
+                                    let ratio = if is_h {
+                                        (event.position.x.to_f64() as f32 - nr.x) / nr.w.max(1.0)
                                     } else {
-                                        let viewport = window.viewport_size();
-                                        let top_offset = GRID_TOP_OFFSET;
-                                        let content_h = viewport.height.to_f64() as f32
-                                            - top_offset
-                                            - STATUS_BAR_HEIGHT;
-                                        let mouse_y = event.position.y.to_f64() as f32 - top_offset;
-                                        let new_ratio = (mouse_y / content_h).clamp(0.2, 0.8);
-                                        if let Some(ref mut split) = this.split_view {
-                                            split.ratio = new_ratio;
-                                        }
-                                    }
+                                        (event.position.y.to_f64() as f32 - nr.y) / nr.h.max(1.0)
+                                    };
+                                    this.layout.set_ratio_at(&path, ratio);
                                     this.resize_if_needed(window);
                                     cx.notify();
-                                },
-                            ))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.split_dragging = false;
-                                    cx.notify();
-                                }),
-                            );
-                    }
-
-                    // Compute explicit pixel sizes from ratio so panes
-                    // actually resize visually (flex_1 always gives 50/50).
-                    let mut first_wrapper = div().relative().overflow_hidden().border_t_2();
-                    let mut second_wrapper = div().relative().overflow_hidden().border_t_2();
-
-                    if is_horizontal {
-                        let first_px = (content_w - divider_f) * split_ratio;
-                        let second_px = (content_w - divider_f) * (1.0 - split_ratio);
-                        first_wrapper = first_wrapper.w(px(first_px)).h_full();
-                        second_wrapper = second_wrapper.w(px(second_px)).h_full();
-                    } else {
-                        let first_px = (content_h - divider_f) * split_ratio;
-                        let second_px = (content_h - divider_f) * (1.0 - split_ratio);
-                        first_wrapper = first_wrapper.h(px(first_px)).w_full();
-                        second_wrapper = second_wrapper.h(px(second_px)).w_full();
-                    }
-
-                    first_wrapper = first_wrapper.child(first_el);
-                    second_wrapper = second_wrapper.child(second_el);
-
-                    // Highlight the focused pane's top border
-                    if first_is_active {
-                        first_wrapper = first_wrapper.border_color(ShellDeckColors::primary());
-                        second_wrapper = second_wrapper.border_color(transparent_black());
-                    } else {
-                        first_wrapper = first_wrapper.border_color(transparent_black());
-                        second_wrapper = second_wrapper.border_color(ShellDeckColors::primary());
-                    }
-
-                    // Add overlays (search bar, context menu) to the active pane wrapper
-                    if first_is_active {
-                        if self.search_visible {
-                            first_wrapper = first_wrapper.child(self.render_search_bar(cx));
-                        }
-                        if let Some(state) = self.context_menu.clone() {
-                            first_wrapper =
-                                first_wrapper.child(self.render_context_menu(&state, cx));
-                        }
-                    } else {
-                        if self.search_visible {
-                            second_wrapper = second_wrapper.child(self.render_search_bar(cx));
-                        }
-                        if let Some(state) = self.context_menu.clone() {
-                            second_wrapper =
-                                second_wrapper.child(self.render_context_menu(&state, cx));
-                        }
-                    }
-
-                    split_container = split_container
-                        .child(first_wrapper)
-                        .child(divider)
-                        .child(second_wrapper);
-
-                    container = container.child(split_container);
-                }
-            } else {
-                // ---- Single pane rendering ----
-                self.grid_x_offset = self.sidebar_width + SIDEBAR_HANDLE_WIDTH;
-                self.grid_y_offset = GRID_TOP_OFFSET;
-
-                let grid_arc = self
-                    .pane
-                    .sessions
-                    .get(self.pane.active_index)
-                    .map(|s| s.grid.clone());
-
-                if let Some(grid) = grid_arc {
-                    let (mouse_mode, mouse_encoding, mut cursor) = {
-                        let mut g = grid.lock();
-                        g.dirty = false;
-                        let visible = g.visible_rows();
-                        self.detected_urls = detect_urls(&visible);
-                        (g.mouse_mode, g.mouse_encoding, g.cursor.clone())
-                    };
-                    cursor.shape = self.effective_cursor_shape(cursor.shape);
-
-                    let mut grid_wrapper =
-                        div()
-                            .relative()
-                            .flex_grow()
-                            .size_full()
-                            .child(self.render_terminal_grid(
-                                mouse_mode,
-                                mouse_encoding,
-                                cursor,
-                                cache,
-                                grid,
-                                cx,
-                            ));
-
-                    if self.search_visible {
-                        grid_wrapper = grid_wrapper.child(self.render_search_bar(cx));
-                    }
-
-                    if let Some(state) = self.context_menu.clone() {
-                        grid_wrapper = grid_wrapper.child(self.render_context_menu(&state, cx));
-                    }
-
-                    container = container.child(grid_wrapper);
+                                }
+                            },
+                        ))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _w, cx| {
+                                this.split_dragging = false;
+                                this.active_divider = None;
+                                cx.notify();
+                            }),
+                        );
                 }
             }
 
+            container = container.child(pane_layer);
+
             // Tab context menu overlays the whole terminal view.
             if let Some(state) = self.tab_context_menu.clone() {
-                container = container.child(self.render_tab_context_menu(&state, cx));
+                container = container.child(self.render_tab_context_menu(&state, window, cx));
             }
         }
 

@@ -1,7 +1,7 @@
 use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::config::app_config::AppConfig;
+use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
@@ -11,7 +11,8 @@ use std::ops::DerefMut;
 use uuid::Uuid;
 
 use crate::command_palette::{
-    ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, PaletteAction, ToggleCommandPalette,
+    ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, PaletteAction,
+    ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
@@ -155,6 +156,13 @@ pub struct Workspace {
     pending_close_confirm: bool,
     /// Whether the titlebar theme-switcher dropdown is open.
     theme_menu_open: bool,
+    /// While the command palette is previewing an app theme, the theme to
+    /// restore if the user dismisses without committing. `None` when no preview
+    /// is active.
+    theme_before_preview: Option<ThemePreference>,
+    /// Same idea for a previewed terminal color theme: the terminal theme name
+    /// to restore if the palette is dismissed without committing.
+    terminal_theme_before_preview: Option<String>,
 }
 
 impl Workspace {
@@ -265,6 +273,15 @@ impl Workspace {
                     Box::new(OpenFileEditorView),
                 ),
             ];
+            // One entry per app theme — previews live as you move the
+            // selection, commits on enter/click.
+            for pref in ThemePreference::all() {
+                actions.push(PaletteAction::new(
+                    &format!("Theme: {}", pref.display_name()),
+                    None,
+                    Box::new(ApplyAppTheme { pref: pref.clone() }),
+                ));
+            }
             // One entry per built-in terminal color theme — switches live.
             for theme in TerminalTheme::builtins() {
                 actions.push(PaletteAction::new(
@@ -290,11 +307,30 @@ impl Workspace {
         // Subscribe to command palette events
         let palette_sub = cx.subscribe(
             &command_palette,
-            |_this, _palette, event: &CommandPaletteEvent, cx| match event {
+            |this, _palette, event: &CommandPaletteEvent, cx| match event {
+                CommandPaletteEvent::SelectionPreviewed(action) => {
+                    this.preview_palette_action(action.as_ref(), cx);
+                }
                 CommandPaletteEvent::ActionSelected(action) => {
-                    cx.dispatch_action(action.as_ref());
+                    if let Some(t) = action.as_any().downcast_ref::<ApplyAppTheme>() {
+                        // Commit the previewed app theme (persists it).
+                        this.revert_terminal_theme_preview(cx);
+                        this.commit_theme_preview(t.pref.clone(), cx);
+                    } else if let Some(t) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
+                        // Commit the previewed terminal theme (persists it).
+                        this.revert_theme_preview(cx);
+                        this.terminal_theme_before_preview = None;
+                        this.apply_terminal_theme_by_name(&t.name, cx);
+                    } else {
+                        // Any other command: drop any active previews first.
+                        this.revert_theme_preview(cx);
+                        this.revert_terminal_theme_preview(cx);
+                        cx.dispatch_action(action.as_ref());
+                    }
                 }
                 CommandPaletteEvent::Dismissed => {
+                    this.revert_theme_preview(cx);
+                    this.revert_terminal_theme_preview(cx);
                     cx.notify();
                 }
             },
@@ -435,6 +471,8 @@ impl Workspace {
             app_config,
             pending_close_confirm: false,
             theme_menu_open: false,
+            theme_before_preview: None,
+            terminal_theme_before_preview: None,
         }
     }
 
@@ -762,34 +800,109 @@ impl Workspace {
                 // Keep the in-memory config in sync with the active theme.
                 self.app_config.theme = pref.clone();
 
-                // Switch the app-wide ShellDeckColors palette
-                ShellDeckColors::set_theme(pref);
+                // A committed theme change supersedes any palette preview.
+                self.theme_before_preview = None;
 
-                // Switch the adabraka-ui component theme to match the base tone
-                let ui_theme = if pref.is_dark() {
-                    Theme::dark()
-                } else {
-                    Theme::light()
-                };
-                install_theme(cx.deref_mut(), ui_theme);
+                // Apply the palette + matching component theme, then repaint.
+                self.apply_palette(pref, cx);
 
                 // Terminal color theme is configured independently (Appearance
                 // tab / command palette) and persisted, so it is intentionally
                 // left untouched when the app light/dark preference changes.
-
-                // Notify all child views to re-render with new colors
-                self.sidebar.update(cx, |_, cx| cx.notify());
-                self.dashboard.update(cx, |_, cx| cx.notify());
-                self.scripts.update(cx, |_, cx| cx.notify());
-                self.port_forwards.update(cx, |_, cx| cx.notify());
-                self.server_sync.update(cx, |_, cx| cx.notify());
-                self.settings.update(cx, |_, cx| cx.notify());
-                self.status_bar.update(cx, |_, cx| cx.notify());
-                self.command_palette.update(cx, |_, cx| cx.notify());
-                self.toasts.update(cx, |_, cx| cx.notify());
-                cx.notify();
             }
         }
+    }
+
+    /// Swap the live `ShellDeckColors` palette and the adabraka-ui component
+    /// theme to `pref`, then notify every view so the whole UI repaints. Does
+    /// NOT touch `app_config` or persist — callers decide whether to commit.
+    fn apply_palette(&self, pref: &ThemePreference, cx: &mut Context<Self>) {
+        ShellDeckColors::set_theme(pref);
+        let ui_theme = if pref.is_dark() {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        install_theme(cx.deref_mut(), ui_theme);
+        self.notify_theme_views(cx);
+    }
+
+    /// Notify every child view (and self) to re-render with the active palette.
+    fn notify_theme_views(&self, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |_, cx| cx.notify());
+        self.dashboard.update(cx, |_, cx| cx.notify());
+        self.scripts.update(cx, |_, cx| cx.notify());
+        self.port_forwards.update(cx, |_, cx| cx.notify());
+        self.server_sync.update(cx, |_, cx| cx.notify());
+        self.settings.update(cx, |_, cx| cx.notify());
+        self.status_bar.update(cx, |_, cx| cx.notify());
+        self.command_palette.update(cx, |_, cx| cx.notify());
+        self.toasts.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    /// Live-preview the action highlighted in the command palette. App-theme
+    /// actions apply their palette without persisting; the original theme is
+    /// remembered so it can be restored on dismiss. Any other action ends an
+    /// active preview (restoring the original theme).
+    fn preview_palette_action(&mut self, action: &dyn Action, cx: &mut Context<Self>) {
+        if let Some(t) = action.as_any().downcast_ref::<ApplyAppTheme>() {
+            // Switching to an app-theme entry ends any terminal-theme preview.
+            self.revert_terminal_theme_preview(cx);
+            if self.theme_before_preview.is_none() {
+                self.theme_before_preview = Some(self.app_config.theme.clone());
+            }
+            let pref = t.pref.clone();
+            self.apply_palette(&pref, cx);
+        } else if let Some(t) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
+            // Switching to a terminal-theme entry ends any app-theme preview.
+            self.revert_theme_preview(cx);
+            let name = t.name.clone();
+            self.preview_terminal_theme(&name, cx);
+        } else {
+            // A non-theme entry: end any active preview of either kind.
+            self.revert_theme_preview(cx);
+            self.revert_terminal_theme_preview(cx);
+        }
+    }
+
+    /// Restore the app theme captured before previewing, if a preview is active.
+    fn revert_theme_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(orig) = self.theme_before_preview.take() {
+            self.apply_palette(&orig, cx);
+        }
+    }
+
+    /// Apply a terminal color theme to the live terminal without persisting,
+    /// remembering the original so it can be restored on dismiss.
+    fn preview_terminal_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.terminal_theme_before_preview.is_none() {
+            self.terminal_theme_before_preview = Some(self.app_config.terminal.theme.clone());
+        }
+        let theme = TerminalTheme::by_name(name);
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.set_terminal_theme(&theme);
+            cx.notify();
+        });
+    }
+
+    /// Restore the terminal theme captured before previewing, if active.
+    fn revert_terminal_theme_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(name) = self.terminal_theme_before_preview.take() {
+            let theme = TerminalTheme::by_name(&name);
+            self.terminal.update(cx, |terminal, cx| {
+                terminal.set_terminal_theme(&theme);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Commit a previewed app theme: persist it via the settings view (which
+    /// re-emits `ThemeChanged`, applying the palette through the normal path).
+    fn commit_theme_preview(&mut self, pref: ThemePreference, cx: &mut Context<Self>) {
+        self.theme_before_preview = None;
+        self.settings
+            .update(cx, |settings, cx| settings.select_app_theme(pref, cx));
     }
 
     /// Apply a terminal color theme by name: persist it (which repaints the
