@@ -19,3 +19,10 @@ chrono = { workspace = true }
 smallvec = { workspace = true }
 unicode-width = "0.2"
 regex = "1"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "terminal"
+harness = false

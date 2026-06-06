@@ -3,6 +3,7 @@ use crate::grid::{
     CursorShape, MouseEncoding, MouseMode, PromptMark, TerminalGrid, UnderlineStyle,
 };
 use parking_lot::Mutex;
+use smallvec::SmallVec;
 use std::sync::Arc;
 
 pub struct TerminalProcessor {
@@ -15,8 +16,13 @@ impl TerminalProcessor {
     }
 
     pub fn process_bytes(&mut self, parser: &mut vte::Parser, bytes: &[u8]) {
+        // Lock the grid once for the whole batch rather than once per byte/
+        // action. A full-screen TUI repaint is thousands of writes; per-byte
+        // locking turned that into thousands of mutex round-trips.
+        let mut grid = self.grid.lock();
+        let mut performer = Performer { grid: &mut grid };
         for byte in bytes {
-            parser.advance(self, *byte);
+            parser.advance(&mut performer, *byte);
         }
     }
 
@@ -31,7 +37,10 @@ impl TerminalProcessor {
     /// is one semicolon-separated parameter group. Within a group, colon-
     /// separated sub-parameters share the same slice.
     fn apply_sgr(grid: &mut TerminalGrid, params: &vte::Params) {
-        let groups: Vec<&[u16]> = params.iter().collect();
+        // Stack-allocated: SGR sequences almost always have a handful of param
+        // groups, so avoid a heap allocation per sequence (htop emits hundreds
+        // of SGRs per frame).
+        let groups: SmallVec<[&[u16]; 16]> = params.iter().collect();
 
         if groups.is_empty() {
             // No params = reset.
@@ -400,13 +409,19 @@ fn base64_decode(input: &str) -> Option<String> {
     String::from_utf8(output).ok()
 }
 
-impl vte::Perform for TerminalProcessor {
+/// Borrows the grid for the duration of one `process_bytes` batch so the VTE
+/// `Perform` callbacks mutate it directly without re-locking per byte.
+struct Performer<'a> {
+    grid: &'a mut TerminalGrid,
+}
+
+impl vte::Perform for Performer<'_> {
     fn print(&mut self, c: char) {
-        self.grid.lock().write_char(c);
+        self.grid.write_char(c);
     }
 
     fn execute(&mut self, byte: u8) {
-        let mut grid = self.grid.lock();
+        let grid = &mut *self.grid;
         match byte {
             0x07 => grid.bell(),
             0x08 => grid.backspace(),
@@ -426,7 +441,7 @@ impl vte::Perform for TerminalProcessor {
         _ignore: bool,
         action: char,
     ) {
-        let mut grid = self.grid.lock();
+        let grid = &mut *self.grid;
         let private_mode = intermediates.first().copied() == Some(b'?');
 
         match action {
@@ -532,7 +547,7 @@ impl vte::Perform for TerminalProcessor {
             }
             // SGR - Select Graphic Rendition
             'm' => {
-                Self::apply_sgr(&mut grid, params);
+                TerminalProcessor::apply_sgr(&mut *grid, params);
             }
             // DECSTBM - Set Scrolling Region
             'r' => {
@@ -872,7 +887,7 @@ impl vte::Perform for TerminalProcessor {
             // OSC 0 / OSC 2 - Set window title.
             Some(0) | Some(2) => {
                 if params.len() > 1 {
-                    self.grid.lock().set_title(payload());
+                    self.grid.set_title(payload());
                 }
             }
             // OSC 4 - Set color palette entry.
@@ -883,7 +898,7 @@ impl vte::Perform for TerminalProcessor {
                     let color_str = std::str::from_utf8(params[2]).unwrap_or("");
                     if let Ok(index) = index_str.parse::<u8>() {
                         if let Some((r, g, b)) = parse_osc_color(color_str) {
-                            self.grid.lock().set_palette_color(index, r, g, b);
+                            self.grid.set_palette_color(index, r, g, b);
                         }
                     }
                 }
@@ -896,7 +911,7 @@ impl vte::Perform for TerminalProcessor {
                     if let Some(path) = url.strip_prefix("file://") {
                         // Skip hostname part (up to first / after //)
                         if let Some(slash_pos) = path.find('/') {
-                            self.grid.lock().working_directory =
+                            self.grid.working_directory =
                                 Some(path[slash_pos..].to_string());
                         }
                     }
@@ -916,7 +931,7 @@ impl vte::Perform for TerminalProcessor {
                     String::new()
                 };
 
-                let mut grid = self.grid.lock();
+                let grid = &mut *self.grid;
                 if uri.is_empty() {
                     grid.hyperlink = None;
                 } else {
@@ -932,7 +947,7 @@ impl vte::Perform for TerminalProcessor {
                     if data != "?" {
                         // Decode base64 data
                         if let Some(decoded) = base64_decode(data) {
-                            self.grid.lock().clipboard_request =
+                            self.grid.clipboard_request =
                                 Some((selection.to_string(), decoded));
                         }
                     }
@@ -943,7 +958,7 @@ impl vte::Perform for TerminalProcessor {
             Some(133) => {
                 if params.len() > 1 {
                     let marker = std::str::from_utf8(params[1]).unwrap_or("");
-                    let mut grid = self.grid.lock();
+                    let grid = &mut *self.grid;
                     match marker.chars().next() {
                         Some('A') => {
                             grid.prompt_mark = Some(PromptMark::PromptStart);
@@ -993,7 +1008,7 @@ impl vte::Perform for TerminalProcessor {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        let mut grid = self.grid.lock();
+        let grid = &mut *self.grid;
         match byte {
             // DECSC - Save Cursor
             b'7' => grid.save_cursor(),

@@ -11,6 +11,7 @@ use shelldeck_terminal::grid::{
 };
 use shelldeck_terminal::session::{SessionState, TerminalSession};
 use shelldeck_terminal::url::{detect_urls, UrlMatch};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use shelldeck_core::config::themes::TerminalTheme;
@@ -968,8 +969,12 @@ pub struct TerminalView {
     search_current_idx: Option<usize>,
     search_case_sensitive: bool,
     search_regex: bool,
-    /// Detected URLs in the visible grid (refreshed each frame).
+    /// Detected URLs in the focused pane's visible grid. Recomputed only when
+    /// the focused grid changes (dirty) or the focused session changes, not on
+    /// every repaint (e.g. cursor-blink frames keep the cached result).
     detected_urls: Vec<UrlMatch>,
+    /// Session id the cached `detected_urls` was computed for.
+    last_url_session: Option<Uuid>,
     /// Index of the URL currently hovered by the mouse.
     _hovered_url: Option<usize>,
     /// Context menu state (position + whether visible).
@@ -1016,6 +1021,12 @@ pub struct TerminalView {
     configured_scrollback: usize,
     /// Whether the terminal grid currently has focus (tracked for hollow cursor).
     has_focus: bool,
+    /// Sender handed to each session's reader thread; pinged on new output so
+    /// the refresh task wakes and repaints (event-driven, not polled). A clone
+    /// is kept here so the channel never closes while the view is alive.
+    output_tx: mpsc::UnboundedSender<()>,
+    /// Receiver for the output signal, moved into the refresh task on start.
+    output_rx: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 /// A script pinned to the terminal toolbar for one-click execution.
@@ -1045,6 +1056,7 @@ struct TabMenuState {
 
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let (output_tx, output_rx) = mpsc::unbounded_channel::<()>();
         Self {
             pane: TerminalPane {
                 sessions: Vec::new(),
@@ -1072,6 +1084,7 @@ impl TerminalView {
             search_case_sensitive: false,
             search_regex: false,
             detected_urls: Vec::new(),
+            last_url_session: None,
             _hovered_url: None,
             context_menu: None,
             tab_context_menu: None,
@@ -1094,6 +1107,8 @@ impl TerminalView {
             cursor_blink_enabled: true,
             configured_scrollback: 10_000,
             has_focus: false,
+            output_tx,
+            output_rx: Some(output_rx),
         }
     }
 
@@ -1206,8 +1221,17 @@ impl TerminalView {
                     .timer(std::time::Duration::from_millis(530))
                     .await;
                 let Ok(_) = entity.update(cx, |this, cx| {
-                    this.cursor_blink_on = !this.cursor_blink_on;
-                    cx.notify();
+                    // Only toggle + repaint when the cursor is actually on screen.
+                    // Full-screen apps that hide the cursor (e.g. htop via DECTCEM)
+                    // otherwise cost a full-grid repaint twice a second for nothing.
+                    let visible = this
+                        .active_session()
+                        .map(|s| s.grid.lock().cursor.visible)
+                        .unwrap_or(false);
+                    if visible {
+                        this.cursor_blink_on = !this.cursor_blink_on;
+                        cx.notify();
+                    }
                 }) else {
                     break;
                 };
@@ -1257,6 +1281,9 @@ impl TerminalView {
             .grid
             .lock()
             .set_max_scrollback(self.configured_scrollback);
+
+        // Wire the session's reader thread to wake the UI on output.
+        session.set_output_notifier(self.output_tx.clone());
 
         // Save the current tab's pane layout before switching away
         if let Some(current_tab) = self.tabs.get(self.pane.active_index) {
@@ -1794,74 +1821,93 @@ impl TerminalView {
 
     /// Start the periodic refresh loop if it is not already running.
     ///
-    /// Polls at ~120 Hz but only triggers a repaint when the grid is
-    /// actually dirty (new data arrived).
+    /// Repaints only when a grid is actually dirty (new data arrived). The poll
+    /// interval adapts: ~60 Hz while output is flowing, backing off to ~25 Hz
+    /// after roughly half a second of quiet so an idle terminal costs almost
+    /// nothing. Any new output is still picked up within one idle interval.
     pub fn ensure_refresh_running(&mut self, cx: &mut Context<Self>) {
-        if self._refresh_task.is_none() {
-            self._refresh_task =
-                Some(cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(8))
-                            .await;
-                        let result = this.update(cx, |this, cx| {
-                            let mut any_dirty = false;
-                            let mut any_sync = false;
-                            for s in this.pane.sessions.iter() {
-                                let g = s.grid.lock();
-                                if g.dirty {
-                                    any_dirty = true;
-                                }
-                                if g.synchronized_output() {
-                                    any_sync = true;
-                                }
-                            }
-                            // Extra (split) panes of the active tab.
-                            for session in this.layout.extra.values() {
-                                let g = session.grid.lock();
-                                if g.dirty {
-                                    any_dirty = true;
-                                }
-                                if g.synchronized_output() {
-                                    any_sync = true;
-                                }
-                            }
-                            // Clear dirty flags on stored (background) tabs' split
-                            // sessions so they don't accumulate stale state, without
-                            // triggering a repaint for background tabs.
-                            for layout in this.stored_layouts.values() {
-                                for session in layout.extra.values() {
-                                    session.grid.lock().dirty = false;
-                                }
-                            }
-                            // Handle OSC 52 clipboard requests from any visible session.
-                            for session in this.pane.sessions.iter() {
-                                if let Some((_sel, text)) =
-                                    session.grid.lock().clipboard_request.take()
-                                {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                }
-                            }
-                            for session in this.layout.extra.values() {
-                                if let Some((_sel, text)) =
-                                    session.grid.lock().clipboard_request.take()
-                                {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                }
-                            }
-                            // Suppress repaint while synchronized output is active
-                            // (batching updates to prevent flicker). When the app
-                            // turns sync off, dirty will be set and any_sync cleared.
-                            if any_dirty && !any_sync {
-                                cx.notify();
-                            }
-                        });
-                        if result.is_err() {
-                            break;
+        if self._refresh_task.is_some() {
+            return;
+        }
+        let Some(mut rx) = self.output_rx.take() else {
+            return;
+        };
+        self._refresh_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                // Block until a reader thread signals new output, or wake every
+                // 250 ms as a safety net. Idle terminals cost ~4 cheap wake-ups
+                // a second instead of polling at 60-120 Hz.
+                let _ = rx
+                    .recv()
+                    .with_timeout(
+                        std::time::Duration::from_millis(250),
+                        cx.background_executor(),
+                    )
+                    .await;
+                // Coalesce a burst of output into a single repaint: a screen
+                // update (e.g. htop) arrives as several PTY chunks over a few
+                // milliseconds, so wait one frame and drain them all, repainting
+                // once instead of once per chunk. Caps the repaint rate at ~60 Hz
+                // under continuous output while staying fully responsive.
+                while rx.try_recv().is_ok() {}
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(16))
+                    .await;
+                while rx.try_recv().is_ok() {}
+
+                let result = this.update(cx, |this, cx| {
+                    let mut any_dirty = false;
+                    let mut any_sync = false;
+                    for s in this.pane.sessions.iter() {
+                        let g = s.grid.lock();
+                        if g.dirty {
+                            any_dirty = true;
+                        }
+                        if g.synchronized_output() {
+                            any_sync = true;
                         }
                     }
-                }));
-        }
+                    // Extra (split) panes of the active tab.
+                    for session in this.layout.extra.values() {
+                        let g = session.grid.lock();
+                        if g.dirty {
+                            any_dirty = true;
+                        }
+                        if g.synchronized_output() {
+                            any_sync = true;
+                        }
+                    }
+                    // Clear dirty flags on stored (background) tabs' split
+                    // sessions so they don't accumulate stale state, without
+                    // triggering a repaint for background tabs.
+                    for layout in this.stored_layouts.values() {
+                        for session in layout.extra.values() {
+                            session.grid.lock().dirty = false;
+                        }
+                    }
+                    // Handle OSC 52 clipboard requests from any visible session.
+                    for session in this.pane.sessions.iter() {
+                        if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    }
+                    for session in this.layout.extra.values() {
+                        if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    }
+                    // Suppress repaint while synchronized output is active
+                    // (batching updates to prevent flicker). When the app turns
+                    // sync off, dirty is set and any_sync cleared.
+                    if any_dirty && !any_sync {
+                        cx.notify();
+                    }
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Ensure the glyph cache is populated for the current font + zoom level.
@@ -4414,6 +4460,8 @@ impl TerminalView {
             .grid
             .lock()
             .set_max_scrollback(self.configured_scrollback);
+        // Wire the split's reader thread to wake the UI on output.
+        session.set_output_notifier(self.output_tx.clone());
         self.layout.extra.insert(new_id, session);
         self.layout.split_leaf(target, direction, new_id);
         self.layout.focused = PaneId::Extra(new_id);
@@ -4785,10 +4833,19 @@ impl Render for TerminalView {
             self.grid_x_offset = focused_rect.x;
             self.grid_y_offset = focused_rect.y;
 
-            // Clear dirty flags on every visible pane this frame.
+            // Clear dirty flags on every visible pane this frame, noting whether
+            // the focused pane changed (so URL detection can be skipped on
+            // unchanged repaints like cursor-blink frames).
+            let mut focused_dirty = false;
+            let mut focused_session: Option<Uuid> = None;
             for (id, _) in &leaves {
                 if let Some(s) = self.session_for(*id) {
-                    s.grid.lock().dirty = false;
+                    let mut g = s.grid.lock();
+                    if *id == self.layout.focused {
+                        focused_dirty = g.dirty;
+                        focused_session = Some(s.id);
+                    }
+                    g.dirty = false;
                 }
             }
 
@@ -4831,10 +4888,18 @@ impl Render for TerminalView {
                 }
 
                 if is_focused {
+                    // Recompute URL underlines only when the focused content
+                    // actually changed (dirty) or the focused session switched;
+                    // otherwise reuse the cached set so blink/idle repaints don't
+                    // re-run the regex over every visible row.
+                    let urls_stale = focused_dirty || self.last_url_session != focused_session;
                     let (mouse_mode, mouse_encoding, mut cursor) = {
                         let g = grid_arc.lock();
-                        let visible = g.visible_rows();
-                        self.detected_urls = detect_urls(&visible);
+                        if urls_stale {
+                            let visible = g.visible_rows();
+                            self.detected_urls = detect_urls(&visible);
+                            self.last_url_session = focused_session;
+                        }
                         (g.mouse_mode, g.mouse_encoding, g.cursor.clone())
                     };
                     cursor.shape = self.effective_cursor_shape(cursor.shape);

@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 license = "MIT"
 authors = ["ShellDeck Contributors"]
@@ -59,6 +59,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 semver = "1"
 tempfile = "3"
 sha2 = "0.10"
+criterion = "0.5"
 
 [patch.crates-io]
 adabraka-gpui = { path = "patches/adabraka-gpui" }

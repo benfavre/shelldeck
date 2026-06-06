@@ -1319,12 +1319,13 @@ impl Workspace {
         self.sync_terminal_tab_count(cx);
     }
 
-    /// Start periodic git status polling (every 5 seconds).
+    /// Start periodic git status polling (every 15 seconds). Only repaints the
+    /// status bar when the status string actually changed.
     fn start_git_polling(cx: &mut Context<Self>, status_bar: &Entity<StatusBar>) -> gpui::Task<()> {
         let weak_bar = status_bar.downgrade();
         cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
             cx.background_executor()
-                .timer(std::time::Duration::from_secs(5))
+                .timer(std::time::Duration::from_secs(15))
                 .await;
 
             let git_display = cx
@@ -1336,8 +1337,10 @@ impl Workspace {
                 .await;
 
             let result = weak_bar.update(cx, |bar, cx| {
-                bar.git_status = git_display;
-                cx.notify();
+                if bar.git_status != git_display {
+                    bar.git_status = git_display;
+                    cx.notify();
+                }
             });
             if result.is_err() {
                 break;

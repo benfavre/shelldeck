@@ -35,6 +35,17 @@ pub struct TerminalSession {
     pub grid: Arc<Mutex<TerminalGrid>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     resize_fn: Option<ResizeFn>,
+    /// Optional signal fired by the reader thread whenever new output is
+    /// processed, so the UI can repaint event-driven instead of polling.
+    output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
+}
+
+impl TerminalSession {
+    /// Install a channel the reader thread pings on every output chunk, letting
+    /// the UI wake and repaint only when there is actually new data.
+    pub fn set_output_notifier(&self, tx: mpsc::UnboundedSender<()>) {
+        *self.output_notifier.lock() = Some(tx);
+    }
 }
 
 impl TerminalSession {
@@ -55,6 +66,9 @@ impl TerminalSession {
 
         let grid_clone = grid.clone();
         let response_input_tx = input_tx.clone();
+        let output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>> =
+            Arc::new(Mutex::new(None));
+        let notifier_reader = output_notifier.clone();
 
         // Spawn reader thread: reads PTY output and feeds to VTE parser.
         // Also drains any pending responses from the parser and forwards
@@ -77,12 +91,20 @@ impl TerminalSession {
                             while let Ok(response) = response_rx.try_recv() {
                                 let _ = response_input_tx.send(response);
                             }
+                            // Wake the UI to repaint (event-driven, no polling).
+                            if let Some(tx) = notifier_reader.lock().as_ref() {
+                                let _ = tx.send(());
+                            }
                         }
                         Err(e) => {
                             tracing::debug!("PTY reader error: {}", e);
                             break;
                         }
                     }
+                }
+                // Final wake so the UI observes the exit promptly.
+                if let Some(tx) = notifier_reader.lock().as_ref() {
+                    let _ = tx.send(());
                 }
                 tracing::debug!("PTY reader thread exiting");
             })
@@ -121,6 +143,7 @@ impl TerminalSession {
             grid,
             input_tx,
             resize_fn: Some(resize_fn),
+            output_notifier,
         })
     }
 
@@ -147,6 +170,9 @@ impl TerminalSession {
 
         let grid_clone = grid.clone();
         let response_input_tx = input_tx.clone();
+        let output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>> =
+            Arc::new(Mutex::new(None));
+        let notifier_reader = output_notifier.clone();
 
         // Spawn reader thread: receives SSH channel data and feeds to VTE parser → grid.
         // Also drains any pending responses from the parser and forwards
@@ -164,6 +190,13 @@ impl TerminalSession {
                     while let Ok(response) = response_rx.try_recv() {
                         let _ = response_input_tx.send(response);
                     }
+                    // Wake the UI to repaint (event-driven, no polling).
+                    if let Some(tx) = notifier_reader.lock().as_ref() {
+                        let _ = tx.send(());
+                    }
+                }
+                if let Some(tx) = notifier_reader.lock().as_ref() {
+                    let _ = tx.send(());
                 }
                 tracing::debug!("SSH reader thread exiting");
             })
@@ -179,6 +212,7 @@ impl TerminalSession {
             grid,
             input_tx,
             resize_fn: None,
+            output_notifier,
         };
 
         Ok((session, data_tx, input_rx))
