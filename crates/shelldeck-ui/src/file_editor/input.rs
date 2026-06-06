@@ -70,6 +70,30 @@ impl FileEditorView {
             }
         }
 
+        // ---- Multi-cursor: add cursor above/below (Ctrl+Alt+Up/Down) ----
+        if ctrl && alt && matches!(ks.key.as_str(), "up" | "down") {
+            if let Some(buf) = self.active_tab_mut().and_then(|t| t.buffer_mut()) {
+                if ks.key.as_str() == "down" {
+                    buf.add_cursor_below();
+                } else {
+                    buf.add_cursor_above();
+                }
+            }
+            self.ensure_cursor_visible();
+            cx.notify();
+            return;
+        }
+
+        // ---- Escape collapses multi-cursor first ----
+        if ks.key.as_str() == "escape" {
+            if let Some(buf) = self.active_tab_mut().and_then(|t| t.buffer_mut()) {
+                if buf.clear_extra_cursors() {
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
         // ---- Ctrl shortcuts ----
         if ctrl {
             match ks.key.as_str() {
@@ -464,7 +488,9 @@ impl FileEditorView {
             "backspace" => {
                 if let Some(tab) = self.active_tab_mut() {
                     let (buf, hl) = tab.text_parts_mut();
-                    if ctrl {
+                    if buf.has_multi_cursors() {
+                        buf.backspace_multi();
+                    } else if ctrl {
                         buf.delete_word_left();
                     } else if !buf.try_backspace_pair() {
                         buf.backspace();
@@ -520,8 +546,12 @@ impl FileEditorView {
                             if !ch.is_control() {
                                 if let Some(tab) = self.active_tab_mut() {
                                     let (buf, hl) = tab.text_parts_mut();
-                                    // Try auto-pair first, then normal insert
-                                    if !buf.try_auto_pair(ch) {
+                                    // Multi-cursor: type at every cursor (no
+                                    // auto-pair in multi mode). Otherwise the
+                                    // normal single-cursor auto-pair + insert.
+                                    if buf.has_multi_cursors() {
+                                        buf.insert_str_multi(&ch.to_string());
+                                    } else if !buf.try_auto_pair(ch) {
                                         buf.insert_char(ch);
                                     }
                                     let pending = buf.take_pending_edits();

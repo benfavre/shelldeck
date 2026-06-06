@@ -1341,6 +1341,14 @@ impl FileEditorView {
         let tab_size = buffer.tab_size();
         let (cursor_line, cursor_char_col) = buffer.cursor_line_col();
         let cursor_col = buffer.char_col_to_visual_col(cursor_line, cursor_char_col);
+        let extra_cursor_coords: Vec<(usize, usize)> = buffer
+            .extra_cursors()
+            .iter()
+            .map(|&p| {
+                let (l, c) = buffer.char_to_line_col(p);
+                (l, buffer.char_col_to_visual_col(l, c))
+            })
+            .collect();
         let selection = buffer.selection().cloned();
 
         // Compute gutter width inline to avoid borrowing self
@@ -1502,6 +1510,7 @@ impl FileEditorView {
                         tab_size,
                         bracket_match,
                         word_highlight_coords,
+                        extra_cursor_coords,
                     )
                 },
                 move |bounds,
@@ -1522,6 +1531,7 @@ impl FileEditorView {
                     tab_size,
                     bracket_match,
                     word_highlight_coords,
+                    extra_cursor_coords,
                 ),
                       window,
                       cx| {
@@ -1543,6 +1553,7 @@ impl FileEditorView {
                         tab_size,
                         bracket_match,
                         &word_highlight_coords,
+                        &extra_cursor_coords,
                         window,
                         cx,
                     );
@@ -1574,6 +1585,7 @@ impl FileEditorView {
         tab_size: usize,
         bracket_match: Option<(usize, usize)>,
         word_highlight_coords: &[(usize, usize, usize, usize)],
+        extra_cursors: &[(usize, usize)],
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1847,6 +1859,22 @@ impl FileEditorView {
                     ),
                     ShellDeckColors::primary(),
                 ));
+            }
+        }
+
+        // Paint extra cursors (multi-cursor) — always shown while focused so
+        // they're visible regardless of the blink phase.
+        if has_focus {
+            for &(el, ec) in extra_cursors {
+                if el >= first_visible && el < first_visible + line_texts.len() {
+                    let vis = el - first_visible;
+                    let ex = bounds.origin.x + gutter_px + cell_w * ec as f32;
+                    let ey = bounds.origin.y + cell_h * vis as f32;
+                    window.paint_quad(fill(
+                        Bounds::new(point(ex, ey), size(px(2.0), cell_h)),
+                        ShellDeckColors::primary(),
+                    ));
+                }
             }
         }
 

@@ -59,6 +59,9 @@ pub struct InputEditInfo {
 pub struct RopeBuffer {
     rope: Rope,
     cursor: usize,              // char offset
+    /// Additional cursors for multi-cursor editing (char offsets). Empty in the
+    /// normal single-cursor case, in which all editing behaves exactly as before.
+    extra_cursors: Vec<usize>,
     selection: Option<Selection>,
     desired_col: Option<usize>, // for vertical nav
     tab_size: usize,
@@ -76,6 +79,7 @@ impl RopeBuffer {
         Self {
             rope: Rope::from_str(text),
             cursor: 0,
+            extra_cursors: Vec::new(),
             selection: None,
             desired_col: None,
             tab_size: 4,
@@ -174,6 +178,139 @@ impl RopeBuffer {
         } else {
             0
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-cursor
+    // -----------------------------------------------------------------------
+
+    /// Extra cursor char offsets (excludes the primary cursor).
+    pub fn extra_cursors(&self) -> &[usize] {
+        &self.extra_cursors
+    }
+
+    pub fn has_multi_cursors(&self) -> bool {
+        !self.extra_cursors.is_empty()
+    }
+
+    /// Drop all extra cursors (collapse to single). Returns true if any existed.
+    pub fn clear_extra_cursors(&mut self) -> bool {
+        if self.extra_cursors.is_empty() {
+            false
+        } else {
+            self.extra_cursors.clear();
+            true
+        }
+    }
+
+    /// Add a cursor on the line below the bottom-most cursor at the same column.
+    pub fn add_cursor_below(&mut self) {
+        self.add_cursor_vertical(true);
+    }
+
+    /// Add a cursor on the line above the top-most cursor at the same column.
+    pub fn add_cursor_above(&mut self) {
+        self.add_cursor_vertical(false);
+    }
+
+    fn add_cursor_vertical(&mut self, below: bool) {
+        let mut all: Vec<usize> = std::iter::once(self.cursor)
+            .chain(self.extra_cursors.iter().copied())
+            .collect();
+        all.sort_unstable();
+        let anchor = if below { *all.last().unwrap() } else { all[0] };
+        let (line, col) = self.char_to_line_col(anchor);
+        let target = if below {
+            line + 1
+        } else if line == 0 {
+            return;
+        } else {
+            line - 1
+        };
+        if target >= self.len_lines() {
+            return;
+        }
+        let pos = self.line_col_to_char(target, col);
+        if pos != self.cursor && !self.extra_cursors.contains(&pos) {
+            self.extra_cursors.push(pos);
+        }
+    }
+
+    /// All cursor offsets (primary + extras), sorted and de-duplicated.
+    fn all_cursors_sorted(&self) -> Vec<usize> {
+        let mut all: Vec<usize> = std::iter::once(self.cursor)
+            .chain(self.extra_cursors.iter().copied())
+            .collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
+    /// Insert a string at every cursor (used in multi-cursor mode). Positions
+    /// shift as earlier inserts land; cursors end up after their inserted text.
+    pub fn insert_str_multi(&mut self, text: &str) {
+        if self.extra_cursors.is_empty() {
+            self.insert_str(text);
+            return;
+        }
+        self.selection = None;
+        self.start_or_extend_transaction(true);
+        let l = text.chars().count();
+        let positions = self.all_cursors_sorted();
+        let mut new_positions = Vec::with_capacity(positions.len());
+        for (i, &pos) in positions.iter().enumerate() {
+            let adj = pos + i * l;
+            self.rope.insert(adj, text);
+            self.record_input_edit_insert(adj, text);
+            self.record_op(EditOp::Insert {
+                pos: adj,
+                text: text.to_string(),
+            });
+            new_positions.push(adj + l);
+        }
+        self.cursor = new_positions[0];
+        self.extra_cursors = new_positions[1..].to_vec();
+        self.desired_col = None;
+    }
+
+    /// Backspace at every cursor (delete one char before each).
+    pub fn backspace_multi(&mut self) {
+        if self.extra_cursors.is_empty() {
+            return;
+        }
+        self.start_or_extend_transaction(true);
+        let positions = self.all_cursors_sorted();
+        // Delete descending so earlier offsets stay valid; track per-cursor shift.
+        let mut new_positions: Vec<usize> = Vec::with_capacity(positions.len());
+        // Number of deletions occurring strictly before a given position.
+        for (i, &pos) in positions.iter().enumerate() {
+            // Each prior cursor (index < i) deletes one char before its own pos,
+            // all of which are < pos here (positions sorted, deletes at pos-1).
+            let shift = i; // i deletions happen before this one's region
+            if pos == 0 {
+                new_positions.push(pos.saturating_sub(shift));
+                continue;
+            }
+            new_positions.push(pos - 1 - shift);
+        }
+        // Perform deletions descending by adjusted index so we don't disturb
+        // not-yet-processed lower offsets.
+        for &pos in positions.iter().rev() {
+            if pos == 0 {
+                continue;
+            }
+            let del = pos - 1;
+            let removed: String = self.rope.slice(del..pos).to_string();
+            self.record_input_edit_delete(del, pos);
+            self.rope.remove(del..pos);
+            self.record_op(EditOp::Delete {
+                pos: del,
+                text: removed,
+            });
+        }
+        self.cursor = new_positions[0];
+        self.extra_cursors = new_positions[1..].to_vec();
+        self.desired_col = None;
     }
 
     /// Get text of a line (without trailing newline).
@@ -382,6 +519,8 @@ impl RopeBuffer {
     }
 
     fn extend_or_clear_selection(&mut self, extend: bool) {
+        // Any cursor movement collapses multi-cursor mode back to a single cursor.
+        self.extra_cursors.clear();
         if extend {
             if self.selection.is_none() {
                 self.selection = Some(Selection {
@@ -928,6 +1067,7 @@ impl RopeBuffer {
 
     /// Go to a specific line number (1-indexed for user display).
     pub fn goto_line(&mut self, line_number: usize) {
+        self.extra_cursors.clear();
         let line = line_number.saturating_sub(1);
         let max_line = self.rope.len_lines().saturating_sub(1);
         let target_line = line.min(max_line);
