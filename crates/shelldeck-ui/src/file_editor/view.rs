@@ -538,6 +538,25 @@ impl FileEditorView {
         }
     }
 
+    /// Set the editor text size (driven by the app "App Font Size" setting so
+    /// the editor scales with the rest of the UI). Rebuilds the glyph cache at
+    /// the new size on the next render.
+    pub fn set_font_size(&mut self, size: f32) {
+        let size = size.clamp(8.0, 40.0);
+        if (self.font_size - size).abs() > f32::EPSILON {
+            self.font_size = size;
+            self.glyph_cache = None;
+        }
+    }
+
+    /// Set the editor font family. Rebuilds the glyph cache on the next render.
+    pub fn set_font_family(&mut self, family: String) {
+        if self.font_family != family && family != "System Default" {
+            self.font_family = family;
+            self.glyph_cache = None;
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Cursor blink
     // -----------------------------------------------------------------------
@@ -779,6 +798,8 @@ impl FileEditorView {
     // -----------------------------------------------------------------------
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Chrome scales with the app UI size (rems track the window rem size).
+        use crate::scale::px;
         let handle = cx.entity().downgrade();
 
         let mut tab_bar = div()
@@ -878,6 +899,7 @@ impl FileEditorView {
     // -----------------------------------------------------------------------
 
     fn render_search_bar(&self) -> impl IntoElement {
+        use crate::scale::px;
         let match_count = self.search_matches.len();
         let current = self
             .search_current_idx
@@ -948,6 +970,7 @@ impl FileEditorView {
     }
 
     fn render_replace_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::scale::px;
         let h_next = cx.entity().downgrade();
         let h_all = cx.entity().downgrade();
         let replace_focused = self.search_focus_replace;
@@ -1034,6 +1057,7 @@ impl FileEditorView {
     // -----------------------------------------------------------------------
 
     fn render_goto_line_bar(&self) -> impl IntoElement {
+        use crate::scale::px;
         div()
             .flex()
             .items_center()
@@ -1363,7 +1387,9 @@ impl FileEditorView {
         let sel_color = hsla(0.58, 0.6, 0.5, 0.35);
         let search_color = hsla(0.12, 0.8, 0.5, 0.35);
         let search_current_color = hsla(0.12, 0.9, 0.55, 0.55);
-        let word_highlight_color = hsla(0.58, 0.3, 0.5, 0.2);
+        // Theme-following highlight tints (derived from the active palette so
+        // they track theme changes instead of being a fixed blue/grey).
+        let word_highlight_color = ShellDeckColors::primary().opacity(0.18);
 
         // Paint gutter background
         window.paint_quad(fill(
@@ -1378,8 +1404,8 @@ impl FileEditorView {
             (total_lines as f64).log10().floor() as usize + 1
         };
 
-        let indent_guide_color = hsla(0.0, 0.0, 0.5, 0.12);
-        let indent_guide_active_color = hsla(0.0, 0.0, 0.5, 0.25);
+        let indent_guide_color = ShellDeckColors::text_muted().opacity(0.25);
+        let indent_guide_active_color = ShellDeckColors::text_muted().opacity(0.5);
 
         // Indent guides: compute max indent depth per visible line, then draw vertical lines
         {
@@ -1632,7 +1658,7 @@ impl FileEditorView {
                 let vis_row = match_line - first_visible;
                 let bx = bounds.origin.x + gutter_px + cell_w * match_vcol as f32;
                 let by = bounds.origin.y + cell_h * vis_row as f32;
-                let bracket_bg = hsla(0.58, 0.4, 0.5, 0.25);
+                let bracket_bg = ShellDeckColors::primary().opacity(0.3);
                 window.paint_quad(fill(
                     Bounds::new(point(bx, by), size(cell_w, cell_h)),
                     bracket_bg,
@@ -2279,6 +2305,10 @@ impl Render for FileEditorView {
             let browser_width = self.file_browser_width;
 
             let entries = self.file_browser.visible_entries();
+            // Pane width + resize handle stay in absolute px (the resize drag
+            // clamps absolute mouse x); the pane's *content* scales with the UI
+            // size via `s` (scaled rems), like the main app sidebar.
+            let s = crate::scale::px;
             let mut browser_panel = div()
                 .flex()
                 .flex_col()
@@ -2294,11 +2324,11 @@ impl Render for FileEditorView {
                 .flex()
                 .items_center()
                 .w_full()
-                .h(px(28.0))
-                .px(px(8.0))
+                .h(s(28.0))
+                .px(s(8.0))
                 .border_b_1()
                 .border_color(ShellDeckColors::border())
-                .text_size(px(11.0))
+                .text_size(s(11.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_muted())
                 .child("FILES");
@@ -2313,7 +2343,7 @@ impl Render for FileEditorView {
                 .min_h(px(0.0))
                 .id("file-browser-list")
                 .overflow_y_scroll()
-                .py(px(2.0));
+                .py(s(2.0));
 
             for entry in entries {
                 let h = h_browser.clone();
@@ -2328,11 +2358,11 @@ impl Render for FileEditorView {
                     .flex()
                     .items_center()
                     .w_full()
-                    .h(px(22.0))
-                    .px(px(8.0 + depth as f32 * 12.0))
-                    .text_size(px(12.0))
+                    .h(s(22.0))
+                    .px(s(8.0 + depth as f32 * 12.0))
+                    .text_size(s(12.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+                    .hover(|st| st.bg(ShellDeckColors::hover_bg()));
 
                 let icon = if is_dir {
                     if is_expanded {
@@ -2590,6 +2620,7 @@ impl FileEditorView {
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
+        use crate::scale::px;
         let tab = self.active_tab();
         let is_text = tab.is_some_and(|t| t.is_text());
 

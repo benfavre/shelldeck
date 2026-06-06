@@ -210,6 +210,11 @@ impl Workspace {
             view
         });
         let file_editor = cx.new(FileEditorView::new);
+        // The editor scales with the app font size, like the rest of the UI.
+        file_editor.update(cx, |ed, _| {
+            ed.set_font_size(config.general.ui_font_size);
+            ed.set_font_family(config.general.ui_font_family.clone());
+        });
         let auto_update_enabled = config.general.auto_update;
         let ui_font_family = config.general.ui_font_family.clone();
         let ui_font_size = config.general.ui_font_size;
@@ -787,6 +792,14 @@ impl Workspace {
                 // Apply application UI font (cascades to all child views on re-render)
                 self.ui_font_family = config.general.ui_font_family.clone();
                 self.ui_font_size = config.general.ui_font_size;
+                // The file editor's text scales with the app font size too.
+                let ed_size = config.general.ui_font_size;
+                let ed_family = config.general.ui_font_family.clone();
+                self.file_editor.update(cx, |ed, cx| {
+                    ed.set_font_size(ed_size);
+                    ed.set_font_family(ed_family);
+                    cx.notify();
+                });
                 // Apply auto-update preference
                 let auto_update = config.general.auto_update;
                 self.auto_updater.update(cx, |updater, cx| {
