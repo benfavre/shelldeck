@@ -58,7 +58,7 @@ interface DownloadInfo {
 }
 
 async function getDownloadInfo(env: Env): Promise<DownloadInfo> {
-  const fallback: DownloadInfo = { version: "0.1.6" };
+  const fallback: DownloadInfo = { version: "0.2.8" };
   try {
     const raw = await env.SHELLDECK_KV.get("latest-release");
     if (!raw) return fallback;
@@ -70,15 +70,15 @@ async function getDownloadInfo(env: Env): Promise<DownloadInfo> {
         size: manifest.platforms["linux-x86_64"].size,
       };
     }
-    if (manifest.platforms["darwin-aarch64"]) {
+    if (manifest.platforms["macos-aarch64"]) {
       info.macos = {
-        url: manifest.platforms["darwin-aarch64"].url,
-        size: manifest.platforms["darwin-aarch64"].size,
+        url: manifest.platforms["macos-aarch64"].url,
+        size: manifest.platforms["macos-aarch64"].size,
       };
-    } else if (manifest.platforms["darwin-x86_64"]) {
+    } else if (manifest.platforms["macos-x86_64"]) {
       info.macos = {
-        url: manifest.platforms["darwin-x86_64"].url,
-        size: manifest.platforms["darwin-x86_64"].size,
+        url: manifest.platforms["macos-x86_64"].url,
+        size: manifest.platforms["macos-x86_64"].size,
       };
     }
     if (manifest.platforms["windows-x86_64"]) {
@@ -811,7 +811,7 @@ function switchInstallTab(tab) {
 }
 
 async function renderInstallSh(env: Env): Promise<Response> {
-  let version = "0.1.6";
+  let version = "0.2.8";
   let linuxX86Url = "";
   let linuxX86Sha = "";
   let darwinArm64Url = "";
@@ -829,13 +829,13 @@ async function renderInstallSh(env: Env): Promise<Response> {
         linuxX86Url = p["linux-x86_64"].url;
         linuxX86Sha = p["linux-x86_64"].sha256;
       }
-      if (p["darwin-aarch64"]) {
-        darwinArm64Url = p["darwin-aarch64"].url;
-        darwinArm64Sha = p["darwin-aarch64"].sha256;
+      if (p["macos-aarch64"]) {
+        darwinArm64Url = p["macos-aarch64"].url;
+        darwinArm64Sha = p["macos-aarch64"].sha256;
       }
-      if (p["darwin-x86_64"]) {
-        darwinX86Url = p["darwin-x86_64"].url;
-        darwinX86Sha = p["darwin-x86_64"].sha256;
+      if (p["macos-x86_64"]) {
+        darwinX86Url = p["macos-x86_64"].url;
+        darwinX86Sha = p["macos-x86_64"].sha256;
       }
     }
   } catch {
@@ -1015,7 +1015,7 @@ echo ""
 }
 
 async function renderInstallPs1(env: Env): Promise<Response> {
-  let version = "0.1.6";
+  let version = "0.2.8";
   let windowsUrl = "";
   let windowsSha = "";
 
