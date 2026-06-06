@@ -7,7 +7,7 @@ A GPU-accelerated native desktop terminal and SSH companion app built with Rust.
 - **GPU-Accelerated Rendering** -- Native performance via [GPUI](https://gpui.rs) framework
 - **SSH Connection Manager** -- Auto-imports from `~/.ssh/config`, supports jump hosts, key auth, and password auth via OS keychain
 - **Terminal Emulator** -- Full VTE escape sequence support (SGR, CSI, OSC), scrollback, alt screen buffer, BCE
-- **Split Panes** -- Horizontal/vertical splits with adjustable ratios
+- **Nested Pane Layouts** -- tmux-like recursive split tree (N panes, mixed horizontal/vertical) with drag-to-resize dividers and click/keyboard focus
 - **Port Forwarding** -- Local, remote, and SOCKS proxy tunnels with visual status
 - **Script Editor** -- Write, save, and execute scripts on remote hosts with variable templating
 - **Server Sync** -- Side-by-side file browser, nginx/database discovery, rsync/mysqldump/pg_dump sync wizard
@@ -15,13 +15,30 @@ A GPU-accelerated native desktop terminal and SSH companion app built with Rust.
 - **Session Persistence** -- Restore workspace layout and sessions across restarts
 - **Search** -- In-terminal text search with match highlighting
 - **URL Detection** -- Clickable URLs detected in terminal output
-- **Customizable Themes** -- Built-in theme system with color customization
+- **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and `Ctrl+P`
+- **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI
 
+## Install
+
+Download the latest release from **[shelldeck.1clic.pro](https://shelldeck.1clic.pro)** (Linux AppImage/tarball, macOS DMG, Windows installer), or use the install script:
+
+```bash
+# Linux / macOS
+curl -fsSL https://shelldeck.1clic.pro/install.sh | bash
+```
+
+```powershell
+# Windows
+powershell -c "irm shelldeck.1clic.pro/install.ps1 | iex"
+```
+
+ShellDeck auto-updates itself once installed. To build from source instead, see below.
+
 ## Requirements
 
-- **Rust nightly** (specified in `rust-toolchain.toml`)
+- **Rust nightly**, pinned in `rust-toolchain.toml` (do not change to floating `nightly` — it breaks the macOS build; see `CLAUDE.md`)
 - **Linux**: `libssl-dev`, `pkg-config`, `libxkbcommon-dev`, `libwayland-dev`
 - **macOS**: Xcode Command Line Tools, OpenSSL (`brew install openssl`)
 
