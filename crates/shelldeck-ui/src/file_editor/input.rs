@@ -56,6 +56,11 @@ impl FileEditorView {
                 return;
             }
 
+        // ---- Find-in-files mode ----
+        if self.fif_visible && self.handle_fif_key(event, ctrl, cx) {
+            return;
+        }
+
         // ---- Context menu: dismiss on any key ----
         if self.context_menu_visible {
             self.context_menu_visible = false;
@@ -168,6 +173,12 @@ impl FileEditorView {
                     return;
                 }
                 "f" => {
+                    // Ctrl+Shift+F → find in files; Ctrl+F → in-buffer search.
+                    if shift {
+                        self.toggle_find_in_files();
+                        cx.notify();
+                        return;
+                    }
                     self.search_visible = !self.search_visible;
                     if !self.search_visible {
                         self.search_query.clear();
@@ -211,6 +222,22 @@ impl FileEditorView {
                 }
                 "m" => {
                     self.minimap_visible = !self.minimap_visible;
+                    cx.notify();
+                    return;
+                }
+                // Editor zoom (independent of the app font size).
+                "=" | "+" => {
+                    self.zoom_in();
+                    cx.notify();
+                    return;
+                }
+                "-" | "_" => {
+                    self.zoom_out();
+                    cx.notify();
+                    return;
+                }
+                "0" => {
+                    self.zoom_reset();
                     cx.notify();
                     return;
                 }
@@ -674,6 +701,71 @@ impl FileEditorView {
                         for ch in key_char.chars() {
                             if ch.is_ascii_digit() {
                                 self.goto_line_query.push(ch);
+                            }
+                        }
+                        cx.notify();
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Find-in-files overlay key handling. Returns true if the key was consumed.
+    fn handle_fif_key(
+        &mut self,
+        event: &KeyDownEvent,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let ks = &event.keystroke;
+        match ks.key.as_str() {
+            "escape" => {
+                self.fif_visible = false;
+                cx.notify();
+                true
+            }
+            "enter" => {
+                // First Enter (or after editing the query) runs the search;
+                // pressing Enter again opens the selected result.
+                if self.fif_query.trim() != self.fif_last_query {
+                    self.fif_last_query = self.fif_query.trim().to_string();
+                    self.run_find_in_files(cx);
+                } else if !self.fif_results.is_empty() {
+                    self.open_fif_result(self.fif_selected, cx);
+                }
+                cx.notify();
+                true
+            }
+            "down" => {
+                if !self.fif_results.is_empty() {
+                    self.fif_selected = (self.fif_selected + 1).min(self.fif_results.len() - 1);
+                }
+                cx.notify();
+                true
+            }
+            "up" => {
+                self.fif_selected = self.fif_selected.saturating_sub(1);
+                cx.notify();
+                true
+            }
+            "backspace" => {
+                self.fif_query.pop();
+                cx.notify();
+                true
+            }
+            "f" if ctrl => {
+                self.fif_visible = false;
+                cx.notify();
+                true
+            }
+            _ => {
+                if !ctrl && !ks.modifiers.alt {
+                    if let Some(ref key_char) = ks.key_char {
+                        for ch in key_char.chars() {
+                            if !ch.is_control() {
+                                self.fif_query.push(ch);
                             }
                         }
                         cx.notify();

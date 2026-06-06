@@ -36,6 +36,10 @@ impl FileBrowserPanel {
         }
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn set_root(&mut self, root: PathBuf) {
         self.expanded_dirs.clear();
         self.expanded_dirs.insert(root.clone());

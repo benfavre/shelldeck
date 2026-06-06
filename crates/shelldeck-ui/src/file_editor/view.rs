@@ -331,11 +331,31 @@ pub struct FileEditorView {
     pub(crate) pending_close_tab: Option<usize>,
     // Cached layout
     pub(crate) font_family: String,
+    /// Base text size, driven by the app font-size setting.
     pub(crate) font_size: f32,
+    /// Per-editor zoom offset added to the base size (Ctrl +/-/0), in px.
+    pub(crate) zoom: f32,
     // Canvas bounds origin (set during prepaint, used by mouse handlers)
     pub(crate) canvas_origin: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // Canvas height in pixels (set during prepaint, used for scroll_lines_per_page)
     pub(crate) canvas_height: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    // Find-in-files (search across the workspace tree)
+    pub(crate) fif_visible: bool,
+    pub(crate) fif_query: String,
+    pub(crate) fif_last_query: String,
+    pub(crate) fif_results: Vec<FifMatch>,
+    pub(crate) fif_selected: usize,
+    /// True while a background find-in-files walk is in progress.
+    pub(crate) fif_searching: bool,
+}
+
+/// One find-in-files match: a file, 1-based line, byte column, and a trimmed
+/// preview of the line.
+#[derive(Clone)]
+pub(crate) struct FifMatch {
+    pub path: PathBuf,
+    pub line: usize,
+    pub preview: String,
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditorView {}
@@ -375,6 +395,13 @@ impl FileEditorView {
             pending_close_tab: None,
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            zoom: 0.0,
+            fif_visible: false,
+            fif_query: String::new(),
+            fif_last_query: String::new(),
+            fif_results: Vec::new(),
+            fif_selected: 0,
+            fif_searching: false,
             canvas_origin: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             canvas_height: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
@@ -528,25 +555,196 @@ impl FileEditorView {
     // Glyph cache
     // -----------------------------------------------------------------------
 
+    /// Effective editor text size = app base size + per-editor zoom, clamped.
+    pub(crate) fn effective_font_size(&self) -> f32 {
+        (self.font_size + self.zoom).clamp(8.0, 40.0)
+    }
+
     fn ensure_glyph_cache(&mut self, window: &Window) {
-        if self.glyph_cache.is_none() {
+        let fs = self.effective_font_size();
+        // Rebuild when the cache is missing or was built at a different size
+        // (covers both the app font-size setting and per-editor zoom).
+        let stale = self
+            .glyph_cache
+            .as_ref()
+            .map(|c| (c.font_size.to_f64() as f32 - fs).abs() > 0.01)
+            .unwrap_or(true);
+        if stale {
             self.glyph_cache = Some(Arc::new(GlyphCache::build(
                 window.text_system(),
                 &self.font_family,
-                self.font_size,
+                fs,
             )));
         }
     }
 
-    /// Set the editor text size (driven by the app "App Font Size" setting so
-    /// the editor scales with the rest of the UI). Rebuilds the glyph cache at
-    /// the new size on the next render.
+    /// Set the editor base text size (driven by the app "App Font Size" setting
+    /// so the editor scales with the rest of the UI). The glyph cache rebuilds
+    /// automatically on the next render if the effective size changed.
     pub fn set_font_size(&mut self, size: f32) {
-        let size = size.clamp(8.0, 40.0);
-        if (self.font_size - size).abs() > f32::EPSILON {
-            self.font_size = size;
-            self.glyph_cache = None;
+        self.font_size = size.clamp(8.0, 40.0);
+    }
+
+    /// Zoom the editor text in/out/reset, independent of the app font size.
+    pub fn zoom_in(&mut self) {
+        self.zoom = (self.zoom + 1.0).min(24.0);
+    }
+    pub fn zoom_out(&mut self) {
+        self.zoom = (self.zoom - 1.0).max(-6.0);
+    }
+    pub fn zoom_reset(&mut self) {
+        self.zoom = 0.0;
+    }
+
+    // -----------------------------------------------------------------------
+    // Find in files
+    // -----------------------------------------------------------------------
+
+    pub fn toggle_find_in_files(&mut self) {
+        self.fif_visible = !self.fif_visible;
+        if self.fif_visible {
+            self.search_visible = false;
+            self.goto_line_visible = false;
+            self.context_menu_visible = false;
         }
+    }
+
+    /// Run the find-in-files query over the file-browser root. The actual file
+    /// walk runs on a background thread (it does blocking disk I/O) and the
+    /// results are applied back on the UI thread, so a large tree can never
+    /// freeze or crash the editor.
+    pub fn run_find_in_files(&mut self, cx: &mut Context<Self>) {
+        self.fif_results.clear();
+        self.fif_selected = 0;
+        let query = self.fif_query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let case_sensitive = self.search_case_sensitive;
+        let needle = if case_sensitive {
+            query
+        } else {
+            query.to_lowercase()
+        };
+        let root = self.file_browser.root().to_path_buf();
+        self.fif_searching = true;
+
+        let search = cx.background_executor().spawn(async move {
+            let mut results = Vec::new();
+            let mut files_scanned = 0usize;
+            FileEditorView::fif_walk(
+                &root,
+                &needle,
+                case_sensitive,
+                &mut results,
+                &mut files_scanned,
+                0,
+            );
+            results
+        });
+
+        cx.spawn(async move |this, cx| {
+            let results = search.await;
+            let _ = this.update(cx, |this, cx| {
+                this.fif_searching = false;
+                if this.fif_visible {
+                    this.fif_results = results;
+                    this.fif_selected = 0;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn fif_walk(
+        dir: &std::path::Path,
+        needle: &str,
+        case_sensitive: bool,
+        out: &mut Vec<FifMatch>,
+        files_scanned: &mut usize,
+        depth: usize,
+    ) {
+        const MAX_RESULTS: usize = 1000;
+        const MAX_FILES: usize = 8000;
+        const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MB
+        const MAX_DEPTH: usize = 32;
+        if out.len() >= MAX_RESULTS || *files_scanned >= MAX_FILES || depth > MAX_DEPTH {
+            return;
+        }
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            if out.len() >= MAX_RESULTS || *files_scanned >= MAX_FILES {
+                return;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            // Use the dir-entry file type (does NOT follow symlinks) so symlink
+            // cycles can't cause infinite recursion / a stack overflow.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                if matches!(
+                    name.as_str(),
+                    "target" | "node_modules" | "__pycache__" | ".git" | "dist" | "build"
+                ) {
+                    continue;
+                }
+                Self::fif_walk(&path, needle, case_sensitive, out, files_scanned, depth + 1);
+            } else if file_type.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.len() > MAX_FILE_SIZE {
+                        continue;
+                    }
+                }
+                *files_scanned += 1;
+                let Ok(content) = std::fs::read_to_string(&path) else {
+                    continue; // non-UTF-8 / unreadable → skip (binary)
+                };
+                for (li, line) in content.lines().enumerate() {
+                    let matched = if case_sensitive {
+                        line.contains(needle)
+                    } else {
+                        line.to_lowercase().contains(needle)
+                    };
+                    if matched {
+                        out.push(FifMatch {
+                            path: path.clone(),
+                            line: li + 1,
+                            preview: line.trim_start().chars().take(160).collect(),
+                        });
+                        if out.len() >= MAX_RESULTS {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Open the file for the given result and jump to its line.
+    pub fn open_fif_result(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(m) = self.fif_results.get(idx).cloned() else {
+            return;
+        };
+        self.open_file(m.path, cx);
+        if let Some(tab) = self.active_tab_mut() {
+            if let Some(buf) = tab.buffer_mut() {
+                buf.goto_line(m.line);
+            }
+        }
+        self.ensure_cursor_visible();
+        self.fif_visible = false;
+        cx.notify();
     }
 
     /// Set the editor font family. Rebuilds the glyph cache on the next render.
@@ -2480,11 +2678,180 @@ impl Render for FileEditorView {
             container = container.child(self.render_context_menu(cx));
         }
 
+        // Find-in-files overlay
+        if self.fif_visible {
+            container = container.child(self.render_find_in_files(cx));
+        }
+
         container
     }
 }
 
 impl FileEditorView {
+    fn render_find_in_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::scale::px;
+        let handle = cx.entity().downgrade();
+        let root = self.file_browser.root().to_path_buf();
+
+        // Query row (input is captured via keystrokes; shown inline).
+        let query_text = if self.fif_query.is_empty() {
+            "type to search the workspace…".to_string()
+        } else {
+            self.fif_query.clone()
+        };
+        let query_color = if self.fif_query.is_empty() {
+            ShellDeckColors::text_muted()
+        } else {
+            ShellDeckColors::text_primary()
+        };
+        let query_row = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("FIND IN FILES"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .text_color(query_color)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(query_text),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(if self.fif_searching {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::text_muted()
+                    })
+                    .child(if self.fif_searching {
+                        "Searching…".to_string()
+                    } else {
+                        format!("{} results", self.fif_results.len())
+                    }),
+            );
+
+        // Only render a bounded window of rows — painting thousands of rows
+        // every frame is what made typing/scrolling lag.
+        const MAX_DISPLAY: usize = 200;
+
+        let mut list = div()
+            .id("fif-results")
+            .flex()
+            .flex_col()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .py(px(2.0));
+
+        if self.fif_results.is_empty() && !self.fif_last_query.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("No matches"),
+            );
+        }
+
+        for (i, m) in self.fif_results.iter().enumerate().take(MAX_DISPLAY) {
+            let selected = i == self.fif_selected;
+            let h = handle.clone();
+            let rel = m
+                .path
+                .strip_prefix(&root)
+                .unwrap_or(&m.path)
+                .display()
+                .to_string();
+
+            let mut row = div()
+                .id(ElementId::from(SharedString::from(format!("fif-{i}"))))
+                .flex()
+                .flex_col()
+                .px(px(12.0))
+                .py(px(3.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+            if selected {
+                row = row.bg(ShellDeckColors::selected_bg());
+            }
+            row = row
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::primary())
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .child(format!("{}:{}", rel, m.line)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .child(m.preview.clone()),
+                )
+                .on_click(move |_e, _w, cx| {
+                    if let Some(v) = h.upgrade() {
+                        v.update(cx, |this, cx| this.open_fif_result(i, cx));
+                    }
+                });
+            list = list.child(row);
+        }
+
+        if self.fif_results.len() > MAX_DISPLAY {
+            list = list.child(
+                div()
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!(
+                        "… showing first {} of {} matches — refine your query",
+                        MAX_DISPLAY,
+                        self.fif_results.len()
+                    )),
+            );
+        }
+
+        // Centered overlay near the top of the editor.
+        div()
+            .absolute()
+            .top(px(40.0))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(620.0))
+                    .max_h(px(460.0))
+                    .flex()
+                    .flex_col()
+                    .bg(ShellDeckColors::bg_surface())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .rounded(px(10.0))
+                    .shadow_xl()
+                    .overflow_hidden()
+                    .child(query_row)
+                    .child(list),
+            )
+    }
+
     fn render_context_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (menu_x, menu_y) = self.context_menu_position;
         let handle = cx.entity().downgrade();
