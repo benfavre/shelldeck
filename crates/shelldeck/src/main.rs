@@ -59,13 +59,10 @@ fn main() -> Result<()> {
         // Initialize adabraka-ui
         adabraka_ui::init(cx);
 
-        // Install theme
-        let is_dark = !matches!(
-            config.theme,
-            shelldeck_core::config::app_config::ThemePreference::Light
-        );
-        ShellDeckColors::set_dark_mode(is_dark);
-        let theme = if is_dark {
+        // Install theme — resolve the configured preference into a full palette,
+        // then pick the matching adabraka-ui component theme.
+        ShellDeckColors::set_theme(&config.theme);
+        let theme = if config.theme.is_dark() {
             Theme::dark()
         } else {
             Theme::light()

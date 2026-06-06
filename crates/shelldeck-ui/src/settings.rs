@@ -5,7 +5,7 @@ use crate::scale::px;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::themes::TerminalTheme;
 
-use crate::theme::ShellDeckColors;
+use crate::theme::{palette_for, ShellDeckColors};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -57,6 +57,45 @@ impl SettingsView {
     /// The name of the currently selected terminal theme.
     pub fn terminal_theme_name(&self) -> &str {
         &self.config.terminal.theme
+    }
+
+    /// Select an application theme and persist it immediately. Emits
+    /// `ThemeChanged` so the workspace swaps the live palette. Shared by the
+    /// Appearance settings cards and the titlebar theme switcher.
+    pub fn select_app_theme(&mut self, pref: ThemePreference, cx: &mut Context<Self>) {
+        if self.config.theme == pref {
+            return;
+        }
+        self.config.theme = pref.clone();
+        if let Err(e) = self.config.save() {
+            tracing::error!("Failed to save config: {}", e);
+        }
+        self.unsaved_changes = false;
+        cx.emit(SettingsEvent::ThemeChanged(pref));
+        cx.notify();
+    }
+
+    /// The currently selected application theme.
+    pub fn app_theme(&self) -> ThemePreference {
+        self.config.theme.clone()
+    }
+
+    /// Nudge the UI scale (app font size) by `delta`, clamped to [10, 22], and
+    /// persist immediately. Emits `ConfigChanged` so the workspace re-applies
+    /// the rem size live. Shared by the Appearance settings and the titlebar
+    /// scale controls.
+    pub fn adjust_ui_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let new = (self.config.general.ui_font_size + delta).clamp(10.0, 22.0);
+        if (new - self.config.general.ui_font_size).abs() < f32::EPSILON {
+            return;
+        }
+        self.config.general.ui_font_size = new;
+        self.save_config(cx);
+    }
+
+    /// The current UI scale (app font size in px).
+    pub fn ui_font_size(&self) -> f32 {
+        self.config.general.ui_font_size
     }
 
     fn save_config(&mut self, cx: &mut Context<Self>) {
@@ -446,49 +485,139 @@ impl SettingsView {
     }
 
     fn render_appearance_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Theme preference buttons (Dark / Light / System)
+        // App theme picker — a live-preview card per built-in theme.
         let current_theme = self.config.theme.clone();
-        let theme_options = [
-            ("Dark", ThemePreference::Dark),
-            ("Light", ThemePreference::Light),
-            ("System", ThemePreference::System),
-        ];
+        let mut app_theme_cards = div().flex().gap(px(8.0)).flex_wrap();
 
-        let mut theme_buttons = div().flex().items_center().gap(px(4.0));
-        for (label, pref) in &theme_options {
-            let is_active = current_theme == *pref;
-            let pref_clone = pref.clone();
-            let mut btn = div()
+        for pref in ThemePreference::all() {
+            let pref = pref.clone();
+            let is_active = current_theme == pref;
+            let label = pref.display_name().to_string();
+            let p = palette_for(&pref);
+
+            // Mini app mock-up: sidebar stripe + content with an accent bar and
+            // a couple of "text" lines, all rendered in the theme's own colors.
+            let preview = div()
+                .w_full()
+                .flex_grow()
+                .rounded(px(4.0))
+                .overflow_hidden()
+                .flex()
+                .child(
+                    // Sidebar
+                    div()
+                        .w(px(20.0))
+                        .h_full()
+                        .bg(p.bg_sidebar)
+                        .border_r_1()
+                        .border_color(p.border)
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(3.0))
+                        .child(div().w(px(8.0)).h(px(3.0)).rounded(px(1.0)).bg(p.primary))
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .h(px(3.0))
+                                .rounded(px(1.0))
+                                .bg(p.text_muted),
+                        ),
+                )
+                .child(
+                    // Content
+                    div()
+                        .flex_grow()
+                        .h_full()
+                        .bg(p.bg_primary)
+                        .p(px(6.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(div().w(px(30.0)).h(px(4.0)).rounded(px(2.0)).bg(p.primary))
+                        .child(
+                            div()
+                                .w(px(46.0))
+                                .h(px(3.0))
+                                .rounded(px(1.0))
+                                .bg(p.text_primary),
+                        )
+                        .child(
+                            div()
+                                .w(px(38.0))
+                                .h(px(3.0))
+                                .rounded(px(1.0))
+                                .bg(p.text_muted),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(3.0))
+                                .child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(p.success))
+                                .child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(p.warning))
+                                .child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(p.error)),
+                        ),
+                );
+
+            let mut card = div()
                 .id(ElementId::from(SharedString::from(format!(
-                    "theme-pref-{}",
+                    "app-theme-{}",
                     label
                 ))))
-                .px(px(10.0))
-                .py(px(4.0))
-                .rounded(px(4.0))
-                .text_size(px(12.0))
-                .cursor_pointer();
+                .w(px(132.0))
+                .h(px(92.0))
+                .rounded(px(6.0))
+                .border_1()
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .p(px(4.0));
 
             if is_active {
-                btn = btn
-                    .bg(ShellDeckColors::primary().opacity(0.2))
-                    .text_color(ShellDeckColors::primary());
+                card = card.border_color(ShellDeckColors::primary());
             } else {
-                btn = btn
-                    .text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()));
+                card = card
+                    .border_color(ShellDeckColors::border())
+                    .hover(|el| el.border_color(ShellDeckColors::primary()));
             }
 
-            btn = btn
-                .child(label.to_string())
+            card = card
+                .child(preview)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(if is_active {
+                                    FontWeight::SEMIBOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if is_active {
+                                    ShellDeckColors::primary()
+                                } else {
+                                    ShellDeckColors::text_primary()
+                                })
+                                .child(label.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::primary())
+                                .child(if is_active { "\u{2713}" } else { "" }),
+                        ),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.config.theme = pref_clone.clone();
-                    this.mark_changed();
-                    cx.emit(SettingsEvent::ThemeChanged(pref_clone.clone()));
-                    cx.notify();
+                    this.select_app_theme(pref.clone(), cx);
                 }));
 
-            theme_buttons = theme_buttons.child(btn);
+            app_theme_cards = app_theme_cards.child(card);
         }
 
         // Terminal theme picker (built-in themes)
@@ -602,11 +731,27 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .child(Self::render_setting_row(
-                "Theme",
-                "Application color theme",
-                theme_buttons,
-            ))
+            .child(
+                div()
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child("App Theme"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("Colors for the whole interface — sidebar, panels, and chrome."),
+                    )
+                    .child(app_theme_cards),
+            )
             .child(
                 div()
                     .py(px(12.0))

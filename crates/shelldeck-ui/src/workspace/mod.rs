@@ -1,7 +1,7 @@
 use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
+use shelldeck_core::config::app_config::AppConfig;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
@@ -153,6 +153,8 @@ pub struct Workspace {
     /// True once the user has been warned about closing with active sessions;
     /// the next close attempt is allowed through (two-step confirm).
     pending_close_confirm: bool,
+    /// Whether the titlebar theme-switcher dropdown is open.
+    theme_menu_open: bool,
 }
 
 impl Workspace {
@@ -432,6 +434,7 @@ impl Workspace {
             pending_delete: None,
             app_config,
             pending_close_confirm: false,
+            theme_menu_open: false,
         }
     }
 
@@ -755,13 +758,15 @@ impl Workspace {
             }
             SettingsEvent::ThemeChanged(pref) => {
                 tracing::info!("Theme preference changed to {:?}", pref);
-                let is_dark = matches!(pref, ThemePreference::Dark | ThemePreference::System);
 
-                // Switch the app-wide ShellDeckColors
-                ShellDeckColors::set_dark_mode(is_dark);
+                // Keep the in-memory config in sync with the active theme.
+                self.app_config.theme = pref.clone();
 
-                // Switch the adabraka-ui component theme
-                let ui_theme = if is_dark {
+                // Switch the app-wide ShellDeckColors palette
+                ShellDeckColors::set_theme(pref);
+
+                // Switch the adabraka-ui component theme to match the base tone
+                let ui_theme = if pref.is_dark() {
                     Theme::dark()
                 } else {
                     Theme::light()
@@ -1254,6 +1259,8 @@ impl Workspace {
     /// Render the custom window titlebar with drag area and window controls.
     fn render_titlebar(
         is_maximized: bool,
+        theme_menu_open: bool,
+        ui_font_size: f32,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1261,9 +1268,22 @@ impl Workspace {
         let titlebar_border = ShellDeckColors::border();
         let title_color = ShellDeckColors::text_primary();
         let title_dim = ShellDeckColors::text_muted();
-        let btn_w = px(46.0);
+        let accent = ShellDeckColors::primary();
         let btn_text = ShellDeckColors::text_muted();
         let btn_hover_bg = ShellDeckColors::hover_bg();
+
+        // Brand mark — a small accent-tinted rounded badge with the diamond glyph.
+        let brand_badge = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(20.0))
+            .rounded(px(5.0))
+            .bg(accent.opacity(0.18))
+            .text_xs()
+            .font_weight(FontWeight::BOLD)
+            .text_color(accent)
+            .child("\u{25C6}"); // ◆
 
         // Title area — draggable
         let title_area = div()
@@ -1271,100 +1291,187 @@ impl Workspace {
             .h_full()
             .flex()
             .items_center()
-            .px_4()
-            .gap_2()
+            .px(px(10.0))
+            .gap(px(8.0))
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
                 window.start_window_move();
             })
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::primary())
-                    .child("\u{25C6}"), // ◆
-            )
+            .child(brand_badge)
             .child(
                 div()
                     .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(title_color)
                     .child("ShellDeck"),
             )
             .child(
+                // Version pill
                 div()
-                    .text_xs()
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(ShellDeckColors::badge_bg())
                     .text_color(title_dim)
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::MEDIUM)
                     .child(format!("v{}", shelldeck_core::VERSION)),
             );
 
-        // Minimize button
-        let minimize_btn = div()
-            .id("titlebar-minimize")
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(btn_w)
-            .h_full()
-            .text_sm()
-            .text_color(btn_text)
-            .hover(|s| s.bg(btn_hover_bg).text_color(gpui::white()))
-            .window_control_area(WindowControlArea::Min)
-            .on_click(cx.listener(|_this, _event: &ClickEvent, window, _cx| {
-                window.minimize_window();
-            }))
-            .child("\u{2500}"); // ─
+        // A window-control button with a rounded hover affordance.
+        let control_btn = |id: &'static str,
+                           glyph: &'static str,
+                           area: WindowControlArea,
+                           danger: bool| {
+            let hover_bg = if danger {
+                ShellDeckColors::error()
+            } else {
+                btn_hover_bg
+            };
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(28.0))
+                .rounded(px(6.0))
+                .text_sm()
+                .text_color(btn_text)
+                .hover(|s| s.bg(hover_bg).text_color(gpui::white()))
+                .window_control_area(area)
+                .child(glyph)
+        };
 
-        // Maximize / Restore button
+        let minimize_btn = control_btn(
+            "titlebar-minimize",
+            "\u{2500}", // ─
+            WindowControlArea::Min,
+            false,
+        )
+        .on_click(cx.listener(|_this, _event: &ClickEvent, window, _cx| {
+            window.minimize_window();
+        }));
+
         let maximize_icon = if is_maximized { "\u{25A3}" } else { "\u{25A1}" }; // ▣ or □
-        let maximize_btn = div()
-            .id("titlebar-maximize")
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(btn_w)
-            .h_full()
-            .text_sm()
-            .text_color(btn_text)
-            .hover(|s| s.bg(btn_hover_bg).text_color(gpui::white()))
-            .window_control_area(WindowControlArea::Max)
-            .on_click(cx.listener(|_this, _event: &ClickEvent, window, _cx| {
-                window.zoom_window();
-            }))
-            .child(maximize_icon);
+        let maximize_btn = control_btn(
+            "titlebar-maximize",
+            maximize_icon,
+            WindowControlArea::Max,
+            false,
+        )
+        .on_click(cx.listener(|_this, _event: &ClickEvent, window, _cx| {
+            window.zoom_window();
+        }));
 
-        // Close button
-        let close_hover_bg = ShellDeckColors::error();
         let h_quit = handle.clone();
-        let close_btn = div()
-            .id("titlebar-close")
+        let close_btn = control_btn(
+            "titlebar-close",
+            "\u{00D7}", // ×
+            WindowControlArea::Close,
+            true,
+        )
+        .on_click(
+            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                if let Some(ws) = h_quit.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.shutdown(cx);
+                        cx.quit();
+                    });
+                }
+            },
+        );
+
+        // Theme switcher — a 2x2 palette swatch that reflects the active theme
+        // and toggles the dropdown menu.
+        let mut theme_btn = div()
+            .id("titlebar-theme")
             .flex()
             .items_center()
             .justify_center()
-            .w(btn_w)
-            .h_full()
-            .text_sm()
-            .text_color(btn_text)
-            .hover(|s| s.bg(close_hover_bg).text_color(gpui::white()))
-            .window_control_area(WindowControlArea::Close)
-            .on_click(
-                move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                    if let Some(ws) = h_quit.upgrade() {
-                        ws.update(cx, |ws, cx| {
-                            ws.shutdown(cx);
-                            cx.quit();
-                        });
-                    }
-                },
-            );
-        let close_btn = close_btn.child("\u{00D7}"); // ×
+            .size(px(28.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(btn_hover_bg))
+            .child(
+                div()
+                    .size(px(14.0))
+                    .rounded(px(4.0))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_wrap()
+                    .child(div().size(px(7.0)).bg(ShellDeckColors::primary()))
+                    .child(div().size(px(7.0)).bg(ShellDeckColors::success()))
+                    .child(div().size(px(7.0)).bg(ShellDeckColors::warning()))
+                    .child(div().size(px(7.0)).bg(ShellDeckColors::error())),
+            )
+            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                this.theme_menu_open = !this.theme_menu_open;
+                cx.notify();
+            }));
+        if theme_menu_open {
+            theme_btn = theme_btn.bg(ShellDeckColors::hover_bg());
+        }
+
+        // UI scale controls — a compact −/value/+ group that adjusts the app
+        // font size (which drives proportional UI scaling) live.
+        let scale_btn = |id: &'static str, glyph: &'static str| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.0))
+                .rounded(px(5.0))
+                .text_sm()
+                .text_color(btn_text)
+                .cursor_pointer()
+                .hover(|s| s.bg(btn_hover_bg).text_color(ShellDeckColors::text_primary()))
+                .child(glyph)
+        };
+        let dec_btn = scale_btn("titlebar-scale-down", "\u{2212}") // −
+            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                this.settings
+                    .update(cx, |settings, cx| settings.adjust_ui_font_size(-1.0, cx));
+                cx.notify();
+            }));
+        let inc_btn = scale_btn("titlebar-scale-up", "+").on_click(cx.listener(
+            |this, _event: &ClickEvent, _window, cx| {
+                this.settings
+                    .update(cx, |settings, cx| settings.adjust_ui_font_size(1.0, cx));
+                cx.notify();
+            },
+        ));
+        let scale_group = div()
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .child(dec_btn)
+            .child(
+                div()
+                    .min_w(px(30.0))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(11.0))
+                    .text_color(title_dim)
+                    .child(format!("{}px", ui_font_size as i32)),
+            )
+            .child(inc_btn);
+
+        // Subtle vertical divider between the chrome control clusters.
+        let divider = || {
+            div()
+                .w(px(1.0))
+                .h(px(16.0))
+                .mx(px(4.0))
+                .bg(titlebar_border)
+        };
 
         div()
             .flex()
             .items_center()
             .w_full()
             .flex_shrink_0()
-            .h(px(38.0))
+            .h(px(40.0))
             .bg(titlebar_bg)
             .border_b_1()
             .border_color(titlebar_border)
@@ -1374,10 +1481,139 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .h_full()
+                    .gap(px(4.0))
+                    .pr(px(8.0))
+                    .child(scale_group)
+                    .child(divider())
+                    .child(theme_btn)
+                    .child(divider())
                     .child(minimize_btn)
                     .child(maximize_btn)
                     .child(close_btn),
             )
+    }
+
+    /// Render the titlebar theme-switcher dropdown: a full-window backdrop that
+    /// dismisses on click, plus an anchored panel listing every app theme.
+    fn render_theme_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use shelldeck_core::config::app_config::ThemePreference;
+
+        let current = self.app_config.theme.clone();
+
+        let mut panel = div()
+            .id("theme-menu-panel")
+            .absolute()
+            .top(px(46.0))
+            .right(px(12.0))
+            .w(px(212.0))
+            .max_h(px(440.0))
+            .overflow_y_scroll()
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(10.0))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.45),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(20.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            // Clicks inside the panel must not bubble to the dismiss backdrop.
+            .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                cx.stop_propagation();
+            });
+
+        for pref in ThemePreference::all() {
+            let pref = pref.clone();
+            let is_active = current == pref;
+            let p = crate::theme::palette_for(&pref);
+            let label = pref.display_name().to_string();
+
+            let mut item = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "theme-menu-{label}"
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .py(px(5.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                // A mini swatch showing the theme's background + accent.
+                .child(
+                    div()
+                        .size(px(16.0))
+                        .rounded(px(4.0))
+                        .bg(p.bg_primary)
+                        .border_1()
+                        .border_color(p.border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(div().size(px(8.0)).rounded(px(2.0)).bg(p.primary)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.0))
+                        .text_color(if is_active {
+                            ShellDeckColors::primary()
+                        } else {
+                            ShellDeckColors::text_primary()
+                        })
+                        .font_weight(if is_active {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .child(label),
+                );
+
+            if is_active {
+                item = item.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::primary())
+                        .child("\u{2713}"),
+                );
+            }
+
+            item = item.on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                let pref = pref.clone();
+                this.settings.update(cx, |settings, cx| {
+                    settings.select_app_theme(pref, cx);
+                });
+                this.theme_menu_open = false;
+                cx.notify();
+            }));
+
+            panel = panel.child(item);
+        }
+
+        // Transparent full-window backdrop — a click anywhere outside the panel
+        // closes the menu.
+        div()
+            .id("theme-menu-backdrop")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _window, cx| {
+                    this.theme_menu_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(panel)
     }
 }
 
@@ -1604,6 +1840,28 @@ impl Render for Workspace {
             root = root.font_family(self.ui_font_family.clone());
         }
 
+        // Window chrome: clip children to the root so the custom titlebar and
+        // status bar follow the window's rounded corners. When floating (not
+        // maximized) draw a soft drop shadow and a 1px frame inside the 5px
+        // client inset; when maximized the window is edge-to-edge with square
+        // corners and no frame.
+        root = root.overflow_hidden();
+        if is_maximized {
+            root = root.rounded(px(0.0));
+        } else {
+            root = root
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .shadow(vec![BoxShadow {
+                    color: hsla(0.0, 0.0, 0.0, 0.45),
+                    offset: point(px(0.0), px(2.0)),
+                    blur_radius: px(16.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }]);
+        }
+
         // Sidebar resize drag
         if sidebar_resizing {
             let h_move = handle.clone();
@@ -1794,12 +2052,23 @@ impl Render for Workspace {
         }
 
         // Custom titlebar with drag area + window controls
-        let titlebar = Self::render_titlebar(is_maximized, &handle, _cx);
+        let titlebar = Self::render_titlebar(
+            is_maximized,
+            self.theme_menu_open,
+            self.ui_font_size,
+            &handle,
+            _cx,
+        );
 
         root = root
             .child(titlebar)
             .child(main_area)
             .child(self.status_bar.clone());
+
+        // Titlebar theme-switcher dropdown overlay
+        if self.theme_menu_open {
+            root = root.child(self.render_theme_menu(_cx));
+        }
 
         // Command palette overlay
         root = root.child(self.command_palette.clone());

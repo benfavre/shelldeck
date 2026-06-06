@@ -17,6 +17,65 @@ pub enum ThemePreference {
     Dark,
     Light,
     System,
+    Dracula,
+    Nord,
+    TokyoNight,
+    GruvboxDark,
+    SolarizedDark,
+    SolarizedLight,
+    CatppuccinMocha,
+    OneDark,
+    Monokai,
+    RosePine,
+}
+
+impl ThemePreference {
+    /// All selectable themes, in display order.
+    pub fn all() -> &'static [ThemePreference] {
+        use ThemePreference::*;
+        &[
+            Dark,
+            Light,
+            System,
+            Dracula,
+            Nord,
+            TokyoNight,
+            GruvboxDark,
+            SolarizedDark,
+            SolarizedLight,
+            CatppuccinMocha,
+            OneDark,
+            Monokai,
+            RosePine,
+        ]
+    }
+
+    /// Human-friendly display name.
+    pub fn display_name(&self) -> &'static str {
+        use ThemePreference::*;
+        match self {
+            Dark => "Dark",
+            Light => "Light",
+            System => "System",
+            Dracula => "Dracula",
+            Nord => "Nord",
+            TokyoNight => "Tokyo Night",
+            GruvboxDark => "Gruvbox Dark",
+            SolarizedDark => "Solarized Dark",
+            SolarizedLight => "Solarized Light",
+            CatppuccinMocha => "Catppuccin Mocha",
+            OneDark => "One Dark",
+            Monokai => "Monokai",
+            RosePine => "Rosé Pine",
+        }
+    }
+
+    /// Whether this theme uses a dark base (drives the adabraka-ui component
+    /// theme and any light/dark-conditional UI). `System` follows dark for now.
+    pub fn is_dark(&self) -> bool {
+        use ThemePreference::*;
+        !matches!(self, Light | SolarizedLight)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
