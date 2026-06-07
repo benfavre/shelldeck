@@ -291,12 +291,8 @@ impl RopeBuffer {
         for (i, &pos) in positions.iter().enumerate() {
             // Each prior cursor (index < i) deletes one char before its own pos,
             // all of which are < pos here (positions sorted, deletes at pos-1).
-            let shift = i; // i deletions happen before this one's region
-            if pos == 0 {
-                new_positions.push(pos.saturating_sub(shift));
-                continue;
-            }
-            new_positions.push(pos - 1 - shift);
+            // saturating_sub guards against underflow for cursors near offset 0.
+            new_positions.push(pos.saturating_sub(1 + i));
         }
         // Perform deletions descending by adjusted index so we don't disturb
         // not-yet-processed lower offsets.
