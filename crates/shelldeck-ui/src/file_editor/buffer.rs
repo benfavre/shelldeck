@@ -1,4 +1,5 @@
 use ropey::Rope;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::time::Instant;
 
@@ -72,6 +73,9 @@ pub struct RopeBuffer {
     dirty: bool,
     /// Accumulated input edits for tree-sitter since last query.
     pending_edits: Vec<InputEditInfo>,
+    /// Header line numbers of currently-folded (collapsed) regions. Empty in the
+    /// normal case, where the editor renders every line exactly as before.
+    folded: HashSet<usize>,
 }
 
 impl RopeBuffer {
@@ -89,6 +93,7 @@ impl RopeBuffer {
             last_edit_time: Instant::now(),
             dirty: false,
             pending_edits: Vec::new(),
+            folded: HashSet::new(),
         }
     }
 
@@ -311,6 +316,117 @@ impl RopeBuffer {
         self.cursor = new_positions[0];
         self.extra_cursors = new_positions[1..].to_vec();
         self.desired_col = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Folding (indentation-based)
+    // -----------------------------------------------------------------------
+
+    pub fn has_folds(&self) -> bool {
+        !self.folded.is_empty()
+    }
+
+    pub fn is_folded_header(&self, line: usize) -> bool {
+        self.folded.contains(&line)
+    }
+
+    fn line_is_blank(&self, line: usize) -> bool {
+        self.line_text(line).trim().is_empty()
+    }
+
+    fn indent_width(&self, line: usize) -> usize {
+        self.line_text(line)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count()
+    }
+
+    /// A line is foldable if a deeper-indented block follows it.
+    pub fn is_foldable(&self, line: usize) -> bool {
+        if line + 1 >= self.len_lines() || self.line_is_blank(line) {
+            return false;
+        }
+        let base = self.indent_width(line);
+        let mut l = line + 1;
+        while l < self.len_lines() && self.line_is_blank(l) {
+            l += 1;
+        }
+        l < self.len_lines() && self.indent_width(l) > base
+    }
+
+    /// Last line of the fold body started at `line` (the deeper-indented block).
+    fn fold_end(&self, line: usize) -> usize {
+        let base = self.indent_width(line);
+        let mut end = line;
+        let mut l = line + 1;
+        while l < self.len_lines() {
+            if self.line_is_blank(l) {
+                l += 1;
+                continue;
+            }
+            if self.indent_width(l) > base {
+                end = l;
+                l += 1;
+            } else {
+                break;
+            }
+        }
+        end
+    }
+
+    /// True if `line` is hidden inside some folded region.
+    pub fn is_line_hidden(&self, line: usize) -> bool {
+        if self.folded.is_empty() {
+            return false;
+        }
+        self.folded
+            .iter()
+            .any(|&h| line > h && line <= self.fold_end(h))
+    }
+
+    /// Buffer line indices that are currently visible (not hidden by a fold).
+    /// Equals `0..len_lines()` when nothing is folded.
+    pub fn visible_lines(&self) -> Vec<usize> {
+        if self.folded.is_empty() {
+            return (0..self.len_lines()).collect();
+        }
+        (0..self.len_lines())
+            .filter(|&l| !self.is_line_hidden(l))
+            .collect()
+    }
+
+    /// Toggle the fold at `line` (or the nearest enclosing foldable header).
+    /// Moves the cursor to the header if it would otherwise become hidden.
+    pub fn toggle_fold_at(&mut self, line: usize) {
+        let header = if self.is_foldable(line) {
+            line
+        } else {
+            // Walk up to the nearest foldable header whose body contains `line`.
+            let mut h = None;
+            for cand in (0..line).rev() {
+                if self.is_foldable(cand) && line <= self.fold_end(cand) {
+                    h = Some(cand);
+                    break;
+                }
+            }
+            match h {
+                Some(h) => h,
+                None => return,
+            }
+        };
+        if self.folded.contains(&header) {
+            self.folded.remove(&header);
+        } else {
+            self.folded.insert(header);
+            // If the cursor is now hidden, pull it up to the header line.
+            let (cur_line, _) = self.cursor_line_col();
+            if self.is_line_hidden(cur_line) {
+                self.cursor = self.line_col_to_char(header, 0);
+                self.extra_cursors.clear();
+                self.selection = None;
+                self.desired_col = None;
+            }
+        }
     }
 
     /// Get text of a line (without trailing newline).
@@ -937,7 +1053,17 @@ impl RopeBuffer {
             return;
         }
         let target_col = self.desired_col.unwrap_or(col);
-        self.cursor = self.line_col_to_char(line - 1, target_col);
+        // Skip lines hidden inside folds.
+        let mut target = line - 1;
+        while target > 0 && self.is_line_hidden(target) {
+            target -= 1;
+        }
+        if self.is_line_hidden(target) {
+            self.cursor = 0;
+            self.update_selection_head();
+            return;
+        }
+        self.cursor = self.line_col_to_char(target, target_col);
         self.desired_col = Some(target_col);
         self.update_selection_head();
     }
@@ -951,7 +1077,18 @@ impl RopeBuffer {
             return;
         }
         let target_col = self.desired_col.unwrap_or(col);
-        self.cursor = self.line_col_to_char(line + 1, target_col);
+        // Skip lines hidden inside folds.
+        let last = self.rope.len_lines().saturating_sub(1);
+        let mut target = line + 1;
+        while target < last && self.is_line_hidden(target) {
+            target += 1;
+        }
+        if self.is_line_hidden(target) {
+            self.cursor = self.rope.len_chars();
+            self.update_selection_head();
+            return;
+        }
+        self.cursor = self.line_col_to_char(target, target_col);
         self.desired_col = Some(target_col);
         self.update_selection_head();
     }

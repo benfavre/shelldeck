@@ -808,7 +808,13 @@ impl FileEditorView {
             Some(b) => b,
             None => return,
         };
-        let (cursor_line, _) = buffer.cursor_line_col();
+        let (cursor_buf_line, _) = buffer.cursor_line_col();
+        // Work in visual-row space so folds are accounted for.
+        let visible = buffer.visible_lines();
+        let cursor_line = match visible.binary_search(&cursor_buf_line) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
         let first_visible = tab.scroll_offset as usize;
         let last_visible = first_visible + lines_per_page.saturating_sub(1);
 
@@ -823,8 +829,9 @@ impl FileEditorView {
         let half_page = (self.scroll_lines_per_page / 2) as f32;
         if let Some(tab) = self.active_tab_mut() {
             if let Some(buffer) = tab.buffer() {
-                // Allow scrolling past end by half a page
-                let max = buffer.len_lines().saturating_sub(1) as f32 + half_page;
+                // Scroll range is in visible (fold-aware) rows.
+                let visible_count = buffer.visible_lines().len();
+                let max = (visible_count.saturating_sub(1)) as f32 + half_page;
                 tab.scroll_offset = tab.scroll_offset.clamp(0.0, max);
             }
         }
@@ -1324,29 +1331,63 @@ impl FileEditorView {
             highlighter.parse_incremental(buffer.rope(), &pending);
         }
 
-        // Compute visible range
-        let first_visible = tab.scroll_offset as usize;
-        let last_visible = (first_visible + scroll_lines_per_page + 1).min(buffer.len_lines());
+        // ---- Folding-aware visible-line model ----
+        // `visible` lists the buffer lines currently shown (== 0..n when nothing
+        // is folded). Scroll, cursor and clicks all operate in this visual-row
+        // space; `to_visual` maps a buffer line to its row (nearest visible
+        // at/above it for lines hidden inside a fold).
+        let visible: Vec<usize> = buffer.visible_lines();
+        let visible_count = visible.len().max(1);
+        let to_visual = |bl: usize| -> usize {
+            match visible.binary_search(&bl) {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            }
+        };
 
-        // Get highlights for visible range
-        let highlights = highlighter.highlights_for_range(buffer.rope(), first_visible, last_visible);
+        let first_visible = (tab.scroll_offset as usize).min(visible_count.saturating_sub(1));
+        let last_visible = (first_visible + scroll_lines_per_page + 1).min(visible.len());
+        let window: Vec<usize> = visible[first_visible..last_visible].to_vec();
 
-        // Collect lines text
-        let mut line_texts: Vec<String> = Vec::with_capacity(last_visible - first_visible);
-        for line_idx in first_visible..last_visible {
-            line_texts.push(buffer.line_text(line_idx));
+        // Highlights for the buffer span covering the window, picked per visible line.
+        let (hl_start, hl_end) = if window.is_empty() {
+            (0usize, 0usize)
+        } else {
+            (window[0], window[window.len() - 1] + 1)
+        };
+        let hl_range = highlighter.highlights_for_range(buffer.rope(), hl_start, hl_end);
+        let highlights: Vec<Vec<HighlightSpan>> = window
+            .iter()
+            .map(|&bl| hl_range.get(bl - hl_start).cloned().unwrap_or_default())
+            .collect();
+
+        // Line texts + real line numbers + fold markers for each displayed row.
+        let mut line_texts: Vec<String> = Vec::with_capacity(window.len());
+        let mut line_numbers: Vec<usize> = Vec::with_capacity(window.len());
+        let mut fold_markers: Vec<u8> = Vec::with_capacity(window.len());
+        for &bl in &window {
+            line_texts.push(buffer.line_text(bl));
+            line_numbers.push(bl);
+            fold_markers.push(if buffer.is_folded_header(bl) {
+                2
+            } else if buffer.is_foldable(bl) {
+                1
+            } else {
+                0
+            });
         }
 
         let total_lines = buffer.len_lines();
         let tab_size = buffer.tab_size();
-        let (cursor_line, cursor_char_col) = buffer.cursor_line_col();
-        let cursor_col = buffer.char_col_to_visual_col(cursor_line, cursor_char_col);
+        let (cursor_buf_line, cursor_char_col) = buffer.cursor_line_col();
+        let cursor_line = to_visual(cursor_buf_line);
+        let cursor_col = buffer.char_col_to_visual_col(cursor_buf_line, cursor_char_col);
         let extra_cursor_coords: Vec<(usize, usize)> = buffer
             .extra_cursors()
             .iter()
             .map(|&p| {
                 let (l, c) = buffer.char_to_line_col(p);
-                (l, buffer.char_col_to_visual_col(l, c))
+                (to_visual(l), buffer.char_col_to_visual_col(l, c))
             })
             .collect();
         let selection = buffer.selection().cloned();
@@ -1361,10 +1402,12 @@ impl FileEditorView {
         let char_width = cache.cell_width.to_f64() as f32;
         let gutter_w = (digits as f32 + 2.0) * char_width;
 
-        // Bracket match
-        let bracket_match: Option<(usize, usize)> = buffer.find_matching_bracket();
+        // Bracket match (converted to visual-row space)
+        let bracket_match: Option<(usize, usize)> = buffer
+            .find_matching_bracket()
+            .map(|(l, c)| (to_visual(l), c));
 
-        // Selection as (start_line, start_visual_col, end_line, end_visual_col) for canvas
+        // Selection as (start_row, start_visual_col, end_row, end_visual_col) for canvas
         let sel_coords: Option<(usize, usize, usize, usize)> = selection.as_ref().and_then(|s| {
             let range = s.range();
             if range.is_empty() {
@@ -1374,19 +1417,20 @@ impl FileEditorView {
             let (el, ec) = buffer.char_to_line_col(range.end);
             let sv = buffer.char_col_to_visual_col(sl, sc);
             let ev = buffer.char_col_to_visual_col(el, ec);
-            Some((sl, sv, el, ev))
+            Some((to_visual(sl), sv, to_visual(el), ev))
         });
 
         // Word highlighting: find all occurrences of the word under cursor
         let word_highlight_coords: Vec<(usize, usize, usize, usize)> = {
             if let Some(word) = buffer.word_at_cursor() {
-                let occurrences = buffer.find_word_occurrences(&word, first_visible, last_visible);
+                let occurrences = buffer.find_word_occurrences(&word, hl_start, hl_end);
                 occurrences
                     .into_iter()
                     .map(|(line, sc, ec)| {
                         let sv = buffer.char_col_to_visual_col(line, sc);
                         let ev = buffer.char_col_to_visual_col(line, ec);
-                        (line, sv, line, ev)
+                        let vr = to_visual(line);
+                        (vr, sv, vr, ev)
                     })
                     .collect()
             } else {
@@ -1404,13 +1448,15 @@ impl FileEditorView {
         for (mi, m) in self.search_matches.iter().enumerate() {
             let (sl, sc) = buffer.char_to_line_col(m.start);
             let (el, ec) = buffer.char_to_line_col(m.end);
-            if el >= first_visible && sl < last_visible {
+            let svl = to_visual(sl);
+            let evl = to_visual(el);
+            if evl >= first_visible && svl < last_visible {
                 if Some(mi) == self.search_current_idx {
                     search_current_coord = Some(search_match_coords.len());
                 }
                 let sv = buffer.char_col_to_visual_col(sl, sc);
                 let ev = buffer.char_col_to_visual_col(el, ec);
-                search_match_coords.push((sl, sv, el, ev));
+                search_match_coords.push((svl, sv, evl, ev));
             }
         }
 
@@ -1496,6 +1542,8 @@ impl FileEditorView {
                     (
                         cache,
                         line_texts,
+                        line_numbers,
+                        fold_markers,
                         highlights,
                         total_lines,
                         first_visible,
@@ -1517,6 +1565,8 @@ impl FileEditorView {
                       (
                     cache,
                     line_texts,
+                    line_numbers,
+                    fold_markers,
                     highlights,
                     total_lines,
                     first_visible,
@@ -1539,6 +1589,8 @@ impl FileEditorView {
                         bounds,
                         &cache,
                         &line_texts,
+                        &line_numbers,
+                        &fold_markers,
                         &highlights,
                         total_lines,
                         first_visible,
@@ -1571,6 +1623,8 @@ impl FileEditorView {
         bounds: Bounds<Pixels>,
         cache: &GlyphCache,
         line_texts: &[String],
+        line_numbers: &[usize],
+        fold_markers: &[u8],
         highlights: &[Vec<HighlightSpan>],
         total_lines: usize,
         first_visible: usize,
@@ -1760,8 +1814,9 @@ impl FileEditorView {
                 }
             }
 
-            // Line number
-            let line_num = format!("{:>width$}", abs_line + 1, width = digits);
+            // Line number (real buffer line, not the visual row)
+            let real_line = line_numbers.get(ri).copied().unwrap_or(abs_line);
+            let line_num = format!("{:>width$}", real_line + 1, width = digits);
             let num_color = if abs_line == cursor_line {
                 ShellDeckColors::text_primary()
             } else {
@@ -1784,6 +1839,29 @@ impl FileEditorView {
             );
             let num_x = bounds.origin.x + px(gutter_w - (digits as f32 + 1.0) * cell_w.to_f64() as f32);
             let _ = shaped_num.paint(point(num_x, y), cell_h, window, cx);
+
+            // Fold marker (▾ foldable / ▸ folded), drawn at the gutter's left edge.
+            if let Some(&fm) = fold_markers.get(ri) {
+                if fm != 0 {
+                    let marker = if fm == 2 { "▸" } else { "▾" };
+                    let ms: SharedString = marker.into();
+                    let shaped_m = window.text_system().shape_line(
+                        ms,
+                        fs,
+                        &[TextRun {
+                            len: marker.len(),
+                            font: cache.base_font.clone(),
+                            color: ShellDeckColors::text_muted(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    );
+                    let mx = bounds.origin.x + px(2.0);
+                    let _ = shaped_m.paint(point(mx, y), cell_h, window, cx);
+                }
+            }
         }
 
         // Pass 2: Paint text characters on top of backgrounds
@@ -2017,15 +2095,28 @@ impl FileEditorView {
             return;
         }
 
+        let row = (rel_y / cell_h) as usize;
+        let scroll = self.tabs[tab_idx].scroll_offset as usize;
+        // Map the clicked visual row to a buffer line through the fold-aware
+        // visible-line list (identity when nothing is folded).
+        let visible = self.tabs[tab_idx].buffer().unwrap().visible_lines();
+        let vrow = (row + scroll).min(visible.len().saturating_sub(1));
+        let abs_line = visible.get(vrow).copied().unwrap_or(0);
+
         let text_x = rel_x - gutter_w;
         if text_x < 0.0 {
+            // Gutter click: toggle a fold when the row is foldable/folded.
+            if let Some(buf) = self.tabs.get_mut(tab_idx).and_then(|t| t.buffer_mut()) {
+                if buf.is_foldable(abs_line) || buf.is_folded_header(abs_line) {
+                    buf.toggle_fold_at(abs_line);
+                    self.clamp_scroll();
+                    cx.notify();
+                }
+            }
             return;
         }
 
         let visual_col = (text_x / cell_w) as usize;
-        let row = (rel_y / cell_h) as usize;
-        let scroll = self.tabs[tab_idx].scroll_offset;
-        let abs_line = row + scroll as usize;
         let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
 
         let extend = event.modifiers.shift;
@@ -2125,7 +2216,9 @@ impl FileEditorView {
         let visual_col = (rel_x / cell_w) as usize;
         let row = (rel_y / cell_h) as usize;
         let scroll = self.tabs[tab_idx].scroll_offset as usize;
-        let abs_line = row + scroll;
+        let visible = self.tabs[tab_idx].buffer().unwrap().visible_lines();
+        let vrow = (row + scroll).min(visible.len().saturating_sub(1));
+        let abs_line = visible.get(vrow).copied().unwrap_or(0);
         let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
 
         self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, true);

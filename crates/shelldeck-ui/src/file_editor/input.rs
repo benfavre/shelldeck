@@ -244,6 +244,16 @@ impl FileEditorView {
                     cx.notify();
                     return;
                 }
+                // Toggle code fold at the cursor line (also via gutter click).
+                "[" | "{" => {
+                    if let Some(buf) = self.active_tab_mut().and_then(|t| t.buffer_mut()) {
+                        let (line, _) = buf.cursor_line_col();
+                        buf.toggle_fold_at(line);
+                    }
+                    self.clamp_scroll();
+                    cx.notify();
+                    return;
+                }
                 "m" => {
                     self.minimap_visible = !self.minimap_visible;
                     cx.notify();
