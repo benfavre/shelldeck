@@ -3,6 +3,7 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::cloud_account::{self, AccountInfo};
+use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -12,8 +13,8 @@ use std::ops::DerefMut;
 use uuid::Uuid;
 
 use crate::command_palette::{
-    ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, PaletteAction,
-    ToggleCommandPalette,
+    ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
+    PaletteAction, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
@@ -95,6 +96,7 @@ actions!(
         OpenSites,
         OpenFileEditorView,
         CloudSyncNow,
+        SwitchSite,
     ]
 );
 
@@ -189,6 +191,10 @@ pub struct Workspace {
     account_status: AccountStatus,
     /// Kept alive while the login modal is open.
     _login_form_sub: Option<Subscription>,
+    /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
+    site_directory: Option<SitesPayload>,
+    /// Whether the titlebar site-switcher dropdown is open.
+    site_menu_open: bool,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -205,9 +211,17 @@ impl Workspace {
         connections: Vec<Connection>,
         store: ConnectionStore,
     ) -> Self {
+        // Restore the persisted active-site filter (if any) so the sidebar
+        // opens scoped to the last-selected site.
+        let initial_site_filter = config
+            .cloud_sync
+            .active_site_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_connections(connections.clone());
+            s.set_site_filter(initial_site_filter);
             s
         });
 
@@ -289,47 +303,7 @@ impl Workspace {
         // Create command palette with registered actions
         let command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
-            let mut actions = vec![
-                PaletteAction::new("New Terminal", Some("Ctrl+T"), Box::new(NewTerminal)),
-                PaletteAction::new("Toggle Sidebar", Some("Ctrl+B"), Box::new(ToggleSidebar)),
-                PaletteAction::new("Open Settings", Some("Ctrl+,"), Box::new(OpenSettings)),
-                PaletteAction::new("Close Tab", Some("Ctrl+W"), Box::new(CloseTab)),
-                PaletteAction::new("Next Tab", Some("Ctrl+Tab"), Box::new(NextTab)),
-                PaletteAction::new("Previous Tab", Some("Ctrl+Shift+Tab"), Box::new(PrevTab)),
-                PaletteAction::new("Quit", Some("Ctrl+Q"), Box::new(Quit)),
-                PaletteAction::new(
-                    "Browse Script Templates",
-                    None,
-                    Box::new(OpenTemplateBrowser),
-                ),
-                PaletteAction::new("New Script", None, Box::new(NewScript)),
-                PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
-                PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
-                PaletteAction::new(
-                    "Open File Editor",
-                    Some("Ctrl+E"),
-                    Box::new(OpenFileEditorView),
-                ),
-                PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
-            ];
-            // One entry per app theme — previews live as you move the
-            // selection, commits on enter/click.
-            for pref in ThemePreference::all() {
-                actions.push(PaletteAction::new(
-                    &format!("Theme: {}", pref.display_name()),
-                    None,
-                    Box::new(ApplyAppTheme { pref: pref.clone() }),
-                ));
-            }
-            // One entry per built-in terminal color theme — switches live.
-            for theme in TerminalTheme::builtins() {
-                actions.push(PaletteAction::new(
-                    &format!("Terminal Theme: {}", theme.name),
-                    None,
-                    Box::new(ApplyTerminalTheme { name: theme.name }),
-                ));
-            }
-            palette.set_actions(actions);
+            palette.set_actions(Self::base_palette_actions());
             palette
         });
 
@@ -514,6 +488,8 @@ impl Workspace {
             account_menu_open: false,
             account_status: AccountStatus::Unknown,
             _login_form_sub: None,
+            site_directory: None,
+            site_menu_open: false,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -1220,6 +1196,8 @@ impl Workspace {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
                         }
+                        // Token is valid → load the sites directory too.
+                        ws.refresh_sites(cx);
                     }
                     Err(e) if cloud_account::is_auth_rejected(&e) => {
                         ws.account_status = AccountStatus::Rejected;
@@ -1396,6 +1374,9 @@ impl Workspace {
         self.account_menu_open = false;
         cx.notify();
 
+        // Load the sites directory for the switcher (background, non-blocking).
+        self.refresh_sites(cx);
+
         let cfg = self.app_config.cloud_sync.clone();
         let name = account.display_name();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
@@ -1451,13 +1432,196 @@ impl Workspace {
         self.app_config.account = None;
         self.app_config.cloud_sync.token = String::new();
         self.app_config.cloud_sync.enabled = false;
+        self.app_config.cloud_sync.active_site_id = None;
+        self.app_config.cloud_sync.active_site_label = None;
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save config after logout: {}", e);
         }
         self.account_status = AccountStatus::Unknown;
         self.account_menu_open = false;
+        self.site_directory = None;
+        self.site_menu_open = false;
+        self.sidebar.update(cx, |s, cx| {
+            s.set_site_filter(None);
+            cx.notify();
+        });
         self.show_toast("Déconnecté d'Inklura Manage.", ToastLevel::Info, cx);
         cx.notify();
+    }
+
+    // --- Manage sites (site switcher) ---
+
+    /// Fetch the sites directory + areas in the background and cache them.
+    /// No-op when logged out; never blocks.
+    pub fn refresh_sites(&mut self, cx: &mut Context<Self>) {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { manage_sites::fetch_sites(&base, &token) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(payload) => {
+                    tracing::info!(
+                        "Loaded {} manage sites, {} areas",
+                        payload.sites.len(),
+                        payload.areas.len()
+                    );
+                    ws.site_directory = Some(payload);
+                    ws.refresh_command_palette(cx);
+                    cx.notify();
+                }
+                Err(e) => tracing::warn!("Failed to load manage sites: {}", e),
+            });
+        })
+        .detach();
+    }
+
+    /// The `ManagedSiteInfo` for the persisted active site, if it's in the cache.
+    fn active_site_info(&self) -> Option<ManagedSiteInfo> {
+        let id = self.app_config.cloud_sync.active_site_id.as_deref()?;
+        self.site_directory
+            .as_ref()?
+            .sites
+            .iter()
+            .find(|s| s.site_id == id)
+            .cloned()
+    }
+
+    /// Select the active site (or `None` for "all sites"): persist it, scope the
+    /// sidebar, and close the dropdown.
+    fn select_site(
+        &mut self,
+        site_id: Option<String>,
+        label: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.app_config.cloud_sync.active_site_id = site_id.clone();
+        self.app_config.cloud_sync.active_site_label = label;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save active site: {}", e);
+        }
+        let filter = site_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
+        self.sidebar.update(cx, |s, cx| {
+            s.set_site_filter(filter);
+            cx.notify();
+        });
+        self.refresh_command_palette(cx);
+        self.site_menu_open = false;
+        cx.notify();
+    }
+
+    /// Open a manage area for the active site in the system browser.
+    pub fn open_manage_area(&mut self, area_path: String, cx: &mut Context<Self>) {
+        let site = match self.active_site_info() {
+            Some(s) => s,
+            None => {
+                self.show_toast(
+                    "Sélectionnez d'abord un site actif pour ouvrir Manage.",
+                    ToastLevel::Warning,
+                    cx,
+                );
+                return;
+            }
+        };
+        let origin = self
+            .site_directory
+            .as_ref()
+            .map(|p| p.manage_origin.clone())
+            .filter(|o| !o.is_empty())
+            .unwrap_or_else(|| self.account_base_url());
+        let url = manage_sites::manage_area_url(&origin, &site, &area_path);
+        self.site_menu_open = false;
+        match cloud_account::open_in_browser(&url) {
+            Ok(_) => self.show_toast("Ouverture dans le navigateur…", ToastLevel::Info, cx),
+            Err(e) => self.show_toast(
+                format!(
+                    "Impossible d'ouvrir le navigateur : {}",
+                    cloud_account::user_message(&e)
+                ),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// Open the titlebar site switcher (from the command palette / an action).
+    pub fn open_site_switcher(&mut self, cx: &mut Context<Self>) {
+        if self.site_directory.is_none() {
+            self.show_toast(
+                "Connectez-vous à Inklura Manage pour changer de site.",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        self.site_menu_open = true;
+        self.theme_menu_open = false;
+        self.account_menu_open = false;
+        cx.notify();
+    }
+
+    /// The fixed command-palette entries (everything except the runtime-dependent
+    /// manage-area entries, which [`refresh_command_palette`] appends).
+    fn base_palette_actions() -> Vec<PaletteAction> {
+        let mut actions = vec![
+            PaletteAction::new("New Terminal", Some("Ctrl+T"), Box::new(NewTerminal)),
+            PaletteAction::new("Toggle Sidebar", Some("Ctrl+B"), Box::new(ToggleSidebar)),
+            PaletteAction::new("Open Settings", Some("Ctrl+,"), Box::new(OpenSettings)),
+            PaletteAction::new("Close Tab", Some("Ctrl+W"), Box::new(CloseTab)),
+            PaletteAction::new("Next Tab", Some("Ctrl+Tab"), Box::new(NextTab)),
+            PaletteAction::new("Previous Tab", Some("Ctrl+Shift+Tab"), Box::new(PrevTab)),
+            PaletteAction::new("Quit", Some("Ctrl+Q"), Box::new(Quit)),
+            PaletteAction::new("Browse Script Templates", None, Box::new(OpenTemplateBrowser)),
+            PaletteAction::new("New Script", None, Box::new(NewScript)),
+            PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
+            PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
+            PaletteAction::new("Open File Editor", Some("Ctrl+E"), Box::new(OpenFileEditorView)),
+            PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
+            PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
+        ];
+        for pref in ThemePreference::all() {
+            actions.push(PaletteAction::new(
+                &format!("Theme: {}", pref.display_name()),
+                None,
+                Box::new(ApplyAppTheme { pref: pref.clone() }),
+            ));
+        }
+        for theme in TerminalTheme::builtins() {
+            actions.push(PaletteAction::new(
+                &format!("Terminal Theme: {}", theme.name),
+                None,
+                Box::new(ApplyTerminalTheme { name: theme.name }),
+            ));
+        }
+        actions
+    }
+
+    /// Rebuild the palette entries, appending "Site actif : <area>" commands for
+    /// the active site's manage areas. Called when the site directory loads or
+    /// the active site changes.
+    fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
+        let mut actions = Self::base_palette_actions();
+        if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
+            let label = site.display_label();
+            for area in &dir.areas {
+                actions.push(PaletteAction::new(
+                    &format!("Site actif ({}) : {}", label, area.label),
+                    None,
+                    Box::new(OpenManageArea {
+                        path: area.path.clone(),
+                    }),
+                ));
+            }
+        }
+        self.command_palette.update(cx, |palette, _| {
+            palette.set_actions(actions);
+        });
     }
 
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
@@ -1803,6 +1967,9 @@ impl Workspace {
         account_menu_open: bool,
         account: Option<AccountInfo>,
         account_status: AccountStatus,
+        site_menu_open: bool,
+        active_site_label: Option<String>,
+        sites_loaded: bool,
         ui_font_size: f32,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -2043,6 +2210,58 @@ impl Workspace {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
 
+        // Site chip — shown only when signed in and the sites directory has
+        // loaded. Displays the active site label or "Tous les sites".
+        let show_site_chip = account.is_some() && sites_loaded;
+        let site_chip = if show_site_chip {
+            let label = active_site_label.unwrap_or_else(|| "Tous les sites".to_string());
+            let mut chip = div()
+                .id("titlebar-site")
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .h(px(28.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(btn_hover_bg))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(title_dim)
+                        .child("\u{25C9}"), // ◉ site glyph
+                )
+                .child(
+                    div()
+                        .max_w(px(120.0))
+                        .overflow_hidden()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(title_color)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(8.0))
+                        .text_color(title_dim)
+                        .child("\u{25BC}"), // ▼
+                )
+                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                    this.site_menu_open = !this.site_menu_open;
+                    if this.site_menu_open {
+                        this.theme_menu_open = false;
+                        this.account_menu_open = false;
+                    }
+                    cx.notify();
+                }));
+            if site_menu_open {
+                chip = chip.bg(ShellDeckColors::hover_bg());
+            }
+            Some(chip)
+        } else {
+            None
+        };
+
         // UI scale controls — a compact −/value/+ group that adjusts the app
         // font size (which drives proportional UI scaling) live.
         let scale_btn = |id: &'static str, glyph: &'static str| {
@@ -2117,6 +2336,7 @@ impl Workspace {
                     .child(scale_group)
                     .child(divider())
                     .child(account_btn)
+                    .children(site_chip)
                     .child(theme_btn)
                     .child(divider())
                     .child(minimize_btn)
@@ -2376,6 +2596,14 @@ impl Workspace {
             panel = panel
                 .child(info_row("Serveur", self.account_base_url()))
                 .child(info_row("Appareil", cloud_account::device_name()))
+                .child(info_row(
+                    "Site actif",
+                    self.app_config
+                        .cloud_sync
+                        .active_site_label
+                        .clone()
+                        .unwrap_or_else(|| "Tous les sites".to_string()),
+                ))
                 .child(info_row("Statut", status_label.to_string()));
 
             panel = panel.child(
@@ -2492,6 +2720,252 @@ impl Workspace {
                 }),
             )
             .child(panel)
+    }
+
+    /// Render the titlebar site-switcher dropdown: "Tous les sites" + the site
+    /// list (active pinned, connection-bearing next, capped) + "Ouvrir dans
+    /// Manage" area links for the active site.
+    fn render_site_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        const CAP: usize = 20;
+        let payload = self.site_directory.clone().unwrap_or_default();
+        let active_id = self.app_config.cloud_sync.active_site_id.clone();
+
+        // Which sites have at least one synced connection.
+        let conn_site_ids: std::collections::HashSet<String> = self
+            .connections
+            .iter()
+            .filter_map(|c| c.site_id.map(|id| id.to_string()))
+            .collect();
+
+        // Sort: active first, then connection-bearing, then alphabetical.
+        let mut sites: Vec<&ManagedSiteInfo> = payload.sites.iter().collect();
+        sites.sort_by(|a, b| {
+            let a_active = active_id.as_deref() == Some(a.site_id.as_str());
+            let b_active = active_id.as_deref() == Some(b.site_id.as_str());
+            let a_conn = conn_site_ids.contains(&a.site_id);
+            let b_conn = conn_site_ids.contains(&b.site_id);
+            b_active
+                .cmp(&a_active)
+                .then(b_conn.cmp(&a_conn))
+                .then(
+                    a.display_label()
+                        .to_lowercase()
+                        .cmp(&b.display_label().to_lowercase()),
+                )
+        });
+        let total = sites.len();
+        let hidden = total.saturating_sub(CAP);
+
+        let row = |id: ElementId,
+                   label: String,
+                   active: bool,
+                   badge: Option<String>|
+         -> Stateful<Div> {
+            let mut r = div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+            if active {
+                r = r.bg(ShellDeckColors::selected_bg());
+            }
+            r = r.child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(label),
+            );
+            if let Some(b) = badge {
+                r = r.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(5.0))
+                        .py(px(1.0))
+                        .rounded(px(8.0))
+                        .bg(ShellDeckColors::badge_bg())
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(b),
+                );
+            }
+            if active {
+                r = r.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::primary())
+                        .child("\u{2713}"),
+                );
+            }
+            r
+        };
+
+        let shadow = vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, 0.45),
+            offset: point(px(0.0), px(4.0)),
+            blur_radius: px(20.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }];
+
+        let mut panel = div()
+            .id("site-menu-panel")
+            .absolute()
+            .top(px(46.0))
+            .right(px(12.0))
+            .w(px(300.0))
+            .max_h(px(480.0))
+            .overflow_y_scroll()
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(10.0))
+            .shadow(shadow)
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                cx.stop_propagation();
+            });
+
+        panel = panel.child(Self::render_site_section_header(&format!(
+            "SITES ({})",
+            total
+        )));
+
+        // "Tous les sites" (clear the filter).
+        panel = panel.child(
+            row(
+                ElementId::from(SharedString::from("site-all")),
+                "Tous les sites".to_string(),
+                active_id.is_none(),
+                None,
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.select_site(None, None, cx);
+            })),
+        );
+
+        for site in sites.iter().take(CAP) {
+            let sid = site.site_id.clone();
+            let label = site.display_label();
+            let is_active = active_id.as_deref() == Some(sid.as_str());
+            let badge = if conn_site_ids.contains(&sid) {
+                Some("connexions".to_string())
+            } else {
+                None
+            };
+            let elem_id = ElementId::from(SharedString::from(format!("site-{}", sid)));
+            let sid_for_click = sid.clone();
+            let label_for_click = label.clone();
+            panel = panel.child(row(elem_id, label, is_active, badge).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.select_site(
+                        Some(sid_for_click.clone()),
+                        Some(label_for_click.clone()),
+                        cx,
+                    );
+                },
+            )));
+        }
+
+        if hidden > 0 {
+            panel = panel.child(
+                div()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!(
+                        "+{} autres sites (les sites avec connexions sont priorisés)",
+                        hidden
+                    )),
+            );
+        }
+
+        // "Ouvrir dans Manage" — area links for the active site.
+        if let Some(active_site) = self.active_site_info() {
+            if !payload.areas.is_empty() {
+                panel = panel.child(Self::render_site_section_header(&format!(
+                    "OUVRIR DANS MANAGE — {}",
+                    active_site.display_label()
+                )));
+                for area in &payload.areas {
+                    let path = area.path.clone();
+                    panel = panel.child(
+                        div()
+                            .id(ElementId::from(SharedString::from(format!(
+                                "area-{}",
+                                area.key
+                            ))))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(area.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child("\u{2197}"), // ↗
+                            )
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.open_manage_area(path.clone(), cx);
+                            })),
+                    );
+                }
+            }
+        }
+
+        // Dismiss backdrop.
+        div()
+            .id("site-menu-backdrop")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _window, cx| {
+                    this.site_menu_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(panel)
+    }
+
+    fn render_site_section_header(label: &str) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .pt(px(8.0))
+            .pb(px(4.0))
+            .text_size(px(10.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ShellDeckColors::text_muted())
+            .child(label.to_string())
     }
 }
 
@@ -2936,6 +3410,9 @@ impl Render for Workspace {
             self.account_menu_open,
             self.app_config.account.clone(),
             self.account_status,
+            self.site_menu_open,
+            self.app_config.cloud_sync.active_site_label.clone(),
+            self.site_directory.is_some(),
             self.ui_font_size,
             &handle,
             _cx,
@@ -2954,6 +3431,11 @@ impl Render for Workspace {
         // Titlebar account dropdown overlay
         if self.account_menu_open {
             root = root.child(self.render_account_menu(_cx));
+        }
+
+        // Titlebar site-switcher dropdown overlay
+        if self.site_menu_open {
+            root = root.child(self.render_site_menu(_cx));
         }
 
         // Command palette overlay

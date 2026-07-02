@@ -435,7 +435,7 @@ pub fn open_in_browser(url: &str) -> Result<()> {
 }
 
 /// Percent-encode a query value (RFC 3986 unreserved chars pass through).
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
         match b {

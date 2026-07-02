@@ -114,6 +114,15 @@ The quickest way to connect is the **account chip in the titlebar** (top-right, 
 
 On success ShellDeck stores an account-bound sync token, enables Cloud Sync, and pulls your profiles. The chip then shows your name and a status dot (green = connected, gray = offline/unchecked, red = token rejected — sign in again). Use the chip's dropdown to **Synchroniser** on demand or **Se déconnecter** (which revokes the token server-side).
 
+### Sites & Manage areas
+
+Once signed in, a **site chip** appears in the titlebar (next to the account chip). It shows the active site — or **Tous les sites** — and its dropdown lets you:
+
+- **Switch the active site**: the list pins the active site and sites that have connections to the top. Selecting one scopes the sidebar to that site's connections (plus your unbound manual/SSH entries); **Tous les sites** clears the filter. Connections bound to a site show a small site badge. The choice is remembered across restarts.
+- **Open a Manage area** for the active site: each area (Dashboard, CMS, Helpdesk, E-commerce, Settings, …) opens in your browser, already scoped to that site.
+
+The command palette (`Ctrl+Shift+P`) also has a **Switch Active Site** entry and, when a site is active, one **Site actif (…) : \<area\>** entry per area.
+
 ### Manual configuration
 
 You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to `~/.local/share/ShellDeck/shelldeck.toml`:

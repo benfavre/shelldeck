@@ -31,6 +31,7 @@ fn main() {
         base_url,
         token,
         sync_on_startup: false,
+        ..Default::default()
     };
 
     println!("Probing {} …", cfg.base_url);

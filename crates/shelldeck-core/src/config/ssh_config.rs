@@ -80,6 +80,8 @@ pub fn parse_ssh_config_file(path: &Path) -> Result<Vec<Connection>> {
             auto_scripts: Vec::new(),
             source: ConnectionSource::SshConfig,
             forward_agent,
+            site_id: None,
+            site_label: None,
             status: ConnectionStatus::Disconnected,
         };
 

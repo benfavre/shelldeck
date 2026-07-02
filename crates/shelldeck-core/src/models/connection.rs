@@ -47,6 +47,13 @@ pub struct Connection {
     pub auto_scripts: Vec<Uuid>,
     pub source: ConnectionSource,
     pub forward_agent: bool,
+    /// Inklura Manage site this connection is bound to (cloud-synced profiles
+    /// only). `#[serde(default)]` keeps pre-site stores parsing.
+    #[serde(default)]
+    pub site_id: Option<Uuid>,
+    /// Human-friendly site label for the sidebar badge / site grouping.
+    #[serde(default)]
+    pub site_label: Option<String>,
     #[serde(skip)]
     pub status: ConnectionStatus,
 }
@@ -67,6 +74,8 @@ impl Connection {
             auto_scripts: Vec::new(),
             source: ConnectionSource::Manual,
             forward_agent: false,
+            site_id: None,
+            site_label: None,
             status: ConnectionStatus::Disconnected,
         }
     }

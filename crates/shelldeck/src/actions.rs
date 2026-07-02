@@ -3,11 +3,11 @@ use gpui::*;
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
     CloseTab, CloudSyncNow, NewTerminal, NextTab, OpenFileEditorView, OpenQuickConnect,
-    OpenSettings, PrevTab, Quit, ToggleSidebar,
+    OpenSettings, PrevTab, Quit, SwitchSite, ToggleSidebar,
 };
 
 // Re-export terminal view actions
-pub use shelldeck_ui::command_palette::{ApplyTerminalTheme, ToggleCommandPalette};
+pub use shelldeck_ui::command_palette::{ApplyTerminalTheme, OpenManageArea, ToggleCommandPalette};
 pub use shelldeck_ui::terminal_view::{
     ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical, ToggleSearch,
     ToggleSplitFocus, ZoomIn, ZoomOut, ZoomReset,

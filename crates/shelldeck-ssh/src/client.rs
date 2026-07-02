@@ -242,6 +242,8 @@ impl SshClient {
             auto_scripts: Vec::new(),
             source: ConnectionSource::Manual,
             forward_agent: false,
+            site_id: None,
+            site_label: None,
             status: ConnectionStatus::Disconnected,
         })
     }

@@ -259,6 +259,23 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &SwitchSite, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open_site_switcher(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |action: &OpenManageArea, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            let path = action.path.clone();
+                            ws.update(cx, |ws, cx| ws.open_manage_area(path, cx));
+                        }
+                    }
+                });
             }
 
             workspace

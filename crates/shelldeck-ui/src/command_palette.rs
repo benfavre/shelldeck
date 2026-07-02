@@ -23,6 +23,14 @@ pub struct ApplyAppTheme {
     pub pref: ThemePreference,
 }
 
+/// Open an Inklura Manage area (by path) for the active site in the browser.
+/// Carried as data so one action type drives every area entry in the palette.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = shelldeck, no_json)]
+pub struct OpenManageArea {
+    pub path: String,
+}
+
 /// A registered action with a display name and shortcut hint.
 #[derive(Debug)]
 pub struct PaletteAction {

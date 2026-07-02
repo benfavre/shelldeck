@@ -113,6 +113,9 @@ pub struct SidebarView {
     /// Host search query
     search_query: String,
     search_focused: bool,
+    /// Active Inklura Manage site filter. `Some(id)` hides connections bound to
+    /// a *different* site (unbound connections always show); `None` = all sites.
+    site_filter: Option<Uuid>,
     focus_handle: FocusHandle,
 }
 
@@ -128,6 +131,7 @@ impl SidebarView {
             terminal_tab_count: 0,
             search_query: String::new(),
             search_focused: false,
+            site_filter: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -150,6 +154,21 @@ impl SidebarView {
 
     pub fn set_connections(&mut self, connections: Vec<Connection>) {
         self.connections = connections;
+    }
+
+    /// Set the active-site filter. `Some(id)` scopes the list to that site
+    /// (plus unbound connections); `None` shows every site.
+    pub fn set_site_filter(&mut self, site_filter: Option<Uuid>) {
+        self.site_filter = site_filter;
+    }
+
+    /// Whether `conn` passes the active-site filter: no filter, an exact site
+    /// match, or an unbound connection (manual / ssh / cloud-without-site).
+    fn conn_matches_site(&self, conn: &Connection) -> bool {
+        match self.site_filter {
+            None => true,
+            Some(active) => conn.site_id == Some(active) || conn.site_id.is_none(),
+        }
     }
 
     pub fn set_terminal_tab_count(&mut self, count: usize) {
@@ -484,6 +503,35 @@ impl SidebarView {
                 .child(conn_str)
         };
 
+        // Name line: the name plus an optional Manage-site badge.
+        let mut name_row = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .child(name_el);
+        if let Some(label) = connection
+            .site_label
+            .as_ref()
+            .filter(|l| !l.trim().is_empty())
+        {
+            name_row = name_row.child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(4.0))
+                    .py(px(1.0))
+                    .rounded(px(3.0))
+                    .bg(ShellDeckColors::badge_bg())
+                    .text_size(px(9.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .max_w(px(88.0))
+                    .child(label.clone()),
+            );
+        }
+
         let content = div()
             .id(ElementId::from(SharedString::from(format!(
                 "conn-{}",
@@ -518,7 +566,7 @@ impl SidebarView {
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .flex_grow()
-                    .child(name_el)
+                    .child(name_row)
                     .child(conn_str_el),
             );
 
@@ -588,11 +636,11 @@ impl Render for SidebarView {
 
         let search_focused = self.search_focused;
 
-        // Filter connections by search query
+        // Filter connections by search query and the active-site filter.
         let filtered: Vec<&Connection> = self
             .connections
             .iter()
-            .filter(|c| self.conn_matches_search(c))
+            .filter(|c| self.conn_matches_site(c) && self.conn_matches_search(c))
             .collect();
 
         // Group filtered connections by group

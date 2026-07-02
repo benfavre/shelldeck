@@ -33,6 +33,11 @@ pub struct CloudSyncConfig {
     pub token: String,
     /// Whether to sync automatically at app startup.
     pub sync_on_startup: bool,
+    /// UUID of the currently selected Inklura Manage site, or `None` for "all
+    /// sites" (no filter). Stored as a string so an empty/legacy config parses.
+    pub active_site_id: Option<String>,
+    /// Display label for the active site (chip text).
+    pub active_site_label: Option<String>,
 }
 
 impl Default for CloudSyncConfig {
@@ -42,6 +47,8 @@ impl Default for CloudSyncConfig {
             base_url: "https://manage.inklura.fr".to_string(),
             token: String::new(),
             sync_on_startup: true,
+            active_site_id: None,
+            active_site_label: None,
         }
     }
 }
@@ -79,6 +86,12 @@ pub struct RemoteProfile {
     pub forward_agent: bool,
     #[serde(default)]
     pub identity_file: Option<String>,
+    /// Inklura Manage site binding (set in the manage console). Absent/null on
+    /// unbound profiles.
+    #[serde(default)]
+    pub site_id: Option<Uuid>,
+    #[serde(default)]
+    pub site_label: Option<String>,
     /// Free-form notes from the portal. ShellDeck has no notes field on
     /// `Connection`, so this is parsed for completeness but not merged.
     #[serde(default)]
@@ -156,6 +169,8 @@ pub fn merge_profiles(store: &mut ConnectionStore, remote: &[RemoteProfile]) -> 
             existing.tags = rp.tags.clone();
             existing.forward_agent = rp.forward_agent;
             existing.identity_file = identity_file;
+            existing.site_id = rp.site_id;
+            existing.site_label = rp.site_label.clone();
             existing.source = ConnectionSource::CloudSync;
             stats.updated += 1;
         } else {
@@ -173,6 +188,8 @@ pub fn merge_profiles(store: &mut ConnectionStore, remote: &[RemoteProfile]) -> 
                 auto_scripts: Vec::new(),
                 source: ConnectionSource::CloudSync,
                 forward_agent: rp.forward_agent,
+                site_id: rp.site_id,
+                site_label: rp.site_label.clone(),
                 status: ConnectionStatus::default(),
             });
             stats.added += 1;
@@ -307,6 +324,8 @@ mod tests {
             tags: vec!["prod".to_string()],
             forward_agent: false,
             identity_file: None,
+            site_id: None,
+            site_label: None,
             notes: None,
         }
     }
@@ -327,6 +346,27 @@ mod tests {
         assert_eq!(c.group.as_deref(), Some("Production"));
         assert_eq!(c.tags, vec!["prod".to_string()]);
         assert_eq!(c.source, ConnectionSource::CloudSync);
+    }
+
+    #[test]
+    fn merge_copies_site_binding() {
+        let mut store = ConnectionStore::default();
+        let id = Uuid::new_v4();
+        let site = Uuid::new_v4();
+        let mut rp = remote(id, "demo", "1.2.3.4");
+        rp.site_id = Some(site);
+        rp.site_label = Some("Inklura".to_string());
+
+        merge_profiles(&mut store, &[rp]);
+        let c = &store.connections[0];
+        assert_eq!(c.site_id, Some(site));
+        assert_eq!(c.site_label.as_deref(), Some("Inklura"));
+
+        // Re-sync with the binding cleared → connection's binding clears too.
+        let cleared = remote(id, "demo", "1.2.3.4");
+        merge_profiles(&mut store, &[cleared]);
+        assert!(store.connections[0].site_id.is_none());
+        assert!(store.connections[0].site_label.is_none());
     }
 
     #[test]
@@ -407,6 +447,30 @@ mod tests {
     }
 
     #[test]
+    fn cloud_sync_config_parses_without_active_site_fields() {
+        // A [cloud_sync] section written before the site switcher existed.
+        let toml = r#"
+enabled = true
+base_url = "https://manage.inklura.fr"
+token = "sd_x"
+sync_on_startup = false
+"#;
+        let cfg: CloudSyncConfig = toml::from_str(toml).expect("parse legacy cloud_sync");
+        assert!(cfg.enabled);
+        assert!(cfg.active_site_id.is_none());
+        assert!(cfg.active_site_label.is_none());
+
+        // Round-trip with an active site set.
+        let mut with_site = CloudSyncConfig::default();
+        with_site.active_site_id = Some("site-uuid".to_string());
+        with_site.active_site_label = Some("Inklura".to_string());
+        let s = toml::to_string(&with_site).unwrap();
+        let back: CloudSyncConfig = toml::from_str(&s).unwrap();
+        assert_eq!(back.active_site_id.as_deref(), Some("site-uuid"));
+        assert_eq!(back.active_site_label.as_deref(), Some("Inklura"));
+    }
+
+    #[test]
     fn is_configured_semantics() {
         let mut cfg = CloudSyncConfig::default();
         assert!(!cfg.is_configured(), "disabled by default");
@@ -481,6 +545,7 @@ mod tests {
             base_url,
             token,
             sync_on_startup: false,
+            ..Default::default()
         };
         let payload = super::fetch_sync(&cfg, crate::VERSION).expect("live fetch_sync");
         // A well-formed payload: every profile must have a parseable UUID.
