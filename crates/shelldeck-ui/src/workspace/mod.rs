@@ -2,9 +2,10 @@ use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
+use shelldeck_core::config::cloud_account::{self, AccountInfo};
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
-use shelldeck_core::models::connection::{Connection, ConnectionStatus};
+use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
 use shelldeck_ssh::tunnel::TunnelHandle;
 use std::collections::HashMap;
 use std::ops::DerefMut;
@@ -15,6 +16,7 @@ use crate::command_palette::{
     ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
+use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
@@ -38,6 +40,29 @@ mod forwards;
 mod scripts;
 mod server_sync;
 mod ssh;
+
+/// Health of the signed-in cloud account, surfaced as the titlebar status dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountStatus {
+    /// Not yet checked this session (or logged out).
+    Unknown,
+    /// whoami succeeded — token valid.
+    Ok,
+    /// Token invalid/revoked — needs re-auth.
+    Rejected,
+    /// whoami failed on a network error — can't tell.
+    Offline,
+}
+
+impl AccountStatus {
+    fn dot_color(self) -> Hsla {
+        match self {
+            AccountStatus::Ok => ShellDeckColors::success(),
+            AccountStatus::Rejected => ShellDeckColors::error(),
+            AccountStatus::Unknown | AccountStatus::Offline => ShellDeckColors::text_muted(),
+        }
+    }
+}
 
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +136,7 @@ pub struct Workspace {
     command_palette: Entity<CommandPalette>,
     toasts: Entity<ToastContainer>,
     connection_form: Option<Entity<ConnectionForm>>,
+    login_form: Option<Entity<LoginForm>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
     template_browser: Option<Entity<TemplateBrowser>>,
@@ -157,6 +183,12 @@ pub struct Workspace {
     pending_close_confirm: bool,
     /// Whether the titlebar theme-switcher dropdown is open.
     theme_menu_open: bool,
+    /// Whether the titlebar account dropdown is open.
+    account_menu_open: bool,
+    /// Health of the signed-in cloud account (drives the status dot).
+    account_status: AccountStatus,
+    /// Kept alive while the login modal is open.
+    _login_form_sub: Option<Subscription>,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -443,6 +475,7 @@ impl Workspace {
             command_palette,
             toasts,
             connection_form: None,
+            login_form: None,
             port_forward_form: None,
             script_form: None,
             template_browser: None,
@@ -478,6 +511,9 @@ impl Workspace {
             app_config,
             pending_close_confirm: false,
             theme_menu_open: false,
+            account_menu_open: false,
+            account_status: AccountStatus::Unknown,
+            _login_form_sub: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -1150,6 +1186,280 @@ impl Workspace {
         cx.notify();
     }
 
+    // --- Cloud account (Inklura Manage) ---
+
+    /// The account/sync base URL, defaulting to the portal if unset.
+    fn account_base_url(&self) -> String {
+        let b = self.app_config.cloud_sync.base_url.trim().to_string();
+        if b.is_empty() {
+            "https://manage.inklura.fr".to_string()
+        } else {
+            b
+        }
+    }
+
+    /// Background whoami at startup: refresh the status dot + account name, and
+    /// warn once if the token was revoked remotely. No-op when logged out.
+    pub fn check_account_on_startup(&mut self, cx: &mut Context<Self>) {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { cloud_account::whoami(&base, &token) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                match result {
+                    Ok(info) => {
+                        ws.account_status = AccountStatus::Ok;
+                        let refreshed = info.account_info();
+                        if !refreshed.name.trim().is_empty() || !refreshed.email.trim().is_empty() {
+                            ws.app_config.account = Some(refreshed);
+                            let _ = ws.app_config.save();
+                        }
+                    }
+                    Err(e) if cloud_account::is_auth_rejected(&e) => {
+                        ws.account_status = AccountStatus::Rejected;
+                        ws.show_toast(
+                            "Session Inklura expirée — reconnectez-vous depuis le menu compte.",
+                            ToastLevel::Warning,
+                            cx,
+                        );
+                    }
+                    Err(_) => {
+                        ws.account_status = AccountStatus::Offline;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Open the password + OIDC login modal.
+    pub fn show_login_form(&mut self, cx: &mut Context<Self>) {
+        let server = self.account_base_url();
+        let device = cloud_account::device_name();
+        let form = cx.new(|form_cx| LoginForm::new(server, device, form_cx));
+
+        let sub = cx.subscribe(&form, |this, _form, event: &LoginFormEvent, cx| match event {
+            LoginFormEvent::SubmitPassword { email, password } => {
+                this.start_password_login(email.clone(), password.clone(), cx);
+            }
+            LoginFormEvent::StartOidc(provider) => {
+                this.start_oidc_login(provider.clone(), cx);
+            }
+            LoginFormEvent::Cancel => {
+                this.login_form = None;
+                this._login_form_sub = None;
+                cx.notify();
+            }
+        });
+
+        self.account_menu_open = false;
+        self.login_form = Some(form);
+        self._login_form_sub = Some(sub);
+        cx.notify();
+    }
+
+    /// Run password login on a background thread, then apply on success.
+    fn start_password_login(&mut self, email: String, password: String, cx: &mut Context<Self>) {
+        let base = self.account_base_url();
+        let device = cloud_account::device_name();
+        if let Some(form) = &self.login_form {
+            form.update(cx, |f, cx| {
+                f.set_busy(true);
+                cx.notify();
+            });
+        }
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    cloud_account::login_password(&base, &email, &password, &device)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok((token, account)) => ws.apply_login(token, account, cx),
+                Err(e) => {
+                    let msg = cloud_account::user_message(&e);
+                    if let Some(form) = &ws.login_form {
+                        form.update(cx, |f, cx| {
+                            f.set_busy(false);
+                            f.set_error(msg.clone());
+                            cx.notify();
+                        });
+                    }
+                    ws.show_toast(msg, ToastLevel::Error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Start the browser device-authorize flow: bind a loopback listener, open
+    /// the system browser, and wait (background) for the token redirect.
+    fn start_oidc_login(&mut self, provider: Option<String>, cx: &mut Context<Self>) {
+        let base = self.account_base_url();
+        let device = cloud_account::device_name();
+
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(e) => {
+                self.show_toast(
+                    format!("Impossible d'ouvrir un port local : {}", e),
+                    ToastLevel::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+        let port = match listener.local_addr() {
+            Ok(a) => a.port(),
+            Err(e) => {
+                self.show_toast(
+                    format!("Impossible de lire le port local : {}", e),
+                    ToastLevel::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+        // Random state: two v4 UUIDs → 64 hex chars, matches [A-Za-z0-9_-]{32,64}.
+        let state = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let url = cloud_account::browser_connect_url(&base, port, &state, &device, provider.as_deref());
+
+        if let Err(e) = cloud_account::open_in_browser(&url) {
+            self.show_toast(
+                format!("Impossible d'ouvrir le navigateur : {}", cloud_account::user_message(&e)),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+
+        // Dismiss the login surfaces and show progress.
+        self.account_menu_open = false;
+        self.login_form = None;
+        self._login_form_sub = None;
+        self.show_toast(
+            "En attente d'autorisation dans le navigateur…",
+            ToastLevel::Info,
+            cx,
+        );
+        cx.notify();
+
+        let state_for_task = state.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let token = cloud_account::browser_connect_listen(
+                        listener,
+                        &state_for_task,
+                        std::time::Duration::from_secs(180),
+                    )?;
+                    let who = cloud_account::whoami(&base, &token)?;
+                    Ok::<(String, AccountInfo), shelldeck_core::ShellDeckError>((
+                        token,
+                        who.account_info(),
+                    ))
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match outcome {
+                Ok((token, account)) => ws.apply_login(token, account, cx),
+                Err(e) => ws.show_toast(
+                    format!("Connexion navigateur échouée : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Persist a successful login (enable cloud sync, store token + account),
+    /// then sync profiles and report the count.
+    fn apply_login(&mut self, token: String, account: AccountInfo, cx: &mut Context<Self>) {
+        self.app_config.cloud_sync.enabled = true;
+        self.app_config.cloud_sync.token = token;
+        self.app_config.account = Some(account.clone());
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save config after login: {}", e);
+        }
+        self.account_status = AccountStatus::Ok;
+        self.login_form = None;
+        self._login_form_sub = None;
+        self.account_menu_open = false;
+        cx.notify();
+
+        let cfg = self.app_config.cloud_sync.clone();
+        let name = account.display_name();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    shelldeck_core::config::cloud_sync::sync_now(&cfg, shelldeck_core::VERSION)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(_stats) => {
+                    ws.reload_connections_after_sync(cx);
+                    let n = ws
+                        .connections
+                        .iter()
+                        .filter(|c| c.source == ConnectionSource::CloudSync)
+                        .count();
+                    ws.show_toast(
+                        format!("Connecté en tant que {} — {} profils synchronisés", name, n),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                }
+                Err(e) => {
+                    ws.show_toast(
+                        format!(
+                            "Connecté en tant que {}. Synchronisation échouée : {}",
+                            name,
+                            cloud_account::user_message(&e)
+                        ),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Sign out: revoke the token server-side (best-effort), then clear local
+    /// account state and disable cloud sync.
+    fn logout_account(&mut self, cx: &mut Context<Self>) {
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        if !token.is_empty() {
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = cloud_account::logout(&base, &token);
+                })
+                .detach();
+        }
+
+        self.app_config.account = None;
+        self.app_config.cloud_sync.token = String::new();
+        self.app_config.cloud_sync.enabled = false;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save config after logout: {}", e);
+        }
+        self.account_status = AccountStatus::Unknown;
+        self.account_menu_open = false;
+        self.show_toast("Déconnecté d'Inklura Manage.", ToastLevel::Info, cx);
+        cx.notify();
+    }
+
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
         let active_forwards = self.active_tunnels.len();
@@ -1262,6 +1572,8 @@ impl Workspace {
         // Clear forms if open
         self.connection_form = None;
         self._form_sub = None;
+        self.login_form = None;
+        self._login_form_sub = None;
         self.port_forward_form = None;
         self._pf_form_sub = None;
         self.script_form = None;
@@ -1488,6 +1800,9 @@ impl Workspace {
     fn render_titlebar(
         is_maximized: bool,
         theme_menu_open: bool,
+        account_menu_open: bool,
+        account: Option<AccountInfo>,
+        account_status: AccountStatus,
         ui_font_size: f32,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -1640,6 +1955,94 @@ impl Workspace {
             theme_btn = theme_btn.bg(ShellDeckColors::hover_bg());
         }
 
+        // Account chip — "Se connecter" when logged out, otherwise an
+        // avatar-initial + name with a health status dot. Toggles the account
+        // dropdown.
+        let mut account_btn = div()
+            .id("titlebar-account")
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(28.0))
+            .px(px(7.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(btn_hover_bg));
+
+        if let Some(acct) = &account {
+            let dot = account_status.dot_color();
+            account_btn = account_btn
+                .child(
+                    div()
+                        .relative()
+                        .child(
+                            div()
+                                .size(px(18.0))
+                                .rounded_full()
+                                .bg(accent.opacity(0.20))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(accent)
+                                .child(acct.initial()),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom(px(-1.0))
+                                .right(px(-1.0))
+                                .size(px(7.0))
+                                .rounded_full()
+                                .bg(dot)
+                                .border_1()
+                                .border_color(titlebar_bg),
+                        ),
+                )
+                .child(
+                    div()
+                        .max_w(px(96.0))
+                        .overflow_hidden()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(title_color)
+                        .child(acct.display_name()),
+                );
+        } else {
+            account_btn = account_btn
+                .child(
+                    div()
+                        .size(px(18.0))
+                        .rounded_full()
+                        .bg(ShellDeckColors::badge_bg())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.0))
+                        .text_color(title_dim)
+                        .child("\u{25CB}"), // ○ placeholder avatar
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(title_dim)
+                        .child("Se connecter"),
+                );
+        }
+
+        account_btn = account_btn.on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+            this.account_menu_open = !this.account_menu_open;
+            if this.account_menu_open {
+                this.theme_menu_open = false;
+            }
+            cx.notify();
+        }));
+        if account_menu_open {
+            account_btn = account_btn.bg(ShellDeckColors::hover_bg());
+        }
+
         // UI scale controls — a compact −/value/+ group that adjusts the app
         // font size (which drives proportional UI scaling) live.
         let scale_btn = |id: &'static str, glyph: &'static str| {
@@ -1713,6 +2116,7 @@ impl Workspace {
                     .pr(px(8.0))
                     .child(scale_group)
                     .child(divider())
+                    .child(account_btn)
                     .child(theme_btn)
                     .child(divider())
                     .child(minimize_btn)
@@ -1838,6 +2242,252 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _e, _window, cx| {
                     this.theme_menu_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(panel)
+    }
+
+    /// Render the titlebar account dropdown: a dismiss backdrop plus an anchored
+    /// panel. Logged out shows the sign-in options (password modal + OIDC);
+    /// logged in shows the account, sync, and sign-out controls.
+    fn render_account_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let shadow = vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, 0.45),
+            offset: point(px(0.0), px(4.0)),
+            blur_radius: px(20.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }];
+
+        let mut panel = div()
+            .id("account-menu-panel")
+            .absolute()
+            .top(px(46.0))
+            .right(px(12.0))
+            .w(px(288.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(10.0))
+            .shadow(shadow)
+            .p(px(12.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            // Clicks inside must not bubble to the dismiss backdrop.
+            .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                cx.stop_propagation();
+            });
+
+        // A full-width secondary (outlined) menu button.
+        let secondary_btn = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_primary())
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_primary())
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                .child(label)
+        };
+
+        if let Some(acct) = self.app_config.account.clone() {
+            // --- LOGGED IN ---
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pb(px(8.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        div()
+                            .size(px(34.0))
+                            .rounded_full()
+                            .bg(ShellDeckColors::primary().opacity(0.20))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::primary())
+                            .child(acct.initial()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(acct.display_name()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(acct.email.clone()),
+                            ),
+                    ),
+            );
+
+            let status_label = match self.account_status {
+                AccountStatus::Ok => "Connecté",
+                AccountStatus::Rejected => "Session expirée — reconnectez-vous",
+                AccountStatus::Offline => "Hors ligne",
+                AccountStatus::Unknown => "Vérification…",
+            };
+            let info_row = |label: &str, value: String| {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(180.0))
+                            .overflow_hidden()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(value),
+                    )
+            };
+            panel = panel
+                .child(info_row("Serveur", self.account_base_url()))
+                .child(info_row("Appareil", cloud_account::device_name()))
+                .child(info_row("Statut", status_label.to_string()));
+
+            panel = panel.child(
+                secondary_btn("account-sync", "Synchroniser".to_string()).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.account_menu_open = false;
+                        this.cloud_sync_now(cx);
+                    },
+                )),
+            );
+            panel = panel.child(
+                secondary_btn("account-logout", "Se déconnecter".to_string())
+                    .text_color(ShellDeckColors::error())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.logout_account(cx);
+                    })),
+            );
+        } else {
+            // --- LOGGED OUT ---
+            panel = panel
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child("Compte Inklura Manage"),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child("Connectez-vous pour synchroniser vos connexions SSH."),
+                );
+
+            // Primary: open the password + OIDC login modal.
+            panel = panel.child(
+                div()
+                    .id("account-signin")
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(9.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(white())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child("Se connecter")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.show_login_form(cx);
+                    })),
+            );
+
+            // Divider.
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border()))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("ou en un clic"),
+                    )
+                    .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border())),
+            );
+
+            panel = panel
+                .child(
+                    secondary_btn("account-oidc-sso", "Continuer avec SSO 1clic.pro".to_string())
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.start_oidc_login(Some("sso".to_string()), cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.0))
+                        .child(div().flex_1().child(
+                            secondary_btn("account-oidc-google", "Google".to_string()).on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.start_oidc_login(Some("google".to_string()), cx);
+                                }),
+                            ),
+                        ))
+                        .child(div().flex_1().child(
+                            secondary_btn("account-oidc-github", "GitHub".to_string()).on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.start_oidc_login(Some("github".to_string()), cx);
+                                }),
+                            ),
+                        )),
+                );
+        }
+
+        // Dismiss backdrop.
+        div()
+            .id("account-menu-backdrop")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _window, cx| {
+                    this.account_menu_open = false;
                     cx.notify();
                 }),
             )
@@ -2283,6 +2933,9 @@ impl Render for Workspace {
         let titlebar = Self::render_titlebar(
             is_maximized,
             self.theme_menu_open,
+            self.account_menu_open,
+            self.app_config.account.clone(),
+            self.account_status,
             self.ui_font_size,
             &handle,
             _cx,
@@ -2298,6 +2951,11 @@ impl Render for Workspace {
             root = root.child(self.render_theme_menu(_cx));
         }
 
+        // Titlebar account dropdown overlay
+        if self.account_menu_open {
+            root = root.child(self.render_account_menu(_cx));
+        }
+
         // Command palette overlay
         root = root.child(self.command_palette.clone());
 
@@ -2307,6 +2965,7 @@ impl Render for Workspace {
         // Modal form overlays — render an occluding backdrop at the workspace
         // level so hover/click on elements behind is properly blocked.
         let has_modal = self.connection_form.is_some()
+            || self.login_form.is_some()
             || self.port_forward_form.is_some()
             || self.script_form.is_some()
             || self.template_browser.is_some()
@@ -2322,6 +2981,9 @@ impl Render for Workspace {
                 .size_full();
 
             if let Some(ref form) = self.connection_form {
+                modal_layer = modal_layer.child(form.clone());
+            }
+            if let Some(ref form) = self.login_form {
                 modal_layer = modal_layer.child(form.clone());
             }
             if let Some(ref form) = self.port_forward_form {

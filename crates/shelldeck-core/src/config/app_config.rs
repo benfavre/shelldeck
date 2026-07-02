@@ -1,3 +1,4 @@
+use crate::config::cloud_account::AccountInfo;
 use crate::config::cloud_sync::CloudSyncConfig;
 use crate::error::{Result, ShellDeckError};
 use directories::ProjectDirs;
@@ -14,6 +15,11 @@ pub struct AppConfig {
     /// `shelldeck.toml` files without a `[cloud_sync]` section parsing cleanly.
     #[serde(default)]
     pub cloud_sync: CloudSyncConfig,
+    /// Signed-in Inklura Manage account. `None`/absent = logged out. Written
+    /// on login, cleared on logout. `skip_serializing_if` keeps the `[account]`
+    /// table out of the file entirely when logged out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountInfo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +291,36 @@ mod tests {
     }
 
     #[test]
+    fn account_round_trips_and_omits_when_logged_out() {
+        let path = temp_path("config.toml");
+
+        // Logged out: no [account] table should be written, and it reloads None.
+        let logged_out = AppConfig::default();
+        logged_out.save_to(&path).expect("save_to");
+        let serialized = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !serialized.contains("[account]"),
+            "logged-out config must not emit [account]"
+        );
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+        assert!(loaded.account.is_none());
+
+        // Logged in: round-trips the identity.
+        let mut logged_in = AppConfig::default();
+        logged_in.account = Some(AccountInfo {
+            email: "ben@webdesign29.net".to_string(),
+            name: "Ben Favre".to_string(),
+        });
+        logged_in.save_to(&path).expect("save_to");
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+        let acct = loaded.account.expect("account present");
+        assert_eq!(acct.email, "ben@webdesign29.net");
+        assert_eq!(acct.name, "Ben Favre");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn config_without_cloud_sync_section_still_parses() {
         // Simulates an older shelldeck.toml written before Cloud Sync existed.
         let path = temp_path("config.toml");
@@ -312,11 +348,12 @@ ui_font_size = 14.0
         std::fs::write(&path, legacy).expect("seed legacy config");
 
         let loaded = AppConfig::load_from(&path).expect("legacy config should parse");
-        // Cloud Sync falls back to defaults.
+        // Cloud Sync + account fall back to defaults (logged out).
         assert!(!loaded.cloud_sync.enabled);
         assert_eq!(loaded.cloud_sync.base_url, "https://manage.inklura.fr");
         assert!(loaded.cloud_sync.token.is_empty());
         assert!(loaded.cloud_sync.sync_on_startup);
+        assert!(loaded.account.is_none());
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

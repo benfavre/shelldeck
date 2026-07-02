@@ -318,10 +318,21 @@ impl SettingsView {
                 .child(s)
         };
 
+        let account_text = match &self.config.account {
+            Some(a) if !a.email.is_empty() => format!("{} ({})", a.display_name(), a.email),
+            Some(a) => a.display_name(),
+            None => "Not signed in".to_string(),
+        };
+
         div()
             .flex()
             .flex_col()
             .child(Self::render_about_section("CLOUD SYNC"))
+            .child(Self::render_setting_row(
+                "Account",
+                "Signed-in Inklura Manage account (sign in from the titlebar)",
+                value_text(account_text),
+            ))
             .child(Self::render_setting_row(
                 "Status",
                 "Sync SSH connection profiles from Inklura Manage",

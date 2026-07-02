@@ -147,6 +147,10 @@ fn main() -> Result<()> {
             // (empty terminal view) unchanged.
             workspace.update(cx, |ws, cx| ws.restore_session(cx));
 
+            // Background whoami to light up the titlebar account status dot and
+            // refresh the account name (or flag a revoked token).
+            workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
+
             // Intercept window close to honor the `confirm_before_close` setting.
             {
                 let w = workspace.downgrade();

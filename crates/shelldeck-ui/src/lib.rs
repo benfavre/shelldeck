@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod editor_buffer;
 pub mod file_editor;
 pub mod glyph_cache;
+pub mod login_form;
 pub mod port_forward_form;
 pub mod port_forward_view;
 pub mod scale;

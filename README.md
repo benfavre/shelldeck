@@ -104,7 +104,18 @@ SSH credentials are stored securely in your OS keychain -- never in config files
 
 ShellDeck can pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal so a team's server inventory stays in sync across machines. Synced connections show up alongside your `~/.ssh/config` and manual entries, tagged as **cloud**-sourced; they are refreshed on every sync and removed automatically when they disappear from the portal. Your local **manual** and **SSH-config** connections are never modified by sync.
 
-Add a `[cloud_sync]` section to `~/.local/share/ShellDeck/shelldeck.toml`:
+### Sign in from the titlebar
+
+The quickest way to connect is the **account chip in the titlebar** (top-right, next to the theme switcher). Click **Se connecter** and either:
+
+- enter your Inklura Manage **email + password**, or
+- use **single sign-on** — *SSO 1clic.pro*, *Google*, or *GitHub*. This opens your system browser to authorize the device, then hands a token back to ShellDeck automatically.
+
+On success ShellDeck stores an account-bound sync token, enables Cloud Sync, and pulls your profiles. The chip then shows your name and a status dot (green = connected, gray = offline/unchecked, red = token rejected — sign in again). Use the chip's dropdown to **Synchroniser** on demand or **Se déconnecter** (which revokes the token server-side).
+
+### Manual configuration
+
+You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to `~/.local/share/ShellDeck/shelldeck.toml`:
 
 ```toml
 [cloud_sync]
