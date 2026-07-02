@@ -310,12 +310,14 @@ mod tests {
         logged_in.account = Some(AccountInfo {
             email: "ben@webdesign29.net".to_string(),
             name: "Ben Favre".to_string(),
+            is_superadmin: true,
         });
         logged_in.save_to(&path).expect("save_to");
         let loaded = AppConfig::load_from(&path).expect("load_from");
         let acct = loaded.account.expect("account present");
         assert_eq!(acct.email, "ben@webdesign29.net");
         assert_eq!(acct.name, "Ben Favre");
+        assert!(acct.is_superadmin, "is_superadmin should round-trip");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

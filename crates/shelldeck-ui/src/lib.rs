@@ -15,6 +15,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod sites_view;
 pub mod status_bar;
+pub mod support_view;
 pub mod syntax;
 pub mod template_browser;
 pub mod terminal_view;

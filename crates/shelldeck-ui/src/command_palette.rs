@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
 use shelldeck_core::config::app_config::ThemePreference;
+use shelldeck_core::config::cloud_account::AppMode;
 
 use crate::theme::ShellDeckColors;
 
@@ -29,6 +30,13 @@ pub struct ApplyAppTheme {
 #[action(namespace = shelldeck, no_json)]
 pub struct OpenManageArea {
     pub path: String,
+}
+
+/// Switch the app mode (super-admins only; a no-op otherwise).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = shelldeck, no_json)]
+pub struct SetAppMode {
+    pub mode: AppMode,
 }
 
 /// A registered action with a display name and shortcut hint.

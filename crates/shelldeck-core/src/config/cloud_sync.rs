@@ -38,6 +38,9 @@ pub struct CloudSyncConfig {
     pub active_site_id: Option<String>,
     /// Display label for the active site (chip text).
     pub active_site_label: Option<String>,
+    /// Persisted app-mode selection for super-admins (User/Support/Dev).
+    /// Defaults to Dev; ignored for non-super-admins (forced to User).
+    pub mode: crate::config::cloud_account::AppMode,
 }
 
 impl Default for CloudSyncConfig {
@@ -49,6 +52,7 @@ impl Default for CloudSyncConfig {
             sync_on_startup: true,
             active_site_id: None,
             active_site_label: None,
+            mode: crate::config::cloud_account::AppMode::default(),
         }
     }
 }
@@ -459,6 +463,8 @@ sync_on_startup = false
         assert!(cfg.enabled);
         assert!(cfg.active_site_id.is_none());
         assert!(cfg.active_site_label.is_none());
+        // Mode defaults to Dev when absent from an older config.
+        assert_eq!(cfg.mode, crate::config::cloud_account::AppMode::Dev);
 
         // Round-trip with an active site set.
         let mut with_site = CloudSyncConfig::default();

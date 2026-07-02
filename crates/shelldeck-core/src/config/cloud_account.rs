@@ -21,12 +21,43 @@ use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 /// The signed-in account identity, persisted in `AppConfig` `[account]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountInfo {
     #[serde(default)]
     pub email: String,
     #[serde(default)]
     pub name: String,
+    /// Whether this account is a manage super-admin. Drives the app mode
+    /// switcher + dev-surface gating. `false` on legacy tokens.
+    #[serde(default)]
+    pub is_superadmin: bool,
+}
+
+/// Which audience surface the app presents. Only super-admins may switch;
+/// non-super-admins are forced to `User`, and a logged-out app runs as the
+/// classic full ShellDeck (treated like `Dev` for surface purposes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppMode {
+    User,
+    Support,
+    #[default]
+    Dev,
+}
+
+impl AppMode {
+    /// All modes in switcher order.
+    pub fn all() -> [AppMode; 3] {
+        [AppMode::User, AppMode::Support, AppMode::Dev]
+    }
+
+    /// Human-friendly (French) label for the switcher.
+    pub fn label(self) -> &'static str {
+        match self {
+            AppMode::User => "Utilisateur",
+            AppMode::Support => "Support",
+            AppMode::Dev => "Dev",
+        }
+    }
 }
 
 impl AccountInfo {
@@ -77,6 +108,8 @@ pub struct WhoamiInfo {
     #[serde(default)]
     pub user: Option<AccountUser>,
     #[serde(default)]
+    pub is_superadmin: bool,
+    #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub last_seen_at: Option<String>,
@@ -97,7 +130,11 @@ impl WhoamiInfo {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| self.label.clone().filter(|s| !s.trim().is_empty()))
             .unwrap_or_default();
-        AccountInfo { email, name }
+        AccountInfo {
+            email,
+            name,
+            is_superadmin: self.is_superadmin,
+        }
     }
 }
 
@@ -109,6 +146,8 @@ struct LoginResponse {
     token: Option<String>,
     #[serde(default)]
     user: Option<AccountUser>,
+    #[serde(default)]
+    is_superadmin: bool,
     #[serde(default)]
     error: Option<String>,
 }
@@ -196,10 +235,12 @@ pub fn login_password(
                         .map(|u| AccountInfo {
                             email: u.email.clone().unwrap_or_else(|| email.to_string()),
                             name: u.name.clone().unwrap_or_default(),
+                            is_superadmin: p.is_superadmin,
                         })
                         .unwrap_or_else(|| AccountInfo {
                             email: email.to_string(),
                             name: String::new(),
+                            is_superadmin: p.is_superadmin,
                         });
                     return Ok((token, account));
                 }
@@ -486,6 +527,7 @@ mod tests {
         let a = AccountInfo {
             email: "ben@webdesign29.net".into(),
             name: "Ben Favre".into(),
+            is_superadmin: true,
         };
         assert_eq!(a.initial(), "B");
         assert_eq!(a.display_name(), "Ben Favre");
@@ -493,6 +535,7 @@ mod tests {
         let only_email = AccountInfo {
             email: "alice@example.com".into(),
             name: String::new(),
+            is_superadmin: false,
         };
         assert_eq!(only_email.initial(), "A");
         assert_eq!(only_email.display_name(), "alice");
@@ -509,6 +552,27 @@ mod tests {
         let info = w.account_info();
         assert_eq!(info.name, "Poste de Ben");
         assert!(info.email.is_empty());
+    }
+
+    #[test]
+    fn whoami_parses_is_superadmin_into_account() {
+        let json = r#"{"ok":true,"label":"Poste","user":{"email":"a@b.c","name":"A B"},"is_superadmin":true}"#;
+        let w: WhoamiInfo = serde_json::from_str(json).expect("parse whoami");
+        assert!(w.is_superadmin);
+        assert!(w.account_info().is_superadmin);
+
+        // Legacy token (field absent) → false.
+        let legacy: WhoamiInfo =
+            serde_json::from_str(r#"{"ok":true,"label":"x"}"#).expect("parse legacy");
+        assert!(!legacy.is_superadmin);
+        assert!(!legacy.account_info().is_superadmin);
+    }
+
+    #[test]
+    fn app_mode_default_is_dev() {
+        assert_eq!(AppMode::default(), AppMode::Dev);
+        assert_eq!(AppMode::all(), [AppMode::User, AppMode::Support, AppMode::Dev]);
+        assert_eq!(AppMode::Support.label(), "Support");
     }
 
     #[test]

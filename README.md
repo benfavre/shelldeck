@@ -140,6 +140,18 @@ sync_on_startup = true     # pull profiles automatically at launch
 - Trigger a sync anytime via the command palette (**Cloud Sync Now**) or the **Sync now** button under Settings → General → Cloud Sync.
 - The token is stored in `shelldeck.toml`; the Settings screen only ever shows a masked hint of it.
 
+## App modes (User / Support / Dev)
+
+Signed in as an Inklura Manage **super-admin**, a three-segment **mode switcher** appears in the titlebar (left of the site chip):
+
+- **Dev** (default) — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites. This is exactly the classic app.
+- **Support** — a native two-pane helpdesk console for support.inklura.fr: view filters (Tous / Non attribués / Les miens / Ouverts / En attente / SLA / Résolus) with live counts, the ticket list, and a conversation pane with a reply/note composer and an action bar (status, priority, assign, resolve). The list refreshes every ~30s while open.
+- **User** — a manage-centric home: an account header plus a **Mes sites** list where each site has an **Activer** button and one-click deep links into its Manage areas (Dashboard, CMS, Helpdesk, E-commerce, Réglages, Console ShellDeck).
+
+Switching modes never closes running terminal sessions — Dev surfaces are hidden, not destroyed. The selected mode is remembered across restarts. The command palette (`Ctrl+Shift+P`) has **Mode : Utilisateur / Support / Dev** entries too.
+
+Non-super-admin accounts are locked to **User** mode (no dev surfaces, no switcher). When you're **not** signed in, ShellDeck runs as the classic full app (Dev), since it's a general-purpose terminal on its own.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

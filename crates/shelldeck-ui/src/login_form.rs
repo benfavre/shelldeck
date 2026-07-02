@@ -157,7 +157,7 @@ impl LoginForm {
             .rounded(px(6.0))
             .bg(ShellDeckColors::bg_primary())
             .border_1()
-            .text_size(px(13.0))
+            .text_size(px(14.0))
             .cursor_text()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.active_field = field;
@@ -204,7 +204,7 @@ impl LoginForm {
             .gap(px(4.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(13.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
                     .child(label.to_string()),
@@ -231,7 +231,7 @@ impl LoginForm {
             .border_1()
             .border_color(ShellDeckColors::border())
             .bg(ShellDeckColors::bg_primary())
-            .text_size(px(13.0))
+            .text_size(px(14.0))
             .text_color(ShellDeckColors::text_primary())
             .flex()
             .items_center()
@@ -259,7 +259,7 @@ impl Render for LoginForm {
         let mut card = div()
             .flex()
             .flex_col()
-            .w(px(400.0))
+            .w(px(420.0))
             .bg(ShellDeckColors::bg_surface())
             .rounded(px(12.0))
             .border_1()
@@ -283,14 +283,14 @@ impl Render for LoginForm {
                         .flex_col()
                         .child(
                             div()
-                                .text_size(px(16.0))
+                                .text_size(px(19.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(ShellDeckColors::text_primary())
                                 .child("Se connecter à Inklura Manage"),
                         )
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(px(12.0))
                                 .text_color(ShellDeckColors::text_muted())
                                 .child(self.server.clone()),
                         ),
@@ -344,7 +344,7 @@ impl Render for LoginForm {
             .py(px(9.0))
             .rounded(px(6.0))
             .bg(ShellDeckColors::primary())
-            .text_size(px(13.0))
+            .text_size(px(14.0))
             .font_weight(FontWeight::MEDIUM)
             .text_color(white())
             .flex()

@@ -2,8 +2,9 @@ use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
-use shelldeck_core::config::cloud_account::{self, AccountInfo};
+use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
+use shelldeck_core::config::manage_support;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
-    PaletteAction, ToggleCommandPalette,
+    PaletteAction, SetAppMode, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
@@ -28,6 +29,7 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::support_view::{SupportView, SupportViewEvent};
 use crate::template_browser::TemplateBrowser;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -195,6 +197,11 @@ pub struct Workspace {
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
     site_menu_open: bool,
+    /// The native Support-mode console.
+    support: Entity<SupportView>,
+    _support_sub: Subscription,
+    /// Background poll while Support mode is visible.
+    _support_poll_task: Option<gpui::Task<()>>,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -292,6 +299,7 @@ impl Workspace {
         let settings = cx.new(|_| SettingsView::new(config));
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
+        let support = cx.new(SupportView::new);
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -410,6 +418,11 @@ impl Workspace {
             },
         );
 
+        let support_sub =
+            cx.subscribe(&support, |this, _view, event: &SupportViewEvent, cx| {
+                this.handle_support_event(event.clone(), cx);
+            });
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -490,6 +503,9 @@ impl Workspace {
             _login_form_sub: None,
             site_directory: None,
             site_menu_open: false,
+            support,
+            _support_sub: support_sub,
+            _support_poll_task: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -1196,8 +1212,10 @@ impl Workspace {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
                         }
-                        // Token is valid → load the sites directory too.
+                        // Token is valid → load the sites directory + activate
+                        // the persisted mode (starts the support poll if needed).
                         ws.refresh_sites(cx);
+                        ws.activate_current_mode(cx);
                     }
                     Err(e) if cloud_account::is_auth_rejected(&e) => {
                         ws.account_status = AccountStatus::Rejected;
@@ -1376,6 +1394,8 @@ impl Workspace {
 
         // Load the sites directory for the switcher (background, non-blocking).
         self.refresh_sites(cx);
+        // Non-super-admins are forced to User mode; activate whatever mode applies.
+        self.activate_current_mode(cx);
 
         let cfg = self.app_config.cloud_sync.clone();
         let name = account.display_name();
@@ -1441,6 +1461,8 @@ impl Workspace {
         self.account_menu_open = false;
         self.site_directory = None;
         self.site_menu_open = false;
+        // Logged out → classic Dev surface; stop the support poll.
+        self._support_poll_task = None;
         self.sidebar.update(cx, |s, cx| {
             s.set_site_filter(None);
             cx.notify();
@@ -1585,6 +1607,13 @@ impl Workspace {
             PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
             PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
         ];
+        for m in AppMode::all() {
+            actions.push(PaletteAction::new(
+                &format!("Mode : {}", m.label()),
+                None,
+                Box::new(SetAppMode { mode: m }),
+            ));
+        }
         for pref in ThemePreference::all() {
             actions.push(PaletteAction::new(
                 &format!("Theme: {}", pref.display_name()),
@@ -1622,6 +1651,247 @@ impl Workspace {
         self.command_palette.update(cx, |palette, _| {
             palette.set_actions(actions);
         });
+    }
+
+    // --- App modes (User / Support / Dev) ---
+
+    /// Whether the user is signed in to Inklura Manage.
+    fn signed_in(&self) -> bool {
+        self.app_config.cloud_sync.is_configured() && self.app_config.account.is_some()
+    }
+
+    fn is_superadmin(&self) -> bool {
+        self.app_config
+            .account
+            .as_ref()
+            .map(|a| a.is_superadmin)
+            .unwrap_or(false)
+    }
+
+    /// Only signed-in super-admins may switch modes.
+    pub fn can_switch_mode(&self) -> bool {
+        self.signed_in() && self.is_superadmin()
+    }
+
+    /// The surface to present: logged-out → classic Dev; super-admin →
+    /// persisted mode (default Dev); non-super-admin → forced User.
+    pub fn effective_mode(&self) -> AppMode {
+        if !self.signed_in() {
+            return AppMode::Dev;
+        }
+        if self.is_superadmin() {
+            self.app_config.cloud_sync.mode
+        } else {
+            AppMode::User
+        }
+    }
+
+    /// Switch the app mode (super-admins only). Dev surfaces are hidden, not
+    /// destroyed — running terminal sessions keep going.
+    pub fn set_mode(&mut self, mode: AppMode, cx: &mut Context<Self>) {
+        if !self.can_switch_mode() || self.app_config.cloud_sync.mode == mode {
+            return;
+        }
+        self.app_config.cloud_sync.mode = mode;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save app mode: {}", e);
+        }
+        self.theme_menu_open = false;
+        self.account_menu_open = false;
+        self.site_menu_open = false;
+        self.activate_current_mode(cx);
+        cx.notify();
+    }
+
+    /// Start/stop the support poll and load support data for the current mode.
+    /// Call after login / startup / a mode change.
+    pub fn activate_current_mode(&mut self, cx: &mut Context<Self>) {
+        self.sync_support_poll(cx);
+        if self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured() {
+            self.refresh_support(cx);
+        }
+    }
+
+    fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
+        let want = self.effective_mode() == AppMode::Support
+            && self.app_config.cloud_sync.is_configured();
+        if want {
+            if self._support_poll_task.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(30))
+                        .await;
+                    let keep_going = this
+                        .update(cx, |ws, cx| {
+                            if ws.effective_mode() == AppMode::Support {
+                                ws.refresh_support(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep_going {
+                        break;
+                    }
+                });
+                self._support_poll_task = Some(task);
+            }
+        } else {
+            self._support_poll_task = None;
+        }
+    }
+
+    fn refresh_support(&mut self, cx: &mut Context<Self>) {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        let need_agents = !self.support.read(cx).has_agents();
+        self.support.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let (list, agents) = cx
+                .background_executor()
+                .spawn(async move {
+                    let list = manage_support::support_list(&base, &token);
+                    let agents = if need_agents {
+                        manage_support::support_agents(&base, &token).ok()
+                    } else {
+                        None
+                    };
+                    (list, agents)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.support.update(cx, |v, cx| {
+                    match list {
+                        Ok(r) => v.set_list(r.tickets, r.counts, r.me),
+                        Err(e) => v.set_error(cloud_account::user_message(&e)),
+                    }
+                    if let Some(a) = agents {
+                        v.set_agents(a);
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn select_support_ticket(&mut self, id: String, cx: &mut Context<Self>) {
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        self.support.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let detail = cx
+                .background_executor()
+                .spawn(async move {
+                    let detail = manage_support::support_ticket(&base, &token, &id);
+                    // Best-effort mark-read; ignore result.
+                    let _ = manage_support::support_read(&base, &token, &id);
+                    detail
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                match detail {
+                    Ok(t) => {
+                        ws.support.update(cx, |v, cx| {
+                            v.set_detail(t);
+                            cx.notify();
+                        });
+                        // Refresh the list so unread flags/counts update.
+                        ws.refresh_support(cx);
+                    }
+                    Err(e) => {
+                        let msg = cloud_account::user_message(&e);
+                        ws.support.update(cx, |v, cx| {
+                            v.set_error(msg);
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn handle_support_event(&mut self, event: SupportViewEvent, cx: &mut Context<Self>) {
+        use manage_support as ms;
+        match event {
+            SupportViewEvent::Refresh => self.refresh_support(cx),
+            SupportViewEvent::SelectTicket(id) => self.select_support_ticket(id, cx),
+            SupportViewEvent::Send { id, text, note } => {
+                self.support_action(cx, move |base, token| {
+                    if note {
+                        ms::support_note(&base, &token, &id, &text)
+                    } else {
+                        ms::support_reply(&base, &token, &id, &text)
+                    }
+                });
+            }
+            SupportViewEvent::SetStatus { id, status } => {
+                self.support_action(cx, move |b, t| ms::support_status(&b, &t, &id, &status));
+            }
+            SupportViewEvent::SetPriority { id, priority } => {
+                self.support_action(cx, move |b, t| ms::support_priority(&b, &t, &id, &priority));
+            }
+            SupportViewEvent::Assign { id, assignee } => {
+                self.support_action(cx, move |b, t| ms::support_assign(&b, &t, &id, &assignee));
+            }
+            SupportViewEvent::Resolve { id, resolution } => {
+                self.support_action(cx, move |b, t| ms::support_resolve(&b, &t, &id, &resolution));
+            }
+        }
+    }
+
+    /// Run a support write action on the background executor; on success install
+    /// the updated ticket + refresh the list, on failure toast the error.
+    fn support_action<F>(&mut self, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(String, String) -> shelldeck_core::Result<manage_support::SupportTicket>
+            + Send
+            + 'static,
+    {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        self.support.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { f(base, token) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(t) => {
+                    ws.support.update(cx, |v, cx| {
+                        v.set_detail(t);
+                        cx.notify();
+                    });
+                    ws.refresh_support(cx);
+                }
+                Err(e) => {
+                    let msg = cloud_account::user_message(&e);
+                    ws.support.update(cx, |v, cx| {
+                        v.set_error(msg.clone());
+                        cx.notify();
+                    });
+                    ws.show_toast(msg, ToastLevel::Error, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
@@ -1970,6 +2240,7 @@ impl Workspace {
         site_menu_open: bool,
         active_site_label: Option<String>,
         sites_loaded: bool,
+        mode_switch: Option<AppMode>,
         ui_font_size: f32,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -2210,6 +2481,46 @@ impl Workspace {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
 
+        // Mode switcher — a three-segment control, super-admins only.
+        let mode_switcher = mode_switch.map(|current| {
+            let mut seg = div()
+                .flex()
+                .items_center()
+                .gap(px(1.0))
+                .p(px(2.0))
+                .rounded(px(6.0))
+                .bg(ShellDeckColors::badge_bg());
+            for m in AppMode::all() {
+                let active = m == current;
+                let mut btn = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "titlebar-mode-{}",
+                        m.label()
+                    ))))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(5.0))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .child(m.label().to_string())
+                    .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                        this.set_mode(m, cx);
+                    }));
+                if active {
+                    btn = btn
+                        .bg(ShellDeckColors::bg_surface())
+                        .text_color(ShellDeckColors::text_primary());
+                } else {
+                    btn = btn
+                        .text_color(title_dim)
+                        .hover(|s| s.text_color(title_color));
+                }
+                seg = seg.child(btn);
+            }
+            seg
+        });
+
         // Site chip — shown only when signed in and the sites directory has
         // loaded. Displays the active site label or "Tous les sites".
         let show_site_chip = account.is_some() && sites_loaded;
@@ -2336,6 +2647,7 @@ impl Workspace {
                     .child(scale_group)
                     .child(divider())
                     .child(account_btn)
+                    .children(mode_switcher)
                     .children(site_chip)
                     .child(theme_btn)
                     .child(divider())
@@ -2967,6 +3279,320 @@ impl Workspace {
             .text_color(ShellDeckColors::text_muted())
             .child(label.to_string())
     }
+
+    /// Open a manage area in the browser for a specific site (User-mode rows).
+    fn open_area_for_site(
+        &mut self,
+        site: ManagedSiteInfo,
+        area_path: String,
+        cx: &mut Context<Self>,
+    ) {
+        let origin = self
+            .site_directory
+            .as_ref()
+            .map(|p| p.manage_origin.clone())
+            .filter(|o| !o.is_empty())
+            .unwrap_or_else(|| self.account_base_url());
+        let url = manage_sites::manage_area_url(&origin, &site, &area_path);
+        match cloud_account::open_in_browser(&url) {
+            Ok(_) => self.show_toast("Ouverture dans le navigateur…", ToastLevel::Info, cx),
+            Err(e) => self.show_toast(
+                format!(
+                    "Impossible d'ouvrir le navigateur : {}",
+                    cloud_account::user_message(&e)
+                ),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
+    }
+
+    /// User mode: a manage-centric home — account header + "Mes sites" list with
+    /// per-site Activer + area deep links.
+    fn render_user_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let account = self.app_config.account.clone().unwrap_or_default();
+        let server = self.account_base_url();
+        let active_id = self.app_config.cloud_sync.active_site_id.clone();
+        let payload = self.site_directory.clone().unwrap_or_default();
+
+        // Preferred area buttons for each site row (subset of the directory).
+        let preferred = ["dashboard", "cms", "helpdesk", "ecommerce", "settings", "shelldeck"];
+        let area_buttons: Vec<manage_sites::ManageArea> = preferred
+            .iter()
+            .filter_map(|k| payload.areas.iter().find(|a| a.key == *k).cloned())
+            .collect();
+
+        // Header card.
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.0))
+            .p(px(16.0))
+            .m(px(16.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .size(px(40.0))
+                            .rounded_full()
+                            .bg(ShellDeckColors::primary().opacity(0.20))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(17.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::primary())
+                            .child(account.initial()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(account.display_name()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(format!("{} · {}", account.email, server)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("uh-open-manage")
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child("Ouvrir Manage")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.open_manage_area("/manage".to_string(), cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("uh-sync")
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(ShellDeckColors::border())
+                            .bg(ShellDeckColors::bg_primary())
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                            .child("Synchroniser")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.cloud_sync_now(cx);
+                            })),
+                    ),
+            );
+
+        // Sites list (sorted: active pinned, connection-bearing next, then label).
+        let conn_site_ids: std::collections::HashSet<String> = self
+            .connections
+            .iter()
+            .filter_map(|c| c.site_id.map(|id| id.to_string()))
+            .collect();
+        let mut sites: Vec<manage_sites::ManagedSiteInfo> = payload.sites.clone();
+        sites.sort_by(|a, b| {
+            let a_active = active_id.as_deref() == Some(a.site_id.as_str());
+            let b_active = active_id.as_deref() == Some(b.site_id.as_str());
+            let a_conn = conn_site_ids.contains(&a.site_id);
+            let b_conn = conn_site_ids.contains(&b.site_id);
+            b_active
+                .cmp(&a_active)
+                .then(b_conn.cmp(&a_conn))
+                .then(
+                    a.display_label()
+                        .to_lowercase()
+                        .cmp(&b.display_label().to_lowercase()),
+                )
+        });
+
+        let mut list = div()
+            .id("user-home-sites")
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .px(px(16.0))
+            .pb(px(16.0));
+
+        if sites.is_empty() {
+            list = list.child(
+                div()
+                    .p(px(24.0))
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Aucun site — connectez-vous à un compte disposant de sites."),
+            );
+        }
+
+        for site in &sites {
+            let is_active = active_id.as_deref() == Some(site.site_id.as_str());
+            let sid = site.site_id.clone();
+            let label = site.display_label();
+
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .p(px(12.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(if is_active {
+                    ShellDeckColors::primary()
+                } else {
+                    ShellDeckColors::border()
+                })
+                .bg(ShellDeckColors::bg_sidebar());
+
+            // Row 1: identity + Activer.
+            let activate_label = if is_active { "Site actif" } else { "Activer" };
+            let sid_for_click = sid.clone();
+            let label_for_click = label.clone();
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(if site.host.is_empty() {
+                                        site.tenant_name.clone()
+                                    } else {
+                                        site.host.clone()
+                                    }),
+                            ),
+                    )
+                    .child({
+                        let mut btn = div()
+                            .id(ElementId::from(SharedString::from(format!("uh-act-{}", sid))))
+                            .px(px(10.0))
+                            .py(px(5.0))
+                            .rounded(px(6.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .flex_shrink_0();
+                        if is_active {
+                            btn = btn
+                                .bg(ShellDeckColors::primary().opacity(0.15))
+                                .text_color(ShellDeckColors::primary())
+                                .child(activate_label.to_string());
+                        } else {
+                            btn = btn
+                                .border_1()
+                                .border_color(ShellDeckColors::border())
+                                .bg(ShellDeckColors::bg_primary())
+                                .text_color(ShellDeckColors::text_primary())
+                                .cursor_pointer()
+                                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                                .child(activate_label.to_string())
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.select_site(
+                                        Some(sid_for_click.clone()),
+                                        Some(label_for_click.clone()),
+                                        cx,
+                                    );
+                                }));
+                        }
+                        btn
+                    }),
+            );
+
+            // Row 2: area deep-link buttons.
+            let mut areas_row = div().flex().flex_wrap().gap(px(6.0));
+            for area in &area_buttons {
+                let site_clone = site.clone();
+                let path = area.path.clone();
+                areas_row = areas_row.child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "uh-area-{}-{}",
+                            sid, area.key
+                        ))))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(ShellDeckColors::border())
+                        .bg(ShellDeckColors::bg_primary())
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .cursor_pointer()
+                        .hover(|s| {
+                            s.bg(ShellDeckColors::hover_bg())
+                                .text_color(ShellDeckColors::text_primary())
+                        })
+                        .child(area.label.clone())
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.open_area_for_site(site_clone.clone(), path.clone(), cx);
+                        })),
+                );
+            }
+            card = card.child(areas_row);
+            list = list.child(card);
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(ShellDeckColors::bg_primary())
+            .child(
+                div()
+                    .px(px(16.0))
+                    .pt(px(14.0))
+                    .text_size(px(18.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child("Mes sites"),
+            )
+            .child(header)
+            .child(list)
+    }
 }
 
 impl Render for Workspace {
@@ -3006,43 +3632,42 @@ impl Render for Workspace {
         // Build main content area — flex_grow fills between titlebar and status bar
         let mut main_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
-        if self.sidebar_visible {
-            main_area = main_area.child(self.sidebar.clone());
-        }
+        // The app mode selects the whole surface. User/Support are full-pane
+        // manage surfaces (no sidebar); Dev is the classic terminal workspace.
+        // Dev views (terminal sessions etc.) are hidden, never destroyed.
+        match self.effective_mode() {
+            AppMode::Support => {
+                main_area = main_area.child(self.support.clone());
+            }
+            AppMode::User => {
+                main_area = main_area.child(self.render_user_home(_cx));
+            }
+            AppMode::Dev => {
+                if self.sidebar_visible {
+                    main_area = main_area.child(self.sidebar.clone());
+                }
 
-        let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
-        if !output_resizing && !sidebar_resizing {
-            content = content.block_mouse_except_scroll();
-        }
+                let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
+                if !output_resizing && !sidebar_resizing {
+                    content = content.block_mouse_except_scroll();
+                }
 
-        match self.active_view {
-            ActiveView::Dashboard => {
-                content = content.child(self.dashboard.clone());
-            }
-            ActiveView::Terminal => {
-                content = content.child(self.terminal.clone());
-            }
-            ActiveView::Scripts => {
-                content = content.child(self.scripts.clone());
-            }
-            ActiveView::PortForwards => {
-                content = content.child(self.port_forwards.clone());
-            }
-            ActiveView::ServerSync => {
-                content = content.child(self.server_sync.clone());
-            }
-            ActiveView::Sites => {
-                content = content.child(self.sites.clone());
-            }
-            ActiveView::FileEditor => {
-                content = content.child(self.file_editor.clone());
-            }
-            ActiveView::Settings => {
-                content = content.child(self.settings.clone());
+                match self.active_view {
+                    ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
+                    ActiveView::Terminal => content = content.child(self.terminal.clone()),
+                    ActiveView::Scripts => content = content.child(self.scripts.clone()),
+                    ActiveView::PortForwards => {
+                        content = content.child(self.port_forwards.clone())
+                    }
+                    ActiveView::ServerSync => content = content.child(self.server_sync.clone()),
+                    ActiveView::Sites => content = content.child(self.sites.clone()),
+                    ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
+                    ActiveView::Settings => content = content.child(self.settings.clone()),
+                }
+
+                main_area = main_area.child(content);
             }
         }
-
-        main_area = main_area.child(content);
 
         let h1 = handle.clone();
         let h2 = handle.clone();
@@ -3413,6 +4038,11 @@ impl Render for Workspace {
             self.site_menu_open,
             self.app_config.cloud_sync.active_site_label.clone(),
             self.site_directory.is_some(),
+            if self.can_switch_mode() {
+                Some(self.effective_mode())
+            } else {
+                None
+            },
             self.ui_font_size,
             &handle,
             _cx,

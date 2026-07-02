@@ -150,6 +150,9 @@ fn main() -> Result<()> {
             // Background whoami to light up the titlebar account status dot and
             // refresh the account name (or flag a revoked token).
             workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
+            // Activate the persisted app mode (loads Support data + poll if the
+            // last session was in Support mode).
+            workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
 
             // Intercept window close to honor the `confirm_before_close` setting.
             {
@@ -273,6 +276,15 @@ fn main() -> Result<()> {
                         if let Some(ws) = w.upgrade() {
                             let path = action.path.clone();
                             ws.update(cx, |ws, cx| ws.open_manage_area(path, cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |action: &SetAppMode, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            let mode = action.mode;
+                            ws.update(cx, |ws, cx| ws.set_mode(mode, cx));
                         }
                     }
                 });
