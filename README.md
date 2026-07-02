@@ -110,6 +110,7 @@ The quickest way to connect is the **account chip in the titlebar** (top-right, 
 
 - enter your Inklura Manage **email + password**, or
 - use **single sign-on** — *SSO 1clic.pro*, *Google*, or *GitHub*. This opens your system browser to authorize the device, then hands a token back to ShellDeck automatically.
+- or **Via le navigateur (mot de passe)** — opens the browser to the Manage password login page (handy when you already have a Manage session or a browser password manager), then authorizes and returns.
 
 On success ShellDeck stores an account-bound sync token, enables Cloud Sync, and pulls your profiles. The chip then shows your name and a status dot (green = connected, gray = offline/unchecked, red = token rejected — sign in again). Use the chip's dropdown to **Synchroniser** on demand or **Se déconnecter** (which revokes the token server-side).
 
