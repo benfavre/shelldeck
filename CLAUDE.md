@@ -111,6 +111,10 @@ if condition {
 - Connection store: `~/.local/share/ShellDeck/connections.json`
 - SSH config (read-only): `~/.ssh/config`
 
+## Cloud Sync (Inklura Manage)
+
+`shelldeck-core::config::cloud_sync` pulls SSH connection profiles from the Inklura Manage portal (`manage.inklura.fr`) into the connection store. `sync_now()` does a device check-in (`POST /api/manage/shelldeck/sync`, falling back to `GET` on 404/405), then `merge_profiles()` upserts by UUID as `ConnectionSource::CloudSync` and prunes cloud entries that vanished remotely — **never** touching `Manual`/`SshConfig` connections. Config lives in a `[cloud_sync]` section of `shelldeck.toml` (`enabled`/`base_url`/`token`/`sync_on_startup`); `AppConfig.cloud_sync` is `#[serde(default)]` so older configs still parse. Startup sync runs in `main.rs` (best-effort, bounded by 4s/10s timeouts); the manual path is the `CloudSyncNow` action → `Workspace::cloud_sync_now` (runs the blocking fetch on `background_executor`, never the UI thread). Token is shown masked in Settings → General.
+
 ## Releasing & Auto-Update
 
 - **Cut a release:** bump `[workspace.package] version` in the root `Cargo.toml`, commit, then push a matching `vX.Y.Z` git tag. The tag triggers `.github/workflows/release.yml`: it builds linux/macos/windows, creates the GitHub Release with assets, and publishes the update manifest to Cloudflare KV (key `latest-release`). If any build fails, the release + manifest jobs are SKIPPED — fix and re-tag.

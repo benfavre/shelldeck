@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     );
 
     // Load connection store (manual connections, scripts, forwards)
-    let store = ConnectionStore::load().unwrap_or_else(|e| {
+    let mut store = ConnectionStore::load().unwrap_or_else(|e| {
         tracing::warn!("Failed to load connection store: {}", e);
         ConnectionStore::default()
     });
@@ -50,6 +50,35 @@ fn main() -> Result<()> {
         store.scripts.len(),
         store.port_forwards.len()
     );
+
+    // Cloud Sync: pull remote SSH profiles at startup (best-effort). Network
+    // failure never blocks launch — the fetch is bounded by 4s connect / 10s
+    // total timeouts. On a successful merge we reload the store so the freshly
+    // synced connections feed the workspace.
+    if config.cloud_sync.is_configured() && config.cloud_sync.sync_on_startup {
+        match shelldeck_core::config::cloud_sync::sync_now(
+            &config.cloud_sync,
+            shelldeck_core::VERSION,
+        ) {
+            Ok(stats) => {
+                tracing::info!(
+                    "Cloud sync: {} added, {} updated, {} removed",
+                    stats.added,
+                    stats.updated,
+                    stats.removed
+                );
+                if stats.changed() {
+                    match ConnectionStore::load() {
+                        Ok(s) => store = s,
+                        Err(e) => {
+                            tracing::warn!("Failed to reload store after cloud sync: {}", e)
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Cloud sync failed: {}", e),
+        }
+    }
 
     // Keep store for passing to workspace
     let store_for_workspace = store.clone();
@@ -215,6 +244,14 @@ fn main() -> Result<()> {
                         if let Some(ws) = w.upgrade() {
                             let name = action.name.clone();
                             ws.update(cx, |ws, cx| ws.apply_terminal_theme_by_name(&name, cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &CloudSyncNow, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.cloud_sync_now(cx));
                         }
                     }
                 });

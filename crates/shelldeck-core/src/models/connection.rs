@@ -6,6 +6,21 @@ use uuid::Uuid;
 pub enum ConnectionSource {
     SshConfig,
     Manual,
+    /// Pulled from the Inklura Manage cloud-sync endpoint. These are managed by
+    /// the sync process: refreshed on every sync and removed when they disappear
+    /// from the remote set. See `config::cloud_sync`.
+    CloudSync,
+}
+
+impl ConnectionSource {
+    /// Short, human-friendly label for badges and UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ConnectionSource::SshConfig => "ssh config",
+            ConnectionSource::Manual => "manual",
+            ConnectionSource::CloudSync => "cloud",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

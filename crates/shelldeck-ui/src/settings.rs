@@ -6,6 +6,7 @@ use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::theme::{palette_for, ShellDeckColors};
+use crate::workspace::CloudSyncNow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -284,6 +285,89 @@ impl SettingsView {
                         cx.notify();
                     })),
             ))
+            .child(self.render_cloud_sync_settings(cx))
+    }
+
+    /// Mask a Cloud Sync token for display: never show the full secret, just a
+    /// hint of its tail (e.g. `sd_…9f2a`), or a placeholder when unset.
+    fn mask_token(token: &str) -> String {
+        if token.is_empty() {
+            return "Not configured".to_string();
+        }
+        let last4: String = {
+            let chars: Vec<char> = token.chars().collect();
+            let start = chars.len().saturating_sub(4);
+            chars[start..].iter().collect()
+        };
+        format!("sd_…{}", last4)
+    }
+
+    /// Read-only Cloud Sync status block for the General tab, plus a "Sync now"
+    /// button that dispatches [`CloudSyncNow`]. Editing happens in
+    /// `shelldeck.toml`; this surface is intentionally view-only.
+    fn render_cloud_sync_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let cfg = &self.config.cloud_sync;
+        let status_text = if cfg.enabled { "Enabled" } else { "Disabled" };
+        let token_display = Self::mask_token(&cfg.token);
+
+        let value_text = |s: String| {
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ShellDeckColors::text_primary())
+                .child(s)
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .child(Self::render_about_section("CLOUD SYNC"))
+            .child(Self::render_setting_row(
+                "Status",
+                "Sync SSH connection profiles from Inklura Manage",
+                value_text(status_text.to_string()),
+            ))
+            .child(Self::render_setting_row(
+                "Server",
+                "Management portal base URL",
+                value_text(cfg.base_url.clone()),
+            ))
+            .child(Self::render_setting_row(
+                "Token",
+                "Bearer token (masked for safety)",
+                value_text(token_display),
+            ))
+            .child(
+                div()
+                    .mt(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(
+                        "Edit [cloud_sync] in shelldeck.toml — get a token at \
+                         https://manage.inklura.fr/manage/shelldeck",
+                    ),
+            )
+            .child(
+                div()
+                    .id("cloud-sync-now")
+                    .mt(px(12.0))
+                    .w(px(120.0))
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(white())
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("Sync now")
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        cx.dispatch_action(&CloudSyncNow);
+                    })),
+            )
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {

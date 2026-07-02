@@ -16,6 +16,7 @@ A GPU-accelerated native desktop terminal and SSH companion app built with Rust.
 - **Search** -- In-terminal text search with match highlighting
 - **URL Detection** -- Clickable URLs detected in terminal output
 - **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and `Ctrl+P`
+- **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI
@@ -98,6 +99,25 @@ ShellDeck stores its configuration in `~/.local/share/ShellDeck/`:
 | `workspace.json` | Window layout and session state |
 
 SSH credentials are stored securely in your OS keychain -- never in config files.
+
+## Cloud Sync (Inklura Manage)
+
+ShellDeck can pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal so a team's server inventory stays in sync across machines. Synced connections show up alongside your `~/.ssh/config` and manual entries, tagged as **cloud**-sourced; they are refreshed on every sync and removed automatically when they disappear from the portal. Your local **manual** and **SSH-config** connections are never modified by sync.
+
+Add a `[cloud_sync]` section to `~/.local/share/ShellDeck/shelldeck.toml`:
+
+```toml
+[cloud_sync]
+enabled = true
+base_url = "https://manage.inklura.fr"
+token = "sd_..."          # get a token at manage.inklura.fr/manage/shelldeck
+sync_on_startup = true     # pull profiles automatically at launch
+```
+
+- **Get a token** at [manage.inklura.fr/manage/shelldeck](https://manage.inklura.fr/manage/shelldeck).
+- With `sync_on_startup = true`, ShellDeck syncs at launch (bounded by a 4s connect / 10s total timeout, so a portal outage never blocks startup).
+- Trigger a sync anytime via the command palette (**Cloud Sync Now**) or the **Sync now** button under Settings → General → Cloud Sync.
+- The token is stored in `shelldeck.toml`; the Settings screen only ever shows a masked hint of it.
 
 ## Keyboard Shortcuts
 

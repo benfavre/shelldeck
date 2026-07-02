@@ -1,3 +1,4 @@
+use crate::config::cloud_sync::CloudSyncConfig;
 use crate::error::{Result, ShellDeckError};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,10 @@ pub struct AppConfig {
     pub theme: ThemePreference,
     pub terminal: TerminalConfig,
     pub general: GeneralConfig,
+    /// Cloud Sync (Inklura Manage). `#[serde(default)]` keeps existing
+    /// `shelldeck.toml` files without a `[cloud_sync]` section parsing cleanly.
+    #[serde(default)]
+    pub cloud_sync: CloudSyncConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +259,64 @@ mod tests {
         assert_eq!(loaded.general.sidebar_width, 333.0);
         assert!(loaded.general.auto_connect_on_startup);
         assert_eq!(loaded.general.ui_font_family, "Inter");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn cloud_sync_round_trips() {
+        let path = temp_path("config.toml");
+
+        let mut config = AppConfig::default();
+        config.cloud_sync.enabled = true;
+        config.cloud_sync.token = "sd_secret".to_string();
+        config.cloud_sync.base_url = "https://example.test".to_string();
+        config.cloud_sync.sync_on_startup = false;
+
+        config.save_to(&path).expect("save_to");
+        let loaded = AppConfig::load_from(&path).expect("load_from");
+
+        assert!(loaded.cloud_sync.enabled);
+        assert_eq!(loaded.cloud_sync.token, "sd_secret");
+        assert_eq!(loaded.cloud_sync.base_url, "https://example.test");
+        assert!(!loaded.cloud_sync.sync_on_startup);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn config_without_cloud_sync_section_still_parses() {
+        // Simulates an older shelldeck.toml written before Cloud Sync existed.
+        let path = temp_path("config.toml");
+        let legacy = r#"
+theme = "Dark"
+
+[terminal]
+font_family = "JetBrains Mono"
+font_size = 14.0
+scrollback_lines = 10000
+cursor_style = "block"
+cursor_blink = true
+theme = "Dark"
+
+[general]
+auto_connect_on_startup = false
+show_notifications = true
+confirm_before_close = true
+sidebar_width = 260.0
+auto_attach_tmux = false
+auto_update = true
+ui_font_family = "System Default"
+ui_font_size = 14.0
+"#;
+        std::fs::write(&path, legacy).expect("seed legacy config");
+
+        let loaded = AppConfig::load_from(&path).expect("legacy config should parse");
+        // Cloud Sync falls back to defaults.
+        assert!(!loaded.cloud_sync.enabled);
+        assert_eq!(loaded.cloud_sync.base_url, "https://manage.inklura.fr");
+        assert!(loaded.cloud_sync.token.is_empty());
+        assert!(loaded.cloud_sync.sync_on_startup);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
