@@ -320,6 +320,22 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &NewRequest, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open_new_request(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &OpenSupportRequests, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open_support_requests(cx));
+                        }
+                    }
+                });
             }
 
             workspace

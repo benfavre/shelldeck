@@ -195,6 +195,15 @@ enabled = false          # default — must be turned on explicitly
 
 Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Jean**).
 
+## Requests (hosted issue management)
+
+ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched to the Jean fleet.
+
+- **User mode** — a **Mes demandes** section (below your sites): file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. It's the durable, tracked path — the quick "Demander à JeanClaude" card stays for one-off Slack-style asks.
+- **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, **Dispatcher** to a tenant Jean instance, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
+
+Staff-only actions are gated server-side; the action bar only appears for staff tokens. Palette: **Nouvelle demande**, **Demandes (support)**.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

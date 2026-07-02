@@ -9,11 +9,19 @@ use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
 
+use shelldeck_core::config::issues::{Issue, IssueInstance};
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
 };
 
 use crate::theme::ShellDeckColors;
+
+/// Which section of the support console is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportSection {
+    Tickets,
+    Requests,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
@@ -76,6 +84,18 @@ pub enum SupportViewEvent {
     JeanReject(String),
     /// File the selected ticket to JeanClaude (the composed text via /api/say).
     SendToJean(String),
+    /// Convert a support ticket into a tracked request (source="support").
+    ConvertToIssue { title: String, body: String },
+    // ── Requests (issues) tab ──
+    IssuesRefresh,
+    SelectIssue(String),
+    IssueComment { id: String, body: String },
+    IssueStatus { id: String, status: String },
+    IssueAssign { id: String, assignee: String },
+    IssuePriority { id: String, priority: String },
+    IssueDispatch { id: String, instance_id: String },
+    IssueGithubPush(String),
+    IssueGithubRefresh(String),
 }
 
 impl EventEmitter<SupportViewEvent> for SupportView {}
@@ -98,6 +118,16 @@ pub struct SupportView {
     jean_available: bool,
     jean_pending: Vec<(String, String)>,
     jean_active: usize,
+    // Requests (issues) tab, fed by the workspace.
+    section: SupportSection,
+    issues: Vec<Issue>,
+    issues_staff: bool,
+    issue_instances: Vec<IssueInstance>,
+    issue_detail: Option<Issue>,
+    issue_selected: Option<String>,
+    issue_status_menu: bool,
+    issue_assign_menu: bool,
+    issue_dispatch_menu: bool,
     focus_handle: FocusHandle,
 }
 
@@ -120,8 +150,35 @@ impl SupportView {
             jean_available: false,
             jean_pending: Vec::new(),
             jean_active: 0,
+            section: SupportSection::Tickets,
+            issues: Vec::new(),
+            issues_staff: false,
+            issue_instances: Vec::new(),
+            issue_detail: None,
+            issue_selected: None,
+            issue_status_menu: false,
+            issue_assign_menu: false,
+            issue_dispatch_menu: false,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Switch the console section (palette / action shortcut to Demandes).
+    pub fn set_section(&mut self, section: SupportSection) {
+        self.section = section;
+    }
+
+    pub fn set_issues(&mut self, issues: Vec<Issue>, staff: bool, instances: Vec<IssueInstance>) {
+        self.issues = issues;
+        self.issues_staff = staff;
+        self.issue_instances = instances;
+    }
+
+    pub fn set_issue_detail(&mut self, detail: Option<Issue>) {
+        if let Some(d) = &detail {
+            self.issue_selected = Some(d.id.clone());
+        }
+        self.issue_detail = detail;
     }
 
     /// Feed the JeanClaude strip (workspace pushes this from the cached state).
@@ -269,11 +326,22 @@ impl SupportView {
         if text.is_empty() {
             return;
         }
-        if let Some(id) = self.selected_id.clone() {
-            let note = self.compose_note;
-            self.loading = true;
-            cx.emit(SupportViewEvent::Send { id, text, note });
-            cx.notify();
+        match self.section {
+            SupportSection::Tickets => {
+                if let Some(id) = self.selected_id.clone() {
+                    let note = self.compose_note;
+                    self.loading = true;
+                    cx.emit(SupportViewEvent::Send { id, text, note });
+                    cx.notify();
+                }
+            }
+            SupportSection::Requests => {
+                if let Some(id) = self.issue_selected.clone() {
+                    self.composer.clear();
+                    cx.emit(SupportViewEvent::IssueComment { id, body: text });
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -792,6 +860,30 @@ impl SupportView {
             ));
         }
 
+        // "Convertir en demande" — turn this ticket into a tracked request.
+        bar = bar.child(self.action_button(
+            "sup-to-issue",
+            "Convertir en demande".to_string(),
+            cx,
+            move |this, cx| {
+                if let Some(t) = this.detail.as_ref() {
+                    let title = if t.subject.trim().is_empty() {
+                        format!("Demande support {}", t.id)
+                    } else {
+                        t.subject.trim().to_string()
+                    };
+                    let body = t
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.is_customer())
+                        .map(|m| m.text.clone())
+                        .unwrap_or_default();
+                    cx.emit(SupportViewEvent::ConvertToIssue { title, body });
+                }
+            },
+        ));
+
         // Priority picker popover (inline row).
         if self.priority_menu_open {
             let mut prio_row = div().w_full().flex().flex_wrap().gap(px(4.0)).mt(px(4.0));
@@ -986,6 +1078,447 @@ impl SupportView {
                 ),
             )
     }
+
+    fn render_section_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = |label: &str, section: SupportSection, cx: &mut Context<Self>| {
+            let active = self.section == section;
+            let mut b = div()
+                .id(ElementId::from(SharedString::from(format!("sup-sec-{label}"))))
+                .px(px(12.0))
+                .py(px(7.0))
+                .rounded(px(6.0))
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .child(label.to_string())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.section = section;
+                    if section == SupportSection::Requests {
+                        cx.emit(SupportViewEvent::IssuesRefresh);
+                    }
+                    cx.notify();
+                }));
+            if active {
+                b = b
+                    .bg(ShellDeckColors::selected_bg())
+                    .text_color(ShellDeckColors::text_primary());
+            } else {
+                b = b.text_color(ShellDeckColors::text_muted());
+            }
+            b
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(tab("Tickets", SupportSection::Tickets, cx))
+            .child(tab(
+                &format!("Demandes ({})", self.issues.len()),
+                SupportSection::Requests,
+                cx,
+            ))
+    }
+
+    fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Left: issues list.
+        let mut list = div()
+            .id("sup-issues-list")
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        if self.issues.is_empty() {
+            list = list.child(
+                div()
+                    .p(px(16.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Aucune demande."),
+            );
+        } else {
+            for iss in &self.issues {
+                let id = iss.id.clone();
+                let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
+                let prio = match iss.priority.as_str() {
+                    "urgent" => ShellDeckColors::error(),
+                    "high" => ShellDeckColors::warning(),
+                    _ => ShellDeckColors::text_muted(),
+                };
+                let mut row = div()
+                    .id(ElementId::from(SharedString::from(format!("iss-{}", iss.id))))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                    .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
+                        cx.emit(SupportViewEvent::SelectIssue(id.clone()))
+                    }));
+                if selected {
+                    row = row.bg(ShellDeckColors::selected_bg());
+                }
+                row = row
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(issue_status_pill(&iss.status))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(13.0))
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(iss.title.clone()),
+                            )
+                            .child(div().size(px(7.0)).rounded_full().bg(prio)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(format!(
+                                "{} · {} · {} comm.{}",
+                                iss.tenant_name,
+                                iss.source,
+                                iss.comment_count,
+                                iss.github
+                                    .as_ref()
+                                    .map(|g| format!(" · GH #{}", g.number))
+                                    .unwrap_or_default()
+                            )),
+                    );
+                list = list.child(row);
+            }
+        }
+        let left = div()
+            .w(px(320.0))
+            .flex_shrink_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(ShellDeckColors::border())
+            .child(list);
+
+        div()
+            .flex_1()
+            .flex()
+            .min_h(px(0.0))
+            .child(left)
+            .child(self.render_issue_detail(cx))
+    }
+
+    fn render_issue_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(iss) = self.issue_detail.clone() else {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child("Sélectionnez une demande")
+                .into_any_element();
+        };
+
+        let mut header_line = format!(
+            "{} · {} · priorité {}",
+            iss.tenant_name,
+            issue_status_label(&iss.status),
+            priority_label(&iss.priority),
+        );
+        if let Some(g) = &iss.github {
+            header_line.push_str(&format!(" · GitHub #{} ({})", g.number, g.state));
+        }
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(iss.title.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(header_line),
+            );
+
+        // Body + comments.
+        let mut thread = div()
+            .id("sup-issue-thread")
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(14.0));
+        if !iss.body.trim().is_empty() {
+            thread = thread.child(
+                div()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(ShellDeckColors::bg_surface())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(iss.body.clone()),
+            );
+        }
+        for c in &iss.comments {
+            let (bg, label) = if c.is_note() {
+                (ShellDeckColors::warning().opacity(0.10), c.kind.clone())
+            } else {
+                (ShellDeckColors::primary().opacity(0.08), c.author.clone())
+            };
+            thread = thread.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .p(px(9.0))
+                    .rounded(px(8.0))
+                    .bg(bg)
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(if label.is_empty() { "—".to_string() } else { label }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(c.body.clone()),
+                    ),
+            );
+        }
+
+        let mut col = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .child(header)
+            .child(thread);
+        if self.issues_staff {
+            col = col.child(self.render_issue_staff_bar(&iss, cx));
+        }
+        col = col.child(self.render_issue_composer(cx));
+        col.into_any_element()
+    }
+
+    fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let display = if self.composer.is_empty() {
+            div()
+                .text_color(ShellDeckColors::text_muted())
+                .child("Commenter la demande…")
+        } else {
+            div()
+                .text_color(ShellDeckColors::text_primary())
+                .child(self.composer.clone())
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(8.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .id("sup-issue-composer")
+                    .track_focus(&self.focus_handle)
+                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
+                        this.handle_composer_key(e, cx);
+                    }))
+                    .flex_1()
+                    .min_h(px(32.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .rounded(px(8.0))
+                    .bg(ShellDeckColors::bg_primary())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(13.0))
+                    .cursor_text()
+                    .child(display),
+            )
+            .child(
+                div()
+                    .id("sup-issue-send")
+                    .px(px(12.0))
+                    .py(px(7.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(white())
+                    .cursor_pointer()
+                    .child("Envoyer")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.send_composer(cx))),
+            )
+    }
+
+    fn render_issue_staff_bar(&self, iss: &Issue, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = iss.id.clone();
+        let mut bar = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(8.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border());
+
+        // Status menu toggle.
+        bar = bar.child(self.action_button(
+            "iss-status",
+            format!("Statut : {}", issue_status_label(&iss.status)),
+            cx,
+            move |this, cx| {
+                this.issue_status_menu = !this.issue_status_menu;
+                this.issue_assign_menu = false;
+                this.issue_dispatch_menu = false;
+                cx.notify();
+            },
+        ));
+        // Priority quick-cycle button (low→normal→high→urgent→low).
+        {
+            let pid = id.clone();
+            let next = next_priority(&iss.priority).to_string();
+            bar = bar.child(self.action_button(
+                "iss-prio",
+                format!("Priorité : {}", priority_label(&iss.priority)),
+                cx,
+                move |_this, cx| {
+                    cx.emit(SupportViewEvent::IssuePriority {
+                        id: pid.clone(),
+                        priority: next.clone(),
+                    });
+                },
+            ));
+        }
+        // Assign to me.
+        {
+            let aid = id.clone();
+            bar = bar.child(self.action_button("iss-assign-me", "M'attribuer".to_string(), cx, move |_t, cx| {
+                cx.emit(SupportViewEvent::IssueAssign { id: aid.clone(), assignee: "me".to_string() })
+            }));
+        }
+        // Dispatch menu toggle.
+        if !self.issue_instances.is_empty() {
+            bar = bar.child(self.action_button("iss-dispatch", "Dispatcher…".to_string(), cx, move |this, cx| {
+                this.issue_dispatch_menu = !this.issue_dispatch_menu;
+                this.issue_status_menu = false;
+                cx.notify();
+            }));
+        }
+        // GitHub.
+        if iss.github.is_some() {
+            let gid = id.clone();
+            bar = bar.child(self.action_button("iss-gh-refresh", "↻ GitHub".to_string(), cx, move |_t, cx| {
+                cx.emit(SupportViewEvent::IssueGithubRefresh(gid.clone()))
+            }));
+        } else {
+            let gid = id.clone();
+            bar = bar.child(self.action_button("iss-gh-push", "Créer sur GitHub".to_string(), cx, move |_t, cx| {
+                cx.emit(SupportViewEvent::IssueGithubPush(gid.clone()))
+            }));
+        }
+
+        // Status picker popover.
+        if self.issue_status_menu {
+            let mut row = div().w_full().flex().flex_wrap().gap(px(4.0)).mt(px(4.0));
+            for s in ["open", "triaging", "in_progress", "blocked", "done", "closed"] {
+                let sid = id.clone();
+                row = row.child(self.action_button(
+                    match s {
+                        "open" => "iss-s-open",
+                        "triaging" => "iss-s-tri",
+                        "in_progress" => "iss-s-prog",
+                        "blocked" => "iss-s-block",
+                        "done" => "iss-s-done",
+                        _ => "iss-s-closed",
+                    },
+                    status_label(s).to_string(),
+                    cx,
+                    move |this, cx| {
+                        this.issue_status_menu = false;
+                        cx.emit(SupportViewEvent::IssueStatus {
+                            id: sid.clone(),
+                            status: s.to_string(),
+                        });
+                    },
+                ));
+            }
+            bar = bar.child(row);
+        }
+        // Dispatch picker popover.
+        if self.issue_dispatch_menu {
+            let mut row = div().w_full().flex().flex_col().gap(px(2.0)).mt(px(4.0));
+            for inst in &self.issue_instances {
+                let did = id.clone();
+                let iid = inst.id.clone();
+                row = row.child(self.action_button(
+                    "iss-disp-inst",
+                    format!("{} ({})", inst.name, inst.status),
+                    cx,
+                    move |this, cx| {
+                        this.issue_dispatch_menu = false;
+                        cx.emit(SupportViewEvent::IssueDispatch {
+                            id: did.clone(),
+                            instance_id: iid.clone(),
+                        });
+                    },
+                ));
+            }
+            bar = bar.child(row);
+        }
+        bar
+    }
+}
+
+fn issue_status_pill(status: &str) -> impl IntoElement {
+    let color = match status {
+        "open" => ShellDeckColors::primary(),
+        "triaging" | "in_progress" => ShellDeckColors::warning(),
+        "blocked" => ShellDeckColors::error(),
+        "done" | "closed" => ShellDeckColors::success(),
+        _ => ShellDeckColors::text_muted(),
+    };
+    div()
+        .flex_shrink_0()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(6.0))
+        .bg(color.opacity(0.15))
+        .text_size(px(10.0))
+        .text_color(color)
+        .child(issue_status_label(status).to_string())
 }
 
 impl Render for SupportView {
@@ -1079,12 +1612,24 @@ impl Render for SupportView {
         }
         left = left.child(self.render_filters(cx)).child(list);
 
+        let content = match self.section {
+            SupportSection::Tickets => div()
+                .flex_1()
+                .flex()
+                .min_h(px(0.0))
+                .child(left)
+                .child(self.render_conversation(cx))
+                .into_any_element(),
+            SupportSection::Requests => self.render_requests(cx).into_any_element(),
+        };
+
         let mut root = div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(ShellDeckColors::bg_primary())
-            .child(left)
-            .child(self.render_conversation(cx));
+            .child(self.render_section_tabs(cx))
+            .child(content);
 
         if let Some(err) = &self.error {
             root = root.child(
@@ -1122,6 +1667,28 @@ fn priority_label(p: &str) -> &str {
         "high" => "haute",
         "urgent" => "urgente",
         other => other,
+    }
+}
+
+fn issue_status_label(s: &str) -> &str {
+    match s {
+        "open" => "ouverte",
+        "triaging" => "tri",
+        "in_progress" => "en cours",
+        "blocked" => "bloquée",
+        "done" => "terminée",
+        "closed" => "fermée",
+        other => other,
+    }
+}
+
+/// The next priority in a low→normal→high→urgent→low cycle.
+fn next_priority(p: &str) -> &'static str {
+    match p {
+        "low" => "normal",
+        "normal" => "high",
+        "high" => "urgent",
+        _ => "low",
     }
 }
 

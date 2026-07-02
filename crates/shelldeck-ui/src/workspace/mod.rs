@@ -4,6 +4,7 @@ use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
+use shelldeck_core::config::issues::{self, Issue, IssueInstance};
 use shelldeck_core::config::jean_fleet::{self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance};
 use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
 use shelldeck_core::config::manage_support;
@@ -93,6 +94,37 @@ enum RuntimeStep {
     Tick(RuntimeTickCtx),
 }
 
+/// Which User-mode "Nouvelle demande" / comment field has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueField {
+    None,
+    Title,
+    Body,
+    Comment,
+}
+
+/// A small colored status pill for a hosted issue (User-mode rows).
+fn user_issue_status_pill(status: &str) -> gpui::Div {
+    let (color, label) = match status {
+        "open" => (ShellDeckColors::primary(), "ouverte"),
+        "triaging" => (ShellDeckColors::warning(), "tri"),
+        "in_progress" => (ShellDeckColors::warning(), "en cours"),
+        "blocked" => (ShellDeckColors::error(), "bloquée"),
+        "done" => (ShellDeckColors::success(), "terminée"),
+        "closed" => (ShellDeckColors::success(), "fermée"),
+        other => (ShellDeckColors::text_muted(), other),
+    };
+    div()
+        .flex_shrink_0()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(6.0))
+        .bg(color.opacity(0.15))
+        .text_size(px(10.0))
+        .text_color(color)
+        .child(label.to_string())
+}
+
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -131,6 +163,8 @@ actions!(
         JeanTogglePause,
         OpenFleet,
         ToggleJeanRuntime,
+        NewRequest,
+        OpenSupportRequests,
     ]
 );
 
@@ -260,6 +294,20 @@ pub struct Workspace {
     runtime_busy: bool,
     /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
     _runtime_loop: Option<gpui::Task<()>>,
+    /// Hosted issue-management (requests) cache — shared by User + Support.
+    issues_list: Vec<Issue>,
+    issues_staff: bool,
+    issues_instances: Vec<IssueInstance>,
+    issue_detail: Option<Issue>,
+    issue_selected: Option<String>,
+    _issues_poll: Option<gpui::Task<()>>,
+    /// User-mode "Nouvelle demande" + comment composer buffers.
+    issue_title_input: String,
+    issue_body_input: String,
+    issue_comment_input: String,
+    issue_new_priority: String,
+    issue_field: IssueField,
+    issue_focus: FocusHandle,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -588,6 +636,18 @@ impl Workspace {
             runtime_awaiting: Vec::new(),
             runtime_busy: false,
             _runtime_loop: None,
+            issues_list: Vec::new(),
+            issues_staff: false,
+            issues_instances: Vec::new(),
+            issue_detail: None,
+            issue_selected: None,
+            _issues_poll: None,
+            issue_title_input: String::new(),
+            issue_body_input: String::new(),
+            issue_comment_input: String::new(),
+            issue_new_priority: "normal".to_string(),
+            issue_field: IssueField::None,
+            issue_focus: cx.focus_handle(),
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -1700,6 +1760,8 @@ impl Workspace {
                 None,
                 Box::new(ToggleJeanRuntime),
             ),
+            PaletteAction::new("Nouvelle demande", None, Box::new(NewRequest)),
+            PaletteAction::new("Demandes (support)", None, Box::new(OpenSupportRequests)),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
@@ -1809,6 +1871,7 @@ impl Workspace {
         self.update_fleet_availability(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_runtime_loop(cx);
+        self.sync_issues_poll(cx);
     }
 
     fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
@@ -1954,6 +2017,31 @@ impl Workspace {
                 self.jean_action(cx, move |c| jeanclaude::reject(&c, &thread));
             }
             SupportViewEvent::SendToJean(text) => self.jean_say(text, cx),
+            SupportViewEvent::ConvertToIssue { title, body } => {
+                self.create_issue_now(title, body, "normal".to_string(), "support", cx)
+            }
+            SupportViewEvent::IssuesRefresh => self.refresh_issues(cx),
+            SupportViewEvent::SelectIssue(id) => self.select_issue(id, cx),
+            SupportViewEvent::IssueComment { id, body } => self.comment_issue_now(id, body, cx),
+            SupportViewEvent::IssueStatus { id, status } => {
+                self.issue_staff_action(cx, move |b, t| issues::set_status(&b, &t, &id, &status))
+            }
+            SupportViewEvent::IssueAssign { id, assignee } => {
+                self.issue_staff_action(cx, move |b, t| issues::assign(&b, &t, &id, &assignee))
+            }
+            SupportViewEvent::IssuePriority { id, priority } => {
+                self.issue_staff_action(cx, move |b, t| issues::set_priority(&b, &t, &id, &priority))
+            }
+            SupportViewEvent::IssueDispatch { id, instance_id } => self
+                .issue_staff_action(cx, move |b, t| {
+                    issues::dispatch_issue(&b, &t, &id, &instance_id)
+                }),
+            SupportViewEvent::IssueGithubPush(id) => {
+                self.issue_staff_action(cx, move |b, t| issues::github_push(&b, &t, &id))
+            }
+            SupportViewEvent::IssueGithubRefresh(id) => {
+                self.issue_staff_action(cx, move |b, t| issues::github_refresh(&b, &t, &id))
+            }
         }
     }
 
@@ -2764,6 +2852,322 @@ impl Workspace {
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
+    }
+
+    // --- Hosted issue management (requests) ---
+
+    /// Palette: focus the User-mode "Nouvelle demande" title field.
+    pub fn open_new_request(&mut self, cx: &mut Context<Self>) {
+        if !self.app_config.cloud_sync.is_configured() {
+            self.show_toast(
+                "Connectez-vous pour créer une demande.",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::User, cx);
+        }
+        self.issue_field = IssueField::Title;
+        self.sync_issues_poll(cx);
+        cx.notify();
+    }
+
+    /// Palette: open the Support console's Demandes tab.
+    pub fn open_support_requests(&mut self, cx: &mut Context<Self>) {
+        if !self.app_config.cloud_sync.is_configured() {
+            self.show_toast(
+                "Connectez-vous pour voir les demandes.",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::Support, cx);
+        }
+        self.support.update(cx, |v, cx| {
+            v.set_section(crate::support_view::SupportSection::Requests);
+            cx.notify();
+        });
+        self.refresh_issues(cx);
+        cx.notify();
+    }
+
+    /// A Jean/issues surface is on screen (User home, or Support mode).
+    fn issues_relevant(&self) -> bool {
+        self.app_config.cloud_sync.is_configured()
+            && matches!(self.effective_mode(), AppMode::User | AppMode::Support)
+    }
+
+    fn refresh_issues(&mut self, cx: &mut Context<Self>) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { issues::list_issues(&base, &token, "", "") })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(list) => {
+                    ws.issues_list = list.issues.clone();
+                    ws.issues_staff = list.staff;
+                    ws.issues_instances = list.instances.clone();
+                    ws.push_issues_to_support(cx);
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    format!("Demandes : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    fn push_issues_to_support(&mut self, cx: &mut Context<Self>) {
+        let issues = self.issues_list.clone();
+        let staff = self.issues_staff;
+        let instances = self.issues_instances.clone();
+        let detail = self.issue_detail.clone();
+        self.support.update(cx, |v, cx| {
+            v.set_issues(issues, staff, instances);
+            v.set_issue_detail(detail);
+            cx.notify();
+        });
+    }
+
+    fn sync_issues_poll(&mut self, cx: &mut Context<Self>) {
+        if self.issues_relevant() {
+            self.refresh_issues(cx);
+            if self._issues_poll.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(15))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.issues_relevant() {
+                                ws.refresh_issues(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
+                    }
+                });
+                self._issues_poll = Some(task);
+            }
+        } else {
+            self._issues_poll = None;
+        }
+    }
+
+    pub fn select_issue(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        self.issue_selected = Some(id.clone());
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { issues::get_issue(&base, &token, &id) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(iss) => {
+                    ws.issue_detail = Some(iss);
+                    ws.push_issues_to_support(cx);
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    format!("Demande : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Create a request. `source` = "user" (User mode) or "support".
+    fn create_issue_now(
+        &mut self,
+        title: String,
+        body: String,
+        priority: String,
+        source: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    issues::create_issue(&base, &token, &title, &body, &priority, source)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(iss) => {
+                    ws.show_toast("Demande créée.", ToastLevel::Success, cx);
+                    ws.issue_detail = Some(iss.clone());
+                    ws.issue_selected = Some(iss.id.clone());
+                    ws.refresh_issues(cx);
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    format!("Création échouée : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Comment on the selected issue (users can comment on their own requests).
+    pub fn comment_issue_now(&mut self, id: String, body: String, cx: &mut Context<Self>) {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { issues::comment_issue(&base, &token, &id, &body) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(iss) => {
+                    ws.issue_detail = Some(iss);
+                    ws.push_issues_to_support(cx);
+                    ws.refresh_issues(cx);
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    format!("Commentaire : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Generic staff issue action (status/assign/priority/dispatch/github);
+    /// installs the updated issue + refreshes the list.
+    pub fn issue_staff_action<F>(&mut self, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(String, String) -> shelldeck_core::Result<Issue> + Send + 'static,
+    {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { f(base, token) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(iss) => {
+                    ws.issue_detail = Some(iss);
+                    ws.push_issues_to_support(cx);
+                    ws.refresh_issues(cx);
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    format!("Demande : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    // User-mode composer key handling.
+    fn issue_field_buf(&mut self, f: IssueField) -> Option<&mut String> {
+        match f {
+            IssueField::Title => Some(&mut self.issue_title_input),
+            IssueField::Body => Some(&mut self.issue_body_input),
+            IssueField::Comment => Some(&mut self.issue_comment_input),
+            IssueField::None => None,
+        }
+    }
+
+    fn handle_issue_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        let field = self.issue_field;
+        if field == IssueField::None {
+            return;
+        }
+        match key {
+            "enter" => {
+                if event.keystroke.modifiers.shift {
+                    if let Some(b) = self.issue_field_buf(field) {
+                        b.push('\n');
+                        cx.notify();
+                    }
+                } else {
+                    self.submit_issue_field(field, cx);
+                }
+            }
+            "backspace" => {
+                if let Some(b) = self.issue_field_buf(field) {
+                    b.pop();
+                    cx.notify();
+                }
+            }
+            _ => {
+                if let Some(ref kc) = event.keystroke.key_char {
+                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
+                        if let Some(b) = self.issue_field_buf(field) {
+                            b.push_str(kc);
+                            cx.notify();
+                        }
+                    }
+                } else if key.len() == 1
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                {
+                    if let Some(b) = self.issue_field_buf(field) {
+                        b.push_str(key);
+                        cx.notify();
+                    }
+                }
+            }
+        }
+    }
+
+    fn submit_issue_field(&mut self, field: IssueField, cx: &mut Context<Self>) {
+        match field {
+            IssueField::Title | IssueField::Body => {
+                let title = std::mem::take(&mut self.issue_title_input);
+                let body = std::mem::take(&mut self.issue_body_input);
+                let prio = self.issue_new_priority.clone();
+                self.create_issue_now(title, body, prio, "user", cx);
+            }
+            IssueField::Comment => {
+                if let Some(id) = self.issue_selected.clone() {
+                    let body = std::mem::take(&mut self.issue_comment_input);
+                    self.comment_issue_now(id, body, cx);
+                }
+            }
+            IssueField::None => {}
+        }
     }
 
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
@@ -4561,6 +4965,343 @@ impl Workspace {
                 None
             })
             .child(list)
+            .child(self.render_user_requests(cx))
+    }
+
+    /// A focusable one-field input for the User-mode issue composers.
+    fn render_issue_input(
+        &self,
+        field: IssueField,
+        value: &str,
+        placeholder: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.issue_field == field;
+        let content = if value.is_empty() {
+            div()
+                .text_color(ShellDeckColors::text_muted())
+                .child(placeholder.to_string())
+        } else {
+            div()
+                .flex()
+                .text_color(ShellDeckColors::text_primary())
+                .child(value.to_string())
+                .child(if active {
+                    div().w(px(1.0)).h(px(15.0)).bg(ShellDeckColors::primary())
+                } else {
+                    div()
+                })
+        };
+        div()
+            .id(ElementId::from(SharedString::from(format!(
+                "issf-{placeholder}"
+            ))))
+            .track_focus(&self.issue_focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| this.handle_issue_key(e, cx)))
+            .w_full()
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(6.0))
+            .bg(ShellDeckColors::bg_primary())
+            .border_1()
+            .border_color(if active {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::border()
+            })
+            .text_size(px(13.0))
+            .cursor_text()
+            .child(content)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.issue_field = field;
+                cx.notify();
+            }))
+    }
+
+    /// User-mode "Mes demandes": a create composer + the tenant's requests, with
+    /// a click-to-expand detail (body + comments + comment box).
+    fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Create composer.
+        let priorities = ["low", "normal", "high", "urgent"];
+        let mut prio_row = div().flex().items_center().gap(px(4.0));
+        for p in priorities {
+            let active = self.issue_new_priority == p;
+            let mut chip = div()
+                .id(ElementId::from(SharedString::from(format!("iss-np-{p}"))))
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .text_size(px(11.0))
+                .cursor_pointer()
+                .child(p.to_string())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.issue_new_priority = p.to_string();
+                    cx.notify();
+                }));
+            if active {
+                chip = chip
+                    .bg(ShellDeckColors::selected_bg())
+                    .text_color(ShellDeckColors::text_primary());
+            } else {
+                chip = chip.text_color(ShellDeckColors::text_muted());
+            }
+            prio_row = prio_row.child(chip);
+        }
+
+        let composer = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .p(px(12.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child("Nouvelle demande"),
+            )
+            .child(self.render_issue_input(
+                IssueField::Title,
+                &self.issue_title_input.clone(),
+                "Titre de la demande",
+                cx,
+            ))
+            .child(self.render_issue_input(
+                IssueField::Body,
+                &self.issue_body_input.clone(),
+                "Détails (facultatif)",
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(prio_row)
+                    .child(
+                        div()
+                            .id("iss-create")
+                            .px(px(12.0))
+                            .py(px(7.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child("Créer")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_issue_field(IssueField::Title, cx)
+                            })),
+                    ),
+            );
+
+        // Issue list.
+        let mut list = div().flex().flex_col().gap(px(4.0)).mt(px(8.0));
+        if self.issues_list.is_empty() {
+            list = list.child(
+                div()
+                    .py(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Aucune demande pour l'instant."),
+            );
+        }
+        for iss in &self.issues_list {
+            let id = iss.id.clone();
+            let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
+            let prio = match iss.priority.as_str() {
+                "urgent" => ShellDeckColors::error(),
+                "high" => ShellDeckColors::warning(),
+                _ => ShellDeckColors::text_muted(),
+            };
+            let mut row = div()
+                .id(ElementId::from(SharedString::from(format!("uiss-{}", iss.id))))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(if selected {
+                    ShellDeckColors::primary()
+                } else {
+                    ShellDeckColors::border()
+                })
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.select_issue(id.clone(), cx)
+                }))
+                .child(user_issue_status_pill(&iss.status))
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(13.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(iss.title.clone()),
+                )
+                .child(div().size(px(7.0)).rounded_full().bg(prio));
+            if let Some(g) = &iss.github {
+                row = row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(format!("GH #{}", g.number)),
+                );
+            }
+            list = list.child(row);
+        }
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .m(px(16.0))
+            .child(
+                div()
+                    .text_size(px(18.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .mb(px(4.0))
+                    .child("Mes demandes"),
+            )
+            .child(composer)
+            .child(list);
+
+        // Detail (body + comments + comment box) for the selected issue.
+        if let Some(iss) = self.issue_detail.clone() {
+            if self.issue_selected.as_deref() == Some(iss.id.as_str()) {
+                section = section.child(self.render_user_issue_detail(&iss, cx));
+            }
+        }
+        section
+    }
+
+    fn render_user_issue_detail(&self, iss: &Issue, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut thread = div().flex().flex_col().gap(px(6.0)).mt(px(8.0));
+        if !iss.body.trim().is_empty() {
+            thread = thread.child(
+                div()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(ShellDeckColors::bg_primary())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(iss.body.clone()),
+            );
+        }
+        for c in &iss.comments {
+            thread = thread.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .p(px(9.0))
+                    .rounded(px(8.0))
+                    .bg(if c.is_note() {
+                        ShellDeckColors::warning().opacity(0.10)
+                    } else {
+                        ShellDeckColors::bg_sidebar()
+                    })
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(if c.is_note() {
+                                c.kind.clone()
+                            } else {
+                                c.author.clone()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(c.body.clone()),
+                    ),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .mt(px(10.0))
+            .p(px(12.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(user_issue_status_pill(&iss.status))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(iss.title.clone()),
+                    )
+                    .children(iss.github.as_ref().map(|g| {
+                        div()
+                            .id("uiss-gh")
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::primary())
+                            .cursor_pointer()
+                            .child(format!("GitHub #{}", g.number))
+                            .on_click({
+                                let url = g.url.clone();
+                                cx.listener(move |_t, _: &ClickEvent, _, _cx| {
+                                    let _ = cloud_account::open_in_browser(&url);
+                                })
+                            })
+                    })),
+            )
+            .child(thread)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(div().flex_1().child(self.render_issue_input(
+                        IssueField::Comment,
+                        &self.issue_comment_input.clone(),
+                        "Ajouter un commentaire…",
+                        cx,
+                    )))
+                    .child(
+                        div()
+                            .id("uiss-comment-send")
+                            .px(px(12.0))
+                            .py(px(7.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child("Envoyer")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_issue_field(IssueField::Comment, cx)
+                            })),
+                    ),
+            )
     }
 
     /// User-mode "Demander à JeanClaude" card: a composer that files a request
