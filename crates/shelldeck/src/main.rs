@@ -336,6 +336,22 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &OpenBextCloud, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open_bext_cloud(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &ConnectBextCloud, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.connect_bext_cloud_action(cx));
+                        }
+                    }
+                });
             }
 
             workspace

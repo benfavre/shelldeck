@@ -2,6 +2,8 @@ use adabraka_ui::prelude::{install_theme, Theme};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
+use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
+use shelldeck_core::config::bext_instance;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::issues::{self, Issue, IssueInstance};
@@ -32,6 +34,7 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::support_view::{SupportView, SupportViewEvent};
@@ -137,6 +140,7 @@ pub enum ActiveView {
     FileEditor,
     JeanConsole,
     Fleet,
+    BextCloud,
     Settings,
 }
 
@@ -165,6 +169,8 @@ actions!(
         ToggleJeanRuntime,
         NewRequest,
         OpenSupportRequests,
+        OpenBextCloud,
+        ConnectBextCloud,
     ]
 );
 
@@ -308,6 +314,12 @@ pub struct Workspace {
     issue_new_priority: String,
     issue_field: IssueField,
     issue_focus: FocusHandle,
+    /// The Dev-mode "bext Cloud" view.
+    bext_view: Entity<BextCloudView>,
+    _bext_sub: Subscription,
+    /// Cached cloud whoami (drives super-admin instances + identity).
+    bext_user: Option<bext_cloud::CloudUser>,
+    _bext_poll: Option<gpui::Task<()>>,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -408,6 +420,7 @@ impl Workspace {
         let support = cx.new(SupportView::new);
         let jean_view = cx.new(JeanView::new);
         let fleet_view = cx.new(FleetView::new);
+        let bext_view = cx.new(BextCloudView::new);
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -539,6 +552,10 @@ impl Workspace {
             this.handle_fleet_event(event.clone(), cx);
         });
 
+        let bext_sub = cx.subscribe(&bext_view, |this, _view, event: &BextViewEvent, cx| {
+            this.handle_bext_event(event.clone(), cx);
+        });
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -648,6 +665,10 @@ impl Workspace {
             issue_new_priority: "normal".to_string(),
             issue_field: IssueField::None,
             issue_focus: cx.focus_handle(),
+            bext_view,
+            _bext_sub: bext_sub,
+            bext_user: None,
+            _bext_poll: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -807,6 +828,9 @@ impl Workspace {
                     terminal.set_sidebar_width(*width);
                 });
                 cx.notify();
+            }
+            SidebarEvent::ConnectionManageBext(id) => {
+                self.manage_bext_for_connection(*id, cx);
             }
         }
     }
@@ -1762,6 +1786,9 @@ impl Workspace {
             ),
             PaletteAction::new("Nouvelle demande", None, Box::new(NewRequest)),
             PaletteAction::new("Demandes (support)", None, Box::new(OpenSupportRequests)),
+            PaletteAction::new("bext Cloud : ouvrir", None, Box::new(OpenBextCloud)),
+            PaletteAction::new("bext Cloud : se connecter", None, Box::new(ConnectBextCloud)),
+            PaletteAction::new("bext Cloud : nouveau site", None, Box::new(OpenBextCloud)),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
@@ -3170,6 +3197,394 @@ impl Workspace {
         }
     }
 
+    // --- bext Cloud (control plane + single-instance SDK) ---
+
+    fn bext_visible(&self) -> bool {
+        self.effective_mode() == AppMode::Dev && self.active_view == ActiveView::BextCloud
+    }
+
+    /// Open the bext Cloud view (palette / sidebar).
+    pub fn open_bext_cloud(&mut self, cx: &mut Context<Self>) {
+        if self.effective_mode() != AppMode::Dev && self.can_switch_mode() {
+            self.set_mode(AppMode::Dev, cx);
+        }
+        self.active_view = ActiveView::BextCloud;
+        self.on_active_view_changed(cx);
+        cx.notify();
+    }
+
+    /// Palette: open the view and immediately start the cloud connect flow.
+    pub fn connect_bext_cloud_action(&mut self, cx: &mut Context<Self>) {
+        self.open_bext_cloud(cx);
+        self.connect_bext(cx);
+    }
+
+    /// Per-connection "Gérer bext": open the Instance tab. v1 targets the local
+    /// loopback SDK (remote reach via SSH tunnel is a follow-up).
+    pub fn manage_bext_for_connection(&mut self, conn_id: Uuid, cx: &mut Context<Self>) {
+        let app_id = self
+            .connections
+            .iter()
+            .find(|c| c.id == conn_id)
+            .map(|c| c.alias.clone())
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        if self.effective_mode() != AppMode::Dev && self.can_switch_mode() {
+            self.set_mode(AppMode::Dev, cx);
+        }
+        self.active_view = ActiveView::BextCloud;
+        let base = "http://127.0.0.1".to_string();
+        self.bext_view.update(cx, |v, cx| {
+            v.open_instance(base.clone(), app_id.clone());
+            cx.notify();
+        });
+        self.show_toast(
+            "Gestion de l'instance bext locale (127.0.0.1). La gestion d'un serveur distant via tunnel arrivera bientôt.",
+            ToastLevel::Info,
+            cx,
+        );
+        self.refresh_bext_instance(base, app_id, cx);
+        cx.notify();
+    }
+
+    fn sync_bext_poll(&mut self, cx: &mut Context<Self>) {
+        if self.bext_visible() {
+            self.refresh_bext_cloud(cx);
+            if self._bext_poll.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(15))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.bext_visible() {
+                                ws.refresh_bext_cloud(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
+                    }
+                });
+                self._bext_poll = Some(task);
+            }
+        } else {
+            self._bext_poll = None;
+        }
+    }
+
+    fn refresh_bext_cloud(&mut self, cx: &mut Context<Self>) {
+        let cfg = self.app_config.bext_cloud.clone();
+        if !cfg.is_connected() {
+            self.bext_view.update(cx, |v, cx| {
+                v.set_connection(false, None);
+                cx.notify();
+            });
+            return;
+        }
+        self.bext_view.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let bundle = cx
+                .background_executor()
+                .spawn(async move {
+                    let who = bext_cloud::whoami(&cfg);
+                    let is_super = who.as_ref().map(|u| u.is_super_admin).unwrap_or(false);
+                    let sites = bext_cloud::list_sites(&cfg);
+                    let dash = bext_cloud::dashboard(&cfg);
+                    let instances = if is_super {
+                        bext_cloud::list_instances(&cfg).ok()
+                    } else {
+                        None
+                    };
+                    (who, sites, dash, instances)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                let (who, sites, dash, instances) = bundle;
+                match who {
+                    Ok(u) => {
+                        ws.bext_user = Some(u.clone());
+                        ws.bext_view.update(cx, |v, cx| {
+                            v.set_connection(true, Some(u));
+                            cx.notify();
+                        });
+                    }
+                    Err(e) => {
+                        ws.bext_view.update(cx, |v, cx| {
+                            v.set_error(cloud_account::user_message(&e));
+                            cx.notify();
+                        });
+                    }
+                }
+                if let Ok(s) = sites {
+                    ws.bext_view.update(cx, |v, cx| {
+                        v.set_sites(s);
+                        cx.notify();
+                    });
+                }
+                if let Ok(d) = dash {
+                    ws.bext_view.update(cx, |v, cx| {
+                        v.set_stats(d.stats);
+                        cx.notify();
+                    });
+                }
+                if let Some(insts) = instances {
+                    ws.bext_view.update(cx, |v, cx| {
+                        v.set_instances(insts.instances);
+                        cx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn connect_bext(&mut self, cx: &mut Context<Self>) {
+        let base = {
+            let b = self.app_config.bext_cloud.base_url.trim().to_string();
+            if b.is_empty() {
+                "https://cloud.bext.dev".to_string()
+            } else {
+                b
+            }
+        };
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(e) => {
+                self.show_toast(
+                    format!("Impossible d'ouvrir un port local : {}", e),
+                    ToastLevel::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+        let port = match listener.local_addr() {
+            Ok(a) => a.port(),
+            Err(e) => {
+                self.show_toast(format!("Port local illisible : {}", e), ToastLevel::Error, cx);
+                return;
+            }
+        };
+        let url = bext_cloud::cli_login_url(&base, port);
+        if let Err(e) = cloud_account::open_in_browser(&url) {
+            self.show_toast(
+                format!("Impossible d'ouvrir le navigateur : {}", cloud_account::user_message(&e)),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        self.show_toast(
+            "Connectez-vous à bext Cloud dans le navigateur…",
+            ToastLevel::Info,
+            cx,
+        );
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    bext_cloud::browser_connect_listen(listener, std::time::Duration::from_secs(180))
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match outcome {
+                Ok(conn) => {
+                    ws.app_config.bext_cloud.token = conn.token;
+                    ws.app_config.bext_cloud.email = conn.email;
+                    ws.app_config.bext_cloud.name = conn.name;
+                    if let Err(e) = ws.app_config.save() {
+                        tracing::error!("Failed to save bext_cloud config: {}", e);
+                    }
+                    ws.show_toast(
+                        format!("bext Cloud connecté : {}", ws.app_config.bext_cloud.email),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    ws.refresh_bext_cloud(cx);
+                }
+                Err(e) => ws.show_toast(
+                    format!("Connexion cloud échouée : {}", cloud_account::user_message(&e)),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    fn disconnect_bext(&mut self, cx: &mut Context<Self>) {
+        self.app_config.bext_cloud.token = String::new();
+        self.app_config.bext_cloud.email = String::new();
+        self.app_config.bext_cloud.name = String::new();
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save bext_cloud config: {}", e);
+        }
+        self.bext_user = None;
+        self.bext_view.update(cx, |v, cx| {
+            v.set_connection(false, None);
+            cx.notify();
+        });
+        self.show_toast("Déconnecté du bext Cloud.", ToastLevel::Info, cx);
+        cx.notify();
+    }
+
+    fn bext_cloud_action<F>(&mut self, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(BextCloudConfig) -> shelldeck_core::Result<()> + Send + 'static,
+    {
+        let cfg = self.app_config.bext_cloud.clone();
+        if !cfg.is_connected() {
+            return;
+        }
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let r = cx
+                .background_executor()
+                .spawn(async move { f(cfg) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                match r {
+                    Ok(_) => ws.show_toast("Action bext effectuée.", ToastLevel::Success, cx),
+                    Err(e) => ws.show_toast(
+                        format!("bext Cloud : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+                ws.refresh_bext_cloud(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_bext_instance(&mut self, base: String, app_id: String, cx: &mut Context<Self>) {
+        let (b2, a2) = (base.clone(), app_id.clone());
+        self.bext_view.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    let inst = bext_instance::BextInstance::new(base, app_id);
+                    bext_instance::list_sites(&inst)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match r {
+                Ok(sites) => ws.bext_view.update(cx, |v, cx| {
+                    v.set_instance_sites(sites.sites, b2.clone(), a2.clone());
+                    cx.notify();
+                }),
+                Err(e) => ws.bext_view.update(cx, |v, cx| {
+                    v.set_error(cloud_account::user_message(&e));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
+    }
+
+    fn bext_instance_action<F>(
+        &mut self,
+        base: String,
+        app_id: String,
+        cx: &mut Context<Self>,
+        f: F,
+    ) where
+        F: FnOnce(&bext_instance::BextInstance) -> shelldeck_core::Result<()> + Send + 'static,
+    {
+        let (b2, a2) = (base.clone(), app_id.clone());
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    let inst = bext_instance::BextInstance::new(base, app_id);
+                    f(&inst)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                match r {
+                    Ok(_) => ws.show_toast("Action instance effectuée.", ToastLevel::Success, cx),
+                    Err(e) => ws.show_toast(
+                        format!("Instance bext : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+                ws.refresh_bext_instance(b2.clone(), a2.clone(), cx);
+            });
+        })
+        .detach();
+    }
+
+    fn handle_bext_event(&mut self, event: BextViewEvent, cx: &mut Context<Self>) {
+        match event {
+            BextViewEvent::Connect => self.connect_bext(cx),
+            BextViewEvent::Disconnect => self.disconnect_bext(cx),
+            BextViewEvent::RefreshCloud => self.refresh_bext_cloud(cx),
+            BextViewEvent::CreateSite { name, title } => {
+                let t = if title.trim().is_empty() { None } else { Some(title) };
+                self.bext_cloud_action(cx, move |cfg| {
+                    bext_cloud::create_site(&cfg, &name, t.as_deref()).map(|_| ())
+                });
+            }
+            BextViewEvent::SiteAction { slug, action } => {
+                self.bext_cloud_action(cx, move |cfg| {
+                    bext_cloud::site_action(&cfg, &slug, &action, None).map(|_| ())
+                });
+            }
+            BextViewEvent::OpenSite(domain) => {
+                let url = if domain.starts_with("http") {
+                    domain
+                } else {
+                    format!("https://{}", domain)
+                };
+                if let Err(e) = cloud_account::open_in_browser(&url) {
+                    self.show_toast(
+                        format!("Impossible d'ouvrir : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                }
+            }
+            BextViewEvent::RefreshInstance { base, app_id } => {
+                self.refresh_bext_instance(base, app_id, cx)
+            }
+            BextViewEvent::InstanceCreate {
+                base,
+                app_id,
+                slug,
+                title,
+            } => {
+                let t = if title.trim().is_empty() { None } else { Some(title) };
+                self.bext_instance_action(base, app_id, cx, move |inst| {
+                    bext_instance::create_site(inst, &slug, t.as_deref(), None, None).map(|_| ())
+                });
+            }
+            BextViewEvent::InstanceGoLive {
+                base,
+                app_id,
+                slug,
+                domain,
+            } => {
+                self.bext_instance_action(base, app_id, cx, move |inst| {
+                    bext_instance::go_live(inst, &slug, &domain).map(|_| ())
+                });
+            }
+            BextViewEvent::InstanceDestroy { base, app_id, slug } => {
+                self.bext_instance_action(base, app_id, cx, move |inst| {
+                    bext_instance::destroy_site(inst, &slug).map(|_| ())
+                });
+            }
+        }
+    }
+
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
         let active_forwards = self.active_tunnels.len();
@@ -3414,6 +3829,7 @@ impl Workspace {
             SidebarSection::FileEditor => ActiveView::FileEditor,
             SidebarSection::JeanConsole => ActiveView::JeanConsole,
             SidebarSection::Fleet => ActiveView::Fleet,
+            SidebarSection::BextCloud => ActiveView::BextCloud,
             SidebarSection::Settings => ActiveView::Settings,
         };
     }
@@ -3423,6 +3839,7 @@ impl Workspace {
     fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
         self.sync_jean_poll(cx);
         self.sync_fleet_view_poll(cx);
+        self.sync_bext_poll(cx);
     }
 
     fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
@@ -5494,6 +5911,7 @@ impl Render for Workspace {
                     ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
                     ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
                     ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
+                    ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
                     ActiveView::Settings => content = content.child(self.settings.clone()),
                 }
 

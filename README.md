@@ -204,6 +204,15 @@ ShellDeck has a built-in **request tracker** — per tenant/site issues that are
 
 Staff-only actions are gated server-side; the action bar only appears for staff tokens. Palette: **Nouvelle demande**, **Demandes (support)**.
 
+## bext Cloud
+
+A **bext Cloud** view (Dev mode, sidebar) integrates the hosted control plane at [cloud.bext.dev](https://cloud.bext.dev) and lets you manage a single bext instance directly. It has two tabs:
+
+- **Cloud** — **Se connecter** signs in through your browser (the cloud CLI OIDC flow via auth.1clic.pro; the token is stored in `[bext_cloud]` of `shelldeck.toml`). Once connected: your identity (with a super-admin badge), a **dashboard** stat strip, and a **Sites** panel — the one-click WordPress sites with status and primary domain (open-in-browser), a **Nouveau site WordPress** form, and per-site **Mettre en ligne / Config / Détruire** (destroy asks to confirm). Super-admins also see the **bext instances** the cloud knows about with health/status. The list polls every ~15s while open.
+- **Instance** — manage the sites on one bext box directly through its loopback site SDK (`/__bext/sdk/site/*`): set a target base URL + app-id, list/create sites, and go-live/destroy them.
+
+Each SSH connection has a **bext** hover action that opens the Instance tab for that box. (v1 targets the local loopback `http://127.0.0.1` — managing a remote box over an SSH tunnel is the next step.) Palette: **bext Cloud : se connecter / nouveau site / ouvrir**.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

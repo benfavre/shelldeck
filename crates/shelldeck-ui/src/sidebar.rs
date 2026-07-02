@@ -86,6 +86,7 @@ pub enum SidebarSection {
     FileEditor,
     JeanConsole,
     Fleet,
+    BextCloud,
     Settings,
 }
 
@@ -96,6 +97,8 @@ pub enum SidebarEvent {
     ConnectionConnect(Uuid),
     ConnectionEdit(Uuid),
     ConnectionDelete(Uuid),
+    /// Manage the bext instance behind this connection (loopback site SDK).
+    ConnectionManageBext(Uuid),
     AddConnection,
     SectionChanged(SidebarSection),
     QuickConnect,
@@ -467,6 +470,27 @@ impl SidebarView {
                         cx.emit(SidebarEvent::ConnectionDelete(conn_id));
                     }))
                     .child("Del"),
+            )
+            .child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "conn-bext-{}",
+                        conn_id
+                    ))))
+                    .px(px(4.0))
+                    .py(px(2.0))
+                    .rounded(px(3.0))
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .cursor_pointer()
+                    .hover(|el| {
+                        el.bg(ShellDeckColors::primary().opacity(0.15))
+                            .text_color(ShellDeckColors::primary())
+                    })
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        cx.emit(SidebarEvent::ConnectionManageBext(conn_id));
+                    }))
+                    .child("bext"),
             );
 
         let mut row = div()
@@ -763,6 +787,7 @@ impl Render for SidebarView {
         if self.fleet_available {
             nav = nav.child(self.render_nav_item(SidebarSection::Fleet, "Fleet", None, cx));
         }
+        nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, "bext Cloud", None, cx));
         nav = nav.child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 
         // Scrollable host list (fills remaining space)
