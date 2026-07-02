@@ -29,6 +29,10 @@ pub struct AppConfig {
     /// `#[serde(default)]` keeps older configs parsing; `enabled` defaults false.
     #[serde(default)]
     pub jean_runtime: crate::config::jean_fleet::JeanRuntimeConfig,
+    /// `[bext_cloud]` — connection to the cloud.bext.dev control plane. Empty
+    /// token = not connected; `#[serde(default)]` keeps older configs parsing.
+    #[serde(default)]
+    pub bext_cloud: crate::config::bext_cloud::BextCloudConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

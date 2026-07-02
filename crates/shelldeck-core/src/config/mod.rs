@@ -1,4 +1,6 @@
 pub mod app_config;
+pub mod bext_cloud;
+pub mod bext_instance;
 pub mod cloud_account;
 pub mod cloud_sync;
 pub mod issues;
@@ -14,6 +16,7 @@ pub mod watcher;
 pub mod workspace_state;
 
 pub use app_config::AppConfig;
+pub use bext_cloud::BextCloudConfig;
 pub use cloud_account::{AccountInfo, AppMode};
 pub use cloud_sync::CloudSyncConfig;
 pub use issues::{Issue, IssueComment, IssueList};

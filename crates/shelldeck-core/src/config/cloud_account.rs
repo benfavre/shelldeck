@@ -490,7 +490,7 @@ pub(crate) fn percent_encode(s: &str) -> String {
 }
 
 /// Percent-decode `%XX` sequences (leaves anything else as-is).
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
