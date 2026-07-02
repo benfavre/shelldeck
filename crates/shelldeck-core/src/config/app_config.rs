@@ -25,6 +25,10 @@ pub struct AppConfig {
     /// 127.0.0.1). Absent → use the server-delivered config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jeanclaude: Option<crate::config::jeanclaude::JeanConfig>,
+    /// `[jean_runtime]` — whether this machine hosts a Jean fleet runtime.
+    /// `#[serde(default)]` keeps older configs parsing; `enabled` defaults false.
+    #[serde(default)]
+    pub jean_runtime: crate::config::jean_fleet::JeanRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,6 +353,30 @@ mod tests {
         let loaded = AppConfig::load_from(&path).unwrap().jeanclaude.expect("present");
         assert_eq!(loaded.url, "http://127.0.0.1:3100");
         assert_eq!(loaded.user, "jean");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn jean_runtime_round_trips_and_defaults_off() {
+        let path = temp_path("config.toml");
+
+        // Default: enabled=false, no instance id.
+        AppConfig::default().save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert!(!loaded.jean_runtime.enabled);
+        assert!(loaded.jean_runtime.instance_id.is_none());
+
+        // Round-trip a registered runtime.
+        let mut cfg = AppConfig::default();
+        cfg.jean_runtime.enabled = true;
+        cfg.jean_runtime.instance_id = Some("4365eee9".to_string());
+        cfg.jean_runtime.workdir = Some("/home/x/infra".to_string());
+        cfg.save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert!(loaded.jean_runtime.enabled);
+        assert_eq!(loaded.jean_runtime.instance_id.as_deref(), Some("4365eee9"));
+        assert_eq!(loaded.jean_runtime.workdir.as_deref(), Some("/home/x/infra"));
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

@@ -4,6 +4,7 @@ use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
+use shelldeck_core::config::jean_fleet::{self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance};
 use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
 use shelldeck_core::config::manage_support;
 use shelldeck_core::config::store::ConnectionStore;
@@ -30,6 +31,7 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::support_view::{SupportView, SupportViewEvent};
 use crate::template_browser::TemplateBrowser;
@@ -69,6 +71,28 @@ impl AccountStatus {
     }
 }
 
+/// Everything the runtime tick needs, gathered on the UI thread then moved into
+/// the background executor (all owned + `Send`).
+struct RuntimeTickCtx {
+    base: String,
+    token: String,
+    instance_id: String,
+    workdir: String,
+    model: String,
+    autonomy: String,
+    version: String,
+}
+
+/// One decision of the runtime loop, produced on the UI thread.
+enum RuntimeStep {
+    /// (base, token, register payload)
+    Register(String, String, RegisterInstance),
+    /// (base, token, instance id, version) — heartbeat only (a job is busy).
+    HeartbeatOnly(String, String, String, String),
+    /// Heartbeat + claim (+ auto-execute).
+    Tick(RuntimeTickCtx),
+}
+
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -80,6 +104,7 @@ pub enum ActiveView {
     Sites,
     FileEditor,
     JeanConsole,
+    Fleet,
     Settings,
 }
 
@@ -104,6 +129,8 @@ actions!(
         SwitchSite,
         OpenJeanConsole,
         JeanTogglePause,
+        OpenFleet,
+        ToggleJeanRuntime,
     ]
 );
 
@@ -217,6 +244,22 @@ pub struct Workspace {
     /// User-mode "Demander à JeanClaude" composer buffer + focus.
     jean_ask_input: String,
     jean_ask_focus: FocusHandle,
+    /// The Jean fleet view (Dev mode).
+    fleet_view: Entity<FleetView>,
+    _fleet_sub: Subscription,
+    /// Cached fleet snapshot (feeds fleet_view).
+    fleet_snapshot: Option<FleetSnapshot>,
+    /// Poll while the Fleet view is visible.
+    _fleet_view_poll: Option<gpui::Task<()>>,
+    /// This machine's registered runtime instance (when the runtime is enabled).
+    runtime_instance: Option<JeanInstance>,
+    /// Jobs claimed by a `confirm`-autonomy instance, awaiting an explicit
+    /// "Exécuter" in the UI. Also gates the loop (concurrency 1).
+    runtime_awaiting: Vec<JeanJob>,
+    /// True while a job is executing or awaiting confirmation (no new claim).
+    runtime_busy: bool,
+    /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
+    _runtime_loop: Option<gpui::Task<()>>,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -316,6 +359,7 @@ impl Workspace {
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
         let jean_view = cx.new(JeanView::new);
+        let fleet_view = cx.new(FleetView::new);
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -443,6 +487,10 @@ impl Workspace {
             this.handle_jean_event(event.clone(), cx);
         });
 
+        let fleet_sub = cx.subscribe(&fleet_view, |this, _view, event: &FleetViewEvent, cx| {
+            this.handle_fleet_event(event.clone(), cx);
+        });
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -532,6 +580,14 @@ impl Workspace {
             _jean_poll_task: None,
             jean_ask_input: String::new(),
             jean_ask_focus: cx.focus_handle(),
+            fleet_view,
+            _fleet_sub: fleet_sub,
+            fleet_snapshot: None,
+            _fleet_view_poll: None,
+            runtime_instance: None,
+            runtime_awaiting: Vec::new(),
+            runtime_busy: false,
+            _runtime_loop: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -1638,6 +1694,12 @@ impl Workspace {
             PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
             PaletteAction::new("JeanClaude : ouvrir la console", None, Box::new(OpenJeanConsole)),
             PaletteAction::new("JeanClaude : pause / reprendre", None, Box::new(JeanTogglePause)),
+            PaletteAction::new("Fleet : ouvrir la flotte Jean", None, Box::new(OpenFleet)),
+            PaletteAction::new(
+                "Fleet : activer / désactiver ce runtime",
+                None,
+                Box::new(ToggleJeanRuntime),
+            ),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
@@ -1744,6 +1806,9 @@ impl Workspace {
         }
         self.update_jean_availability(cx);
         self.sync_jean_poll(cx);
+        self.update_fleet_availability(cx);
+        self.sync_fleet_view_poll(cx);
+        self.sync_runtime_loop(cx);
     }
 
     fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
@@ -2237,6 +2302,470 @@ impl Workspace {
         .detach();
     }
 
+    // --- Jean fleet runtime ---
+
+    /// `(base_url, token)` when signed in to Inklura Manage.
+    fn fleet_base_token(&self) -> Option<(String, String)> {
+        if self.app_config.cloud_sync.is_configured() {
+            Some((self.account_base_url(), self.app_config.cloud_sync.token.clone()))
+        } else {
+            None
+        }
+    }
+
+    fn fleet_visible(&self) -> bool {
+        self.fleet_base_token().is_some()
+            && self.effective_mode() == AppMode::Dev
+            && self.active_view == ActiveView::Fleet
+    }
+
+    fn update_fleet_availability(&mut self, cx: &mut Context<Self>) {
+        let show = self.fleet_base_token().is_some() && self.effective_mode() == AppMode::Dev;
+        self.sidebar.update(cx, |s, cx| {
+            s.set_fleet_available(show);
+            cx.notify();
+        });
+    }
+
+    /// Tenant to register this machine under: the active site's tenant, else the
+    /// first known site's, else empty (the server pins it for non-super-admins).
+    fn runtime_tenant(&self) -> (String, String) {
+        if let Some(active) = self.active_site_info() {
+            return (active.tenant_id, active.tenant_name);
+        }
+        if let Some(dir) = &self.site_directory {
+            if let Some(s) = dir.sites.first() {
+                return (s.tenant_id.clone(), s.tenant_name.clone());
+            }
+        }
+        (String::new(), String::new())
+    }
+
+    fn runtime_workdir_model(&self) -> (String, String) {
+        let inst = self.runtime_instance.as_ref();
+        let workdir = inst
+            .map(|i| i.workdir.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.app_config.jean_runtime.workdir.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+        let model = inst.map(|i| i.model.clone()).unwrap_or_default();
+        (workdir, model)
+    }
+
+    fn build_register(&self) -> Option<RegisterInstance> {
+        let (tenant_id, tenant_name) = self.runtime_tenant();
+        let name = self
+            .app_config
+            .jean_runtime
+            .name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(cloud_account::device_name);
+        let (workdir, _) = self.runtime_workdir_model();
+        Some(RegisterInstance {
+            id: self.app_config.jean_runtime.instance_id.clone(),
+            name,
+            tenant_id,
+            tenant_name,
+            site_id: self.app_config.cloud_sync.active_site_id.clone(),
+            slack_channel: None,
+            workdir,
+            model: None,
+            // Only set autonomy on the FIRST register (safe default = confirm);
+            // later leave it so an admin can flip it to "auto" in the console.
+            autonomy: if self.app_config.jean_runtime.instance_id.is_none() {
+                Some("confirm".to_string())
+            } else {
+                None
+            },
+        })
+    }
+
+    fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        self.fleet_view.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jean_fleet::get_fleet(&base, &token) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(snap) => {
+                    ws.fleet_snapshot = Some(snap.clone());
+                    ws.fleet_view.update(cx, |v, cx| {
+                        v.set_snapshot(snap);
+                        cx.notify();
+                    });
+                    ws.push_runtime_status_to_fleet(cx);
+                }
+                Err(e) => ws.fleet_view.update(cx, |v, cx| {
+                    v.set_error(cloud_account::user_message(&e));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
+    }
+
+    fn push_runtime_status_to_fleet(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.app_config.jean_runtime.enabled;
+        let my_id = self
+            .runtime_instance
+            .as_ref()
+            .map(|i| i.id.clone())
+            .or_else(|| self.app_config.jean_runtime.instance_id.clone());
+        let status = if !enabled {
+            "désactivé".to_string()
+        } else {
+            self.runtime_instance
+                .as_ref()
+                .map(|i| i.status.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "démarrage…".to_string())
+        };
+        let awaiting = self.runtime_awaiting.clone();
+        self.fleet_view.update(cx, |v, cx| {
+            v.set_runtime(enabled, my_id, status);
+            v.set_awaiting(awaiting);
+            cx.notify();
+        });
+    }
+
+    fn sync_fleet_view_poll(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_visible() {
+            self.refresh_fleet_view(cx);
+            if self._fleet_view_poll.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(10))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.fleet_visible() {
+                                ws.refresh_fleet_view(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
+                    }
+                });
+                self._fleet_view_poll = Some(task);
+            }
+        } else {
+            self._fleet_view_poll = None;
+        }
+    }
+
+    fn handle_fleet_event(&mut self, event: FleetViewEvent, cx: &mut Context<Self>) {
+        match event {
+            FleetViewEvent::Refresh => self.refresh_fleet_view(cx),
+            FleetViewEvent::ToggleRuntime => self.toggle_jean_runtime(cx),
+            FleetViewEvent::ApproveJob(id) => self.approve_fleet_job(id, cx),
+            FleetViewEvent::RejectJob(id) => self.reject_fleet_job(id, cx),
+        }
+    }
+
+    /// Enable/disable THIS machine as a fleet runtime. Off by default; enabling
+    /// starts the loop. The safety gate is that the loop only *executes* jobs
+    /// when enabled AND the instance autonomy is "auto"; "confirm" needs a click.
+    pub fn toggle_jean_runtime(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_base_token().is_none() {
+            self.show_toast(
+                "Connectez-vous à Inklura Manage pour héberger un runtime Jean.",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        let now = !self.app_config.jean_runtime.enabled;
+        self.app_config.jean_runtime.enabled = now;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save jean_runtime: {}", e);
+        }
+        if now {
+            self.show_toast(
+                "Runtime Jean activé sur cette machine.",
+                ToastLevel::Success,
+                cx,
+            );
+        } else {
+            // Best-effort offline heartbeat, then clear local state.
+            if let (Some((base, token)), Some(inst)) =
+                (self.fleet_base_token(), self.runtime_instance.clone())
+            {
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = jean_fleet::heartbeat(
+                            &base,
+                            &token,
+                            &inst.id,
+                            "offline",
+                            Some("désactivé"),
+                            None,
+                        );
+                    })
+                    .detach();
+            }
+            self.runtime_instance = None;
+            self.runtime_awaiting.clear();
+            self.runtime_busy = false;
+            self.show_toast("Runtime Jean désactivé.", ToastLevel::Info, cx);
+        }
+        self.sync_runtime_loop(cx);
+        self.push_runtime_status_to_fleet(cx);
+        cx.notify();
+    }
+
+    /// Start/stop the runtime loop from config + auth state.
+    pub fn sync_runtime_loop(&mut self, cx: &mut Context<Self>) {
+        let want = self.app_config.jean_runtime.enabled && self.fleet_base_token().is_some();
+        if want {
+            if self._runtime_loop.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    let step = this
+                        .update(cx, |ws, cx| ws.runtime_loop_step(cx))
+                        .ok()
+                        .flatten();
+                    let Some(step) = step else {
+                        break; // disabled / signed out → stop
+                    };
+                    match step {
+                        RuntimeStep::Register(base, token, reg) => {
+                            let r = cx
+                                .background_executor()
+                                .spawn(async move { jean_fleet::register(&base, &token, &reg) })
+                                .await;
+                            let _ = this.update(cx, |ws, cx| ws.apply_register(r, cx));
+                        }
+                        RuntimeStep::HeartbeatOnly(base, token, id, version) => {
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let _ = jean_fleet::heartbeat(
+                                        &base,
+                                        &token,
+                                        &id,
+                                        "online",
+                                        None,
+                                        Some(&version),
+                                    );
+                                })
+                                .await;
+                        }
+                        RuntimeStep::Tick(tc) => {
+                            let r = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    jean_fleet::runtime_tick(
+                                        &tc.base,
+                                        &tc.token,
+                                        &tc.instance_id,
+                                        &tc.workdir,
+                                        &tc.model,
+                                        &tc.autonomy,
+                                        &tc.version,
+                                        &ClaudeExecutor::default(),
+                                        std::time::Duration::from_secs(1800),
+                                    )
+                                })
+                                .await;
+                            let _ = this.update(cx, |ws, cx| ws.apply_tick_result(r, cx));
+                        }
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(15))
+                        .await;
+                });
+                self._runtime_loop = Some(task);
+            }
+        } else {
+            self._runtime_loop = None;
+        }
+    }
+
+    /// Decide this loop iteration's action on the UI thread (keeps all the config
+    /// reads + gating in one place). `None` = stop the loop.
+    fn runtime_loop_step(&mut self, _cx: &mut Context<Self>) -> Option<RuntimeStep> {
+        if !self.app_config.jean_runtime.enabled {
+            return None;
+        }
+        let (base, token) = self.fleet_base_token()?;
+        let version = shelldeck_core::VERSION.to_string();
+
+        if self.runtime_instance.is_none() {
+            let reg = self.build_register()?;
+            return Some(RuntimeStep::Register(base, token, reg));
+        }
+        let id = self.runtime_instance.as_ref().unwrap().id.clone();
+        // Concurrency 1: while a job runs / awaits confirmation, just heartbeat.
+        if self.runtime_busy {
+            return Some(RuntimeStep::HeartbeatOnly(base, token, id, version));
+        }
+        let (workdir, model) = self.runtime_workdir_model();
+        let autonomy = self.runtime_instance.as_ref().unwrap().autonomy.clone();
+        Some(RuntimeStep::Tick(RuntimeTickCtx {
+            base,
+            token,
+            instance_id: id,
+            workdir,
+            model,
+            autonomy,
+            version,
+        }))
+    }
+
+    fn apply_register(
+        &mut self,
+        r: shelldeck_core::Result<JeanInstance>,
+        cx: &mut Context<Self>,
+    ) {
+        match r {
+            Ok(inst) => {
+                self.app_config.jean_runtime.instance_id = Some(inst.id.clone());
+                if let Err(e) = self.app_config.save() {
+                    tracing::error!("Failed to persist runtime instance id: {}", e);
+                }
+                self.runtime_instance = Some(inst);
+                self.push_runtime_status_to_fleet(cx);
+            }
+            Err(e) => {
+                self.fleet_view.update(cx, |v, cx| {
+                    v.set_error(format!(
+                        "Enregistrement du runtime échoué : {}",
+                        cloud_account::user_message(&e)
+                    ));
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    fn apply_tick_result(
+        &mut self,
+        result: shelldeck_core::Result<jean_fleet::TickResult>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(tick) => {
+                if let Some(job) = tick.awaiting_confirm {
+                    if !self.runtime_awaiting.iter().any(|j| j.id == job.id) {
+                        self.runtime_awaiting.push(job);
+                    }
+                    self.runtime_busy = true;
+                    self.show_toast(
+                        "Un ticket Jean attend votre validation (vue Fleet).",
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+                self.push_runtime_status_to_fleet(cx);
+            }
+            Err(e) => {
+                self.fleet_view.update(cx, |v, cx| {
+                    v.set_error(cloud_account::user_message(&e));
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    /// Approve a confirm-mode job: execute it now (running → done/failed).
+    fn approve_fleet_job(&mut self, job_id: String, cx: &mut Context<Self>) {
+        let Some(job) = self.runtime_awaiting.iter().find(|j| j.id == job_id).cloned() else {
+            return;
+        };
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        let (workdir, model) = self.runtime_workdir_model();
+        self.runtime_awaiting.retain(|j| j.id != job_id);
+        // busy stays true through execution.
+        self.push_runtime_status_to_fleet(cx);
+        self.show_toast("Exécution du ticket Jean…", ToastLevel::Info, cx);
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    jean_fleet::execute_job(
+                        &base,
+                        &token,
+                        &job,
+                        &workdir,
+                        &model,
+                        &ClaudeExecutor::default(),
+                        std::time::Duration::from_secs(1800),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Err(e) = r {
+                    ws.show_toast(
+                        format!("Ticket Jean échoué : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                } else {
+                    ws.show_toast("Ticket Jean terminé.", ToastLevel::Success, cx);
+                }
+                ws.runtime_busy = false; // free for the next claim
+                ws.push_runtime_status_to_fleet(cx);
+                ws.refresh_fleet_view(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Reject a confirm-mode job: mark it cancelled server-side.
+    fn reject_fleet_job(&mut self, job_id: String, cx: &mut Context<Self>) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        self.runtime_awaiting.retain(|j| j.id != job_id);
+        self.runtime_busy = false;
+        self.push_runtime_status_to_fleet(cx);
+        let jid = job_id;
+        cx.background_executor()
+            .spawn(async move {
+                let _ = jean_fleet::update_job(
+                    &base,
+                    &token,
+                    &jid,
+                    "cancelled",
+                    Some("rejeté depuis ShellDeck"),
+                );
+            })
+            .detach();
+        self.refresh_fleet_view(cx);
+        cx.notify();
+    }
+
+    /// Open the Fleet view (palette / action) in Dev mode.
+    pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_base_token().is_none() {
+            self.show_toast(
+                "Connectez-vous à Inklura Manage pour voir la flotte.",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::Dev, cx);
+        }
+        self.active_view = ActiveView::Fleet;
+        self.on_active_view_changed(cx);
+        cx.notify();
+    }
+
     fn update_dashboard_stats(&mut self, cx: &mut Context<Self>) {
         let terminal_count = self.terminal.read(cx).tab_count();
         let active_forwards = self.active_tunnels.len();
@@ -2480,6 +3009,7 @@ impl Workspace {
             SidebarSection::Sites => ActiveView::Sites,
             SidebarSection::FileEditor => ActiveView::FileEditor,
             SidebarSection::JeanConsole => ActiveView::JeanConsole,
+            SidebarSection::Fleet => ActiveView::Fleet,
             SidebarSection::Settings => ActiveView::Settings,
         };
     }
@@ -2488,6 +3018,7 @@ impl Workspace {
     /// console just became visible.
     fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
         self.sync_jean_poll(cx);
+        self.sync_fleet_view_poll(cx);
     }
 
     fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
@@ -4221,6 +4752,7 @@ impl Render for Workspace {
                     ActiveView::Sites => content = content.child(self.sites.clone()),
                     ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
                     ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
+                    ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
                     ActiveView::Settings => content = content.child(self.settings.clone()),
                 }
 

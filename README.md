@@ -173,6 +173,28 @@ Where it shows up:
 - **Support mode** — a compact JeanClaude strip (pending confirmations + active count) and an **Envoyer à Jean** action per ticket that files it through Jean's normal Slack intake.
 - **User mode** — a **Demander à JeanClaude** card to send a request (a confirmer must still approve in `#jean`), with a read-only recent-activity list.
 
+### Fleet runtime
+
+Beyond controlling one dashboard, ShellDeck can be a **runtime for the Jean fleet** — the tenant/site-aware set of Jean instances managed from `manage.inklura.fr`. Signed in (Dev mode), a **Fleet** sidebar entry shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
+
+When enabled, ShellDeck registers itself, heartbeats, and claims pending jobs for its instance, executing each by driving **headless Claude Code** (`claude -p`, subscription auth) in the configured working directory.
+
+⚠️ **Safety.** Executing a job runs Claude Code with file/edit/command powers on this machine. It is **off by default** and gated hard:
+
+- The runtime only runs when `[jean_runtime].enabled = true` **and** the instance's autonomy is **`auto`**.
+- An instance set to **`confirm`** never auto-runs — each claimed job appears in the Fleet view with **Exécuter / Rejeter** and waits for an explicit click. New instances default to `confirm`.
+- One job at a time per machine.
+
+```toml
+[jean_runtime]
+enabled = false          # default — must be turned on explicitly
+# instance_id = "…"      # filled in after the first registration
+# workdir = "/home/you/infra"
+# name = "my-machine"
+```
+
+Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Jean**).
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

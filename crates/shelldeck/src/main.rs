@@ -304,6 +304,22 @@ fn main() -> Result<()> {
                         }
                     }
                 });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &OpenFleet, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open_fleet(cx));
+                        }
+                    }
+                });
+                cx.on_action({
+                    let w = w.clone();
+                    move |_: &ToggleJeanRuntime, cx| {
+                        if let Some(ws) = w.upgrade() {
+                            ws.update(cx, |ws, cx| ws.toggle_jean_runtime(cx));
+                        }
+                    }
+                });
             }
 
             workspace

@@ -85,6 +85,7 @@ pub enum SidebarSection {
     Sites,
     FileEditor,
     JeanConsole,
+    Fleet,
     Settings,
 }
 
@@ -119,6 +120,8 @@ pub struct SidebarView {
     site_filter: Option<Uuid>,
     /// Whether the JeanClaude console nav entry should be shown (config present).
     jean_available: bool,
+    /// Whether the Jean fleet nav entry should be shown (Dev + signed in).
+    fleet_available: bool,
     focus_handle: FocusHandle,
 }
 
@@ -136,6 +139,7 @@ impl SidebarView {
             search_focused: false,
             site_filter: None,
             jean_available: false,
+            fleet_available: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -143,6 +147,11 @@ impl SidebarView {
     /// Show/hide the JeanClaude console nav entry (Dev mode + config present).
     pub fn set_jean_available(&mut self, available: bool) {
         self.jean_available = available;
+    }
+
+    /// Show/hide the Jean fleet nav entry (Dev mode + signed in).
+    pub fn set_fleet_available(&mut self, available: bool) {
+        self.fleet_available = available;
     }
 
     pub fn width(&self) -> f32 {
@@ -750,6 +759,9 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx));
         if self.jean_available {
             nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, "JeanClaude", None, cx));
+        }
+        if self.fleet_available {
+            nav = nav.child(self.render_nav_item(SidebarSection::Fleet, "Fleet", None, cx));
         }
         nav = nav.child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 

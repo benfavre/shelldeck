@@ -3,6 +3,7 @@ pub mod connection_form;
 pub mod dashboard;
 pub mod editor_buffer;
 pub mod file_editor;
+pub mod fleet_view;
 pub mod glyph_cache;
 pub mod jean_view;
 pub mod login_form;
