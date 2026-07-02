@@ -4,6 +4,7 @@ use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
+use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
 use shelldeck_core::config::manage_support;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
@@ -29,6 +30,7 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::support_view::{SupportView, SupportViewEvent};
 use crate::template_browser::TemplateBrowser;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
@@ -77,6 +79,7 @@ pub enum ActiveView {
     ServerSync,
     Sites,
     FileEditor,
+    JeanConsole,
     Settings,
 }
 
@@ -99,6 +102,8 @@ actions!(
         OpenFileEditorView,
         CloudSyncNow,
         SwitchSite,
+        OpenJeanConsole,
+        JeanTogglePause,
     ]
 );
 
@@ -202,6 +207,16 @@ pub struct Workspace {
     _support_sub: Subscription,
     /// Background poll while Support mode is visible.
     _support_poll_task: Option<gpui::Task<()>>,
+    /// The JeanClaude console (Dev mode).
+    jean_view: Entity<JeanView>,
+    _jean_sub: Subscription,
+    /// Shared `/api/state` cache (feeds jean_view + the Support strip + User card).
+    jean_state: Option<JeanState>,
+    /// Background poll while a Jean surface is visible.
+    _jean_poll_task: Option<gpui::Task<()>>,
+    /// User-mode "Demander à JeanClaude" composer buffer + focus.
+    jean_ask_input: String,
+    jean_ask_focus: FocusHandle,
     /// While the command palette is previewing an app theme, the theme to
     /// restore if the user dismisses without committing. `None` when no preview
     /// is active.
@@ -300,6 +315,7 @@ impl Workspace {
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
+        let jean_view = cx.new(JeanView::new);
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -423,6 +439,10 @@ impl Workspace {
                 this.handle_support_event(event.clone(), cx);
             });
 
+        let jean_sub = cx.subscribe(&jean_view, |this, _view, event: &JeanViewEvent, cx| {
+            this.handle_jean_event(event.clone(), cx);
+        });
+
         // Load saved port forwards into the view
         {
             let saved_forwards = store.port_forwards.clone();
@@ -506,6 +526,12 @@ impl Workspace {
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
+            jean_view,
+            _jean_sub: jean_sub,
+            jean_state: None,
+            _jean_poll_task: None,
+            jean_ask_input: String::new(),
+            jean_ask_focus: cx.focus_handle(),
             theme_before_preview: None,
             terminal_theme_before_preview: None,
         }
@@ -557,6 +583,7 @@ impl Workspace {
                 if *section == SidebarSection::Scripts {
                     self.populate_script_editor_connections(cx);
                 }
+                self.on_active_view_changed(cx);
                 cx.notify();
             }
             SidebarEvent::ConnectionSelected(id) => {
@@ -1495,6 +1522,9 @@ impl Workspace {
                     );
                     ws.site_directory = Some(payload);
                     ws.refresh_command_palette(cx);
+                    // Server may have just delivered the Jean config (super-admin).
+                    ws.update_jean_availability(cx);
+                    ws.sync_jean_poll(cx);
                     cx.notify();
                 }
                 Err(e) => tracing::warn!("Failed to load manage sites: {}", e),
@@ -1606,6 +1636,8 @@ impl Workspace {
             PaletteAction::new("Open File Editor", Some("Ctrl+E"), Box::new(OpenFileEditorView)),
             PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
             PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
+            PaletteAction::new("JeanClaude : ouvrir la console", None, Box::new(OpenJeanConsole)),
+            PaletteAction::new("JeanClaude : pause / reprendre", None, Box::new(JeanTogglePause)),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
@@ -1710,6 +1742,8 @@ impl Workspace {
         if self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured() {
             self.refresh_support(cx);
         }
+        self.update_jean_availability(cx);
+        self.sync_jean_poll(cx);
     }
 
     fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
@@ -1848,6 +1882,13 @@ impl Workspace {
             SupportViewEvent::Resolve { id, resolution } => {
                 self.support_action(cx, move |b, t| ms::support_resolve(&b, &t, &id, &resolution));
             }
+            SupportViewEvent::JeanConfirm(thread) => {
+                self.jean_action(cx, move |c| jeanclaude::confirm(&c, &thread));
+            }
+            SupportViewEvent::JeanReject(thread) => {
+                self.jean_action(cx, move |c| jeanclaude::reject(&c, &thread));
+            }
+            SupportViewEvent::SendToJean(text) => self.jean_say(text, cx),
         }
     }
 
@@ -1888,6 +1929,308 @@ impl Workspace {
                         cx.notify();
                     });
                     ws.show_toast(msg, ToastLevel::Error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    // --- JeanClaude client ---
+
+    /// The effective Jean config: a local `[jeanclaude]` override wins, else the
+    /// server-delivered config (super-admin only). `None` = feature unavailable.
+    fn effective_jean_config(&self) -> Option<JeanConfig> {
+        if let Some(local) = &self.app_config.jeanclaude {
+            if local.is_set() {
+                return Some(local.clone());
+            }
+        }
+        self.site_directory
+            .as_ref()
+            .and_then(|s| s.jeanclaude.clone())
+            .filter(|c| c.is_set())
+    }
+
+    pub fn has_jean(&self) -> bool {
+        self.effective_jean_config().is_some()
+    }
+
+    /// Whether a Jean surface is currently on screen (so polling is worthwhile).
+    fn jean_surface_visible(&self) -> bool {
+        if !self.has_jean() {
+            return false;
+        }
+        match self.effective_mode() {
+            AppMode::User | AppMode::Support => true,
+            AppMode::Dev => self.active_view == ActiveView::JeanConsole,
+        }
+    }
+
+    /// Reflect Jean availability into the sidebar nav (Dev mode only).
+    fn update_jean_availability(&mut self, cx: &mut Context<Self>) {
+        let show = self.has_jean() && self.effective_mode() == AppMode::Dev;
+        self.sidebar.update(cx, |s, cx| {
+            s.set_jean_available(show);
+            cx.notify();
+        });
+    }
+
+    fn sync_jean_poll(&mut self, cx: &mut Context<Self>) {
+        if self.jean_surface_visible() {
+            // Refresh immediately when a surface becomes visible.
+            self.refresh_jean_state(cx);
+            if self._jean_poll_task.is_none() {
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(10))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.jean_surface_visible() {
+                                ws.refresh_jean_state(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
+                    }
+                });
+                self._jean_poll_task = Some(task);
+            }
+        } else {
+            self._jean_poll_task = None;
+        }
+    }
+
+    fn refresh_jean_state(&mut self, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        self.jean_view.update(cx, |v, cx| {
+            v.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::get_state(&cfg) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(state) => {
+                    ws.jean_state = Some(state.clone());
+                    ws.jean_view.update(cx, |v, cx| {
+                        v.set_state(state);
+                        cx.notify();
+                    });
+                    ws.push_jean_brief_to_support(cx);
+                }
+                Err(e) => {
+                    ws.jean_view.update(cx, |v, cx| {
+                        v.set_error(cloud_account::user_message(&e));
+                        cx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Feed the Support-mode Jean strip from the cached state.
+    fn push_jean_brief_to_support(&mut self, cx: &mut Context<Self>) {
+        let available = self.has_jean();
+        let (pending, active) = self
+            .jean_state
+            .as_ref()
+            .map(|s| {
+                let pending: Vec<(String, String)> = s
+                    .pending
+                    .iter()
+                    .map(|p| (p.thread_ts.clone(), p.prompt.clone()))
+                    .collect();
+                let active = s
+                    .tickets
+                    .iter()
+                    .filter(|t| t.is_running() || t.is_queued())
+                    .count();
+                (pending, active)
+            })
+            .unwrap_or_default();
+        self.support.update(cx, |v, cx| {
+            v.set_jean_brief(available, pending, active);
+            cx.notify();
+        });
+    }
+
+    fn handle_jean_event(&mut self, event: JeanViewEvent, cx: &mut Context<Self>) {
+        use jeanclaude as j;
+        match event {
+            JeanViewEvent::Refresh => self.refresh_jean_state(cx),
+            JeanViewEvent::SetPaused(p) => self.jean_action(cx, move |c| j::set_paused(&c, p)),
+            JeanViewEvent::SetConcurrency(n) => {
+                self.jean_action(cx, move |c| j::set_concurrency(&c, n))
+            }
+            JeanViewEvent::Say(text) => self.jean_say(text, cx),
+            JeanViewEvent::Confirm(t) => self.jean_action(cx, move |c| j::confirm(&c, &t)),
+            JeanViewEvent::Reject(t) => self.jean_action(cx, move |c| j::reject(&c, &t)),
+            JeanViewEvent::Cancel(id) => self.jean_action(cx, move |c| j::cancel(&c, &id)),
+            JeanViewEvent::Force(id) => self.jean_action(cx, move |c| j::force_ticket(&c, &id)),
+            JeanViewEvent::SelectTicket(id) => self.jean_select_ticket(id, cx),
+            JeanViewEvent::LoadHistory { q, status } => self.jean_load_history(q, status, cx),
+            JeanViewEvent::LoadTargets => self.jean_load_targets(cx),
+            JeanViewEvent::LoadMemory => self.jean_load_memory(cx),
+            JeanViewEvent::AddTarget {
+                domain,
+                ssh_host,
+                note,
+            } => self.jean_action(cx, move |c| j::add_target(&c, &domain, &ssh_host, &note)),
+            JeanViewEvent::RemoveTarget(d) => {
+                self.jean_action(cx, move |c| j::remove_target(&c, &d))
+            }
+            JeanViewEvent::AddMemory { kind, match_, text } => {
+                self.jean_action(cx, move |c| j::add_memory(&c, &kind, &match_, &[], &text))
+            }
+            JeanViewEvent::RemoveMemory(id) => {
+                self.jean_action(cx, move |c| j::remove_memory(&c, &id))
+            }
+        }
+    }
+
+    /// Run a Jean write action on the background executor, then refresh state.
+    fn jean_action<F>(&mut self, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(JeanConfig) -> shelldeck_core::Result<()> + Send + 'static,
+    {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { f(cfg) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Err(e) = result {
+                    ws.show_toast(
+                        format!("JeanClaude : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                }
+                ws.refresh_jean_state(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn jean_say(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::say(&cfg, &text) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                match result {
+                    Ok(_) => ws.show_toast("Envoyé à #jean.", ToastLevel::Success, cx),
+                    Err(e) => ws.show_toast(
+                        format!("JeanClaude : {}", cloud_account::user_message(&e)),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+                ws.refresh_jean_state(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn jean_select_ticket(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::get_ticket(&cfg, &id) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(t) => ws.jean_view.update(cx, |v, cx| {
+                    v.set_detail(t);
+                    cx.notify();
+                }),
+                Err(e) => ws.jean_view.update(cx, |v, cx| {
+                    v.set_error(cloud_account::user_message(&e));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
+    }
+
+    fn jean_load_history(&mut self, q: String, status: String, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::get_history(&cfg, &q, &status, 60) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(h) => ws.jean_view.update(cx, |v, cx| {
+                    v.set_history(h);
+                    cx.notify();
+                }),
+                Err(e) => ws.jean_view.update(cx, |v, cx| {
+                    v.set_error(cloud_account::user_message(&e));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
+    }
+
+    fn jean_load_targets(&mut self, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::get_targets(&cfg) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Ok(t) = result {
+                    ws.jean_view.update(cx, |v, cx| {
+                        v.set_targets(t);
+                        cx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn jean_load_memory(&mut self, cx: &mut Context<Self>) {
+        let Some(cfg) = self.effective_jean_config() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::get_memory(&cfg) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Ok(m) = result {
+                    ws.jean_view.update(cx, |v, cx| {
+                        v.set_memory(m);
+                        cx.notify();
+                    });
                 }
             });
         })
@@ -2019,6 +2362,88 @@ impl Workspace {
         self.active_view = view;
     }
 
+    /// Open the JeanClaude console (palette / action). Switches to Dev mode for
+    /// super-admins so the console is actually on screen.
+    pub fn open_jean_console(&mut self, cx: &mut Context<Self>) {
+        if !self.has_jean() {
+            self.show_toast(
+                "JeanClaude n'est pas configuré (compte super-admin ou [jeanclaude] requis).",
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::Dev, cx);
+        }
+        self.active_view = ActiveView::JeanConsole;
+        self.on_active_view_changed(cx);
+        cx.notify();
+    }
+
+    /// Key handling for the User-mode "Demander à JeanClaude" composer.
+    fn handle_jean_ask_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        match key {
+            "enter" => {
+                if event.keystroke.modifiers.shift {
+                    self.jean_ask_input.push('\n');
+                    cx.notify();
+                } else {
+                    self.submit_jean_ask(cx);
+                }
+            }
+            "backspace" => {
+                self.jean_ask_input.pop();
+                cx.notify();
+            }
+            _ => {
+                if let Some(ref kc) = event.keystroke.key_char {
+                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
+                        self.jean_ask_input.push_str(kc);
+                        cx.notify();
+                    }
+                } else if key.len() == 1
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                {
+                    self.jean_ask_input.push_str(key);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn submit_jean_ask(&mut self, cx: &mut Context<Self>) {
+        let text = self.jean_ask_input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let name = self
+            .app_config
+            .account
+            .as_ref()
+            .map(|a| a.display_name())
+            .unwrap_or_default();
+        let full = format!("[via ShellDeck — {}] {}", name, text);
+        self.jean_ask_input.clear();
+        self.jean_say(full, cx);
+        cx.notify();
+    }
+
+    /// Toggle JeanClaude's paused state (palette / action).
+    pub fn jean_toggle_pause(&mut self, cx: &mut Context<Self>) {
+        if !self.has_jean() {
+            return;
+        }
+        let paused = self
+            .jean_state
+            .as_ref()
+            .map(|s| s.bot.paused)
+            .unwrap_or(false);
+        self.jean_action(cx, move |c| jeanclaude::set_paused(&c, !paused));
+    }
+
     fn populate_script_editor_connections(&self, cx: &mut Context<Self>) {
         let conns: Vec<(Uuid, String)> = self
             .connections
@@ -2054,8 +2479,15 @@ impl Workspace {
             SidebarSection::ServerSync => ActiveView::ServerSync,
             SidebarSection::Sites => ActiveView::Sites,
             SidebarSection::FileEditor => ActiveView::FileEditor,
+            SidebarSection::JeanConsole => ActiveView::JeanConsole,
             SidebarSection::Settings => ActiveView::Settings,
         };
+    }
+
+    /// Called when the active Dev view changes — (re)start the Jean poll if the
+    /// console just became visible.
+    fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
+        self.sync_jean_poll(cx);
     }
 
     fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
@@ -2231,6 +2663,7 @@ fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option
 
 impl Workspace {
     /// Render the custom window titlebar with drag area and window controls.
+    #[allow(clippy::too_many_arguments)]
     fn render_titlebar(
         is_maximized: bool,
         theme_menu_open: bool,
@@ -3591,7 +4024,132 @@ impl Workspace {
                     .child("Mes sites"),
             )
             .child(header)
+            .children(if self.has_jean() {
+                Some(self.render_jean_ask_card(cx))
+            } else {
+                None
+            })
             .child(list)
+    }
+
+    /// User-mode "Demander à JeanClaude" card: a composer that files a request
+    /// through Jean's Slack intake, plus a read-only recent-activity list.
+    fn render_jean_ask_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let input_display = if self.jean_ask_input.is_empty() {
+            div()
+                .text_color(ShellDeckColors::text_muted())
+                .child("Décrivez votre demande… (Entrée pour envoyer)")
+        } else {
+            div()
+                .text_color(ShellDeckColors::text_primary())
+                .child(self.jean_ask_input.clone())
+        };
+
+        let mut activity = div().flex().flex_col().gap(px(2.0)).mt(px(6.0));
+        if let Some(state) = &self.jean_state {
+            for t in state.tickets.iter().take(10) {
+                activity = activity.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .py(px(2.0))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .px(px(5.0))
+                                .rounded(px(6.0))
+                                .bg(ShellDeckColors::badge_bg())
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t.status.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t.prompt.clone()),
+                        ),
+                );
+            }
+        }
+
+        div()
+            .m(px(16.0))
+            .p(px(14.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child("Demander à JeanClaude"),
+            )
+            .child(
+                div()
+                    .id("jean-ask-input")
+                    .track_focus(&self.jean_ask_focus)
+                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
+                        this.handle_jean_ask_key(e, cx)
+                    }))
+                    .w_full()
+                    .min_h(px(56.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(ShellDeckColors::bg_primary())
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(13.0))
+                    .cursor_text()
+                    .child(input_display),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("Un confirmateur doit approuver dans #jean."),
+                    )
+                    .child(
+                        div()
+                            .id("jean-ask-send")
+                            .px(px(12.0))
+                            .py(px(7.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child("Envoyer")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_jean_ask(cx)
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .mt(px(4.0))
+                    .child("Activité récente"),
+            )
+            .child(activity)
     }
 }
 
@@ -3662,6 +4220,7 @@ impl Render for Workspace {
                     ActiveView::ServerSync => content = content.child(self.server_sync.clone()),
                     ActiveView::Sites => content = content.child(self.sites.clone()),
                     ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
+                    ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
                     ActiveView::Settings => content = content.child(self.settings.clone()),
                 }
 

@@ -152,6 +152,27 @@ Switching modes never closes running terminal sessions — Dev surfaces are hidd
 
 Non-super-admin accounts are locked to **User** mode (no dev surfaces, no switcher). When you're **not** signed in, ShellDeck runs as the classic full app (Dev), since it's a general-purpose terminal on its own.
 
+## JeanClaude
+
+[JeanClaude](https://github.com/benfavre/slack-claude-bot) is Ben's `#jean` Slack ticket bot, driven by headless Claude Code. ShellDeck is a **native client for it, replacing the bot's web dashboard** — the console lives in the app instead of a browser tab.
+
+It appears only when a JeanClaude config is available (which de facto scopes it to super-admins and local overrides), sourced with this precedence:
+
+1. A local `[jeanclaude]` section in `shelldeck.toml` (wins — e.g. to point at an SSH tunnel on `127.0.0.1`):
+   ```toml
+   [jeanclaude]
+   url = "http://127.0.0.1:3100"
+   user = "jean"
+   pass = "…"
+   ```
+2. Otherwise the config delivered by the server in the sites feed (super-admin tokens only).
+
+Where it shows up:
+
+- **Dev mode** — a **JeanClaude** entry in the sidebar opens the full console: bot status (connected / paused / concurrency) with a "Dire dans #jean" input, **Aperçu** (pending confirmations with Confirmer/Rejeter + active tickets with heartbeat age and Annuler), **Historique** (status filter + detail with the per-ticket action log + Forcer/Annuler), **Cibles** (domain→server CRUD), and **Mémoire** (rules/notes CRUD). It polls every ~10s while open. The command palette has **JeanClaude : ouvrir la console** and **pause / reprendre**.
+- **Support mode** — a compact JeanClaude strip (pending confirmations + active count) and an **Envoyer à Jean** action per ticket that files it through Jean's normal Slack intake.
+- **User mode** — a **Demander à JeanClaude** card to send a request (a confirmer must still approve in `#jean`), with a read-only recent-activity list.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

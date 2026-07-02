@@ -20,6 +20,11 @@ pub struct AppConfig {
     /// table out of the file entirely when logged out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountInfo>,
+    /// Local `[jeanclaude]` override (url/user/pass). When set, takes precedence
+    /// over the server-delivered config (e.g. to point at an SSH tunnel on
+    /// 127.0.0.1). Absent → use the server-delivered config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jeanclaude: Option<crate::config::jeanclaude::JeanConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,6 +323,32 @@ mod tests {
         assert_eq!(acct.email, "ben@webdesign29.net");
         assert_eq!(acct.name, "Ben Favre");
         assert!(acct.is_superadmin, "is_superadmin should round-trip");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn jeanclaude_override_round_trips_and_omits_when_unset() {
+        use crate::config::jeanclaude::JeanConfig;
+        let path = temp_path("config.toml");
+
+        // Unset: no [jeanclaude] table emitted, reloads None.
+        AppConfig::default().save_to(&path).expect("save");
+        let serialized = std::fs::read_to_string(&path).unwrap();
+        assert!(!serialized.contains("[jeanclaude]"));
+        assert!(AppConfig::load_from(&path).unwrap().jeanclaude.is_none());
+
+        // Set: round-trips the local override.
+        let mut cfg = AppConfig::default();
+        cfg.jeanclaude = Some(JeanConfig {
+            url: "http://127.0.0.1:3100".into(),
+            user: "jean".into(),
+            pass: "x".into(),
+        });
+        cfg.save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).unwrap().jeanclaude.expect("present");
+        assert_eq!(loaded.url, "http://127.0.0.1:3100");
+        assert_eq!(loaded.user, "jean");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

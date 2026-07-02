@@ -1,6 +1,7 @@
 pub mod app_config;
 pub mod cloud_account;
 pub mod cloud_sync;
+pub mod jeanclaude;
 pub mod keychain;
 pub mod manage_sites;
 pub mod manage_support;
@@ -13,6 +14,7 @@ pub mod workspace_state;
 pub use app_config::AppConfig;
 pub use cloud_account::{AccountInfo, AppMode};
 pub use cloud_sync::CloudSyncConfig;
+pub use jeanclaude::JeanConfig;
 pub use manage_sites::{ManageArea, ManagedSiteInfo, SitesPayload};
 pub use store::ConnectionStore;
 pub use themes::TerminalTheme;

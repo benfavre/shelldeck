@@ -84,6 +84,7 @@ pub enum SidebarSection {
     ServerSync,
     Sites,
     FileEditor,
+    JeanConsole,
     Settings,
 }
 
@@ -116,6 +117,8 @@ pub struct SidebarView {
     /// Active Inklura Manage site filter. `Some(id)` hides connections bound to
     /// a *different* site (unbound connections always show); `None` = all sites.
     site_filter: Option<Uuid>,
+    /// Whether the JeanClaude console nav entry should be shown (config present).
+    jean_available: bool,
     focus_handle: FocusHandle,
 }
 
@@ -132,8 +135,14 @@ impl SidebarView {
             search_query: String::new(),
             search_focused: false,
             site_filter: None,
+            jean_available: false,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Show/hide the JeanClaude console nav entry (Dev mode + config present).
+    pub fn set_jean_available(&mut self, available: bool) {
+        self.jean_available = available;
     }
 
     pub fn width(&self) -> f32 {
@@ -715,7 +724,7 @@ impl Render for SidebarView {
             );
 
         // Navigation tabs (pinned at top)
-        let nav = div()
+        let mut nav = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
@@ -738,8 +747,11 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::PortForwards, "Port Forwards", None, cx))
             .child(self.render_nav_item(SidebarSection::ServerSync, "Server Sync", None, cx))
             .child(self.render_nav_item(SidebarSection::Sites, "Sites", None, cx))
-            .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx))
-            .child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
+            .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx));
+        if self.jean_available {
+            nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, "JeanClaude", None, cx));
+        }
+        nav = nav.child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 
         // Scrollable host list (fills remaining space)
         let mut host_list = div()

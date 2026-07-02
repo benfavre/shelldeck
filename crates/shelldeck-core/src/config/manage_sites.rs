@@ -67,6 +67,10 @@ pub struct SitesPayload {
     pub sites: Vec<ManagedSiteInfo>,
     #[serde(default)]
     pub areas: Vec<ManageArea>,
+    /// JeanClaude dashboard config — delivered ONLY for super-admin tokens
+    /// (`null`/absent otherwise). See `config::jeanclaude`.
+    #[serde(default)]
+    pub jeanclaude: Option<crate::config::jeanclaude::JeanConfig>,
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {

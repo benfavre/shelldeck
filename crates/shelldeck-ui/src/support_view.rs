@@ -71,6 +71,11 @@ pub enum SupportViewEvent {
     SetPriority { id: String, priority: String },
     Assign { id: String, assignee: String },
     Resolve { id: String, resolution: String },
+    /// Confirm/reject a JeanClaude pending ticket from the Support strip.
+    JeanConfirm(String),
+    JeanReject(String),
+    /// File the selected ticket to JeanClaude (the composed text via /api/say).
+    SendToJean(String),
 }
 
 impl EventEmitter<SupportViewEvent> for SupportView {}
@@ -89,6 +94,10 @@ pub struct SupportView {
     error: Option<String>,
     assign_menu_open: bool,
     priority_menu_open: bool,
+    // JeanClaude strip (fed by the workspace when Jean config is present).
+    jean_available: bool,
+    jean_pending: Vec<(String, String)>,
+    jean_active: usize,
     focus_handle: FocusHandle,
 }
 
@@ -108,8 +117,47 @@ impl SupportView {
             error: None,
             assign_menu_open: false,
             priority_menu_open: false,
+            jean_available: false,
+            jean_pending: Vec::new(),
+            jean_active: 0,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Feed the JeanClaude strip (workspace pushes this from the cached state).
+    pub fn set_jean_brief(
+        &mut self,
+        available: bool,
+        pending: Vec<(String, String)>,
+        active: usize,
+    ) {
+        self.jean_available = available;
+        self.jean_pending = pending;
+        self.jean_active = active;
+    }
+
+    /// Compose the "Envoyer à Jean" text from the open ticket.
+    fn jean_ticket_text(&self) -> Option<String> {
+        let t = self.detail.as_ref()?;
+        let last_customer = t
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.is_customer())
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        let truncated: String = last_customer.chars().take(500).collect();
+        Some(format!(
+            "[Ticket support {} — {}] {} — {}",
+            t.id,
+            t.contact.display(),
+            if t.subject.trim().is_empty() {
+                "(sans objet)"
+            } else {
+                t.subject.trim()
+            },
+            truncated
+        ))
     }
 
     pub fn set_list(&mut self, tickets: Vec<SupportTicket>, counts: SupportCounts, me: SupportMe) {
@@ -230,6 +278,97 @@ impl SupportView {
     }
 
     // ── render helpers ───────────────────────────────────────────────────
+
+    /// Compact JeanClaude strip: pending confirmations (confirm/reject inline)
+    /// + active-ticket count. Shown only when Jean config is present.
+    fn render_jean_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut strip = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_sidebar())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("JEANCLAUDE"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(format!("{} actifs", self.jean_active)),
+                    ),
+            );
+
+        if self.jean_pending.is_empty() {
+            strip = strip.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Aucune confirmation en attente"),
+            );
+        } else {
+            for (thread, prompt) in self.jean_pending.iter().take(4) {
+                let t_ok = thread.clone();
+                let t_no = thread.clone();
+                let preview: String = prompt.chars().take(40).collect();
+                strip = strip.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(preview),
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::from(SharedString::from(format!("sj-ok-{thread}"))))
+                                .px(px(5.0))
+                                .rounded(px(4.0))
+                                .bg(ShellDeckColors::success())
+                                .text_size(px(11.0))
+                                .text_color(white())
+                                .cursor_pointer()
+                                .child("✓")
+                                .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
+                                    cx.emit(SupportViewEvent::JeanConfirm(t_ok.clone()))
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::from(SharedString::from(format!("sj-no-{thread}"))))
+                                .px(px(5.0))
+                                .rounded(px(4.0))
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::error())
+                                .cursor_pointer()
+                                .child("✕")
+                                .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
+                                    cx.emit(SupportViewEvent::JeanReject(t_no.clone()))
+                                })),
+                        ),
+                );
+            }
+        }
+        strip
+    }
 
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut row = div()
@@ -639,6 +778,20 @@ impl SupportView {
             );
         }
 
+        // "Envoyer à Jean" — file this ticket through JeanClaude's Slack intake.
+        if self.jean_available {
+            bar = bar.child(self.action_button(
+                "sup-to-jean",
+                "Envoyer à Jean".to_string(),
+                cx,
+                move |this, cx| {
+                    if let Some(text) = this.jean_ticket_text() {
+                        cx.emit(SupportViewEvent::SendToJean(text));
+                    }
+                },
+            ));
+        }
+
         // Priority picker popover (inline row).
         if self.priority_menu_open {
             let mut prio_row = div().w_full().flex().flex_wrap().gap(px(4.0)).mt(px(4.0));
@@ -912,7 +1065,7 @@ impl Render for SupportView {
             }
         }
 
-        let left = div()
+        let mut left = div()
             .w(px(340.0))
             .flex_shrink_0()
             .h_full()
@@ -920,9 +1073,11 @@ impl Render for SupportView {
             .flex_col()
             .border_r_1()
             .border_color(ShellDeckColors::border())
-            .child(header)
-            .child(self.render_filters(cx))
-            .child(list);
+            .child(header);
+        if self.jean_available {
+            left = left.child(self.render_jean_strip(cx));
+        }
+        left = left.child(self.render_filters(cx)).child(list);
 
         let mut root = div()
             .size_full()

@@ -2,8 +2,8 @@ use gpui::*;
 
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
-    CloseTab, CloudSyncNow, NewTerminal, NextTab, OpenFileEditorView, OpenQuickConnect,
-    OpenSettings, PrevTab, Quit, SwitchSite, ToggleSidebar,
+    CloseTab, CloudSyncNow, JeanTogglePause, NewTerminal, NextTab, OpenFileEditorView,
+    OpenJeanConsole, OpenQuickConnect, OpenSettings, PrevTab, Quit, SwitchSite, ToggleSidebar,
 };
 
 // Re-export terminal view actions
