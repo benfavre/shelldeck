@@ -1,3 +1,4 @@
+use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -1058,15 +1059,10 @@ impl SettingsView {
             .py(px(24.0))
             .gap(px(4.0));
 
-        // Header: app name + tagline
+        // Header: brand icon + wordmark + tagline
         root = root
-            .child(
-                div()
-                    .text_size(px(28.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::primary())
-                    .child("ShellDeck"),
-            )
+            .child(div().mb(px(8.0)).child(crate::brand::brand_badge(56.0)))
+            .child(crate::brand::brand_wordmark(28.0))
             .child(
                 div()
                     .text_size(px(13.0))
@@ -1149,7 +1145,7 @@ impl SettingsView {
         card = card
             .child(Self::render_about_row(
                 "GitHub",
-                "github.com/nickarrow/shelldeck",
+                "github.com/benfavre/shelldeck",
             ))
             .child(Self::render_about_row(
                 "Website",
@@ -1158,13 +1154,28 @@ impl SettingsView {
 
         root = root.child(card);
 
-        // Footer
+        // Footer: "Made with" + Webdesign29 logo, tinted with the current
+        // muted-text color so it inverts cleanly between light and dark themes.
+        // The logo's viewBox is 380×135 → keep that ratio (~2.815).
         root = root.child(
             div()
-                .mt(px(12.0))
-                .text_size(px(11.0))
+                .mt(px(16.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child("Made with Rust"),
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .child("Made with"),
+                )
+                .child(
+                    svg()
+                        .path("images/wd29-logo.svg")
+                        .w(px(72.0))
+                        .h(px(26.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                ),
         );
 
         root
@@ -1208,8 +1219,13 @@ impl Render for SettingsView {
             );
         }
 
-        // Tab content
-        let mut tab_content = div().flex_grow().p(px(24.0)).max_w(px(600.0));
+        // Tab content — scrolls vertically inside its own column.
+        let mut tab_content = div()
+            .id("settings-tab-content")
+            .flex()
+            .flex_col()
+            .p(px(24.0))
+            .max_w(px(600.0));
 
         match self.active_tab {
             SettingsTab::General => {
@@ -1233,18 +1249,20 @@ impl Render for SettingsView {
             .bg(ShellDeckColors::bg_primary())
             // Header
             .child(header)
-            // Content
+            // Content: horizontal row with fixed tab sidebar + scrollable tab content
             .child(
                 div()
                     .flex()
                     .flex_grow()
-                    .id("settings-scroll")
-                    .overflow_y_scroll()
+                    .min_h(px(0.0))
+                    .id("settings-body")
+                    .overflow_hidden()
                     // Tab sidebar
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_shrink_0()
                             .gap(px(2.0))
                             .w(px(180.0))
                             .p(px(12.0))
@@ -1259,8 +1277,8 @@ impl Render for SettingsView {
                             ))
                             .child(self.render_tab_button(SettingsTab::About, "About", cx)),
                     )
-                    // Tab content
-                    .child(tab_content),
+                    // Tab content — scrolls independently
+                    .child(scrollable_vertical(tab_content)),
             )
     }
 }

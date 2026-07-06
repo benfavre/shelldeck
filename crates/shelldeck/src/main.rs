@@ -2,13 +2,44 @@ mod actions;
 
 use adabraka_ui::prelude::*;
 use anyhow::Result;
-use gpui::WindowDecorations;
+use gpui::{AssetSource, SharedString, WindowDecorations};
+use std::borrow::Cow;
 use shelldeck_core::config::app_config::AppConfig;
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::Workspace;
 use tracing_subscriber::EnvFilter;
+
+/// In-process asset source that ships a small set of images embedded in the
+/// binary (see `assets/images/`). GPUI's `svg()` element requires an
+/// `AssetSource` to resolve `.path("images/…")`.
+struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        let path = path.strip_prefix('/').unwrap_or(path);
+        let bytes: &'static [u8] = match path {
+            "images/wd29-logo.svg" => include_bytes!("../assets/images/wd29-logo.svg"),
+            // Filled brand icon: `currentColor` fills the rounded square, prompt
+            // stays white. Use with `.text_color(ShellDeckColors::primary())`.
+            "images/shelldeck-icon.svg" => include_bytes!("../assets/images/shelldeck-icon.svg"),
+            // Outline monochrome mark, everything `currentColor`. Use when you
+            // want the whole logo tinted with one color (e.g. muted footer).
+            "images/shelldeck-mark.svg" => include_bytes!("../assets/images/shelldeck-mark.svg"),
+            _ => return Ok(None),
+        };
+        Ok(Some(Cow::Borrowed(bytes)))
+    }
+
+    fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
+        Ok(vec![
+            SharedString::from("images/wd29-logo.svg"),
+            SharedString::from("images/shelldeck-icon.svg"),
+            SharedString::from("images/shelldeck-mark.svg"),
+        ])
+    }
+}
 
 fn main() -> Result<()> {
     // Initialize tracing
@@ -84,7 +115,7 @@ fn main() -> Result<()> {
     let store_for_workspace = store.clone();
 
     // Start GPUI application
-    Application::new().run(move |cx| {
+    Application::new().with_assets(Assets).run(move |cx| {
         // Initialize adabraka-ui
         adabraka_ui::init(cx);
 

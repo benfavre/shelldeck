@@ -4038,19 +4038,6 @@ impl Workspace {
         let btn_text = ShellDeckColors::text_muted();
         let btn_hover_bg = ShellDeckColors::hover_bg();
 
-        // Brand mark — a small accent-tinted rounded badge with the diamond glyph.
-        let brand_badge = div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(20.0))
-            .rounded(px(5.0))
-            .bg(accent.opacity(0.18))
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
-            .text_color(accent)
-            .child("\u{25C6}"); // ◆
-
         // Title area — draggable
         let title_area = div()
             .flex_1()
@@ -4063,14 +4050,8 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
                 window.start_window_move();
             })
-            .child(brand_badge)
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(title_color)
-                    .child("ShellDeck"),
-            )
+            .child(crate::brand::brand_badge(20.0))
+            .child(crate::brand::brand_wordmark(12.0))
             .child(
                 // Version pill
                 div()

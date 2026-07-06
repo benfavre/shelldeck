@@ -15,8 +15,8 @@ edition = "2021"
 license = "MIT"
 authors = ["ShellDeck Contributors"]
 description = "GPU-accelerated native desktop terminal and SSH companion app"
-repository = "https://github.com/nickarrow/shelldeck"
-homepage = "https://github.com/nickarrow/shelldeck"
+repository = "https://github.com/benfavre/shelldeck"
+homepage = "https://github.com/benfavre/shelldeck"
 
 [workspace.dependencies]
 # GPUI framework (via adabraka fork)

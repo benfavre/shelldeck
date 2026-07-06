@@ -716,45 +716,8 @@ impl Render for SidebarView {
             .py(px(14.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            // Icon badge: rounded square with terminal prompt glyph
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(30.0))
-                    .h(px(30.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::primary())
-                    .shadow_sm()
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(gpui::white())
-                            .child(">_"),
-                    ),
-            )
-            // Wordmark: "Shell" in primary text, "Deck" in brand color
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .text_size(px(17.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child("Shell"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(17.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::primary())
-                            .child("Deck"),
-                    ),
-            );
+            .child(crate::brand::brand_badge(30.0))
+            .child(crate::brand::brand_wordmark(17.0));
 
         // Navigation tabs (pinned at top)
         let mut nav = div()
@@ -790,14 +753,11 @@ impl Render for SidebarView {
         nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, "bext Cloud", None, cx));
         nav = nav.child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
 
-        // Scrollable host list (fills remaining space)
+        // Scrollable host list (fills remaining space, wrapped in scrollable_vertical below)
         let mut host_list = div()
             .flex()
             .flex_col()
-            .flex_grow()
-            .min_h(px(0.0))
             .id("sidebar-host-list")
-            .overflow_y_scroll()
             .child(Self::render_section_header("Hosts"))
             .child(self.render_search_bar(cx));
 
@@ -889,7 +849,7 @@ impl Render for SidebarView {
             }))
             .child(logo)
             .child(nav)
-            .child(host_list)
+            .child(scrollable_vertical(host_list))
             .child(add_button)
             .child(resize_handle)
     }

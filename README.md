@@ -53,7 +53,7 @@ sudo apt install libssl-dev pkg-config libxkbcommon-dev libwayland-dev
 
 ```bash
 # Clone
-git clone https://github.com/nickarrow/shelldeck.git
+git clone https://github.com/benfavre/shelldeck.git
 cd shelldeck
 
 # Build

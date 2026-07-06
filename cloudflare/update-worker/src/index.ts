@@ -765,7 +765,7 @@ async function renderLandingPage(env: Env): Promise<Response> {
     <a href="${GITHUB_RELEASES}" target="_blank" rel="noopener">Releases</a>
     <span>MIT License</span>
   </div>
-  <div>ShellDeck v${v}</div>
+  <div>ShellDeck v${v} · Made with <a href="https://webdesign29.net" target="_blank" rel="noopener">Webdesign29</a></div>
 </footer>
 
 <script>
