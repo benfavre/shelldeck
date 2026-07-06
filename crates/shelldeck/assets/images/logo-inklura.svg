@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Inklura mark — mono version of the source `inklura-icon-static.svg` with
+     the outer blue rounded square stripped out. GPUI paints SVGs with one
+     color, so we drop the bg rect and only keep the person silhouette; wrap
+     in a coloured badge div at the call site to get the two-tone look. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="25 25 78 118" fill="currentColor">
+    <circle cx="64" cy="55" r="8"/>
+    <rect x="56" y="67" width="16" height="40" rx="7" ry="7"/>
+    <path d="M41 106 C 47 121, 81 121, 87 106" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+</svg>

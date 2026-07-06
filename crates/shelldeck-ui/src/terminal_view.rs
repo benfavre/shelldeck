@@ -2090,7 +2090,7 @@ impl TerminalView {
                     el.bg(ShellDeckColors::badge_bg())
                         .text_color(ShellDeckColors::error())
                 })
-                .child("x")
+                .child(svg().path("images/close.svg").size(s(10.0)).text_color(ShellDeckColors::text_muted()))
                 .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                     this.close_tab(tab_id);
                     cx.emit(TerminalEvent::TabClosed(tab_id));
@@ -2132,7 +2132,7 @@ impl TerminalView {
                     el.bg(ShellDeckColors::hover_bg())
                         .text_color(ShellDeckColors::text_primary())
                 })
-                .child("+")
+                .child(svg().path("images/plus.svg").size(s(14.0)).text_color(ShellDeckColors::text_muted()))
                 .on_click(cx.listener(|this, _event: &ClickEvent, window, cx| {
                     this.spawn_local_terminal(cx);
                     this.focus_handle.focus(window);
@@ -2495,8 +2495,13 @@ impl TerminalView {
                                             "pin-fav-{}",
                                             script_id
                                         ))))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(16.0))
+                                        .h(px(16.0))
                                         .cursor_pointer()
-                                        .text_size(px(11.0))
                                         .text_color(if is_pinned {
                                             ShellDeckColors::primary()
                                         } else {
@@ -2508,7 +2513,15 @@ impl TerminalView {
                                                 cx.emit(TerminalEvent::TogglePinScript(script_id));
                                             },
                                         ))
-                                        .child(if is_pinned { "\u{25C9}" } else { "\u{25CB}" }),
+                                        .child(
+                                            svg()
+                                                .path(if is_pinned {
+                                                    "images/pin.svg"
+                                                } else {
+                                                    "images/pin-outline.svg"
+                                                })
+                                                .size(px(11.0)),
+                                        ),
                                 ),
                         );
                     }
@@ -3989,11 +4002,13 @@ impl TerminalView {
                 // Close button
                 div()
                     .id("search-close")
-                    .text_size(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|el| el.text_color(ShellDeckColors::error()))
-                    .child("x")
+                    .child(svg().path("images/close.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_search();
                         cx.notify();

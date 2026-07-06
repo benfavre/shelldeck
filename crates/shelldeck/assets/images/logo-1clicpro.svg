@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd">
+    <!-- Cloud silhouette placeholder for the 1clic.pro SSO button. Replace with
+         the real 1clic.pro glyph when we get it from the design team. -->
+    <path d="M17.5 10.5 A 6 6 0 0 0 5.5 10.5 A 4 4 0 0 0 6 18.5 L 18 18.5 A 4 4 0 0 0 17.5 10.5 Z M 6 16.9 A 2.4 2.4 0 0 1 6 12.1 L 7.1 12.1 L 7.1 11.1 A 4.4 4.4 0 0 1 15.9 11.1 L 15.9 12.1 L 17 12.1 A 2.4 2.4 0 0 1 17 16.9 Z"/>
+</svg>

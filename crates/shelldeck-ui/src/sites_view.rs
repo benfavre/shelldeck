@@ -128,6 +128,8 @@ pub struct SitesView {
     visible_card_count: usize,
     collapsed_groups: HashSet<String>,
     focus_handle: FocusHandle,
+    /// Open kebab (⋮) menu: which site, and the click position (window coords).
+    kebab_menu: Option<(Uuid, Point<Pixels>)>,
 }
 
 impl EventEmitter<SitesEvent> for SitesView {}
@@ -150,6 +152,7 @@ impl SitesView {
             visible_card_count: PAGE_SIZE,
             collapsed_groups: HashSet::new(),
             focus_handle: cx.focus_handle(),
+            kebab_menu: None,
         }
     }
 
@@ -793,87 +796,39 @@ impl SitesView {
             );
         }
 
-        // Action buttons (hover-reveal)
-        let url_for_open = site.url();
-        let conn_id = site.connection_id;
-
-        let mut actions = div()
+        // Kebab (⋮) — same affordance as the sidebar host rows. Faint until
+        // the row is hovered, opens a dropdown with Open / SSH / Favorite.
+        let actions = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "site-kebab-{}",
+                site_id
+            ))))
+            .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(px(2.0))
-            .w(px(80.0))
-            .flex_shrink_0()
-            .opacity(0.0)
-            .group_hover(group_name.clone(), |el| el.opacity(1.0));
-
-        if let Some(url) = url_for_open {
-            actions = actions.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "open-{}",
-                        site_id
-                    ))))
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|el| {
-                        el.bg(ShellDeckColors::primary().opacity(0.15))
-                            .text_color(ShellDeckColors::primary())
-                    })
-                    .on_click(cx.listener(move |_this, _, _, cx| {
-                        cx.emit(SitesEvent::OpenInBrowser(url.clone()));
-                    }))
-                    .child("Open"),
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .mr(px(4.0))
+            .rounded(px(4.0))
+            .opacity(0.35)
+            .group_hover(group_name.clone(), |el| el.opacity(1.0))
+            .cursor_pointer()
+            .hover(|el| {
+                el.bg(ShellDeckColors::hover_bg())
+                    .text_color(ShellDeckColors::text_primary())
+            })
+            .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+                this.kebab_menu = Some((site_id, event.position()));
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .path("images/kebab.svg")
+                    .size(px(14.0))
+                    .text_color(ShellDeckColors::text_muted()),
             );
-        }
-
-        actions = actions.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "ssh-{}",
-                    site_id
-                ))))
-                .px(px(4.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .text_size(px(10.0))
-                .text_color(ShellDeckColors::text_muted())
-                .cursor_pointer()
-                .hover(|el| {
-                    el.bg(ShellDeckColors::success().opacity(0.15))
-                        .text_color(ShellDeckColors::success())
-                })
-                .on_click(cx.listener(move |_this, _, _, cx| {
-                    cx.emit(SitesEvent::SshToServer(conn_id));
-                }))
-                .child("SSH"),
-        );
-
-        let fav_label = if site.favorite { "*" } else { "+" };
-        actions = actions.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "fav-{}",
-                    site_id
-                ))))
-                .px(px(4.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .text_size(px(10.0))
-                .text_color(ShellDeckColors::text_muted())
-                .cursor_pointer()
-                .hover(|el| {
-                    el.bg(ShellDeckColors::warning().opacity(0.15))
-                        .text_color(ShellDeckColors::warning())
-                })
-                .on_click(cx.listener(move |_this, _, _, cx| {
-                    cx.emit(SitesEvent::ToggleFavorite(site_id));
-                }))
-                .child(fav_label),
-        );
 
         div()
             .id(ElementId::from(SharedString::from(format!(
@@ -1222,8 +1177,10 @@ impl SitesView {
                         .px(px(6.0))
                         .py(px(3.0))
                         .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .cursor_pointer()
-                        .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
                         .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1231,7 +1188,7 @@ impl SitesView {
                             this.selected_site = None;
                             cx.notify();
                         }))
-                        .child("x"),
+                        .child(svg().path("images/close.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted())),
                 ),
         );
 
@@ -1602,6 +1559,159 @@ impl SitesView {
                     }))
                     .child("Scan All Servers"),
             )
+    }
+
+    /// Floating kebab (⋮) row-action menu: Open in browser (when the site has a
+    /// URL), SSH to the underlying server, Toggle favorite. Positioned at the
+    /// click coords via `deferred(anchored())` so it escapes list clipping, and
+    /// auto-dismisses on any click outside via `on_mouse_down_out`.
+    fn render_kebab_menu(
+        &self,
+        site_id: Uuid,
+        pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let site = self.sites.iter().find(|s| s.id == site_id)?;
+        let conn_id = site.connection_id;
+        let url = site.url();
+        let favorite = site.favorite;
+        let title = site.name().to_string();
+
+        let mut panel = div()
+            .id("sites-kebab-panel")
+            .occlude()
+            .w(px(220.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(8.0))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.35),
+                offset: point(gpui::px(0.0), gpui::px(4.0)),
+                blur_radius: gpui::px(16.0),
+                spread_radius: gpui::px(0.0),
+                inset: false,
+            }])
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .on_mouse_down_out(cx.listener(|this, _e, _window, cx| {
+                this.kebab_menu = None;
+                cx.notify();
+            }))
+            // Header
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(title),
+            )
+            .child(
+                div()
+                    .h(px(1.0))
+                    .my(px(2.0))
+                    .bg(ShellDeckColors::border()),
+            );
+
+        // "Open in browser" — only when the site has a URL.
+        if let Some(url) = url {
+            let accent = ShellDeckColors::primary();
+            panel = panel.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "sites-kebab-open-{site_id}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(5.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .cursor_pointer()
+                    .hover(move |el| el.bg(accent.opacity(0.12)).text_color(accent))
+                    .child("Open in browser")
+                    .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.kebab_menu = None;
+                        cx.emit(SitesEvent::OpenInBrowser(url.clone()));
+                    })),
+            );
+        }
+
+        // "SSH to server"
+        let ssh_accent = ShellDeckColors::success();
+        panel = panel.child(
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "sites-kebab-ssh-{site_id}"
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(5.0))
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .hover(move |el| el.bg(ssh_accent.opacity(0.12)).text_color(ssh_accent))
+                .child("SSH to server")
+                .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.kebab_menu = None;
+                    cx.emit(SitesEvent::SshToServer(conn_id));
+                })),
+        );
+
+        // "Toggle favorite"
+        let fav_accent = ShellDeckColors::warning();
+        let fav_label = if favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        };
+        panel = panel.child(
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "sites-kebab-fav-{site_id}"
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(5.0))
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .hover(move |el| el.bg(fav_accent.opacity(0.12)).text_color(fav_accent))
+                .child(fav_label)
+                .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.kebab_menu = None;
+                    cx.emit(SitesEvent::ToggleFavorite(site_id));
+                })),
+        );
+
+        Some(
+            deferred(
+                anchored()
+                    .position(pos + point(gpui::px(0.0), gpui::px(4.0)))
+                    .anchor(gpui::Corner::TopLeft)
+                    .snap_to_window_with_margin(gpui::px(8.0))
+                    .child(panel),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
     }
 }
 
@@ -2025,6 +2135,13 @@ impl Render for SitesView {
         }
 
         page = page.child(content_area);
+
+        // Kebab (⋮) menu overlay for the currently-open row.
+        if let Some((site_id, pos)) = self.kebab_menu {
+            if let Some(menu) = self.render_kebab_menu(site_id, pos, cx) {
+                page = page.child(menu);
+            }
+        }
 
         page
     }

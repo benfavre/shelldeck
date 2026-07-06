@@ -1,4 +1,5 @@
-use adabraka_ui::prelude::{install_theme, Theme};
+use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::prelude::{install_theme, scrollable_vertical};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
@@ -75,6 +76,11 @@ impl AccountStatus {
     }
 }
 
+/// Duration (ms) of the User-mode sheet enter/exit animation. The close
+/// handlers use it to keep the sheet mounted while the exit tween plays,
+/// then clear the backing state.
+const SHEET_ANIM_MS: u64 = 300;
+
 /// Everything the runtime tick needs, gathered on the UI thread then moved into
 /// the background executor (all owned + `Send`).
 struct RuntimeTickCtx {
@@ -95,15 +101,6 @@ enum RuntimeStep {
     HeartbeatOnly(String, String, String, String),
     /// Heartbeat + claim (+ auto-execute).
     Tick(RuntimeTickCtx),
-}
-
-/// Which User-mode "Nouvelle demande" / comment field has focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IssueField {
-    None,
-    Title,
-    Body,
-    Comment,
 }
 
 /// A small colored status pill for a hosted issue (User-mode rows).
@@ -269,6 +266,9 @@ pub struct Workspace {
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
     site_menu_open: bool,
+    /// Kebab menu open state for a sidebar host row: which connection and where
+    /// (window-relative click position). `None` = closed.
+    sidebar_kebab_menu: Option<(Uuid, Point<Pixels>)>,
     /// The native Support-mode console.
     support: Entity<SupportView>,
     _support_sub: Subscription,
@@ -307,13 +307,23 @@ pub struct Workspace {
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
     _issues_poll: Option<gpui::Task<()>>,
-    /// User-mode "Nouvelle demande" + comment composer buffers.
-    issue_title_input: String,
-    issue_body_input: String,
-    issue_comment_input: String,
+    /// User-mode "Nouvelle demande" + comment composer states — each hosts
+    /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
+    /// tracked by each state entity itself; no separate `issue_field` needed.
+    issue_title_state: Entity<InputState>,
+    issue_body_state: Entity<InputState>,
+    issue_comment_state: Entity<InputState>,
     issue_new_priority: String,
-    issue_field: IssueField,
-    issue_focus: FocusHandle,
+    /// User-mode: "Nouvelle demande" sheet visibility. The composer used to be
+    /// always-visible at the top of `render_user_requests`; it now lives in a
+    /// right-side sheet, toggled by the "Nouvelle demande" button in the list
+    /// header.
+    user_new_request_sheet_open: bool,
+    /// While `true` the composer sheet plays its slide-out/fade-out animation.
+    /// Cleared (along with `..open`) by a delayed task the close handler spawns.
+    user_new_request_sheet_dismissing: bool,
+    /// Same for the selected-request detail sheet.
+    user_issue_detail_dismissing: bool,
     /// The Dev-mode "bext Cloud" view.
     bext_view: Entity<BextCloudView>,
     _bext_sub: Subscription,
@@ -636,6 +646,7 @@ impl Workspace {
             _login_form_sub: None,
             site_directory: None,
             site_menu_open: false,
+            sidebar_kebab_menu: None,
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
@@ -659,12 +670,13 @@ impl Workspace {
             issue_detail: None,
             issue_selected: None,
             _issues_poll: None,
-            issue_title_input: String::new(),
-            issue_body_input: String::new(),
-            issue_comment_input: String::new(),
+            user_new_request_sheet_open: false,
+            user_new_request_sheet_dismissing: false,
+            user_issue_detail_dismissing: false,
+            issue_title_state: cx.new(|cx| InputState::new(cx)),
+            issue_body_state: cx.new(|cx| InputState::new(cx)),
+            issue_comment_state: cx.new(|cx| InputState::new(cx)),
             issue_new_priority: "normal".to_string(),
-            issue_field: IssueField::None,
-            issue_focus: cx.focus_handle(),
             bext_view,
             _bext_sub: bext_sub,
             bext_user: None,
@@ -831,6 +843,10 @@ impl Workspace {
             }
             SidebarEvent::ConnectionManageBext(id) => {
                 self.manage_bext_for_connection(*id, cx);
+            }
+            SidebarEvent::OpenConnectionMenu { conn_id, position } => {
+                self.sidebar_kebab_menu = Some((*conn_id, *position));
+                cx.notify();
             }
         }
     }
@@ -1028,12 +1044,7 @@ impl Workspace {
     /// NOT touch `app_config` or persist — callers decide whether to commit.
     fn apply_palette(&self, pref: &ThemePreference, cx: &mut Context<Self>) {
         ShellDeckColors::set_theme(pref);
-        let ui_theme = if pref.is_dark() {
-            Theme::dark()
-        } else {
-            Theme::light()
-        };
-        install_theme(cx.deref_mut(), ui_theme);
+        install_theme(cx.deref_mut(), crate::theme::adabraka_theme_from_palette());
         self.notify_theme_views(cx);
     }
 
@@ -2896,9 +2907,69 @@ impl Workspace {
         if self.can_switch_mode() {
             self.set_mode(AppMode::User, cx);
         }
-        self.issue_field = IssueField::Title;
+        self.user_new_request_sheet_open = true;
         self.sync_issues_poll(cx);
         cx.notify();
+    }
+
+    /// Reset an `InputState` entity's content back to empty. `set_value` needs
+    /// a `Window`, which we don't have in async close callbacks, so we clear
+    /// the public `content` field directly (the widget re-reads it on next
+    /// paint). Selection state is left at its previous position; since the
+    /// content is empty, any range is effectively out of bounds and the
+    /// widget clamps it on next input.
+    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
+        state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
+    }
+
+    /// Close the "Nouvelle demande" sheet. Plays the exit animation first
+    /// (sheet is kept mounted with `dismissing = true`), then clears the state
+    /// once the animation duration has elapsed.
+    fn close_new_request_sheet(&mut self, cx: &mut Context<Self>) {
+        if self.user_new_request_sheet_dismissing || !self.user_new_request_sheet_open {
+            return;
+        }
+        self.user_new_request_sheet_dismissing = true;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(SHEET_ANIM_MS))
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.user_new_request_sheet_open = false;
+                ws.user_new_request_sheet_dismissing = false;
+                Self::reset_input(&ws.issue_title_state.clone(), cx);
+                Self::reset_input(&ws.issue_body_state.clone(), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Close the User-mode issue detail sheet. Same delayed-unmount pattern
+    /// as `close_new_request_sheet`.
+    fn close_user_issue_detail(&mut self, cx: &mut Context<Self>) {
+        if self.user_issue_detail_dismissing || self.issue_selected.is_none() {
+            return;
+        }
+        self.user_issue_detail_dismissing = true;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(SHEET_ANIM_MS))
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_selected = None;
+                ws.issue_detail = None;
+                ws.user_issue_detail_dismissing = false;
+                Self::reset_input(&ws.issue_comment_state.clone(), cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Palette: open the Support console's Demandes tab.
@@ -3048,6 +3119,11 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
                     ws.show_toast("Demande créée.", ToastLevel::Success, cx);
+                    // Success: close the composer sheet, clear its buffers,
+                    // and pop the detail sheet on the newly-created request.
+                    ws.user_new_request_sheet_open = false;
+                    Self::reset_input(&ws.issue_title_state.clone(), cx);
+                    Self::reset_input(&ws.issue_body_state.clone(), cx);
                     ws.issue_detail = Some(iss.clone());
                     ws.issue_selected = Some(iss.id.clone());
                     ws.refresh_issues(cx);
@@ -3125,76 +3201,27 @@ impl Workspace {
         .detach();
     }
 
-    // User-mode composer key handling.
-    fn issue_field_buf(&mut self, f: IssueField) -> Option<&mut String> {
-        match f {
-            IssueField::Title => Some(&mut self.issue_title_input),
-            IssueField::Body => Some(&mut self.issue_body_input),
-            IssueField::Comment => Some(&mut self.issue_comment_input),
-            IssueField::None => None,
-        }
+    /// Submit the "Nouvelle demande" composer sheet: read the Input states,
+    /// hand them to `create_issue_now`. Called from the "Créer" button and
+    /// from the Title `Input::on_enter`.
+    fn submit_new_request(&mut self, cx: &mut Context<Self>) {
+        let title = self.issue_title_state.read(cx).content().to_string();
+        let body = self.issue_body_state.read(cx).content().to_string();
+        let prio = self.issue_new_priority.clone();
+        self.create_issue_now(title, body, prio, "user", cx);
     }
 
-    fn handle_issue_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let field = self.issue_field;
-        if field == IssueField::None {
+    /// Submit the comment composer on the currently-open detail sheet.
+    fn submit_issue_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.issue_selected.clone() else {
+            return;
+        };
+        let body = self.issue_comment_state.read(cx).content().to_string();
+        if body.trim().is_empty() {
             return;
         }
-        match key {
-            "enter" => {
-                if event.keystroke.modifiers.shift {
-                    if let Some(b) = self.issue_field_buf(field) {
-                        b.push('\n');
-                        cx.notify();
-                    }
-                } else {
-                    self.submit_issue_field(field, cx);
-                }
-            }
-            "backspace" => {
-                if let Some(b) = self.issue_field_buf(field) {
-                    b.pop();
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        if let Some(b) = self.issue_field_buf(field) {
-                            b.push_str(kc);
-                            cx.notify();
-                        }
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    if let Some(b) = self.issue_field_buf(field) {
-                        b.push_str(key);
-                        cx.notify();
-                    }
-                }
-            }
-        }
-    }
-
-    fn submit_issue_field(&mut self, field: IssueField, cx: &mut Context<Self>) {
-        match field {
-            IssueField::Title | IssueField::Body => {
-                let title = std::mem::take(&mut self.issue_title_input);
-                let body = std::mem::take(&mut self.issue_body_input);
-                let prio = self.issue_new_priority.clone();
-                self.create_issue_now(title, body, prio, "user", cx);
-            }
-            IssueField::Comment => {
-                if let Some(id) = self.issue_selected.clone() {
-                    let body = std::mem::take(&mut self.issue_comment_input);
-                    self.comment_issue_now(id, body, cx);
-                }
-            }
-            IssueField::None => {}
-        }
+        Self::reset_input(&self.issue_comment_state.clone(), cx);
+        self.comment_issue_now(id, body, cx);
     }
 
     // --- bext Cloud (control plane + single-instance SDK) ---
@@ -4065,9 +4092,15 @@ impl Workspace {
                     .child(format!("v{}", shelldeck_core::VERSION)),
             );
 
-        // A window-control button with a rounded hover affordance.
+        // A window-control button with a rounded hover affordance and an SVG
+        // glyph. `icon_path` points at an embedded asset (see main.rs Assets).
+        //
+        // GPUI's `svg()` element paints with its OWN `style.text.color` — it
+        // does not inherit from the parent — so we set it explicitly on the
+        // SVG and swap it on group hover to whiten the icon over the red
+        // close background.
         let control_btn = |id: &'static str,
-                           glyph: &'static str,
+                           icon_path: &'static str,
                            area: WindowControlArea,
                            danger: bool| {
             let hover_bg = if danger {
@@ -4075,23 +4108,29 @@ impl Workspace {
             } else {
                 btn_hover_bg
             };
+            let group_name = SharedString::from(format!("ctrl-{id}"));
             div()
                 .id(id)
+                .group(group_name.clone())
                 .flex()
                 .items_center()
                 .justify_center()
                 .size(px(28.0))
                 .rounded(px(6.0))
-                .text_sm()
-                .text_color(btn_text)
-                .hover(|s| s.bg(hover_bg).text_color(gpui::white()))
+                .hover(|s| s.bg(hover_bg))
                 .window_control_area(area)
-                .child(glyph)
+                .child(
+                    svg()
+                        .path(icon_path)
+                        .size(px(12.0))
+                        .text_color(btn_text)
+                        .group_hover(group_name, |s| s.text_color(gpui::white())),
+                )
         };
 
         let minimize_btn = control_btn(
             "titlebar-minimize",
-            "\u{2500}", // ─
+            "images/minimize.svg",
             WindowControlArea::Min,
             false,
         )
@@ -4099,7 +4138,11 @@ impl Workspace {
             window.minimize_window();
         }));
 
-        let maximize_icon = if is_maximized { "\u{25A3}" } else { "\u{25A1}" }; // ▣ or □
+        let maximize_icon = if is_maximized {
+            "images/restore.svg"
+        } else {
+            "images/maximize.svg"
+        };
         let maximize_btn = control_btn(
             "titlebar-maximize",
             maximize_icon,
@@ -4113,7 +4156,7 @@ impl Workspace {
         let h_quit = handle.clone();
         let close_btn = control_btn(
             "titlebar-close",
-            "\u{00D7}", // ×
+            "images/close.svg",
             WindowControlArea::Close,
             true,
         )
@@ -4318,10 +4361,10 @@ impl Workspace {
                         .child(label),
                 )
                 .child(
-                    div()
-                        .text_size(px(8.0))
-                        .text_color(title_dim)
-                        .child("\u{25BC}"), // ▼
+                    svg()
+                        .path("images/chevron-down.svg")
+                        .size(px(9.0))
+                        .text_color(title_dim),
                 )
                 .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.site_menu_open = !this.site_menu_open;
@@ -4341,27 +4384,35 @@ impl Workspace {
 
         // UI scale controls — a compact −/value/+ group that adjusts the app
         // font size (which drives proportional UI scaling) live.
-        let scale_btn = |id: &'static str, glyph: &'static str| {
+        let scale_btn = |id: &'static str, icon_path: &'static str| {
+            let group_name = SharedString::from(format!("scale-{id}"));
             div()
                 .id(id)
+                .group(group_name.clone())
                 .flex()
                 .items_center()
                 .justify_center()
                 .size(px(22.0))
                 .rounded(px(5.0))
-                .text_sm()
-                .text_color(btn_text)
                 .cursor_pointer()
-                .hover(|s| s.bg(btn_hover_bg).text_color(ShellDeckColors::text_primary()))
-                .child(glyph)
+                .hover(|s| s.bg(btn_hover_bg))
+                .child(
+                    svg()
+                        .path(icon_path)
+                        .size(px(11.0))
+                        .text_color(btn_text)
+                        .group_hover(group_name, |s| {
+                            s.text_color(ShellDeckColors::text_primary())
+                        }),
+                )
         };
-        let dec_btn = scale_btn("titlebar-scale-down", "\u{2212}") // −
+        let dec_btn = scale_btn("titlebar-scale-down", "images/minus.svg")
             .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
                 this.settings
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(-1.0, cx));
                 cx.notify();
             }));
-        let inc_btn = scale_btn("titlebar-scale-up", "+").on_click(cx.listener(
+        let inc_btn = scale_btn("titlebar-scale-up", "images/plus.svg").on_click(cx.listener(
             |this, _event: &ClickEvent, _window, cx| {
                 this.settings
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(1.0, cx));
@@ -5035,6 +5086,182 @@ impl Workspace {
             .child(panel)
     }
 
+    /// Render the sidebar kebab (⋮) row-action menu: a backdrop that dismisses
+    /// on click plus an anchored panel with SSH / Edit / bext / Delete for the
+    /// clicked connection. Positioned at the kebab's window-relative click
+    /// coordinates.
+    fn render_sidebar_kebab_menu(
+        &self,
+        conn_id: Uuid,
+        pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let conn_name = self
+            .connections
+            .iter()
+            .find(|c| c.id == conn_id)
+            .map(|c| c.display_name().to_string())
+            .unwrap_or_else(|| "Connection".to_string());
+
+        let shadow = vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, 0.35),
+            offset: point(px(0.0), px(4.0)),
+            blur_radius: px(16.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }];
+
+        // Header (connection name) — reminds the user which row is targeted.
+        let header = div()
+            .px(px(10.0))
+            .py(px(6.0))
+            .text_size(px(11.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ShellDeckColors::text_muted())
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(conn_name);
+
+        let item = |id: &'static str,
+                    label: &'static str,
+                    accent: gpui::Hsla,
+                    danger: bool,
+                    on_click: Box<dyn Fn(&mut Self, &mut Context<Self>)>|
+         -> gpui::Stateful<Div> {
+            let hover_bg = if danger {
+                ShellDeckColors::error().opacity(0.12)
+            } else {
+                accent.opacity(0.12)
+            };
+            let hover_text = if danger {
+                ShellDeckColors::error()
+            } else {
+                accent
+            };
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "kebab-item-{id}-{conn_id}"
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(5.0))
+                .text_size(px(12.0))
+                .text_color(if danger {
+                    ShellDeckColors::error()
+                } else {
+                    ShellDeckColors::text_primary()
+                })
+                .cursor_pointer()
+                .hover(move |el| el.bg(hover_bg).text_color(hover_text))
+                .child(label)
+                .on_click(cx.listener(
+                    move |this, _event: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.sidebar_kebab_menu = None;
+                        on_click(this, cx);
+                    },
+                ))
+        };
+
+        let panel = div()
+            .id("sidebar-kebab-panel")
+            .absolute()
+            .left(pos.x)
+            .top(pos.y + px(4.0))
+            .w(px(200.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(8.0))
+            .shadow(shadow)
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            // Clicks inside the panel must not bubble to the dismiss backdrop.
+            .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                cx.stop_propagation();
+            })
+            .child(header)
+            .child(
+                div()
+                    .h(px(1.0))
+                    .my(px(2.0))
+                    .bg(ShellDeckColors::border()),
+            )
+            .child(item(
+                "ssh",
+                "Connect (SSH)",
+                ShellDeckColors::success(),
+                false,
+                Box::new(move |this, cx| {
+                    if let Some(conn) = this.connections.iter().find(|c| c.id == conn_id) {
+                        let conn = conn.clone();
+                        this.connect_ssh(conn, cx);
+                    }
+                    this.active_view = ActiveView::Terminal;
+                    cx.notify();
+                }),
+            ))
+            .child(item(
+                "edit",
+                "Edit…",
+                ShellDeckColors::primary(),
+                false,
+                Box::new(move |this, cx| {
+                    if let Some(conn) = this.connections.iter().find(|c| c.id == conn_id) {
+                        let conn = conn.clone();
+                        this.show_connection_form(Some(conn), cx);
+                    }
+                }),
+            ))
+            .child(item(
+                "bext",
+                "Manage bext…",
+                ShellDeckColors::primary(),
+                false,
+                Box::new(move |this, cx| {
+                    this.manage_bext_for_connection(conn_id, cx);
+                }),
+            ))
+            .child(
+                div()
+                    .h(px(1.0))
+                    .my(px(2.0))
+                    .bg(ShellDeckColors::border()),
+            )
+            .child(item(
+                "del",
+                "Delete",
+                ShellDeckColors::error(),
+                true,
+                Box::new(move |this, cx| {
+                    // Reuse the two-step confirm flow from the existing handler.
+                    this.handle_sidebar_event(&SidebarEvent::ConnectionDelete(conn_id), cx);
+                }),
+            ));
+
+        // Transparent full-window backdrop — click anywhere outside dismisses.
+        div()
+            .id("sidebar-kebab-backdrop")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _window, cx| {
+                    this.sidebar_kebab_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(panel)
+    }
+
     fn render_site_section_header(label: &str) -> impl IntoElement {
         div()
             .px(px(8.0))
@@ -5202,22 +5429,92 @@ impl Workspace {
 
         let mut list = div()
             .id("user-home-sites")
-            .flex_1()
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .px(px(16.0))
-            .pb(px(16.0));
+            .px(px(16.0));
 
         if sites.is_empty() {
-            list = list.child(
-                div()
-                    .p(px(24.0))
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child("Aucun site — connectez-vous à un compte disposant de sites."),
-            );
+            // Centered CTA card instead of a passive mumble line — makes it
+            // clear the next action is to open Manage (or Synchroniser if the
+            // sites were just created).
+            let empty_card = div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.0))
+                .p(px(28.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_sidebar())
+                .child(
+                    div()
+                        .size(px(44.0))
+                        .rounded_full()
+                        .bg(ShellDeckColors::primary().opacity(0.15))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(20.0))
+                        .text_color(ShellDeckColors::primary())
+                        .child(">_"),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child("Aucun site pour l'instant"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child("Ouvrez Manage pour créer un site ou synchronisez si vous venez d'en ajouter un."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .mt(px(4.0))
+                        .child(
+                            div()
+                                .id("uh-empty-open-manage")
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .bg(ShellDeckColors::primary())
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(white())
+                                .cursor_pointer()
+                                .child("Ouvrir Manage")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.open_manage_area("/manage".to_string(), cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("uh-empty-sync")
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(ShellDeckColors::border())
+                                .bg(ShellDeckColors::bg_primary())
+                                .text_size(px(13.0))
+                                .text_color(ShellDeckColors::text_primary())
+                                .cursor_pointer()
+                                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                                .child("Synchroniser")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.cloud_sync_now(cx);
+                                })),
+                        ),
+                );
+            list = list.child(empty_card);
         }
 
         for site in &sites {
@@ -5342,161 +5639,48 @@ impl Workspace {
             list = list.child(card);
         }
 
-        div()
-            .size_full()
+        // Page body: account header, "Mes sites" section, optional Jean card,
+        // "Mes demandes" section. Everything stacks at natural height; the
+        // whole page scrolls if the content overflows.
+        let body = div()
+            .id("user-home-body")
             .flex()
             .flex_col()
-            .bg(ShellDeckColors::bg_primary())
+            .pb(px(24.0))
+            .child(header)
             .child(
                 div()
                     .px(px(16.0))
-                    .pt(px(14.0))
+                    .pt(px(8.0))
+                    .pb(px(6.0))
                     .text_size(px(18.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_primary())
                     .child("Mes sites"),
             )
-            .child(header)
+            .child(list)
             .children(if self.has_jean() {
                 Some(self.render_jean_ask_card(cx))
             } else {
                 None
             })
-            .child(list)
-            .child(self.render_user_requests(cx))
-    }
+            .child(self.render_user_requests(cx));
 
-    /// A focusable one-field input for the User-mode issue composers.
-    fn render_issue_input(
-        &self,
-        field: IssueField,
-        value: &str,
-        placeholder: &str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let active = self.issue_field == field;
-        let content = if value.is_empty() {
-            div()
-                .text_color(ShellDeckColors::text_muted())
-                .child(placeholder.to_string())
-        } else {
-            div()
-                .flex()
-                .text_color(ShellDeckColors::text_primary())
-                .child(value.to_string())
-                .child(if active {
-                    div().w(px(1.0)).h(px(15.0)).bg(ShellDeckColors::primary())
-                } else {
-                    div()
-                })
-        };
         div()
-            .id(ElementId::from(SharedString::from(format!(
-                "issf-{placeholder}"
-            ))))
-            .track_focus(&self.issue_focus)
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| this.handle_issue_key(e, cx)))
-            .w_full()
-            .px(px(10.0))
-            .py(px(7.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .border_color(if active {
-                ShellDeckColors::primary()
-            } else {
-                ShellDeckColors::border()
-            })
-            .text_size(px(13.0))
-            .cursor_text()
-            .child(content)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.issue_field = field;
-                cx.notify();
-            }))
-    }
-
-    /// User-mode "Mes demandes": a create composer + the tenant's requests, with
-    /// a click-to-expand detail (body + comments + comment box).
-    fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Create composer.
-        let priorities = ["low", "normal", "high", "urgent"];
-        let mut prio_row = div().flex().items_center().gap(px(4.0));
-        for p in priorities {
-            let active = self.issue_new_priority == p;
-            let mut chip = div()
-                .id(ElementId::from(SharedString::from(format!("iss-np-{p}"))))
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(6.0))
-                .text_size(px(11.0))
-                .cursor_pointer()
-                .child(p.to_string())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.issue_new_priority = p.to_string();
-                    cx.notify();
-                }));
-            if active {
-                chip = chip
-                    .bg(ShellDeckColors::selected_bg())
-                    .text_color(ShellDeckColors::text_primary());
-            } else {
-                chip = chip.text_color(ShellDeckColors::text_muted());
-            }
-            prio_row = prio_row.child(chip);
-        }
-
-        let composer = div()
+            .size_full()
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .p(px(12.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child("Nouvelle demande"),
-            )
-            .child(self.render_issue_input(
-                IssueField::Title,
-                &self.issue_title_input.clone(),
-                "Titre de la demande",
-                cx,
-            ))
-            .child(self.render_issue_input(
-                IssueField::Body,
-                &self.issue_body_input.clone(),
-                "Détails (facultatif)",
-                cx,
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(prio_row)
-                    .child(
-                        div()
-                            .id("iss-create")
-                            .px(px(12.0))
-                            .py(px(7.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary())
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .child("Créer")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_issue_field(IssueField::Title, cx)
-                            })),
-                    ),
-            );
+            .bg(ShellDeckColors::bg_primary())
+            .child(scrollable_vertical(body))
+    }
+
+
+    /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
+    /// row opens the detail as a right-side sheet; the "+ Nouvelle demande"
+    /// button in the header opens the composer as another right-side sheet.
+    /// Both live at the workspace root — they slide over the list without
+    /// pushing it down (the pre-sheet layout used to append them inline).
+    fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
 
         // Issue list.
         let mut list = div().flex().flex_col().gap(px(4.0)).mt(px(8.0));
@@ -5559,29 +5743,292 @@ impl Workspace {
             list = list.child(row);
         }
 
-        let mut section = div()
+        // Section header: title + "Nouvelle demande" button.
+        let header = div()
             .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .m(px(16.0))
+            .items_center()
+            .justify_between()
+            .mb(px(4.0))
             .child(
                 div()
                     .text_size(px(18.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .mb(px(4.0))
                     .child("Mes demandes"),
             )
-            .child(composer)
-            .child(list);
+            .child(
+                div()
+                    .id("user-new-request-btn")
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::primary())
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(white())
+                    .cursor_pointer()
+                    .child(
+                        svg()
+                            .path("images/plus.svg")
+                            .size(px(11.0))
+                            .text_color(white()),
+                    )
+                    .child("Nouvelle demande")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.open_new_request(cx);
+                    })),
+            );
 
-        // Detail (body + comments + comment box) for the selected issue.
-        if let Some(iss) = self.issue_detail.clone() {
-            if self.issue_selected.as_deref() == Some(iss.id.as_str()) {
-                section = section.child(self.render_user_issue_detail(&iss, cx));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .m(px(16.0))
+            .child(header)
+            .child(list)
+    }
+
+    /// Full-screen dimmed backdrop + right-anchored panel that wraps some inner
+    /// content. Shared chrome for the two User-mode issue sheets (composer +
+    /// detail). Clicking the backdrop or the header × triggers `on_close`;
+    /// inner clicks are stopped so the backdrop doesn't dismiss.
+    ///
+    /// `dismissing = true` plays the exit animation (slide back off-screen
+    /// right + fade out); `false` plays the enter animation.
+    fn render_user_sheet<C: IntoElement + 'static>(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        dismissing: bool,
+        inner: C,
+        on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use std::time::Duration;
+        const SHEET_WIDTH: f32 = 480.0;
+        const ANIM_MS: u64 = SHEET_ANIM_MS;
+
+        let close_bg = on_close.clone();
+        div()
+            .id(id)
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .bg(ShellDeckColors::backdrop())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _e, _window, cx| {
+                    close_bg(this, cx);
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .flex()
+                    .flex_col()
+                    .w(px(SHEET_WIDTH))
+                    .bg(ShellDeckColors::bg_surface())
+                    .border_l_1()
+                    .border_color(ShellDeckColors::border())
+                    .shadow_xl()
+                    .overflow_hidden()
+                    .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                        cx.stop_propagation();
+                    })
+                    // Sheet header: title + close button.
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .flex_shrink_0()
+                            .px(px(20.0))
+                            .py(px(14.0))
+                            .border_b_1()
+                            .border_color(ShellDeckColors::border())
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(title),
+                            )
+                            .child({
+                                let close = on_close.clone();
+                                div()
+                                    .id("user-sheet-close")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .hover(|el| {
+                                        el.text_color(ShellDeckColors::text_primary())
+                                    })
+                                    .child(
+                                        svg()
+                                            .path("images/close.svg")
+                                            .size(px(14.0))
+                                            .text_color(ShellDeckColors::text_muted()),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, _window, cx| {
+                                            close(this, cx);
+                                        },
+                                    ))
+                            }),
+                    )
+                    // Body — scrollable if the content overflows the sheet.
+                    .child(
+                        div()
+                            .id("user-sheet-body")
+                            .flex_grow()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .p(px(16.0))
+                            .child(inner),
+                    )
+                    // Slide (300ms). On enter: ease_out_quint (very smooth
+                    // decel), from `right = -SHEET_WIDTH` to 0. On exit:
+                    // ease_in_quint reversed. Encoding the direction in the
+                    // id makes GPUI treat enter vs exit as distinct
+                    // animations and restart cleanly on each flip.
+                    .with_animation(
+                        SharedString::from(format!(
+                            "{id}-slide-{}",
+                            if dismissing { "out" } else { "in" }
+                        )),
+                        Animation::new(Duration::from_millis(ANIM_MS)).with_easing(
+                            if dismissing {
+                                (|t: f32| t * t * t * t * t) as fn(f32) -> f32 // ease_in_quint
+                            } else {
+                                (|t: f32| 1.0 - (1.0 - t).powi(5)) as fn(f32) -> f32 // ease_out_quint
+                            },
+                        ),
+                        move |el, delta| {
+                            let d = delta.clamp(0.0, 1.0);
+                            let offset = if dismissing {
+                                -SHEET_WIDTH * d
+                            } else {
+                                -SHEET_WIDTH * (1.0 - d)
+                            };
+                            el.right(gpui::px(offset))
+                        },
+                    ),
+            )
+    }
+
+    /// The "Nouvelle demande" composer rendered as a right-side sheet.
+    fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let priorities = ["low", "normal", "high", "urgent"];
+        let mut prio_row = div().flex().items_center().gap(px(4.0));
+        for p in priorities {
+            let active = self.issue_new_priority == p;
+            let mut chip = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "iss-np-sheet-{p}"
+                ))))
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .text_size(px(11.0))
+                .cursor_pointer()
+                .child(p.to_string())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.issue_new_priority = p.to_string();
+                    cx.notify();
+                }));
+            if active {
+                chip = chip
+                    .bg(ShellDeckColors::selected_bg())
+                    .text_color(ShellDeckColors::text_primary());
+            } else {
+                chip = chip.text_color(ShellDeckColors::text_muted());
             }
+            prio_row = prio_row.child(chip);
         }
-        section
+
+        // Real Input widgets — cursor, selection, undo, Enter to submit.
+        // Sm size (32px h / 8px padx / 13px font) matches the compact look
+        // the fake-input divs used before the migration.
+        let title_input = Input::new(&self.issue_title_state)
+            .size(InputSize::Sm)
+            .placeholder("Titre de la demande")
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |ws, cx| ws.submit_new_request(cx));
+                }
+            });
+        let body_input = Input::new(&self.issue_body_state)
+            .size(InputSize::Sm)
+            .placeholder("Détails (facultatif)");
+
+        let inner = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(title_input)
+            .child(body_input)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .mt(px(4.0))
+                    .child(prio_row)
+                    .child(
+                        div()
+                            .id("iss-create")
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child("Créer")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_new_request(cx);
+                            })),
+                    ),
+            );
+
+        self.render_user_sheet(
+            "user-new-request-sheet",
+            "Nouvelle demande",
+            self.user_new_request_sheet_dismissing,
+            inner,
+            |this, cx| this.close_new_request_sheet(cx),
+            cx,
+        )
+    }
+
+    /// The selected-request detail rendered as a right-side sheet.
+    fn render_user_issue_detail_sheet(
+        &self,
+        iss: Issue,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let inner = self.render_user_issue_detail(&iss, cx);
+        self.render_user_sheet(
+            "user-issue-detail-sheet",
+            "Détail de la demande",
+            self.user_issue_detail_dismissing,
+            inner,
+            |this, cx| this.close_user_issue_detail(cx),
+            cx,
+        )
     }
 
     fn render_user_issue_detail(&self, iss: &Issue, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5677,12 +6124,19 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(div().flex_1().child(self.render_issue_input(
-                        IssueField::Comment,
-                        &self.issue_comment_input.clone(),
-                        "Ajouter un commentaire…",
-                        cx,
-                    )))
+                    .child(
+                        div().flex_1().child(
+                            Input::new(&self.issue_comment_state)
+                                .size(InputSize::Sm)
+                                .placeholder("Ajouter un commentaire…")
+                                .on_enter({
+                                    let entity = cx.entity();
+                                    move |_value, cx| {
+                                        entity.update(cx, |ws, cx| ws.submit_issue_comment(cx));
+                                    }
+                                }),
+                        ),
+                    )
                     .child(
                         div()
                             .id("uiss-comment-send")
@@ -5696,7 +6150,7 @@ impl Workspace {
                             .cursor_pointer()
                             .child("Envoyer")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_issue_field(IssueField::Comment, cx)
+                                this.submit_issue_comment(cx);
                             })),
                     ),
             )
@@ -6297,6 +6751,24 @@ impl Render for Workspace {
         // Titlebar site-switcher dropdown overlay
         if self.site_menu_open {
             root = root.child(self.render_site_menu(_cx));
+        }
+
+        // Sidebar kebab (⋮) row-action menu
+        if let Some((conn_id, pos)) = self.sidebar_kebab_menu {
+            root = root.child(self.render_sidebar_kebab_menu(conn_id, pos, _cx));
+        }
+
+        // User-mode "Mes demandes" sheets: composer + selected-request detail.
+        // Both live at workspace root so they slide over the list without
+        // pushing it down (their inline predecessors did the pushing).
+        if matches!(self.effective_mode(), AppMode::User) {
+            if self.user_new_request_sheet_open {
+                root = root.child(self.render_user_new_request_sheet(_cx));
+            } else if let Some(iss) = self.issue_detail.clone() {
+                if self.issue_selected.as_deref() == Some(iss.id.as_str()) {
+                    root = root.child(self.render_user_issue_detail_sheet(iss, _cx));
+                }
+            }
         }
 
         // Command palette overlay

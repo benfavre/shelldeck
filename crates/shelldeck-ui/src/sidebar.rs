@@ -2,6 +2,8 @@ use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
+
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
 use uuid::Uuid;
@@ -99,6 +101,11 @@ pub enum SidebarEvent {
     ConnectionDelete(Uuid),
     /// Manage the bext instance behind this connection (loopback site SDK).
     ConnectionManageBext(Uuid),
+    /// Open the row's kebab (⋮) action menu at the given window position.
+    OpenConnectionMenu {
+        conn_id: Uuid,
+        position: Point<Pixels>,
+    },
     AddConnection,
     SectionChanged(SidebarSection),
     QuickConnect,
@@ -116,8 +123,11 @@ pub struct SidebarView {
     /// Number of open terminal tabs (shown as badge)
     terminal_tab_count: usize,
     /// Host search query
+    search_state: Entity<InputState>,
+    /// Cached snapshot of the current input value (used by `conn_matches_search`
+    /// and highlight helpers). Kept in sync with `search_state` via the Input
+    /// widget's `on_change` callback.
     search_query: String,
-    search_focused: bool,
     /// Active Inklura Manage site filter. `Some(id)` hides connections bound to
     /// a *different* site (unbound connections always show); `None` = all sites.
     site_filter: Option<Uuid>,
@@ -138,8 +148,8 @@ impl SidebarView {
             width: 260.0,
             resizing: false,
             terminal_tab_count: 0,
+            search_state: cx.new(|cx| InputState::new(cx)),
             search_query: String::new(),
-            search_focused: false,
             site_filter: None,
             jean_available: false,
             fleet_available: false,
@@ -294,80 +304,35 @@ impl SidebarView {
     }
 
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut input_box = div()
-            .id("sidebar-search-input")
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .w_full()
-            .px(px(8.0))
-            .py(px(5.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .cursor_text()
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.search_focused = true;
-                cx.notify();
-            }));
-
-        if self.search_focused {
-            input_box = input_box.border_color(ShellDeckColors::primary());
-        } else {
-            input_box = input_box.border_color(ShellDeckColors::border());
-        }
-
-        // Search icon
-        input_box = input_box.child(
-            div()
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
-                .flex_shrink_0()
-                .child("/"),
-        );
-
-        if self.search_query.is_empty() {
-            input_box = input_box.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .flex_grow()
-                    .child("Filter hosts..."),
-            );
-        } else {
-            input_box = input_box.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .flex_grow()
-                    .flex()
-                    .child(self.search_query.clone())
-                    .when(self.search_focused, |el| {
-                        el.child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-                    }),
-            );
-            // Clear button
-            input_box = input_box.child(
-                div()
-                    .id("sidebar-search-clear")
-                    .cursor_pointer()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.text_color(ShellDeckColors::text_primary()))
+        // Real adabraka `Input` — cursor, selection, Ctrl+C/V/X, built-in
+        // clear button. The magnifying-glass prefix keeps the affordance we
+        // had with the fake-input version.
+        let input = Input::new(&self.search_state)
+            .size(InputSize::Sm)
+            .placeholder("Filter hosts...")
+            .clearable(true)
+            .prefix(
+                svg()
+                    .path("images/search.svg")
+                    .size(px(12.0))
                     .flex_shrink_0()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.search_query.clear();
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .on_change({
+                let entity = cx.entity();
+                move |value, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.search_query = value.to_string();
                         cx.notify();
-                    }))
-                    .child("x"),
-            );
-        }
+                    });
+                }
+            });
 
         div()
             .flex_shrink_0()
             .px(px(8.0))
             .py(px(6.0))
-            .child(input_box)
+            .child(input)
     }
 
     fn render_connection_item_highlighted(
@@ -400,97 +365,44 @@ impl SidebarView {
             vec![]
         };
 
-        // Hover-reveal action buttons
+        // Kebab button — faint hint always visible so the affordance is
+        // discoverable, brightens on row hover. Click opens a dropdown at the
+        // click position with SSH/Edit/bext/Delete.
         let action_buttons = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "conn-kebab-{}",
+                conn_id
+            ))))
+            .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(px(2.0))
-            .flex_shrink_0()
-            .opacity(0.0)
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .mr(px(4.0))
+            .rounded(px(4.0))
+            .text_size(px(16.0))
+            .font_weight(FontWeight::BOLD)
+            .text_color(ShellDeckColors::text_muted())
+            .opacity(0.35)
             .group_hover(group_name.clone(), |el| el.opacity(1.0))
+            .cursor_pointer()
+            .hover(|el| {
+                el.bg(ShellDeckColors::hover_bg())
+                    .text_color(ShellDeckColors::text_primary())
+            })
+            .on_click(cx.listener(move |_this, event: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+                cx.emit(SidebarEvent::OpenConnectionMenu {
+                    conn_id,
+                    position: event.position(),
+                });
+            }))
             .child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-connect-{}",
-                        conn_id
-                    ))))
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|el| {
-                        el.bg(ShellDeckColors::success().opacity(0.15))
-                            .text_color(ShellDeckColors::success())
-                    })
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::ConnectionConnect(conn_id));
-                    }))
-                    .child("SSH"),
-            )
-            .child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-edit-{}",
-                        conn_id
-                    ))))
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|el| {
-                        el.bg(ShellDeckColors::primary().opacity(0.15))
-                            .text_color(ShellDeckColors::primary())
-                    })
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::ConnectionEdit(conn_id));
-                    }))
-                    .child("Edit"),
-            )
-            .child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-del-{}",
-                        conn_id
-                    ))))
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|el| {
-                        el.bg(ShellDeckColors::error().opacity(0.15))
-                            .text_color(ShellDeckColors::error())
-                    })
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::ConnectionDelete(conn_id));
-                    }))
-                    .child("Del"),
-            )
-            .child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-bext-{}",
-                        conn_id
-                    ))))
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .rounded(px(3.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|el| {
-                        el.bg(ShellDeckColors::primary().opacity(0.15))
-                            .text_color(ShellDeckColors::primary())
-                    })
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::ConnectionManageBext(conn_id));
-                    }))
-                    .child("bext"),
+                svg()
+                    .path("images/kebab.svg")
+                    .size(px(14.0))
+                    .text_color(ShellDeckColors::text_muted()),
             );
 
         let mut row = div()
@@ -617,55 +529,6 @@ impl SidebarView {
         row
     }
 
-    fn handle_search_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-
-        match key {
-            "escape" => {
-                if !self.search_query.is_empty() {
-                    self.search_query.clear();
-                } else {
-                    self.search_focused = false;
-                }
-                cx.notify();
-                return;
-            }
-            "backspace" => {
-                self.search_query.pop();
-                cx.notify();
-                return;
-            }
-            _ => {}
-        }
-
-        // Ctrl+V paste
-        if key == "v" && mods.secondary() {
-            if let Some(item) = cx.read_from_clipboard() {
-                if let Some(text) = item.text() {
-                    // Only take first line, strip whitespace
-                    let clean: String = text.lines().next().unwrap_or("").trim().to_string();
-                    self.search_query.push_str(&clean);
-                    cx.notify();
-                }
-            }
-            return;
-        }
-
-        // Printable characters
-        if let Some(ref kc) = event.keystroke.key_char {
-            if !mods.control && !mods.alt {
-                self.search_query.push_str(kc);
-                cx.notify();
-                return;
-            }
-        }
-
-        if key.len() == 1 && !mods.control && !mods.alt {
-            self.search_query.push_str(key);
-            cx.notify();
-        }
-    }
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
@@ -675,8 +538,6 @@ impl Render for SidebarView {
         if self.collapsed {
             return div().w(px(0.0)).h_full().id("sidebar-collapsed");
         }
-
-        let search_focused = self.search_focused;
 
         // Filter connections by search query and the active-site filter.
         let filtered: Vec<&Connection> = self
@@ -842,11 +703,6 @@ impl Render for SidebarView {
             .border_color(ShellDeckColors::border())
             .id("sidebar")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
-                if search_focused {
-                    this.handle_search_key_down(event, cx);
-                }
-            }))
             .child(logo)
             .child(nav)
             .child(scrollable_vertical(host_list))

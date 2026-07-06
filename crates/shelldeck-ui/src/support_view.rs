@@ -1565,6 +1565,9 @@ impl Render for SupportView {
             .child(
                 div()
                     .id("support-refresh")
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
                     .px(px(8.0))
                     .py(px(4.0))
                     .rounded(px(6.0))
@@ -1572,7 +1575,8 @@ impl Render for SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child("\u{21BB} Actualiser")
+                    .child(svg().path("images/refresh.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted()))
+                    .child("Actualiser")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(SupportViewEvent::Refresh);
                     })),

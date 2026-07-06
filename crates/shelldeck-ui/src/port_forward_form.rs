@@ -841,11 +841,13 @@ impl Render for PortForwardForm {
                             .child(
                                 div()
                                     .id("close-pf-form-btn")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .cursor_pointer()
-                                    .text_size(px(16.0))
                                     .text_color(ShellDeckColors::text_muted())
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                                    .child("x")
+                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(PortForwardFormEvent::Cancel);
                                     })),

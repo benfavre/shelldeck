@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;
 use uuid::Uuid;
@@ -17,176 +18,130 @@ pub enum ConnectionFormEvent {
 
 impl EventEmitter<ConnectionFormEvent> for ConnectionForm {}
 
+/// Identifies which field a validation error belongs to, so the matching
+/// `Input` renders its red-outline error state. Active-field tracking is no
+/// longer needed — the `Input` widget owns its own focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormField {
-    Alias,
     Hostname,
     Port,
     User,
-    IdentityFile,
-    ProxyJump,
-    Group,
-}
-
-impl FormField {
-    const ALL: &[FormField] = &[
-        FormField::Alias,
-        FormField::Group,
-        FormField::Hostname,
-        FormField::User,
-        FormField::Port,
-        FormField::IdentityFile,
-        FormField::ProxyJump,
-    ];
-
-    fn next(self) -> FormField {
-        let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
-    }
 }
 
 pub struct ConnectionForm {
     /// Editing existing connection (Some) or creating new (None)
     editing_id: Option<Uuid>,
-    alias: String,
-    hostname: String,
-    port: String,
-    user: String,
-    identity_file: String,
-    proxy_jump: String,
-    group: String,
+    alias_state: Entity<InputState>,
+    hostname_state: Entity<InputState>,
+    port_state: Entity<InputState>,
+    user_state: Entity<InputState>,
+    identity_file_state: Entity<InputState>,
+    proxy_jump_state: Entity<InputState>,
+    group_state: Entity<InputState>,
     forward_agent: bool,
     error: Option<String>,
     error_field: Option<FormField>,
-    active_field: Option<FormField>,
     focus_handle: FocusHandle,
     needs_focus: bool,
 }
 
+/// Create a new `Input` state entity with an optional initial value. We can't
+/// use `InputState::set_value` in the constructor (it needs `&mut Window`),
+/// so we bypass by writing the public `content` field directly.
+fn new_input_state(cx: &mut Context<ConnectionForm>, initial: &str) -> Entity<InputState> {
+    let initial = initial.to_string();
+    cx.new(|cx| {
+        let mut s = InputState::new(cx);
+        if !initial.is_empty() {
+            s.content = initial.into();
+        }
+        s
+    })
+}
+
 impl ConnectionForm {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let default_user = whoami().unwrap_or_else(|| "root".to_string());
         Self {
             editing_id: None,
-            alias: String::new(),
-            hostname: String::new(),
-            port: "22".to_string(),
-            user: whoami().unwrap_or_else(|| "root".to_string()),
-            identity_file: String::new(),
-            proxy_jump: String::new(),
-            group: String::new(),
+            alias_state: new_input_state(cx, ""),
+            hostname_state: new_input_state(cx, ""),
+            port_state: new_input_state(cx, "22"),
+            user_state: new_input_state(cx, &default_user),
+            identity_file_state: new_input_state(cx, ""),
+            proxy_jump_state: new_input_state(cx, ""),
+            group_state: new_input_state(cx, ""),
             forward_agent: false,
             error: None,
             error_field: None,
-            active_field: Some(FormField::Hostname),
             focus_handle: cx.focus_handle(),
             needs_focus: true,
         }
     }
 
     pub fn from_connection(conn: &Connection, cx: &mut Context<Self>) -> Self {
+        let identity_file = conn
+            .identity_file
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         Self {
             editing_id: Some(conn.id),
-            alias: conn.alias.clone(),
-            hostname: conn.hostname.clone(),
-            port: conn.port.to_string(),
-            user: conn.user.clone(),
-            identity_file: conn
-                .identity_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            proxy_jump: conn.proxy_jump.clone().unwrap_or_default(),
-            group: conn.group.clone().unwrap_or_default(),
+            alias_state: new_input_state(cx, &conn.alias),
+            hostname_state: new_input_state(cx, &conn.hostname),
+            port_state: new_input_state(cx, &conn.port.to_string()),
+            user_state: new_input_state(cx, &conn.user),
+            identity_file_state: new_input_state(cx, &identity_file),
+            proxy_jump_state: new_input_state(cx, conn.proxy_jump.as_deref().unwrap_or("")),
+            group_state: new_input_state(cx, conn.group.as_deref().unwrap_or("")),
             forward_agent: conn.forward_agent,
             error: None,
             error_field: None,
-            active_field: Some(FormField::Hostname),
             focus_handle: cx.focus_handle(),
             needs_focus: true,
         }
     }
 
     pub fn focus(&self, window: &mut Window) {
+        // Focus the sheet root so Escape reaches our `handle_key_down`. The
+        // individual `Input` widgets take focus on click; we don't force the
+        // hostname field to grab focus programmatically (would need `App`
+        // access that isn't available here).
         self.focus_handle.focus(window);
     }
 
-    fn is_valid(&self) -> bool {
-        if self.hostname.is_empty() {
-            return false;
-        }
-        if self.user.is_empty() {
-            return false;
-        }
-        matches!(self.port.parse::<u16>(), Ok(p) if p > 0)
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
     }
 
-    fn active_field_mut(&mut self) -> Option<&mut String> {
-        self.active_field.map(move |f| match f {
-            FormField::Alias => &mut self.alias,
-            FormField::Hostname => &mut self.hostname,
-            FormField::Port => &mut self.port,
-            FormField::User => &mut self.user,
-            FormField::IdentityFile => &mut self.identity_file,
-            FormField::ProxyJump => &mut self.proxy_jump,
-            FormField::Group => &mut self.group,
-        })
+    fn is_valid(&self, cx: &Context<Self>) -> bool {
+        if Self::field_value(&self.hostname_state, cx).is_empty() {
+            return false;
+        }
+        if Self::field_value(&self.user_state, cx).is_empty() {
+            return false;
+        }
+        matches!(
+            Self::field_value(&self.port_state, cx).parse::<u16>(),
+            Ok(p) if p > 0
+        )
     }
 
+    /// Escape key on the sheet cancels the form. Enter is handled per-input
+    /// via `on_enter` (submits the form). Text-editing keys are consumed by
+    /// the focused `Input` widget.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        match key {
-            "escape" => {
-                cx.emit(ConnectionFormEvent::Cancel);
-            }
-            "enter" => {
-                self.try_save(cx);
-            }
-            "tab" => {
-                if let Some(field) = self.active_field {
-                    self.active_field = Some(field.next());
-                    cx.notify();
-                }
-            }
-            "backspace" => {
-                if let Some(field) = self.active_field_mut() {
-                    field.pop();
-                    self.error = None;
-                    self.error_field = None;
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        if let Some(field) = self.active_field_mut() {
-                            field.push_str(kc);
-                            self.error = None;
-                            self.error_field = None;
-                            cx.notify();
-                        }
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    if let Some(field) = self.active_field_mut() {
-                        field.push_str(key);
-                        self.error = None;
-                        self.error_field = None;
-                        cx.notify();
-                    }
-                }
-            }
+        if event.keystroke.key == "escape" {
+            cx.emit(ConnectionFormEvent::Cancel);
         }
     }
 
-    fn try_save(&mut self, cx: &mut Context<Self>) {
-        match self.validate() {
+    pub fn try_save(&mut self, cx: &mut Context<Self>) {
+        match self.validate(cx) {
             Ok(conn) => {
                 cx.emit(ConnectionFormEvent::Save(conn));
             }
             Err(msg) => {
-                // Set error_field based on the validation error message
                 if msg.contains("Hostname") {
                     self.error_field = Some(FormField::Hostname);
                 } else if msg.contains("Username") {
@@ -200,118 +155,89 @@ impl ConnectionForm {
         }
     }
 
-    fn validate(&self) -> Result<Connection, String> {
-        if self.hostname.is_empty() {
+    fn validate(&self, cx: &Context<Self>) -> Result<Connection, String> {
+        let hostname = Self::field_value(&self.hostname_state, cx);
+        let user = Self::field_value(&self.user_state, cx);
+        let port_str = Self::field_value(&self.port_state, cx);
+        let alias = Self::field_value(&self.alias_state, cx);
+        let identity_file = Self::field_value(&self.identity_file_state, cx);
+        let proxy_jump = Self::field_value(&self.proxy_jump_state, cx);
+        let group = Self::field_value(&self.group_state, cx);
+
+        if hostname.is_empty() {
             return Err("Hostname is required".to_string());
         }
-        if self.user.is_empty() {
+        if user.is_empty() {
             return Err("Username is required".to_string());
         }
-        let port: u16 = self
-            .port
+        let port: u16 = port_str
             .parse()
             .map_err(|_| "Port must be a valid number (1-65535)".to_string())?;
         if port == 0 {
             return Err("Port must be between 1 and 65535".to_string());
         }
 
-        let alias = if self.alias.is_empty() {
-            self.hostname.clone()
+        let alias = if alias.is_empty() {
+            hostname.clone()
         } else {
-            self.alias.clone()
+            alias
         };
 
-        let mut conn = Connection::new_manual(alias, self.hostname.clone(), self.user.clone());
+        let mut conn = Connection::new_manual(alias, hostname, user);
         conn.port = port;
 
         if let Some(id) = self.editing_id {
             conn.id = id;
         }
 
-        if !self.identity_file.is_empty() {
-            conn.identity_file = Some(std::path::PathBuf::from(&self.identity_file));
+        if !identity_file.is_empty() {
+            conn.identity_file = Some(std::path::PathBuf::from(identity_file));
         }
-        if !self.proxy_jump.is_empty() {
-            conn.proxy_jump = Some(self.proxy_jump.clone());
+        if !proxy_jump.is_empty() {
+            conn.proxy_jump = Some(proxy_jump);
         }
-        if !self.group.is_empty() {
-            conn.group = Some(self.group.clone());
+        if !group.is_empty() {
+            conn.group = Some(group);
         }
         conn.forward_agent = self.forward_agent;
 
         Ok(conn)
     }
 
+    /// A labeled `Input` widget. `error_field` variant triggers the red-error
+    /// styling. Enter on any field tries to save.
     fn render_field(
         &self,
-        field: FormField,
-        label: &str,
-        value: &str,
-        placeholder: &str,
+        field: Option<FormField>,
+        label: &'static str,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_active = self.active_field == Some(field);
-
-        let mut input_box = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "field-{field:?}"
-            ))))
-            .w_full()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .text_size(px(13.0))
-            .cursor_text()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = Some(field);
-                cx.notify();
-            }));
-
-        let has_error = self.error_field == Some(field);
-
-        if has_error {
-            input_box = input_box.border_color(ShellDeckColors::error());
-        } else if is_active {
-            input_box = input_box.border_color(ShellDeckColors::primary());
-        } else {
-            input_box = input_box.border_color(ShellDeckColors::border());
-        }
-
-        if value.is_empty() {
-            input_box = input_box.child(
-                div()
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(placeholder.to_string()),
-            );
-        } else {
-            let mut text_el = div()
-                .text_color(ShellDeckColors::text_primary())
-                .flex()
-                .child(value.to_string());
-
-            // Show cursor at the end when active
-            if is_active {
-                text_el =
-                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
-            }
-
-            input_box = input_box.child(text_el);
-        }
-
-        // Show cursor in empty field when active
-        if value.is_empty() && is_active {
-            input_box = input_box.child(
-                div()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(6.0))
-                    .w(px(1.0))
-                    .h(px(16.0))
-                    .bg(ShellDeckColors::primary()),
-            );
-        }
+        let has_error = field.is_some() && field == self.error_field;
+        let input = Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .error(has_error)
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| this.try_save(cx));
+                }
+            })
+            // Any keystroke clears the previous error highlight.
+            .on_change({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| {
+                        if this.error.is_some() {
+                            this.error = None;
+                            this.error_field = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
 
         div()
             .flex()
@@ -322,9 +248,9 @@ impl ConnectionForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label.to_string()),
+                    .child(label),
             )
-            .child(input_box)
+            .child(input)
     }
 }
 
@@ -358,8 +284,12 @@ impl Render for ConnectionForm {
         }
 
         let mut form_fields = div()
+            .id("connection-form-fields")
             .flex()
             .flex_col()
+            .flex_grow()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
             .gap(px(12.0))
             .p(px(20.0))
             // Row: Alias + Group
@@ -368,25 +298,25 @@ impl Render for ConnectionForm {
                     .flex()
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_field(
-                        FormField::Alias,
+                        None,
                         "Alias",
-                        &self.alias.clone(),
+                        &self.alias_state,
                         "my-server",
                         cx,
                     )))
                     .child(div().w(px(140.0)).child(self.render_field(
-                        FormField::Group,
+                        None,
                         "Group",
-                        &self.group.clone(),
+                        &self.group_state,
                         "Production",
                         cx,
                     ))),
             )
             // Hostname
             .child(self.render_field(
-                FormField::Hostname,
+                Some(FormField::Hostname),
                 "Hostname",
-                &self.hostname.clone(),
+                &self.hostname_state,
                 "192.168.1.100 or example.com",
                 cx,
             ))
@@ -396,33 +326,33 @@ impl Render for ConnectionForm {
                     .flex()
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_field(
-                        FormField::User,
+                        Some(FormField::User),
                         "User",
-                        &self.user.clone(),
+                        &self.user_state,
                         "deploy",
                         cx,
                     )))
                     .child(div().w(px(100.0)).child(self.render_field(
-                        FormField::Port,
+                        Some(FormField::Port),
                         "Port",
-                        &self.port.clone(),
+                        &self.port_state,
                         "22",
                         cx,
                     ))),
             )
             // Identity File
             .child(self.render_field(
-                FormField::IdentityFile,
+                None,
                 "Identity File",
-                &self.identity_file.clone(),
+                &self.identity_file_state,
                 "~/.ssh/id_ed25519",
                 cx,
             ))
             // ProxyJump
             .child(self.render_field(
-                FormField::ProxyJump,
+                None,
                 "ProxyJump",
-                &self.proxy_jump.clone(),
+                &self.proxy_jump_state,
                 "bastion-host",
                 cx,
             ))
@@ -452,7 +382,10 @@ impl Render for ConnectionForm {
             );
         }
 
-        // Outer overlay: full screen backdrop + centered form
+        // Outer overlay: full-screen dimmed backdrop that closes on click, and
+        // a right-anchored slide-in Sheet panel that holds the form. Feels
+        // less blocking than the previous centered modal — the sidebar/list
+        // behind stays partially visible.
         div()
             .id("connection-form-overlay")
             .track_focus(&self.focus_handle)
@@ -466,20 +399,32 @@ impl Render for ConnectionForm {
             .right_0()
             .bottom_0()
             .bg(ShellDeckColors::backdrop())
-            .flex()
-            .justify_center()
-            .items_center()
+            // Clicking on the dimmed area behind the sheet cancels the form.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _e, _window, cx| {
+                    cx.emit(ConnectionFormEvent::Cancel);
+                }),
+            )
             .child(
                 div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
                     .flex()
                     .flex_col()
-                    .w(px(460.0))
+                    .w(px(480.0))
                     .bg(ShellDeckColors::bg_surface())
-                    .rounded(px(12.0))
-                    .border_1()
+                    .border_l_1()
                     .border_color(ShellDeckColors::border())
                     .shadow_xl()
                     .overflow_hidden()
+                    // Clicks inside the sheet must not bubble to the backdrop
+                    // (which would close the form).
+                    .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                        cx.stop_propagation();
+                    })
                     // Header
                     .child(
                         div()
@@ -500,11 +445,13 @@ impl Render for ConnectionForm {
                             .child(
                                 div()
                                     .id("close-form-btn")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .cursor_pointer()
-                                    .text_size(px(16.0))
                                     .text_color(ShellDeckColors::text_muted())
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                                    .child("x")
+                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(ConnectionFormEvent::Cancel);
                                     })),
@@ -535,7 +482,7 @@ impl Render for ConnectionForm {
                                     ),
                             )
                             .child({
-                                let valid = self.is_valid();
+                                let valid = self.is_valid(cx);
                                 let mut save_btn = div()
                                     .id("save-btn")
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

@@ -184,9 +184,11 @@ impl ToastContainer {
                 // Dismiss hint (x)
                 div()
                     .flex_shrink_0()
-                    .text_size(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_color(hsla(0.0, 0.0, 1.0, 0.5))
-                    .child("\u{00D7}"), // multiplication sign as x
+                    .child(svg().path("images/close.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted())),
             )
     }
 }

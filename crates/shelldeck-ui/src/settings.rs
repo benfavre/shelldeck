@@ -401,7 +401,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("-")
+                            .child(svg().path("images/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.font_size =
                                     (this.config.terminal.font_size - 1.0).max(8.0);
@@ -422,7 +422,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("+")
+                            .child(svg().path("images/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.font_size =
                                     (this.config.terminal.font_size + 1.0).min(32.0);
@@ -492,7 +492,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("-")
+                            .child(svg().path("images/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.scrollback_lines = this
                                     .config
@@ -517,7 +517,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("+")
+                            .child(svg().path("images/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.scrollback_lines =
                                     (this.config.terminal.scrollback_lines + 1000).min(100_000);
@@ -877,7 +877,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("-")
+                            .child(svg().path("images/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.sidebar_width =
                                     (this.config.general.sidebar_width - 20.0).max(140.0);
@@ -898,7 +898,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("+")
+                            .child(svg().path("images/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.sidebar_width =
                                     (this.config.general.sidebar_width + 20.0).min(400.0);
@@ -921,7 +921,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("-")
+                            .child(svg().path("images/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.ui_font_size =
                                     (this.config.general.ui_font_size - 1.0).max(10.0);
@@ -942,7 +942,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child("+")
+                            .child(svg().path("images/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.ui_font_size =
                                     (this.config.general.ui_font_size + 1.0).min(22.0);

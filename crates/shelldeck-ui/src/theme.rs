@@ -674,3 +674,44 @@ impl ShellDeckColors {
         Self::error()
     }
 }
+
+/// Build an adabraka-ui `Theme` whose color tokens follow the currently-active
+/// `ShellDeckColors` palette. Used at startup (`main.rs`) and every time the
+/// user switches theme (`Workspace::apply_palette`), so that all adabraka
+/// widgets — `Input`, `Button`, `Card`, popovers, … — share the same look
+/// as the app's custom-drawn UI instead of adabraka's shadcn defaults.
+pub fn adabraka_theme_from_palette() -> adabraka_ui::prelude::Theme {
+    use adabraka_ui::prelude::Theme;
+    let mut theme = if ShellDeckColors::is_dark() {
+        Theme::dark()
+    } else {
+        Theme::light()
+    };
+    let t = &mut theme.tokens;
+    t.background = ShellDeckColors::bg_primary();
+    t.foreground = ShellDeckColors::text_primary();
+    t.card = ShellDeckColors::bg_surface();
+    t.card_foreground = ShellDeckColors::text_primary();
+    t.popover = ShellDeckColors::bg_surface();
+    t.popover_foreground = ShellDeckColors::text_primary();
+    t.muted = ShellDeckColors::hint_bg();
+    t.muted_foreground = ShellDeckColors::text_muted();
+    t.accent = ShellDeckColors::primary();
+    t.accent_foreground = gpui::white();
+    t.primary = ShellDeckColors::primary();
+    t.primary_foreground = gpui::white();
+    t.secondary = ShellDeckColors::badge_bg();
+    t.secondary_foreground = ShellDeckColors::text_primary();
+    t.destructive = ShellDeckColors::error();
+    t.destructive_foreground = gpui::white();
+    t.border = ShellDeckColors::border();
+    t.input = ShellDeckColors::border();
+    t.ring = ShellDeckColors::primary();
+    // Adabraka's `Input` renders text in `font_mono` (JetBrains Mono by
+    // default) — great for a code editor field, wrong for the plain-text
+    // composer / form fields we use everywhere. Point mono at the UI font so
+    // adabraka widgets pick up the same face as the rest of the app. Terminal
+    // and file editors have their own font-family config and are unaffected.
+    t.font_mono = t.font_family.clone();
+    theme
+}

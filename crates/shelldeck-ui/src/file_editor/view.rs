@@ -1062,11 +1062,13 @@ impl FileEditorView {
             if self.tabs.len() > 1 || tab.is_dirty() {
                 let close_btn = div()
                     .id(SharedString::from(format!("close-tab-{}", i)))
-                    .text_size(px(10.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.text_color(ShellDeckColors::text_primary()))
-                    .child("×")
+                    .child(svg().path("images/close.svg").size(px(10.0)).text_color(ShellDeckColors::text_muted()))
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h2.upgrade() {
                             view.update(cx, |this, cx| {

@@ -53,6 +53,8 @@ pub struct ScriptEditorView {
     pub template_browser_open: bool,
     // Last-used variable values per script (script_id -> name -> value)
     pub last_var_values: HashMap<Uuid, HashMap<String, String>>,
+    /// Open kebab (⋮) menu: script + click position (window coords).
+    kebab_menu: Option<(Uuid, Point<Pixels>)>,
 }
 
 impl ScriptEditorView {
@@ -309,6 +311,7 @@ impl ScriptEditorView {
             show_favorites_only: false,
             template_browser_open: false,
             last_var_values: HashMap::new(),
+            kebab_menu: None,
         }
     }
 
@@ -415,14 +418,16 @@ impl ScriptEditorView {
                         .child(
                             div()
                                 .id("add-script-btn")
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .cursor_pointer()
-                                .text_size(px(16.0))
                                 .text_color(ShellDeckColors::text_muted())
                                 .hover(|el| el.text_color(ShellDeckColors::primary()))
                                 .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                     cx.emit(ScriptEvent::AddScript);
                                 }))
-                                .child("+"),
+                                .child(svg().path("images/plus.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
                         ),
                 ),
         );
@@ -635,44 +640,97 @@ impl ScriptEditorView {
                         .font_weight(FontWeight::MEDIUM)
                         .child(script.name.clone()),
                 )
-                // Favorite star
+                // Favorite star — star icon (filled/outlined per state).
                 .child(
                     div()
                         .id(ElementId::from(SharedString::from(format!(
                             "fav-{}",
                             script_id
                         ))))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(16.0))
+                        .h(px(16.0))
                         .cursor_pointer()
-                        .text_size(px(12.0))
+                        .text_size(px(13.0))
                         .text_color(if is_favorite {
                             ShellDeckColors::warning()
                         } else {
-                            ShellDeckColors::text_muted()
+                            ShellDeckColors::text_muted().opacity(0.6)
                         })
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ScriptEvent::ToggleFavorite(script_id));
                         }))
-                        .child(if is_favorite { "*" } else { "" }),
+                        .child(if is_favorite { "\u{2605}" } else { "\u{2606}" }),
                 )
-                // Pin to toolbar toggle
+                // Pin to toolbar toggle — filled/outlined circle SVG.
                 .child(
                     div()
                         .id(ElementId::from(SharedString::from(format!(
                             "pin-{}",
                             script_id
                         ))))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(16.0))
+                        .h(px(16.0))
                         .cursor_pointer()
-                        .text_size(px(11.0))
                         .text_color(if is_pinned {
                             ShellDeckColors::primary()
                         } else {
-                            ShellDeckColors::text_muted()
+                            ShellDeckColors::text_muted().opacity(0.6)
                         })
-                        .hover(|el| el.text_color(ShellDeckColors::primary()))
+                        .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ScriptEvent::TogglePinToToolbar(script_id));
                         }))
-                        .child(if is_pinned { "\u{25C9}" } else { "\u{25CB}" }),
+                        .child(
+                            svg()
+                                .path(if is_pinned {
+                                    "images/pin.svg"
+                                } else {
+                                    "images/pin-outline.svg"
+                                })
+                                .size(px(11.0)),
+                        ),
+                )
+                // Kebab (⋮) — moved from row2 to row1 so all interactive
+                // controls sit together and the second row can stay clean.
+                .child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "script-kebab-{}",
+                            script_id
+                        ))))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .rounded(px(4.0))
+                        .opacity(0.35)
+                        .group_hover("script-item", |el| el.opacity(1.0))
+                        .cursor_pointer()
+                        .hover(|el| {
+                            el.bg(ShellDeckColors::hover_bg())
+                                .text_color(ShellDeckColors::text_primary())
+                        })
+                        .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            this.kebab_menu = Some((script_id, event.position()));
+                            cx.notify();
+                        }))
+                        .child(
+                            svg()
+                                .path("images/kebab.svg")
+                                .size(px(14.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        ),
                 );
 
             // Row 2: target badge + run button (on hover)
@@ -699,48 +757,7 @@ impl ScriptEditorView {
                 } else {
                     div()
                 })
-                .child(div().flex_grow())
-                // Quick run button (visible on hover via group)
-                .child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "run-{}",
-                            script_id
-                        ))))
-                        .cursor_pointer()
-                        .text_size(px(10.0))
-                        .px(px(4.0))
-                        .py(px(1.0))
-                        .rounded(px(3.0))
-                        .bg(ShellDeckColors::success().opacity(0.1))
-                        .text_color(ShellDeckColors::success())
-                        .opacity(0.0)
-                        .group_hover("script-item", |el| el.opacity(1.0))
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(ScriptEvent::RunScriptById(script_id));
-                        }))
-                        .child("Run"),
-                )
-                // Delete button (visible on hover via group)
-                .child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "del-{}",
-                            script_id
-                        ))))
-                        .cursor_pointer()
-                        .text_size(px(10.0))
-                        .px(px(4.0))
-                        .py(px(1.0))
-                        .rounded(px(3.0))
-                        .text_color(ShellDeckColors::error())
-                        .opacity(0.0)
-                        .group_hover("script-item", |el| el.opacity(1.0))
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(ScriptEvent::DeleteScript(script_id));
-                        }))
-                        .child("x"),
-                );
+                .child(div().flex_grow());
 
             list = list.child(item_el.child(row1).child(row2));
         }
@@ -1383,6 +1400,130 @@ impl ScriptEditorView {
     }
 }
 
+impl ScriptEditorView {
+    /// Floating kebab (⋮) row-action menu: Run / Delete. Positioned at the
+    /// click coords via `deferred(anchored())` so it escapes list clipping;
+    /// dismisses on any click outside via `on_mouse_down_out`.
+    fn render_kebab_menu(
+        &self,
+        script_id: Uuid,
+        pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let script = self.scripts.iter().find(|s| s.id == script_id)?;
+        let title = script.name.clone();
+
+        let run_accent = ShellDeckColors::success();
+        let del_accent = ShellDeckColors::error();
+
+        let panel = div()
+            .id("scripts-kebab-panel")
+            .occlude()
+            .w(px(200.0))
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .rounded(px(8.0))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.35),
+                offset: point(gpui::px(0.0), gpui::px(4.0)),
+                blur_radius: gpui::px(16.0),
+                spread_radius: gpui::px(0.0),
+                inset: false,
+            }])
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .on_mouse_down_out(cx.listener(|this, _e, _window, cx| {
+                this.kebab_menu = None;
+                cx.notify();
+            }))
+            // Header
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(title),
+            )
+            .child(
+                div()
+                    .h(px(1.0))
+                    .my(px(2.0))
+                    .bg(ShellDeckColors::border()),
+            )
+            // Run
+            .child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "scripts-kebab-run-{script_id}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(5.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .cursor_pointer()
+                    .hover(move |el| el.bg(run_accent.opacity(0.12)).text_color(run_accent))
+                    .child("Run")
+                    .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.kebab_menu = None;
+                        cx.emit(ScriptEvent::RunScriptById(script_id));
+                    })),
+            )
+            .child(
+                div()
+                    .h(px(1.0))
+                    .my(px(2.0))
+                    .bg(ShellDeckColors::border()),
+            )
+            // Delete
+            .child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "scripts-kebab-del-{script_id}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(5.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::error())
+                    .cursor_pointer()
+                    .hover(move |el| el.bg(del_accent.opacity(0.12)).text_color(del_accent))
+                    .child("Delete")
+                    .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.kebab_menu = None;
+                        cx.emit(ScriptEvent::DeleteScript(script_id));
+                    })),
+            );
+
+        Some(
+            deferred(
+                anchored()
+                    .position(pos + point(gpui::px(0.0), gpui::px(4.0)))
+                    .anchor(gpui::Corner::TopLeft)
+                    .snap_to_window_with_margin(gpui::px(8.0))
+                    .child(panel),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+}
+
 impl Render for ScriptEditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected().cloned();
@@ -1406,6 +1547,13 @@ impl Render for ScriptEditorView {
             container = container.child(self.render_editor(&script, cx));
         } else {
             container = container.child(Self::render_empty_editor());
+        }
+
+        // Kebab (⋮) menu overlay for the currently-open row.
+        if let Some((script_id, pos)) = self.kebab_menu {
+            if let Some(menu) = self.render_kebab_menu(script_id, pos, cx) {
+                container = container.child(menu);
+            }
         }
 
         container

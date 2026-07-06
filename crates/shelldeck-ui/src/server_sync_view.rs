@@ -1276,7 +1276,7 @@ impl ServerSyncView {
             &state.connection_name
         };
 
-        div()
+        let mut panel = div()
             .flex()
             .flex_col()
             .flex_grow()
@@ -1322,9 +1322,15 @@ impl ServerSyncView {
                     .px(px(8.0))
                     .pb(px(4.0))
                     .child(self.render_connection_picker(side, cx)),
-            )
-            // Breadcrumbs
-            .child(self.render_breadcrumbs(side, cx))
+            );
+
+        // Breadcrumbs — only once a connection is picked. Otherwise the
+        // panel would render a stray "/" root crumb under an empty dropdown.
+        if self.panel_state(side).connection_id.is_some() {
+            panel = panel.child(self.render_breadcrumbs(side, cx));
+        }
+
+        panel
             // File list
             .child(self.render_file_list(side, cx))
             // Discovery

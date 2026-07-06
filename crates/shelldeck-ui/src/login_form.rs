@@ -8,6 +8,8 @@ use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
+
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -22,25 +24,9 @@ pub enum LoginFormEvent {
 
 impl EventEmitter<LoginFormEvent> for LoginForm {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Field {
-    Email,
-    Password,
-}
-
-impl Field {
-    fn next(self) -> Field {
-        match self {
-            Field::Email => Field::Password,
-            Field::Password => Field::Email,
-        }
-    }
-}
-
 pub struct LoginForm {
-    email: String,
-    password: String,
-    active_field: Field,
+    email_state: Entity<InputState>,
+    password_state: Entity<InputState>,
     device: String,
     server: String,
     /// A request is in flight (login or OIDC wait): disable inputs + show spinner.
@@ -53,9 +39,8 @@ pub struct LoginForm {
 impl LoginForm {
     pub fn new(server: String, device: String, cx: &mut Context<Self>) -> Self {
         Self {
-            email: String::new(),
-            password: String::new(),
-            active_field: Field::Email,
+            email_state: cx.new(|cx| InputState::new(cx)),
+            password_state: cx.new(|cx| InputState::new(cx)),
             device,
             server,
             busy: false,
@@ -75,153 +60,62 @@ impl LoginForm {
         self.error = Some(msg.into());
     }
 
-    fn active_field_mut(&mut self) -> &mut String {
-        match self.active_field {
-            Field::Email => &mut self.email,
-            Field::Password => &mut self.password,
-        }
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
     }
 
-    fn can_submit(&self) -> bool {
-        !self.busy && !self.email.trim().is_empty() && !self.password.is_empty()
+    fn can_submit(&self, cx: &Context<Self>) -> bool {
+        !self.busy
+            && !Self::field_value(&self.email_state, cx).trim().is_empty()
+            && !Self::field_value(&self.password_state, cx).is_empty()
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if !self.can_submit() {
+        if !self.can_submit(cx) {
             return;
         }
+        let email = Self::field_value(&self.email_state, cx).trim().to_string();
+        let password = Self::field_value(&self.password_state, cx);
         self.error = None;
-        cx.emit(LoginFormEvent::SubmitPassword {
-            email: self.email.trim().to_string(),
-            password: self.password.clone(),
-        });
+        cx.emit(LoginFormEvent::SubmitPassword { email, password });
     }
 
+    /// Only Escape needs to reach us — Input handles all typing keys, and
+    /// `on_enter` on each field submits the form.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let key = event.keystroke.key.as_str();
-        match key {
-            "escape" => cx.emit(LoginFormEvent::Cancel),
-            "enter" => self.submit(cx),
-            "tab" => {
-                self.active_field = self.active_field.next();
-                cx.notify();
-            }
-            "backspace" => {
-                self.active_field_mut().pop();
-                self.error = None;
-                cx.notify();
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        self.active_field_mut().push_str(kc);
-                        self.error = None;
-                        cx.notify();
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    self.active_field_mut().push_str(key);
-                    self.error = None;
-                    cx.notify();
-                }
-            }
+        if event.keystroke.key == "escape" {
+            cx.emit(LoginFormEvent::Cancel);
         }
     }
 
-    fn render_field(
-        &self,
-        field: Field,
-        label: &str,
-        value: &str,
-        placeholder: &str,
-        mask: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let is_active = self.active_field == field;
-        let display: String = if mask {
-            "\u{2022}".repeat(value.chars().count())
-        } else {
-            value.to_string()
-        };
-
-        let mut input_box = div()
-            .id(ElementId::from(SharedString::from(format!("login-field-{label}"))))
-            .w_full()
-            .px(px(10.0))
-            .py(px(7.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .text_size(px(14.0))
-            .cursor_text()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = field;
-                cx.notify();
-            }));
-
-        if is_active {
-            input_box = input_box.border_color(ShellDeckColors::primary());
-        } else {
-            input_box = input_box.border_color(ShellDeckColors::border());
-        }
-
-        if display.is_empty() {
-            let mut ph = div()
-                .relative()
-                .text_color(ShellDeckColors::text_muted())
-                .child(placeholder.to_string());
-            if is_active {
-                ph = ph.child(
-                    div()
-                        .absolute()
-                        .left(px(0.0))
-                        .top(px(1.0))
-                        .w(px(1.0))
-                        .h(px(15.0))
-                        .bg(ShellDeckColors::primary()),
-                );
-            }
-            input_box = input_box.child(ph);
-        } else {
-            let mut text_el = div()
-                .flex()
-                .text_color(ShellDeckColors::text_primary())
-                .child(display);
-            if is_active {
-                text_el = text_el.child(div().w(px(1.0)).h(px(15.0)).bg(ShellDeckColors::primary()));
-            }
-            input_box = input_box.child(text_el);
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(label.to_string()),
-            )
-            .child(input_box)
-    }
-
-    /// A full-width OIDC provider button.
+    /// A full-width OIDC provider button. `icon_path` puts a logo on the left
+    /// (12px, muted color) — GPUI paints SVGs mono, so all provider logos
+    /// share the current text_color regardless of their source fills.
     fn oidc_button(
         &self,
         id: &'static str,
         label: &str,
+        icon_path: Option<&'static str>,
         provider: Option<&'static str>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let provider = provider.map(|p| p.to_string());
         let busy = self.busy;
+        let mut row = div().flex().items_center().gap(px(8.0));
+        if let Some(icon) = icon_path {
+            row = row.child(
+                svg()
+                    .path(icon)
+                    .size(px(14.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_primary()),
+            );
+        }
+        row = row.child(label.to_string());
+
         let mut btn = div()
             .id(id)
             .w_full()
@@ -236,7 +130,7 @@ impl LoginForm {
             .flex()
             .items_center()
             .justify_center()
-            .child(label.to_string());
+            .child(row);
         if busy {
             btn = btn.opacity(0.5);
         } else {
@@ -280,50 +174,105 @@ impl Render for LoginForm {
                 .child(
                     div()
                         .flex()
-                        .flex_col()
+                        .items_center()
+                        .gap(px(12.0))
+                        // Inklura mark — hardcoded brand blue on a rounded
+                        // portrait badge, since GPUI paints SVGs mono and the
+                        // source is multi-color. Badge aspect ratio matches
+                        // the source viewBox (78×118 → ~2:3).
                         .child(
                             div()
-                                .text_size(px(19.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(ShellDeckColors::text_primary())
-                                .child("Se connecter à Inklura Manage"),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .flex_shrink_0()
+                                .w(px(28.0))
+                                .h(px(42.0))
+                                .rounded(px(8.0))
+                                .bg(rgb(0x146BFF))
+                                .child(
+                                    svg()
+                                        .path("images/logo-inklura.svg")
+                                        .w(px(28.0))
+                                        .h(px(42.0))
+                                        .text_color(gpui::white()),
+                                ),
                         )
                         .child(
                             div()
-                                .text_size(px(12.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(self.server.clone()),
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(17.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child("Se connecter à Inklura Manage"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(self.server.clone()),
+                                ),
                         ),
                 )
                 .child(
                     div()
                         .id("login-close")
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .cursor_pointer()
-                        .text_size(px(16.0))
                         .text_color(ShellDeckColors::text_muted())
                         .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                        .child("\u{00D7}")
+                        .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
                         .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                             cx.emit(LoginFormEvent::Cancel);
                         })),
                 ),
         );
 
-        // Body: password fields + submit, divider, OIDC buttons.
+        // Real `Input` widgets — cursor, selection, undo, Enter submits.
+        let labeled = |label: &'static str, input: Input| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(label),
+                )
+                .child(input)
+        };
+        let submit_on_enter = {
+            let entity = cx.entity();
+            move |_v: SharedString, cx: &mut App| {
+                entity.update(cx, |this, cx| this.submit(cx));
+            }
+        };
+        let email_input = Input::new(&self.email_state)
+            .size(InputSize::Sm)
+            .placeholder("vous@exemple.com")
+            .disabled(self.busy)
+            .on_enter(submit_on_enter.clone());
+        let password_input = Input::new(&self.password_state)
+            .size(InputSize::Sm)
+            .placeholder("••••••••")
+            .password(true)
+            .disabled(self.busy)
+            .on_enter(submit_on_enter);
+
         let mut body = div()
             .flex()
             .flex_col()
             .gap(px(12.0))
             .p(px(20.0))
-            .child(self.render_field(Field::Email, "Email", &self.email.clone(), "vous@exemple.com", false, cx))
-            .child(self.render_field(
-                Field::Password,
-                "Mot de passe",
-                &self.password.clone(),
-                "••••••••",
-                true,
-                cx,
-            ));
+            .child(labeled("Email", email_input))
+            .child(labeled("Mot de passe", password_input));
 
         if let Some(ref err) = self.error {
             body = body.child(
@@ -335,7 +284,7 @@ impl Render for LoginForm {
         }
 
         // Primary "Se connecter" button.
-        let can_submit = self.can_submit();
+        let can_submit = self.can_submit(cx);
         let submit_label = if self.busy { "Connexion…" } else { "Se connecter" };
         let mut submit_btn = div()
             .id("login-submit")
@@ -378,7 +327,13 @@ impl Render for LoginForm {
         );
 
         body = body
-            .child(self.oidc_button("login-oidc-sso", "Continuer avec SSO 1clic.pro", Some("sso"), cx))
+            .child(self.oidc_button(
+                "login-oidc-sso",
+                "Continuer avec SSO 1clic.pro",
+                Some("images/logo-1clicpro.svg"),
+                Some("sso"),
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -386,12 +341,14 @@ impl Render for LoginForm {
                     .child(div().flex_1().child(self.oidc_button(
                         "login-oidc-google",
                         "Google",
+                        Some("images/logo-google.svg"),
                         Some("google"),
                         cx,
                     )))
                     .child(div().flex_1().child(self.oidc_button(
                         "login-oidc-github",
                         "GitHub",
+                        Some("images/logo-github.svg"),
                         Some("github"),
                         cx,
                     ))),
@@ -402,6 +359,7 @@ impl Render for LoginForm {
             .child(self.oidc_button(
                 "login-oidc-browser",
                 "Via le navigateur (mot de passe)",
+                None,
                 None,
                 cx,
             ))
