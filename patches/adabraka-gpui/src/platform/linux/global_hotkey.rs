@@ -30,6 +30,7 @@ impl LinuxGlobalHotkey {
 pub mod x11 {
     use super::*;
     use std::rc::Rc;
+    use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::{self, ConnectionExt as _, GrabMode, ModMask};
     use x11rb::xcb_ffi::XCBConnection;
 
