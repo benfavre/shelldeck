@@ -1424,13 +1424,16 @@ impl ScriptEditorView {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.35),
-                offset: point(gpui::px(0.0), gpui::px(4.0)),
-                blur_radius: gpui::px(16.0),
-                spread_radius: gpui::px(0.0),
-                inset: false,
-            }])
+            .shadow(
+                vec![BoxShadow {
+                    color: hsla(0.0, 0.0, 0.0, 0.35),
+                    offset: point(gpui::px(0.0), gpui::px(4.0)),
+                    blur_radius: gpui::px(16.0),
+                    spread_radius: gpui::px(0.0),
+                    inset: false,
+                }]
+                .into(),
+            )
             .p(px(4.0))
             .flex()
             .flex_col()

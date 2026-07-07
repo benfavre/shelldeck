@@ -4503,13 +4503,16 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.45),
-                offset: point(px(0.0), px(4.0)),
-                blur_radius: px(20.0),
-                spread_radius: px(0.0),
-                inset: false,
-            }])
+            .shadow(
+                vec![BoxShadow {
+                    color: hsla(0.0, 0.0, 0.0, 0.45),
+                    offset: point(px(0.0), px(4.0)),
+                    blur_radius: px(20.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }]
+                .into(),
+            )
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -4629,7 +4632,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(12.0))
             .flex()
             .flex_col()
@@ -4967,7 +4970,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(6.0))
             .flex()
             .flex_col()
@@ -5184,7 +5187,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -6535,13 +6538,16 @@ impl Render for Workspace {
                 .rounded(px(10.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
-                .shadow(vec![BoxShadow {
-                    color: hsla(0.0, 0.0, 0.0, 0.45),
-                    offset: point(px(0.0), px(2.0)),
-                    blur_radius: px(16.0),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }]);
+                .shadow(
+                    vec![BoxShadow {
+                        color: hsla(0.0, 0.0, 0.0, 0.45),
+                        offset: point(px(0.0), px(2.0)),
+                        blur_radius: px(16.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    }]
+                    .into(),
+                );
         }
 
         // Sidebar resize drag
