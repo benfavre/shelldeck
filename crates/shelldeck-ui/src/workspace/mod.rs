@@ -310,6 +310,8 @@ pub struct Workspace {
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
     /// tracked by each state entity itself; no separate `issue_field` needed.
+    /// `issue_body_state` runs in multi-line mode (`Input::multi_line(true)`
+    /// via SDPATCH-009) so Détails behaves as a textarea.
     issue_title_state: Entity<InputState>,
     issue_body_state: Entity<InputState>,
     issue_comment_state: Entity<InputState>,
@@ -676,7 +678,7 @@ impl Workspace {
             user_new_request_sheet_dismissing: false,
             user_issue_detail_dismissing: false,
             issue_title_state: cx.new(|cx| InputState::new(cx)),
-            issue_body_state: cx.new(|cx| InputState::new(cx)),
+            issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_comment_state: cx.new(|cx| InputState::new(cx)),
             issue_new_priority: "normal".to_string(),
             bext_view,
@@ -5994,7 +5996,9 @@ impl Workspace {
             });
         let body_input = Input::new(&self.issue_body_state)
             .size(InputSize::Sm)
-            .placeholder("Détails (facultatif)");
+            .placeholder("Détails (facultatif)")
+            .multi_line(true)
+            .min_rows(4);
 
         let inner = div()
             .flex()
