@@ -6,6 +6,7 @@
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -469,11 +470,6 @@ impl SupportView {
     fn render_ticket_row(&self, t: &SupportTicket, cx: &mut Context<Self>) -> impl IntoElement {
         let id = t.id.clone();
         let selected = self.selected_id.as_deref() == Some(t.id.as_str());
-        let prio_color = match t.priority.as_str() {
-            "urgent" => ShellDeckColors::error(),
-            "high" => ShellDeckColors::warning(),
-            _ => ShellDeckColors::text_muted(),
-        };
         let subject = if t.subject.trim().is_empty() {
             "(sans objet)".to_string()
         } else {
@@ -525,7 +521,7 @@ impl SupportView {
                         .text_color(ShellDeckColors::text_primary())
                         .child(subject),
                 )
-                .child(div().size(px(7.0)).rounded_full().bg(prio_color))
+                .child(priority_badge(&t.priority))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -1099,11 +1095,6 @@ impl SupportView {
             for iss in &self.issues {
                 let id = iss.id.clone();
                 let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
-                let prio = match iss.priority.as_str() {
-                    "urgent" => ShellDeckColors::error(),
-                    "high" => ShellDeckColors::warning(),
-                    _ => ShellDeckColors::text_muted(),
-                };
                 let mut row = div()
                     .id(ElementId::from(SharedString::from(format!("iss-{}", iss.id))))
                     .flex()
@@ -1137,7 +1128,7 @@ impl SupportView {
                                     .text_color(ShellDeckColors::text_primary())
                                     .child(iss.title.clone()),
                             )
-                            .child(div().size(px(7.0)).rounded_full().bg(prio)),
+                            .child(priority_badge(&iss.priority)),
                     )
                     .child(
                         div()
@@ -1605,7 +1596,7 @@ fn status_label(s: &str) -> &str {
     }
 }
 
-fn priority_label(p: &str) -> &str {
+pub(crate) fn priority_label(p: &str) -> &str {
     match p {
         "low" => "basse",
         "normal" => "normale",
@@ -1613,6 +1604,20 @@ fn priority_label(p: &str) -> &str {
         "urgent" => "urgente",
         other => other,
     }
+}
+
+/// Priority level as an adabraka `Badge` with a color that matches the
+/// severity: low → Outline (neutral), normal → Secondary (grey), high →
+/// Warning (orange), urgent → Destructive (red). Used everywhere a
+/// priority is displayed to a reader.
+pub(crate) fn priority_badge(p: &str) -> Badge {
+    let variant = match p {
+        "urgent" => BadgeVariant::Destructive,
+        "high" => BadgeVariant::Warning,
+        "low" => BadgeVariant::Outline,
+        _ => BadgeVariant::Secondary,
+    };
+    Badge::new(priority_label(p).to_string()).variant(variant)
 }
 
 fn issue_status_label(s: &str) -> &str {

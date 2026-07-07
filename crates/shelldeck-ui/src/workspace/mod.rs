@@ -38,7 +38,7 @@ use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::jean_view::{JeanView, JeanViewEvent};
-use crate::support_view::{SupportView, SupportViewEvent};
+use crate::support_view::{priority_badge, SupportView, SupportViewEvent};
 use crate::template_browser::TemplateBrowser;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -5721,11 +5721,6 @@ impl Workspace {
         for iss in &self.issues_list {
             let id = iss.id.clone();
             let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
-            let prio = match iss.priority.as_str() {
-                "urgent" => ShellDeckColors::error(),
-                "high" => ShellDeckColors::warning(),
-                _ => ShellDeckColors::text_muted(),
-            };
             let mut row = div()
                 .id(ElementId::from(SharedString::from(format!("uiss-{}", iss.id))))
                 .flex()
@@ -5755,7 +5750,7 @@ impl Workspace {
                         .text_color(ShellDeckColors::text_primary())
                         .child(iss.title.clone()),
                 )
-                .child(div().size(px(7.0)).rounded_full().bg(prio));
+                .child(priority_badge(&iss.priority));
             if let Some(g) = &iss.github {
                 row = row.child(
                     div()
@@ -5955,29 +5950,34 @@ impl Workspace {
     /// The "Nouvelle demande" composer rendered as a right-side sheet.
     fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let priorities = ["low", "normal", "high", "urgent"];
-        let mut prio_row = div().flex().items_center().gap(px(4.0));
+        let mut prio_row = div().flex().items_center().gap(px(6.0));
         for p in priorities {
             let active = self.issue_new_priority == p;
+            // Colored adabraka Badge picks up the severity mapping; the
+            // wrapper div carries the click-target + a soft ring on the
+            // selected option so the picker still reads as a choice, not a
+            // read-only tag.
             let mut chip = div()
                 .id(ElementId::from(SharedString::from(format!(
                     "iss-np-sheet-{p}"
                 ))))
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(6.0))
-                .text_size(px(11.0))
+                .p(px(2.0))
+                .rounded_full()
                 .cursor_pointer()
-                .child(p.to_string())
+                .child(priority_badge(p))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.issue_new_priority = p.to_string();
                     cx.notify();
                 }));
             if active {
                 chip = chip
-                    .bg(ShellDeckColors::selected_bg())
-                    .text_color(ShellDeckColors::text_primary());
+                    .border_2()
+                    .border_color(ShellDeckColors::primary());
             } else {
-                chip = chip.text_color(ShellDeckColors::text_muted());
+                chip = chip
+                    .border_2()
+                    .border_color(gpui::transparent_black())
+                    .opacity(0.55);
             }
             prio_row = prio_row.child(chip);
         }
