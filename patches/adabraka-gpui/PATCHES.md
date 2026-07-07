@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **7**
+Total markers in code: **9**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -64,30 +64,41 @@ only, out of the src/-scoped marker convention.)
 ### SDPATCH-104 — WGSL alignment padding for `Quad` and `Shadow`
 
 - **Files / symbols**:
-  - `src/scene.rs` — `pub(crate) struct Quad` (adds trailing `_pad: u32`
-    *after* v0.5.1's new `transform: TransformationMatrix, blend_mode: u32`
-    tail)
+  - `src/scene.rs` — `pub(crate) struct Quad` (adds interior
+    `_pad_transform: u32` between `continuous_corners` and `transform`,
+    and a trailing `_pad: u32` after `blend_mode`)
   - `src/scene.rs` — `pub(crate) struct Shadow` (adds trailing `_pad: u32`
     after `inset`)
   - `src/window.rs` — `Window::paint_shadows` (initialises `_pad: 0` on
     the `Shadow` primitive)
-  - `src/window.rs` — `Window::paint_quad` (initialises `_pad: 0` on the
-    `Quad` primitive)
-- **Markers** (4 markers total, one per site):
-  - `src/scene.rs:522` — `/// ShellDeck patch: WGSL alignment fix — `Bounds` contains `vec2<f32>``
-  - `src/scene.rs:568` — `/// ShellDeck patch: WGSL alignment fix — same reasoning as `Quad::_pad``
-  - `src/window.rs:2842` — `// ShellDeck patch: initialise the WGSL alignment padding`
-  - `src/window.rs:2876` — `// ShellDeck patch: initialise the WGSL alignment padding`
-- **Why**: WGSL treats a struct containing `vec2<f32>` (via `Bounds`) as
-  8-byte aligned, so the *element stride* of `array<Quad>` / `array<Shadow>`
-  in a storage buffer is rounded up to a multiple of 8. Rust `#[repr(C)]`
-  with a trailing `u32` tail leaves the struct's own size at only a
-  4-byte multiple. Uploading a `&[Quad]` slice as an `array<Quad>`
-  therefore misindexes every element after the first. Explicit `_pad: u32`
-  keeps the Rust-side stride in lockstep with WGSL. Upstream v0.5.1
-  already applies the *interior* variant of this pattern to `Underline`
+  - `src/window.rs` — `Window::paint_quad` (initialises `_pad_transform: 0`
+    and `_pad: 0` on the `Quad` primitive)
+- **Markers** (6 markers total, one per site):
+  - `src/scene.rs:520` — `/// ShellDeck patch: interior padding — WGSL's `TransformationMatrix``
+  - `src/scene.rs:531` — `/// ShellDeck patch: trailing pad — with `_pad_transform` above the tail`
+  - `src/scene.rs:574` — `/// ShellDeck patch: WGSL alignment fix — same reasoning as `Quad::_pad``
+  - `src/window.rs:2842` — `// ShellDeck patch: initialise the WGSL alignment padding` *(Shadow)*
+  - `src/window.rs:2874` — `// ShellDeck patch: initialise the interior WGSL alignment`
+  - `src/window.rs:2880` — `// ShellDeck patch: initialise the trailing WGSL alignment`
+- **Why**: two intertwined WGSL/Rust alignment mismatches:
+  1. **Element stride**: WGSL treats a struct containing `vec2<f32>` (via
+     `Bounds`) as 8-byte aligned, so `array<Quad>` / `array<Shadow>` round
+     the element stride up to a multiple of 8. Rust `#[repr(C)]` with a
+     trailing `u32` doesn't add that padding on its own, so the Rust
+     `sizeof` lands 4 bytes short — misindexes every element after the
+     first. Fixed by the trailing `_pad: u32`.
+  2. **Interior alignment**: `TransformationMatrix` in WGSL contains
+     `mat2x2<f32>` (align 8) so the shader implicitly pads 4 bytes before
+     `transform`. Rust's `[[f32; 2]; 2]` is align 4 → no implicit pad, so
+     every field after `continuous_corners` is 4 bytes early on the Rust
+     side. Symptom: `background` / `border_color` were read from the
+     wrong bytes shader-side, translating to alpha=0 on every solid fill
+     (the whole UI rendered translucent — desktop showed through, cf.
+     `img.ascencia.re/C18BPYwyhd5H.png` before the split). Fixed by the
+     `_pad_transform: u32` between `continuous_corners` and `transform`.
+  Upstream v0.5.1 already applies the trailing variant to `Underline`
   (`pub pad: u32, // align to 8 bytes` between `order` and `bounds`) but
-  hasn't propagated it to Quad/Shadow.
+  hasn't propagated any of it to Quad/Shadow.
 - **Upstream status**: not filed yet — real bug worth reproducing +
   upstreaming; batch with SDPATCH-101/102 in one Augani/adabraka-gpui PR.
 
@@ -121,14 +132,25 @@ only, out of the src/-scoped marker convention.)
   replayed clean (only line-number shifts and the two new `Quad` fields
   `transform`/`blend_mode` to sit above the `_pad`); SDPATCH-105 retired
   (upstream v0.5.1 shipped the same `point → pt` rename in
-  `squircle_sdf`). Marker count is now 7 = 1 + 2 + 4 + 0 (SDPATCH-105
-  moved to `## Retired patches`, SDPATCH-103 remains marker-less by
-  design). The workflow's "stop and report on upstream `div.rs` changes"
-  rule was consciously overridden for this sync — user opted to port
-  the smooth-scroll WIP onto v0.5.1's `div.rs` in the same run rather
-  than defer. v0.5.1 also adds `transform`/`blend_mode` fields to
-  `PaintQuad` — workspace call sites in `shelldeck-*` that construct
-  `PaintQuad` had to be updated in the same sync.
+  `squircle_sdf`). Initial post-sync marker count was 7 = 1 + 2 + 4 + 0
+  (SDPATCH-105 moved to `## Retired patches`, SDPATCH-103 remains
+  marker-less by design). The workflow's "stop and report on upstream
+  `div.rs` changes" rule was consciously overridden for this sync —
+  user opted to port the smooth-scroll WIP onto v0.5.1's `div.rs` in the
+  same run rather than defer. v0.5.1 also adds `transform`/`blend_mode`
+  fields to `PaintQuad` — workspace call sites in `shelldeck-*` that
+  construct `PaintQuad` had to be updated in the same sync.
+- **2026-07-07** — SDPATCH-104 hardened at runtime. First launch panicked
+  on `blade_graphics::shader:105` (`Host struct 'Quad' size doesn't match
+  the shader, left: 252 right: 256`) → bumped trailing `_pad` from `u32`
+  to `[u32; 2]`. Second launch didn't panic but rendered every solid
+  fill translucent (desktop bled through the whole UI) — root cause was
+  the WGSL `mat2x2<f32>` alignment inside `TransformationMatrix` forcing
+  an implicit 4-byte pad before `transform` shader-side that Rust's
+  `[[f32; 2]; 2]` doesn't emit. Split the pad: interior
+  `_pad_transform: u32` between `continuous_corners` and `transform`,
+  plus trailing `_pad: u32`. Marker count is now 9 = 1 + 2 + 6 + 0.
+  Runtime confirmed opaque paints.
 
 ## Retired patches
 
