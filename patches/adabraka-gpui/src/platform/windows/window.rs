@@ -385,6 +385,8 @@ impl WindowsWindow {
 
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
             (WS_EX_TOOLWINDOW, WINDOW_STYLE(0x0))
+        } else if params.kind == WindowKind::Overlay {
+            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WS_POPUP)
         } else {
             let mut dwstyle = WS_SYSMENU;
 
@@ -398,6 +400,9 @@ impl WindowsWindow {
 
             (WS_EX_APPWINDOW, dwstyle)
         };
+        if params.mouse_passthrough {
+            dwexstyle |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+        }
         if !disable_direct_composition {
             dwexstyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
@@ -849,6 +854,78 @@ impl PlatformWindow for WindowsWindow {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
         // There is no such thing on Windows.
+    }
+
+    fn show(&self) {
+        unsafe {
+            let _ = ShowWindow(self.0.hwnd, SW_SHOW);
+        }
+    }
+
+    fn hide(&self) {
+        unsafe {
+            let _ = ShowWindow(self.0.hwnd, SW_HIDE);
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        unsafe { IsWindowVisible(self.0.hwnd).as_bool() }
+    }
+
+    fn set_mouse_passthrough(&self, passthrough: bool) {
+        unsafe {
+            let ex_style = GetWindowLongW(self.0.hwnd, GWL_EXSTYLE);
+            let new_style = if passthrough {
+                ex_style | (WS_EX_TRANSPARENT.0 as i32) | (WS_EX_LAYERED.0 as i32)
+            } else {
+                ex_style & !(WS_EX_TRANSPARENT.0 as i32) & !(WS_EX_LAYERED.0 as i32)
+            };
+            if new_style != ex_style {
+                let _ = SetWindowLongW(self.0.hwnd, GWL_EXSTYLE, new_style);
+                let _ = SetWindowPos(
+                    self.0.hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                );
+            }
+        }
+    }
+
+    fn set_progress_bar(&self, state: crate::ProgressBarState) {
+        unsafe {
+            let taskbar: std::result::Result<ITaskbarList3, windows::core::Error> =
+                CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER);
+            let Ok(taskbar) = taskbar else { return };
+            if taskbar.HrInit().is_err() {
+                return;
+            }
+
+            let hwnd = self.0.hwnd;
+            match state {
+                crate::ProgressBarState::None => {
+                    let _ = taskbar.SetProgressState(hwnd, TBPF_NOPROGRESS);
+                }
+                crate::ProgressBarState::Indeterminate => {
+                    let _ = taskbar.SetProgressState(hwnd, TBPF_INDETERMINATE);
+                }
+                crate::ProgressBarState::Normal(pct) => {
+                    let _ = taskbar.SetProgressState(hwnd, TBPF_NORMAL);
+                    let _ = taskbar.SetProgressValue(hwnd, (pct * 100.0) as u64, 100);
+                }
+                crate::ProgressBarState::Error(pct) => {
+                    let _ = taskbar.SetProgressState(hwnd, TBPF_ERROR);
+                    let _ = taskbar.SetProgressValue(hwnd, (pct * 100.0) as u64, 100);
+                }
+                crate::ProgressBarState::Paused(pct) => {
+                    let _ = taskbar.SetProgressState(hwnd, TBPF_PAUSED);
+                    let _ = taskbar.SetProgressValue(hwnd, (pct * 100.0) as u64, 100);
+                }
+            }
+        }
     }
 }
 

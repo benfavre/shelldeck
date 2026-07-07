@@ -4,12 +4,14 @@ use std::{
     ops::Range,
 };
 
+use smallvec::SmallVec;
+
 use crate::{
-    black, phi, point, quad, rems, size, AbsoluteLength, App, Background, BackgroundTag,
-    BorderStyle, Bounds, ContentMask, Corners, CornersRefinement, CursorStyle, DefiniteLength,
-    DevicePixels, Edges, EdgesRefinement, Font, FontFallbacks, FontFeatures, FontStyle, FontWeight,
-    GridLocation, Hsla, Length, Pixels, Point, PointRefinement, Rgba, SharedString, Size,
-    SizeRefinement, Styled, TextRun, Window,
+    AbsoluteLength, App, Background, BackgroundTag, BlendMode, BorderStyle, Bounds, ContentMask,
+    Corners, CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement,
+    Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, Pixels,
+    Point, PointRefinement, Radians, Rgba, SharedString, Size, SizeRefinement, Styled, TextRun,
+    TransformationMatrix, Window, black, phi, point, quad, rems, size,
 };
 use collections::HashSet;
 use refineable::Refineable;
@@ -251,8 +253,11 @@ pub struct Style {
     /// Whether to use continuous (squircle) corner rounding instead of circular.
     pub continuous_corners: bool,
 
+    /// The blend mode to apply when rendering this element's background.
+    pub blend_mode: Option<BlendMode>,
+
     /// Box shadow of the element
-    pub box_shadow: Vec<BoxShadow>,
+    pub box_shadow: SmallVec<[BoxShadow; 1]>,
 
     /// The text style of this element
     pub text: TextStyleRefinement,
@@ -262,6 +267,15 @@ pub struct Style {
 
     /// The opacity of this element
     pub opacity: Option<f32>,
+
+    /// Rotation in radians (clockwise).
+    pub rotate: Option<f32>,
+
+    /// Scale factor (x, y). Defaults to (1.0, 1.0) when not set.
+    pub scale: Option<Point<f32>>,
+
+    /// Transform origin as fraction of element size (0.0-1.0). Defaults to center (0.5, 0.5).
+    pub transform_origin: Option<Point<f32>>,
 
     /// The grid columns of this element
     /// Equivalent to the Tailwind `grid-cols-<number>`
@@ -654,6 +668,8 @@ impl Style {
             .to_pixels(rem_size)
             .clamp_radii_for_quad_size(bounds.size);
 
+        let transform = self.compose_transform(bounds);
+
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
         let background_color = self.background.as_ref().and_then(Fill::color);
@@ -661,7 +677,9 @@ impl Style {
             let mut border_color = match background_color {
                 Some(color) => match color.tag {
                     BackgroundTag::Solid => color.solid,
-                    BackgroundTag::LinearGradient => color
+                    BackgroundTag::LinearGradient
+                    | BackgroundTag::RadialGradient
+                    | BackgroundTag::ConicGradient => color
                         .colors
                         .first()
                         .map(|stop| stop.color)
@@ -680,6 +698,8 @@ impl Style {
                 self.border_style,
             );
             bg_quad.continuous_corners = self.continuous_corners;
+            bg_quad.transform = transform;
+            bg_quad.blend_mode = self.blend_mode.unwrap_or_default();
             window.paint_quad(bg_quad);
         }
 
@@ -718,6 +738,7 @@ impl Style {
                 self.border_style,
             );
             quad.continuous_corners = self.continuous_corners;
+            quad.transform = transform;
 
             window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
                 window.paint_quad(quad.clone());
@@ -752,6 +773,39 @@ impl Style {
         if self.debug_below {
             cx.remove_global::<DebugBelow>();
         }
+    }
+
+    fn compose_transform(&self, bounds: Bounds<Pixels>) -> TransformationMatrix {
+        let has_transform = self.rotate.is_some() || self.scale.is_some();
+        if !has_transform {
+            return TransformationMatrix::unit();
+        }
+
+        let origin_frac = self.transform_origin.unwrap_or(Point { x: 0.5, y: 0.5 });
+        let cx = bounds.origin.x.0 + bounds.size.width.0 * origin_frac.x;
+        let cy = bounds.origin.y.0 + bounds.size.height.0 * origin_frac.y;
+
+        let mut t = TransformationMatrix::unit();
+
+        if let Some(scale) = self.scale {
+            t = t.scale(crate::Size {
+                width: scale.x,
+                height: scale.y,
+            });
+        }
+        if let Some(rotate) = self.rotate {
+            t = t.rotate(Radians(rotate));
+        }
+
+        let neg_origin = TransformationMatrix {
+            rotation_scale: [[1.0, 0.0], [0.0, 1.0]],
+            translation: [-cx, -cy],
+        };
+        let pos_origin = TransformationMatrix {
+            rotation_scale: [[1.0, 0.0], [0.0, 1.0]],
+            translation: [cx, cy],
+        };
+        pos_origin.compose(t.compose(neg_origin))
     }
 
     fn is_border_visible(&self) -> bool {
@@ -799,10 +853,14 @@ impl Default for Style {
             border_style: BorderStyle::default(),
             corner_radii: Corners::default(),
             continuous_corners: false,
+            blend_mode: None,
             box_shadow: Default::default(),
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,
+            rotate: None,
+            scale: None,
+            transform_origin: None,
             grid_rows: None,
             grid_cols: None,
             grid_location: None,

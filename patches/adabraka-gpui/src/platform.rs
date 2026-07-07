@@ -1,6 +1,10 @@
 mod app_menu;
 mod keyboard;
 mod keystroke;
+/// Cross-platform single instance enforcement using Unix domain sockets and Windows named mutexes.
+pub mod single_instance;
+/// Pure Rust utility for computing window bounds from a semantic [`WindowPosition`].
+pub mod window_positioner;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
@@ -274,6 +278,96 @@ pub(crate) trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+
+    fn set_tray_icon(&self, _icon: Option<&[u8]>) {}
+    fn set_tray_menu(&self, _menu: Vec<TrayMenuItem>) {}
+    fn set_tray_tooltip(&self, _tooltip: &str) {}
+    fn set_tray_panel_mode(&self, _enabled: bool) {}
+    fn get_tray_icon_bounds(&self) -> Option<Bounds<Pixels>> {
+        None
+    }
+    fn on_tray_icon_event(&self, _callback: Box<dyn FnMut(TrayIconEvent)>) {}
+    fn on_tray_menu_action(&self, _callback: Box<dyn FnMut(SharedString)>) {}
+
+    fn register_global_hotkey(&self, _id: u32, _keystroke: &Keystroke) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Global hotkeys not supported on this platform"
+        ))
+    }
+    fn unregister_global_hotkey(&self, _id: u32) {}
+    fn on_global_hotkey(&self, _callback: Box<dyn FnMut(u32)>) {}
+
+    fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
+        None
+    }
+
+    fn accessibility_status(&self) -> PermissionStatus {
+        PermissionStatus::Granted
+    }
+    fn request_accessibility_permission(&self) {}
+
+    fn microphone_status(&self) -> PermissionStatus {
+        PermissionStatus::Granted
+    }
+    fn request_microphone_permission(&self, callback: Box<dyn FnOnce(bool)>) {
+        callback(true);
+    }
+
+    fn set_auto_launch(&self, _app_id: &str, _enabled: bool) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Auto-launch not supported on this platform"
+        ))
+    }
+    fn is_auto_launch_enabled(&self, _app_id: &str) -> bool {
+        false
+    }
+
+    fn show_notification(&self, _title: &str, _body: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Notifications not supported on this platform"
+        ))
+    }
+
+    fn set_keep_alive_without_windows(&self, _keep_alive: bool) {}
+
+    fn on_system_power_event(&self, _callback: Box<dyn FnMut(SystemPowerEvent)>) {}
+    fn start_power_save_blocker(&self, _kind: PowerSaveBlockerKind) -> Option<u32> { None }
+    fn stop_power_save_blocker(&self, _id: u32) {}
+    fn system_idle_time(&self) -> Option<Duration> { None }
+    fn network_status(&self) -> NetworkStatus { NetworkStatus::Online }
+    fn on_network_status_change(&self, _callback: Box<dyn FnMut(NetworkStatus)>) {}
+    fn on_media_key_event(&self, _callback: Box<dyn FnMut(MediaKeyEvent)>) {}
+    fn request_user_attention(&self, _attention_type: AttentionType) {}
+    fn cancel_user_attention(&self) {}
+    fn set_dock_badge(&self, _label: Option<&str>) {}
+    fn show_context_menu(
+        &self,
+        _position: Point<Pixels>,
+        _items: Vec<TrayMenuItem>,
+        _callback: Box<dyn FnMut(SharedString)>,
+    ) {}
+    fn show_dialog(&self, _options: DialogOptions) -> oneshot::Receiver<usize> {
+        let (tx, rx) = oneshot::channel();
+        tx.send(0).ok();
+        rx
+    }
+    fn os_info(&self) -> OsInfo {
+        OsInfo {
+            name: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            version: String::new().into(),
+            locale: String::new().into(),
+            hostname: String::new().into(),
+        }
+    }
+    fn biometric_status(&self) -> BiometricStatus { BiometricStatus::Unavailable }
+    fn authenticate_biometric(
+        &self,
+        _reason: &str,
+        callback: Box<dyn FnOnce(bool) + Send>,
+    ) {
+        callback(false);
+    }
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
@@ -549,6 +643,14 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+
+    fn show(&self) {}
+    fn hide(&self) {}
+    fn is_visible(&self) -> bool {
+        true
+    }
+    fn set_mouse_passthrough(&self, _passthrough: bool) {}
+    fn set_progress_bar(&self, _state: ProgressBarState) {}
 
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
@@ -1134,6 +1236,9 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// Whether the window should allow mouse events to pass through to windows behind it
+    pub mouse_passthrough: bool,
 }
 
 /// The variables that can be configured when creating a new window
@@ -1183,6 +1288,9 @@ pub(crate) struct WindowParams {
     pub window_min_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,
+
+    #[allow(dead_code)]
+    pub mouse_passthrough: bool,
 }
 
 /// Represents the status of how a window should be opened.
@@ -1241,6 +1349,7 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            mouse_passthrough: false,
         }
     }
 }
@@ -1271,17 +1380,21 @@ pub enum WindowKind {
 
     /// A floating window that appears on top of its parent window
     Floating,
+
+    /// An overlay window that appears above all other windows, including fullscreen apps
+    Overlay,
 }
 
 /// The appearance of the window, as defined by the operating system.
 ///
 /// On macOS, this corresponds to named [`NSAppearance`](https://developer.apple.com/documentation/appkit/nsappearance)
 /// values.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum WindowAppearance {
     /// A light appearance.
     ///
     /// On macOS, this corresponds to the `aqua` appearance.
+    #[default]
     Light,
 
     /// A light appearance with vibrant colors.
@@ -1298,12 +1411,6 @@ pub enum WindowAppearance {
     ///
     /// On macOS, this corresponds to the `NSAppearanceNameVibrantDark` appearance.
     VibrantDark,
-}
-
-impl Default for WindowAppearance {
-    fn default() -> Self {
-        Self::Light
-    }
 }
 
 /// The appearance of the background of the window itself, when there is
@@ -1327,8 +1434,263 @@ pub enum WindowBackgroundAppearance {
     Blurred,
 }
 
+/// Events that can occur on a system tray icon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrayIconEvent {
+    /// The user left-clicked the tray icon.
+    LeftClick,
+    /// The user right-clicked the tray icon.
+    RightClick,
+    /// The user double-clicked the tray icon.
+    DoubleClick,
+}
+
+/// A menu item for a system tray context menu.
+#[derive(Debug, Clone)]
+pub enum TrayMenuItem {
+    /// A clickable action item.
+    Action {
+        /// The display label.
+        label: SharedString,
+        /// A unique identifier for this action.
+        id: SharedString,
+    },
+    /// A visual separator between menu items.
+    Separator,
+    /// A submenu containing nested items.
+    Submenu {
+        /// The display label.
+        label: SharedString,
+        /// The nested menu items.
+        items: Vec<TrayMenuItem>,
+    },
+    /// A toggleable menu item with a checkmark.
+    Toggle {
+        /// The display label.
+        label: SharedString,
+        /// Whether the item is currently checked.
+        checked: bool,
+        /// A unique identifier for this toggle.
+        id: SharedString,
+    },
+}
+
+/// Information about the currently focused window from any application.
+#[derive(Debug, Clone)]
+pub struct FocusedWindowInfo {
+    /// The name of the application that owns the focused window.
+    pub app_name: String,
+    /// The title of the focused window.
+    pub window_title: String,
+    /// The bundle identifier of the application (macOS only).
+    pub bundle_id: Option<String>,
+    /// The process ID of the application.
+    pub pid: Option<u32>,
+}
+
+/// The status of a system permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionStatus {
+    /// Permission has been granted.
+    Granted,
+    /// Permission has been denied.
+    Denied,
+    /// Permission has not yet been requested.
+    NotDetermined,
+}
+
+/// System power state change events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemPowerEvent {
+    /// The system is about to suspend/sleep.
+    Suspend,
+    /// The system has resumed from suspend/sleep.
+    Resume,
+    /// The screen has been locked.
+    LockScreen,
+    /// The screen has been unlocked.
+    UnlockScreen,
+    /// The system is shutting down.
+    Shutdown,
+}
+
+/// The kind of power save blocker to create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerSaveBlockerKind {
+    /// Prevent the application from being suspended.
+    PreventAppSuspension,
+    /// Prevent the display from sleeping.
+    PreventDisplaySleep,
+}
+
+/// The current network connectivity status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkStatus {
+    /// The system has network connectivity.
+    Online,
+    /// The system has no network connectivity.
+    Offline,
+}
+
+/// Media key events from hardware media keys or OS media controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKeyEvent {
+    /// Play media.
+    Play,
+    /// Pause media.
+    Pause,
+    /// Toggle play/pause.
+    PlayPause,
+    /// Stop media playback.
+    Stop,
+    /// Skip to the next track.
+    NextTrack,
+    /// Skip to the previous track.
+    PreviousTrack,
+}
+
+/// The type of user attention to request from the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionType {
+    /// An informational attention request (e.g. bounce dock icon once).
+    Informational,
+    /// A critical attention request (e.g. bounce dock icon continuously).
+    Critical,
+}
+
+/// The state of a taskbar/dock progress bar for a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProgressBarState {
+    /// No progress bar is shown.
+    None,
+    /// An indeterminate progress bar is shown.
+    Indeterminate,
+    /// A normal progress bar with the given fraction (0.0 to 1.0).
+    Normal(f64),
+    /// An error progress bar with the given fraction (0.0 to 1.0).
+    Error(f64),
+    /// A paused progress bar with the given fraction (0.0 to 1.0).
+    Paused(f64),
+}
+
+/// The kind of a native dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    /// An informational dialog.
+    Info,
+    /// A warning dialog.
+    Warning,
+    /// An error dialog.
+    Error,
+}
+
+/// Options for displaying a native dialog.
+#[derive(Debug, Clone)]
+pub struct DialogOptions {
+    /// The kind of dialog to display.
+    pub kind: DialogKind,
+    /// The title of the dialog.
+    pub title: SharedString,
+    /// The primary message of the dialog.
+    pub message: SharedString,
+    /// Optional detail text shown below the message.
+    pub detail: Option<SharedString>,
+    /// The button labels for the dialog.
+    pub buttons: Vec<SharedString>,
+}
+
+/// Information about the operating system.
+#[derive(Debug, Clone)]
+pub struct OsInfo {
+    /// The name of the operating system (e.g. "macos", "linux", "windows").
+    pub name: SharedString,
+    /// The version of the operating system.
+    pub version: SharedString,
+    /// The CPU architecture (e.g. "x86_64", "aarch64").
+    pub arch: SharedString,
+    /// The system locale (e.g. "en-US").
+    pub locale: SharedString,
+    /// The hostname of the system.
+    pub hostname: SharedString,
+}
+
+/// The kind of biometric authentication available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiometricKind {
+    /// macOS Touch ID.
+    TouchId,
+    /// Windows Hello.
+    WindowsHello,
+    /// Generic fingerprint reader.
+    Fingerprint,
+}
+
+/// The availability status of biometric authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiometricStatus {
+    /// Biometric authentication is available with the given kind.
+    Available(BiometricKind),
+    /// Biometric authentication is not available.
+    Unavailable,
+}
+
+/// A snapshot of a window's state for save/restore.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowState {
+    /// The window bounds.
+    pub bounds: WindowBounds,
+    /// The display the window is on.
+    pub display_id: Option<DisplayId>,
+    /// Whether the window is fullscreen.
+    pub fullscreen: bool,
+}
+
+/// A semantic window position for positioning windows relative to the screen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowPosition {
+    /// Center the window on the primary display.
+    Center,
+    /// Center the window on the given display.
+    CenterOnDisplay(DisplayId),
+    /// Center the window above the tray icon area.
+    TrayCenter(Bounds<Pixels>),
+    /// Position the window in the top-right corner.
+    TopRight {
+        /// The margin from the screen edge.
+        margin: Pixels,
+    },
+    /// Position the window in the bottom-right corner.
+    BottomRight {
+        /// The margin from the screen edge.
+        margin: Pixels,
+    },
+    /// Position the window in the top-left corner.
+    TopLeft {
+        /// The margin from the screen edge.
+        margin: Pixels,
+    },
+    /// Position the window in the bottom-left corner.
+    BottomLeft {
+        /// The margin from the screen edge.
+        margin: Pixels,
+    },
+}
+
+/// Information collected for a crash report.
+#[derive(Debug, Clone)]
+pub struct CrashReport {
+    /// The error message.
+    pub message: String,
+    /// The backtrace at the time of the crash.
+    pub backtrace: String,
+    /// Information about the operating system.
+    pub os_info: OsInfo,
+    /// The application version, if available.
+    pub app_version: Option<String>,
+}
+
 /// The options that can be configured for a file dialog prompt
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PathPromptOptions {
     /// Should the prompt allow files to be selected?
     pub files: bool,
@@ -1338,10 +1700,6 @@ pub struct PathPromptOptions {
     pub multiple: bool,
     /// The prompt to show to a user when selecting a path
     pub prompt: Option<SharedString>,
-    /// ShellDeck patch: initial directory the OS picker should open in (e.g.
-    /// pointing straight at `~/.ssh/` for SSH-key pickers). Ignored when the
-    /// underlying platform / portal doesn't honour it.
-    pub starting_directory: Option<std::path::PathBuf>,
 }
 
 /// What kind of prompt styling to show
@@ -1410,9 +1768,10 @@ impl From<&str> for PromptButton {
 }
 
 /// The style of the cursor (pointer)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum CursorStyle {
     /// The default cursor
+    #[default]
     Arrow,
 
     /// A text input cursor
@@ -1497,12 +1856,6 @@ pub enum CursorStyle {
 
     /// Hide the cursor
     None,
-}
-
-impl Default for CursorStyle {
-    fn default() -> Self {
-        Self::Arrow
-    }
 }
 
 /// A clipboard item that should be copied to the clipboard

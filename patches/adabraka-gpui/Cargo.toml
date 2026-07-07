@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "adabraka-gpui"
-version = "0.3.0"
+version = "0.5.1"
 authors = ["Adabraka Team"]
 build = "build.rs"
 publish = true
@@ -21,13 +21,15 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Adabraka's GPU-accelerated UI framework (fork of GPUI from Zed - github.com/zed-industries/zed)"
-homepage = "https://gpui.rs"
+description = "GPU-accelerated UI framework with system tray, global hotkeys, notifications, and daemon mode support (fork of Zed's GPUI)"
+homepage = "https://github.com/Augani/adabraka-gpui"
 readme = "README.md"
 keywords = [
-    "desktop",
     "gui",
-    "immediate",
+    "desktop",
+    "tray",
+    "gpu",
+    "daemon",
 ]
 categories = ["gui"]
 license = "Apache-2.0"
@@ -109,6 +111,10 @@ name = "animation"
 path = "examples/animation.rs"
 
 [[example]]
+name = "daemon_app"
+path = "examples/daemon_app.rs"
+
+[[example]]
 name = "data_table"
 path = "examples/data_table.rs"
 
@@ -173,6 +179,14 @@ name = "pattern"
 path = "examples/pattern.rs"
 
 [[example]]
+name = "perf_bench"
+path = "examples/perf_bench.rs"
+
+[[example]]
+name = "platform_features"
+path = "examples/platform_features.rs"
+
+[[example]]
 name = "scrollable"
 path = "examples/scrollable.rs"
 
@@ -203,6 +217,10 @@ path = "examples/text_layout.rs"
 [[example]]
 name = "text_wrapper"
 path = "examples/text_wrapper.rs"
+
+[[example]]
+name = "tray_test"
+path = "examples/tray_test.rs"
 
 [[example]]
 name = "tree"
@@ -255,11 +273,11 @@ version = "1"
 optional = true
 
 [dependencies.collections]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_collections"
 
 [dependencies.ctor]
-version = "0.4.0"
+version = "0.3.0"
 
 [dependencies.derive_more]
 version = "0.99.17"
@@ -271,11 +289,11 @@ version = "0.2"
 version = "0.3"
 
 [dependencies.gpui_macros]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka-gpui-macros"
 
 [dependencies.http_client]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_http_client"
 
 [dependencies.image]
@@ -324,7 +342,7 @@ optional = true
 version = "0.6"
 
 [dependencies.refineable]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_refineable"
 
 [dependencies.resvg]
@@ -338,13 +356,16 @@ default-features = false
 
 [dependencies.schemars]
 version = "1.0"
-features = ["indexmap2"]
+features = [
+    "indexmap2",
+    "smallvec1",
+]
 
 [dependencies.seahash]
 version = "4.1"
 
 [dependencies.semantic_version]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_semantic_version"
 
 [dependencies.serde]
@@ -366,7 +387,10 @@ version = "1.0.6"
 
 [dependencies.smallvec]
 version = "1.6"
-features = ["union"]
+features = [
+    "union",
+    "serde",
+]
 
 [dependencies.smol]
 version = "2.0"
@@ -379,7 +403,7 @@ version = "0.27.0"
 features = ["derive"]
 
 [dependencies.sum_tree]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_sum_tree"
 
 [dependencies.taffy]
@@ -393,11 +417,11 @@ version = "0.45.0"
 default-features = false
 
 [dependencies.util]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_util"
 
 [dependencies.util_macros]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_util_macros"
 
 [dependencies.uuid]
@@ -416,7 +440,7 @@ version = "1.2.0"
 version = "0.3"
 
 [dev-dependencies.collections]
-version = "0.3.0"
+version = "0.5.1"
 features = ["test-support"]
 package = "adabraka_collections"
 
@@ -424,7 +448,7 @@ package = "adabraka_collections"
 version = "0.11"
 
 [dev-dependencies.http_client]
-version = "0.3.0"
+version = "0.5.1"
 features = ["test-support"]
 package = "adabraka_http_client"
 
@@ -443,7 +467,7 @@ version = "0.9"
 version = "1.10"
 
 [dev-dependencies.util]
-version = "0.3.0"
+version = "0.5.1"
 features = ["test-support"]
 package = "adabraka_util"
 
@@ -496,6 +520,12 @@ version = "0.14.1-zed"
 features = ["source-fontconfig-dlopen"]
 optional = true
 package = "zed-font-kit"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.ksni]
+version = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.notify-rust]
+version = "4"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
 version = "0.5.0"
@@ -552,6 +582,8 @@ features = [
     "xinput",
     "cursor",
     "resource_manager",
+    "screensaver",
+    "shape",
     "sync",
 ]
 optional = true
@@ -599,10 +631,10 @@ version = "0.10.0"
 version = "0.8.6"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-graphics]
-version = "0.25"
+version = "0.24"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-text]
-version = "21"
+version = "=21.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-video]
 version = "0.4.3"
@@ -624,7 +656,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies.media]
-version = "0.3.0"
+version = "0.5.1"
 package = "adabraka_media"
 
 [target.'cfg(target_os = "macos")'.dependencies.metal]
@@ -695,6 +727,7 @@ features = [
     "Win32_System_Performance",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
+    "Win32_System_WindowsProgramming",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_System_Variant",
@@ -707,6 +740,9 @@ features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Power",
+    "Win32_System_RemoteDesktop",
+    "Win32_Networking_NetworkListManager",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-core]

@@ -1,3 +1,4 @@
+use super::tray::MacTray;
 use super::{
     BoolExt, MacKeyboardLayout, MacKeyboardMapper,
     attributed_string::{NSAttributedString, NSMutableAttributedString},
@@ -9,22 +10,23 @@ use crate::{
     CursorStyle, ForegroundExecutor, Image, ImageFormat, KeyContext, Keymap, MacDispatcher,
     MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
     PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Result, SemanticVersion, SystemMenuType, Task, WindowAppearance, WindowParams,
-    hash,
+    PlatformWindow, Result, SemanticVersion, SharedString, SystemMenuType, Task, TrayIconEvent,
+    TrayMenuItem, WindowAppearance, WindowParams, hash,
 };
 use anyhow::{Context as _, anyhow};
 use block::ConcreteBlock;
 use cocoa::{
     appkit::{
-        NSApplication, NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
-        NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponse, NSOpenPanel, NSPasteboard,
-        NSPasteboardTypePNG, NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString,
-        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
+        NSApplication, NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+        NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular, NSEventModifierFlags,
+        NSMenu, NSMenuItem, NSModalResponse, NSOpenPanel, NSPasteboard, NSPasteboardTypePNG,
+        NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString, NSPasteboardTypeTIFF,
+        NSSavePanel, NSWindow,
     },
     base::{BOOL, NO, YES, id, nil, selector},
     foundation::{
-        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
-        NSUInteger, NSURL,
+        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSSize,
+        NSString, NSUInteger, NSURL,
     },
 };
 use core_foundation::{
@@ -102,6 +104,14 @@ unsafe fn build_classes() {
                 sel!(handleGPUIMenuItem:),
                 handle_menu_item as extern "C" fn(&mut Object, Sel, id),
             );
+            decl.add_method(
+                sel!(handleTrayMenuItem:),
+                handle_tray_menu_item as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(handleTrayPanelClick:),
+                handle_tray_panel_click as extern "C" fn(&mut Object, Sel, id),
+            );
             // Add menu item handlers so that OS save panels have the correct key commands
             decl.add_method(
                 sel!(cut:),
@@ -149,6 +159,22 @@ unsafe fn build_classes() {
                 on_keyboard_layout_change as extern "C" fn(&mut Object, Sel, id),
             );
 
+            decl.add_method(
+                sel!(applicationShouldTerminateAfterLastWindowClosed:),
+                should_terminate_after_last_window_closed
+                    as extern "C" fn(&mut Object, Sel, id) -> BOOL,
+            );
+
+            decl.add_method(
+                sel!(handleSystemPowerEvent:),
+                handle_system_power_event as extern "C" fn(&mut Object, Sel, id),
+            );
+
+            decl.add_method(
+                sel!(handleContextMenuItem:),
+                handle_context_menu_item as extern "C" fn(&mut Object, Sel, id),
+            );
+
             decl.register()
         }
     }
@@ -177,6 +203,20 @@ pub(crate) struct MacPlatformState {
     dock_menu: Option<id>,
     menus: Option<Vec<OwnedMenu>>,
     keyboard_mapper: Rc<MacKeyboardMapper>,
+    keep_alive_without_windows: bool,
+    tray: Option<MacTray>,
+    tray_icon_callback: Option<Box<dyn FnMut(TrayIconEvent)>>,
+    tray_menu_callback: Option<Box<dyn FnMut(SharedString)>>,
+    global_hotkey_callback: Option<Box<dyn FnMut(u32)>>,
+    global_hotkey_monitors: Vec<id>,
+    global_hotkey_registrations: std::collections::HashMap<u32, crate::Keystroke>,
+    system_power_callback: Option<Box<dyn FnMut(crate::SystemPowerEvent)>>,
+    network_change_callback: Option<Box<dyn FnMut(crate::NetworkStatus)>>,
+    media_key_callback: Option<Box<dyn FnMut(crate::MediaKeyEvent)>>,
+    media_key_monitor: Option<id>,
+    network_monitor: Option<*const c_void>,
+    attention_request_id: isize,
+    context_menu_callback: Option<Box<dyn FnMut(crate::SharedString)>>,
 }
 
 impl Default for MacPlatform {
@@ -219,6 +259,20 @@ impl MacPlatform {
             on_keyboard_layout_change: None,
             menus: None,
             keyboard_mapper,
+            keep_alive_without_windows: false,
+            tray: None,
+            tray_icon_callback: None,
+            tray_menu_callback: None,
+            global_hotkey_callback: None,
+            global_hotkey_monitors: Vec::new(),
+            global_hotkey_registrations: std::collections::HashMap::new(),
+            system_power_callback: None,
+            network_change_callback: None,
+            media_key_callback: None,
+            media_key_monitor: None,
+            network_monitor: None,
+            attention_request_id: 0,
+            context_menu_callback: None,
         }))
     }
 
@@ -265,6 +319,23 @@ impl MacPlatform {
                 let menu_item = NSMenuItem::new(nil).autorelease();
                 menu_item.setTitle_(menu_title);
                 menu_item.setSubmenu_(menu);
+
+                if let Some(icon_bytes) = &menu_config.icon {
+                    let ns_data: id = NSData::dataWithBytes_length_(
+                        nil,
+                        icon_bytes.as_ptr() as *const std::ffi::c_void,
+                        icon_bytes.len() as u64,
+                    );
+                    let image: id = msg_send![class!(NSImage), alloc];
+                    let image: id = msg_send![image, initWithData: ns_data];
+                    if image != nil {
+                        let image: id = msg_send![image, autorelease];
+                        let _: () = msg_send![image, setSize: NSSize::new(16.0, 16.0)];
+                        let _: () = msg_send![image, setTemplate: YES];
+                        let _: () = msg_send![menu_item, setImage: image];
+                    }
+                }
+
                 application_menu.addItem_(menu_item);
 
                 if menu_config.name == "Window" {
@@ -414,7 +485,7 @@ impl MacPlatform {
                     actions.push(action.boxed_clone());
                     item
                 }
-                MenuItem::Submenu(Menu { name, items }) => {
+                MenuItem::Submenu(Menu { name, icon, items }) => {
                     let item = NSMenuItem::new(nil).autorelease();
                     let submenu = NSMenu::new(nil).autorelease();
                     submenu.setDelegate_(delegate);
@@ -423,6 +494,23 @@ impl MacPlatform {
                     }
                     item.setSubmenu_(submenu);
                     item.setTitle_(ns_string(name));
+
+                    if let Some(icon_bytes) = icon {
+                        let ns_data: id = NSData::dataWithBytes_length_(
+                            nil,
+                            icon_bytes.as_ptr() as *const std::ffi::c_void,
+                            icon_bytes.len() as u64,
+                        );
+                        let image: id = msg_send![class!(NSImage), alloc];
+                        let image: id = msg_send![image, initWithData: ns_data];
+                        if image != nil {
+                            let image: id = msg_send![image, autorelease];
+                            let _: () = msg_send![image, setSize: NSSize::new(16.0, 16.0)];
+                            let _: () = msg_send![image, setTemplate: YES];
+                            let _: () = msg_send![item, setImage: image];
+                        }
+                    }
+
                     item
                 }
                 MenuItem::SystemMenu(OsMenu { name, menu_type }) => {
@@ -1222,6 +1310,191 @@ impl Platform for MacPlatform {
         })
     }
 
+    fn set_keep_alive_without_windows(&self, keep_alive: bool) {
+        self.0.lock().keep_alive_without_windows = keep_alive;
+    }
+
+    fn set_tray_icon(&self, icon: Option<&[u8]>) {
+        let mut state = self.0.lock();
+        if state.tray.is_none() {
+            state.tray = Some(MacTray::new());
+        }
+        if let Some(tray) = &state.tray {
+            tray.set_icon(icon);
+        }
+    }
+
+    fn set_tray_menu(&self, menu: Vec<TrayMenuItem>) {
+        let mut state = self.0.lock();
+        if state.tray.is_none() {
+            state.tray = Some(MacTray::new());
+        }
+        if let Some(tray) = &state.tray {
+            tray.set_menu(menu);
+        }
+    }
+
+    fn set_tray_tooltip(&self, tooltip: &str) {
+        let mut state = self.0.lock();
+        if state.tray.is_none() {
+            state.tray = Some(MacTray::new());
+        }
+        if let Some(tray) = &state.tray {
+            tray.set_tooltip(tooltip);
+        }
+    }
+
+    fn set_tray_panel_mode(&self, enabled: bool) {
+        let mut state = self.0.lock();
+        if state.tray.is_none() {
+            state.tray = Some(MacTray::new());
+        }
+        if let Some(tray) = &state.tray {
+            tray.set_panel_mode(enabled);
+        }
+    }
+
+    fn get_tray_icon_bounds(&self) -> Option<crate::Bounds<crate::Pixels>> {
+        let state = self.0.lock();
+        state.tray.as_ref().and_then(|tray| tray.get_icon_bounds())
+    }
+
+    fn on_tray_icon_event(&self, callback: Box<dyn FnMut(TrayIconEvent)>) {
+        self.0.lock().tray_icon_callback = Some(callback);
+    }
+
+    fn on_tray_menu_action(&self, callback: Box<dyn FnMut(SharedString)>) {
+        self.0.lock().tray_menu_callback = Some(callback);
+    }
+
+    fn register_global_hotkey(&self, id: u32, keystroke: &crate::Keystroke) -> Result<()> {
+        let mut state = self.0.lock();
+        state
+            .global_hotkey_registrations
+            .insert(id, keystroke.clone());
+
+        if state.global_hotkey_monitors.is_empty() {
+            let platform_ptr = &self.0 as *const Mutex<MacPlatformState> as *const c_void;
+
+            unsafe {
+                let mask: u64 = 1 << 10;
+
+                let global_block = ConcreteBlock::new(move |event: id| {
+                    let platform_state = &*(platform_ptr as *const Mutex<MacPlatformState>);
+                    let mut lock = platform_state.lock();
+                    if let Some(hotkey_id) = super::global_hotkey::find_matching_hotkey(
+                        &lock.global_hotkey_registrations,
+                        event,
+                    ) {
+                        if let Some(mut callback) = lock.global_hotkey_callback.take() {
+                            drop(lock);
+                            callback(hotkey_id);
+                            platform_state.lock().global_hotkey_callback = Some(callback);
+                        }
+                    }
+                });
+                let global_block = global_block.copy();
+                let global_monitor: id = msg_send![
+                    class!(NSEvent),
+                    addGlobalMonitorForEventsMatchingMask: mask
+                    handler: &*global_block
+                ];
+                std::mem::forget(global_block);
+
+                let local_block = ConcreteBlock::new(move |event: id| -> id {
+                    let platform_state = &*(platform_ptr as *const Mutex<MacPlatformState>);
+                    let mut lock = platform_state.lock();
+                    if let Some(hotkey_id) = super::global_hotkey::find_matching_hotkey(
+                        &lock.global_hotkey_registrations,
+                        event,
+                    ) {
+                        if let Some(mut callback) = lock.global_hotkey_callback.take() {
+                            drop(lock);
+                            callback(hotkey_id);
+                            platform_state.lock().global_hotkey_callback = Some(callback);
+                        }
+                    }
+                    event
+                });
+                let local_block = local_block.copy();
+                let local_monitor: id = msg_send![
+                    class!(NSEvent),
+                    addLocalMonitorForEventsMatchingMask: mask
+                    handler: &*local_block
+                ];
+                std::mem::forget(local_block);
+
+                state.global_hotkey_monitors.push(global_monitor);
+                state.global_hotkey_monitors.push(local_monitor);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn unregister_global_hotkey(&self, id: u32) {
+        let mut state = self.0.lock();
+        state.global_hotkey_registrations.remove(&id);
+    }
+
+    fn on_global_hotkey(&self, callback: Box<dyn FnMut(u32)>) {
+        self.0.lock().global_hotkey_callback = Some(callback);
+    }
+
+    fn focused_window_info(&self) -> Option<crate::FocusedWindowInfo> {
+        super::active_window::get_focused_window_info()
+    }
+
+    fn accessibility_status(&self) -> crate::PermissionStatus {
+        super::permissions::accessibility_status()
+    }
+
+    fn request_accessibility_permission(&self) {
+        super::permissions::request_accessibility_permission();
+    }
+
+    fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {
+        super::auto_launch::set_auto_launch(app_id, enabled)
+    }
+
+    fn is_auto_launch_enabled(&self, app_id: &str) -> bool {
+        super::auto_launch::is_auto_launch_enabled(app_id)
+    }
+
+    fn show_notification(&self, title: &str, body: &str) -> Result<()> {
+        unsafe {
+            let bundle: id = msg_send![class!(NSBundle), mainBundle];
+            let bundle_id: id = msg_send![bundle, bundleIdentifier];
+            if bundle_id == nil {
+                return Err(anyhow!(
+                    "Notifications require an app bundle (bundleIdentifier is nil)"
+                ));
+            }
+
+            let center: id = msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+            if center == nil {
+                return Err(anyhow!("UNUserNotificationCenter not available"));
+            }
+            let content: id = msg_send![class!(UNMutableNotificationContent), new];
+            let ns_title = cocoa::foundation::NSString::alloc(nil).init_str(title);
+            let _: () = msg_send![content, setTitle: ns_title];
+            let ns_body = cocoa::foundation::NSString::alloc(nil).init_str(body);
+            let _: () = msg_send![content, setBody: ns_body];
+
+            let uuid_str = uuid::Uuid::new_v4().to_string();
+            let ns_id = cocoa::foundation::NSString::alloc(nil).init_str(&uuid_str);
+            let request: id = msg_send![
+                class!(UNNotificationRequest),
+                requestWithIdentifier: ns_id
+                content: content
+                trigger: nil
+            ];
+            let _: () =
+                msg_send![center, addNotificationRequest: request withCompletionHandler: nil];
+        }
+        Ok(())
+    }
+
     fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
         let url = url.to_string();
 
@@ -1239,6 +1512,210 @@ impl Platform for MacPlatform {
             }
             Ok(())
         })
+    }
+
+    fn on_system_power_event(&self, callback: Box<dyn FnMut(crate::SystemPowerEvent)>) {
+        self.0.lock().system_power_callback = Some(callback);
+    }
+
+    fn start_power_save_blocker(&self, kind: crate::PowerSaveBlockerKind) -> Option<u32> {
+        super::power::start_power_save_blocker(kind)
+    }
+
+    fn stop_power_save_blocker(&self, id: u32) {
+        super::power::stop_power_save_blocker(id);
+    }
+
+    fn system_idle_time(&self) -> Option<std::time::Duration> {
+        super::power::system_idle_time()
+    }
+
+    fn network_status(&self) -> crate::NetworkStatus {
+        super::network::network_status()
+    }
+
+    fn on_network_status_change(&self, callback: Box<dyn FnMut(crate::NetworkStatus)>) {
+        let mut state = self.0.lock();
+
+        if let Some(old_monitor) = state.network_monitor.take() {
+            unsafe { super::network::cancel_path_monitor(old_monitor) };
+        }
+
+        state.network_change_callback = Some(callback);
+
+        let platform_ptr = &self.0 as *const Mutex<MacPlatformState> as *const c_void;
+
+        unsafe {
+            let monitor = super::network::create_path_monitor();
+            if monitor.is_null() {
+                return;
+            }
+
+            let block = ConcreteBlock::new(move |path: *const c_void| {
+                let status = super::network::path_status_to_network_status(path);
+
+                struct NetworkChangeCtx {
+                    platform: *const c_void,
+                    status: crate::NetworkStatus,
+                }
+
+                let ctx = Box::into_raw(Box::new(NetworkChangeCtx {
+                    platform: platform_ptr,
+                    status,
+                }));
+
+                use super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
+
+                unsafe extern "C" fn invoke(ctx_ptr: *mut c_void) {
+                    let ctx = unsafe { Box::from_raw(ctx_ptr as *mut NetworkChangeCtx) };
+                    let platform_state =
+                        unsafe { &*(ctx.platform as *const Mutex<MacPlatformState>) };
+                    let mut lock = platform_state.lock();
+                    if let Some(mut callback) = lock.network_change_callback.take() {
+                        drop(lock);
+                        callback(ctx.status);
+                        platform_state.lock().network_change_callback = Some(callback);
+                    }
+                }
+
+                dispatch_async_f(dispatch_get_main_queue(), ctx as *mut c_void, Some(invoke));
+            });
+            let block = block.copy();
+
+            let queue = super::dispatcher::dispatch_get_main_queue();
+            super::network::start_path_monitor(
+                monitor,
+                &*block as *const _ as *const c_void,
+                queue as *const c_void,
+            );
+            std::mem::forget(block);
+
+            state.network_monitor = Some(monitor);
+        }
+    }
+
+    fn on_media_key_event(&self, callback: Box<dyn FnMut(crate::MediaKeyEvent)>) {
+        let mut state = self.0.lock();
+        state.media_key_callback = Some(callback);
+
+        if state.media_key_monitor.is_some() {
+            return;
+        }
+
+        let platform_ptr = &self.0 as *const Mutex<MacPlatformState> as *const c_void;
+
+        unsafe {
+            let mask: u64 = 1 << 14; // NSSystemDefinedMask
+
+            let block = ConcreteBlock::new(move |event: id| {
+                let subtype: i16 = msg_send![event, subtype];
+                if subtype != 8 {
+                    return;
+                }
+
+                let data1: isize = msg_send![event, data1];
+                let key_code = (data1 >> 16) & 0xFF;
+                let flags = (data1 >> 8) & 0xFF;
+                let is_down = (flags & 0x1) == 0;
+
+                if !is_down {
+                    return;
+                }
+
+                let media_event = match key_code {
+                    16 => crate::MediaKeyEvent::PlayPause,
+                    17 => crate::MediaKeyEvent::NextTrack,
+                    18 => crate::MediaKeyEvent::PreviousTrack,
+                    19 => crate::MediaKeyEvent::Stop,
+                    20 => crate::MediaKeyEvent::Play,
+                    _ => return,
+                };
+
+                let platform_state = &*(platform_ptr as *const Mutex<MacPlatformState>);
+                let mut lock = platform_state.lock();
+                if let Some(mut callback) = lock.media_key_callback.take() {
+                    drop(lock);
+                    callback(media_event);
+                    platform_state.lock().media_key_callback = Some(callback);
+                }
+            });
+            let block = block.copy();
+            let monitor: id = msg_send![
+                class!(NSEvent),
+                addGlobalMonitorForEventsMatchingMask: mask
+                handler: &*block
+            ];
+            std::mem::forget(block);
+
+            state.media_key_monitor = Some(monitor);
+        }
+    }
+
+    fn request_user_attention(&self, attention_type: crate::AttentionType) {
+        let id = super::dock::request_user_attention(attention_type);
+        self.0.lock().attention_request_id = id;
+    }
+
+    fn cancel_user_attention(&self) {
+        let id = self.0.lock().attention_request_id;
+        super::dock::cancel_user_attention(id);
+    }
+
+    fn set_dock_badge(&self, label: Option<&str>) {
+        super::dock::set_dock_badge(label);
+    }
+
+    fn show_context_menu(
+        &self,
+        position: crate::Point<crate::Pixels>,
+        items: Vec<crate::TrayMenuItem>,
+        callback: Box<dyn FnMut(crate::SharedString)>,
+    ) {
+        self.0.lock().context_menu_callback = Some(callback);
+
+        unsafe {
+            let menu: id = msg_send![class!(NSMenu), new];
+            let _: () = msg_send![menu, setAutoenablesItems: NO];
+            super::tray::build_menu_with_selector(
+                menu,
+                &items,
+                sel!(handleContextMenuItem:),
+            );
+
+            let main_screen: id = cocoa::appkit::NSScreen::mainScreen(nil);
+            let screen_height = if main_screen != nil {
+                cocoa::appkit::NSScreen::frame(main_screen).size.height
+            } else {
+                0.0
+            };
+
+            let point = cocoa::foundation::NSPoint::new(
+                position.x.0 as f64,
+                screen_height - position.y.0 as f64,
+            );
+
+            let _: () = msg_send![menu, popUpMenuPositioningItem: nil atLocation: point inView: nil];
+            let _: () = msg_send![menu, release];
+        }
+    }
+
+    fn show_dialog(
+        &self,
+        options: crate::DialogOptions,
+    ) -> futures::channel::oneshot::Receiver<usize> {
+        super::dialog::show_dialog(options)
+    }
+
+    fn os_info(&self) -> crate::OsInfo {
+        super::os_info::get_os_info()
+    }
+
+    fn biometric_status(&self) -> crate::BiometricStatus {
+        super::biometric::biometric_status()
+    }
+
+    fn authenticate_biometric(&self, reason: &str, callback: Box<dyn FnOnce(bool) + Send>) {
+        super::biometric::authenticate_biometric(reason, callback);
     }
 }
 
@@ -1387,7 +1864,6 @@ extern "C" fn will_finish_launching(_this: &mut Object, _: Sel, _: id) {
 extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
     unsafe {
         let app: id = msg_send![APP_CLASS, sharedApplication];
-        app.setActivationPolicy_(NSApplicationActivationPolicyRegular);
 
         let notification_center: *mut Object =
             msg_send![class!(NSNotificationCenter), defaultCenter];
@@ -1398,10 +1874,36 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             object: nil
         ];
 
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let ws_notification_center: id = msg_send![workspace, notificationCenter];
+
+        let power_notifications = [
+            "NSWorkspaceWillSleepNotification",
+            "NSWorkspaceDidWakeNotification",
+            "NSWorkspaceSessionDidResignActiveNotification",
+            "NSWorkspaceSessionDidBecomeActiveNotification",
+            "NSWorkspaceWillPowerOffNotification",
+        ];
+        for name in &power_notifications {
+            let ns_name = ns_string(name);
+            let _: () = msg_send![ws_notification_center, addObserver: this as id
+                selector: sel!(handleSystemPowerEvent:)
+                name: ns_name
+                object: nil
+            ];
+        }
+
         let platform = get_mac_platform(this);
         let callback = platform.0.lock().finish_launching.take();
         if let Some(callback) = callback {
             callback();
+        }
+
+        let keep_alive = platform.0.lock().keep_alive_without_windows;
+        if keep_alive {
+            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+        } else {
+            app.setActivationPolicy_(NSApplicationActivationPolicyRegular);
         }
     }
 }
@@ -1444,6 +1946,16 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
     }
 }
 
+extern "C" fn should_terminate_after_last_window_closed(this: &mut Object, _: Sel, _: id) -> BOOL {
+    let platform = unsafe { get_mac_platform(this) };
+    let lock = platform.0.lock();
+    if lock.keep_alive_without_windows {
+        NO
+    } else {
+        YES
+    }
+}
+
 extern "C" fn open_urls(this: &mut Object, _: Sel, _: id, urls: id) {
     let urls = unsafe {
         (0..urls.count())
@@ -1481,6 +1993,123 @@ extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
                 callback(&*action);
             }
             platform.0.lock().menu_command.get_or_insert(callback);
+        }
+    }
+}
+
+extern "C" fn handle_tray_menu_item(this: &mut Object, _: Sel, item: id) {
+    unsafe {
+        let platform = get_mac_platform(this);
+        let represented: id = msg_send![item, representedObject];
+        if represented == nil {
+            return;
+        }
+        let len: usize = msg_send![represented, lengthOfBytesUsingEncoding: NSUTF8StringEncoding];
+        let bytes: *const u8 = msg_send![represented, UTF8String];
+        let id_str = std::str::from_utf8(slice::from_raw_parts(bytes, len)).unwrap_or("");
+        let shared_id: SharedString = id_str.to_string().into();
+
+        let platform_ptr = platform as *const MacPlatform;
+
+        use super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
+
+        struct TrayActionCtx {
+            platform: *const MacPlatform,
+            id: SharedString,
+        }
+
+        let ctx = Box::into_raw(Box::new(TrayActionCtx {
+            platform: platform_ptr,
+            id: shared_id,
+        }));
+
+        unsafe extern "C" fn invoke(ctx_ptr: *mut c_void) {
+            let ctx = unsafe { Box::from_raw(ctx_ptr as *mut TrayActionCtx) };
+            let platform = unsafe { &*ctx.platform };
+            let mut lock = platform.0.lock();
+            if let Some(mut callback) = lock.tray_menu_callback.take() {
+                drop(lock);
+                callback(ctx.id);
+                platform.0.lock().tray_menu_callback = Some(callback);
+            }
+        }
+
+        dispatch_async_f(dispatch_get_main_queue(), ctx as *mut c_void, Some(invoke));
+    }
+}
+
+extern "C" fn handle_tray_panel_click(this: &mut Object, _: Sel, _sender: id) {
+    unsafe {
+        let platform = get_mac_platform(this);
+        let platform_ptr = platform as *const MacPlatform;
+
+        use super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
+
+        unsafe extern "C" fn invoke(ctx_ptr: *mut c_void) {
+            let platform = unsafe { &*(ctx_ptr as *const MacPlatform) };
+            let mut lock = platform.0.lock();
+            if let Some(mut callback) = lock.tray_icon_callback.take() {
+                drop(lock);
+                callback(TrayIconEvent::LeftClick);
+                platform.0.lock().tray_icon_callback = Some(callback);
+            }
+        }
+
+        dispatch_async_f(
+            dispatch_get_main_queue(),
+            platform_ptr as *mut c_void,
+            Some(invoke),
+        );
+    }
+}
+
+extern "C" fn handle_system_power_event(this: &mut Object, _: Sel, notification: id) {
+    unsafe {
+        let name: id = msg_send![notification, name];
+        let name_str: *const c_char = msg_send![name, UTF8String];
+        let name_cstr = CStr::from_ptr(name_str);
+        let name_bytes = name_cstr.to_bytes();
+
+        let event = match name_bytes {
+            b"NSWorkspaceWillSleepNotification" => crate::SystemPowerEvent::Suspend,
+            b"NSWorkspaceDidWakeNotification" => crate::SystemPowerEvent::Resume,
+            b"NSWorkspaceSessionDidResignActiveNotification" => {
+                crate::SystemPowerEvent::LockScreen
+            }
+            b"NSWorkspaceSessionDidBecomeActiveNotification" => {
+                crate::SystemPowerEvent::UnlockScreen
+            }
+            b"NSWorkspaceWillPowerOffNotification" => crate::SystemPowerEvent::Shutdown,
+            _ => return,
+        };
+
+        let platform = get_mac_platform(this);
+        let mut lock = platform.0.lock();
+        if let Some(mut callback) = lock.system_power_callback.take() {
+            drop(lock);
+            callback(event);
+            platform.0.lock().system_power_callback = Some(callback);
+        }
+    }
+}
+
+extern "C" fn handle_context_menu_item(this: &mut Object, _: Sel, item: id) {
+    unsafe {
+        let platform = get_mac_platform(this);
+        let represented: id = msg_send![item, representedObject];
+        if represented == nil {
+            return;
+        }
+        let len: usize = msg_send![represented, lengthOfBytesUsingEncoding: NSUTF8StringEncoding];
+        let bytes: *const u8 = msg_send![represented, UTF8String];
+        let id_str = std::str::from_utf8(slice::from_raw_parts(bytes, len)).unwrap_or("");
+        let shared_id: SharedString = id_str.to_string().into();
+
+        let mut lock = platform.0.lock();
+        if let Some(mut callback) = lock.context_menu_callback.take() {
+            drop(lock);
+            callback(shared_id);
+            platform.0.lock().context_menu_callback = Some(callback);
         }
     }
 }

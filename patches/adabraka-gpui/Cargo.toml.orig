@@ -1,17 +1,19 @@
 [package]
 edition = "2024"
 name = "adabraka-gpui"
-version = "0.3.0"
+version = "0.5.1"
 authors = ["Adabraka Team"]
 build = "build.rs"
 publish = true
-description = "Adabraka's GPU-accelerated UI framework (fork of GPUI from Zed - github.com/zed-industries/zed)"
-homepage = "https://gpui.rs"
+description = "GPU-accelerated UI framework with system tray, global hotkeys, notifications, and daemon mode support (fork of Zed's GPUI)"
+homepage = "https://github.com/Augani/adabraka-gpui"
 readme = "README.md"
 keywords = [
-    "desktop",
     "gui",
-    "immediate",
+    "desktop",
+    "tray",
+    "gpu",
+    "daemon",
 ]
 categories = ["gui"]
 license = "Apache-2.0"
@@ -240,10 +242,10 @@ optional = true
 [dependencies.collections]
 path = "../collections"
 package = "adabraka_collections"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.ctor]
-version = "0.4.0"
+version = "0.3.0"
 
 [dependencies.derive_more]
 version = "0.99.17"
@@ -257,12 +259,12 @@ version = "0.3"
 [dependencies.gpui_macros]
 path = "../gpui-macros"
 package = "adabraka-gpui-macros"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.http_client]
 path = "../http_client"
 package = "adabraka_http_client"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.image]
 version = "0.25.1"
@@ -312,7 +314,7 @@ version = "0.6"
 [dependencies.refineable]
 path = "../refineable"
 package = "adabraka_refineable"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.resvg]
 version = "0.45.0"
@@ -325,7 +327,7 @@ default-features = false
 
 [dependencies.schemars]
 version = "1.0"
-features = ["indexmap2"]
+features = ["indexmap2", "smallvec1"]
 
 [dependencies.seahash]
 version = "4.1"
@@ -333,7 +335,7 @@ version = "4.1"
 [dependencies.semantic_version]
 path = "../semantic_version"
 package = "adabraka_semantic_version"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.serde]
 version = "1.0.221"
@@ -354,7 +356,7 @@ version = "1.0.6"
 
 [dependencies.smallvec]
 version = "1.6"
-features = ["union"]
+features = ["union", "serde"]
 
 [dependencies.smol]
 version = "2.0"
@@ -369,7 +371,7 @@ features = ["derive"]
 [dependencies.sum_tree]
 path = "../sum_tree"
 package = "adabraka_sum_tree"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.taffy]
 version = "=0.9.0"
@@ -384,12 +386,12 @@ default-features = false
 [dependencies.util]
 path = "../util"
 package = "adabraka_util"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.util_macros]
 path = "../util_macros"
 package = "adabraka_util_macros"
-version = "0.3.0"
+version = "0.5.1"
 
 [dependencies.uuid]
 version = "1.1.2"
@@ -411,7 +413,7 @@ version = "0.3"
 path = "../collections"
 features = ["test-support"]
 package = "adabraka_collections"
-version = "0.3.0"
+version = "0.5.1"
 
 [dev-dependencies.env_logger]
 version = "0.11"
@@ -420,7 +422,7 @@ version = "0.11"
 path = "../http_client"
 features = ["test-support"]
 package = "adabraka_http_client"
-version = "0.3.0"
+version = "0.5.1"
 
 [dev-dependencies.lyon]
 version = "1.0"
@@ -440,7 +442,7 @@ version = "1.10"
 path = "../util"
 features = ["test-support"]
 package = "adabraka_util"
-version = "0.3.0"
+version = "0.5.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.as-raw-xcb-connection]
 version = "1"
@@ -547,6 +549,8 @@ features = [
     "xinput",
     "cursor",
     "resource_manager",
+    "screensaver",
+    "shape",
     "sync",
 ]
 optional = true
@@ -567,6 +571,12 @@ features = [
     "x11",
 ]
 optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.ksni]
+version = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.notify-rust]
+version = "4"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies.naga]
 version = "25.0"
@@ -597,7 +607,7 @@ version = "0.8.6"
 version = "0.24"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-text]
-version = "21"
+version = "=21.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies.core-video]
 version = "0.4.3"
@@ -621,7 +631,7 @@ features = [
 [target.'cfg(target_os = "macos")'.dependencies.media]
 path = "../media"
 package = "adabraka_media"
-version = "0.3.0"
+version = "0.5.1"
 
 [target.'cfg(target_os = "macos")'.dependencies.metal]
 version = "0.29"
@@ -691,6 +701,7 @@ features = [
     "Win32_System_Performance",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
+    "Win32_System_WindowsProgramming",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_System_Variant",
@@ -703,6 +714,9 @@ features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Power",
+    "Win32_System_RemoteDesktop",
+    "Win32_Networking_NetworkListManager",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-core]
