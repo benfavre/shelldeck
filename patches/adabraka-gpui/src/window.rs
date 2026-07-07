@@ -2839,6 +2839,9 @@ impl Window {
                 corner_radii: corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
                 inset: if shadow.inset { 1 } else { 0 },
+                // ShellDeck patch: initialise the WGSL alignment padding
+                // (SDPATCH-104, `Shadow::_pad` in scene.rs).
+                _pad: 0,
             });
         }
     }
@@ -2870,6 +2873,9 @@ impl Window {
             continuous_corners: if quad.continuous_corners { 1 } else { 0 },
             transform: quad.transform,
             blend_mode: quad.blend_mode as u32,
+            // ShellDeck patch: initialise the WGSL alignment padding
+            // (SDPATCH-104, `Quad::_pad` in scene.rs).
+            _pad: 0,
         });
     }
 
