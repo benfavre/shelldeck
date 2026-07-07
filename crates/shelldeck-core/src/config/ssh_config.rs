@@ -50,10 +50,9 @@ pub fn parse_ssh_config_file(path: &Path) -> Result<Vec<Connection>> {
         let params = &host.params;
 
         let hostname = params.host_name.clone().unwrap_or_else(|| alias.clone());
-        let user = params
-            .user
-            .clone()
-            .unwrap_or_else(|| crate::util::current_username().unwrap_or_else(|| "root".to_string()));
+        let user = params.user.clone().unwrap_or_else(|| {
+            crate::util::current_username().unwrap_or_else(|| "root".to_string())
+        });
         let port = params.port.unwrap_or(22);
         let identity_file = params
             .identity_file

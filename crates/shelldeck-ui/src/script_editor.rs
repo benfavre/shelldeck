@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::scale::px;
 use adabraka_ui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 use shelldeck_core::models::execution::ExecutionRecord;
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;
@@ -427,7 +427,12 @@ impl ScriptEditorView {
                                 .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                     cx.emit(ScriptEvent::AddScript);
                                 }))
-                                .child(svg().path("images/plus.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
+                                .child(
+                                    svg()
+                                        .path("images/plus.svg")
+                                        .size(px(14.0))
+                                        .text_color(ShellDeckColors::text_muted()),
+                                ),
                         ),
                 ),
         );
@@ -1454,12 +1459,7 @@ impl ScriptEditorView {
                     .whitespace_nowrap()
                     .child(title),
             )
-            .child(
-                div()
-                    .h(px(1.0))
-                    .my(px(2.0))
-                    .bg(ShellDeckColors::border()),
-            )
+            .child(div().h(px(1.0)).my(px(2.0)).bg(ShellDeckColors::border()))
             // Run
             .child(
                 div()
@@ -1483,12 +1483,7 @@ impl ScriptEditorView {
                         cx.emit(ScriptEvent::RunScriptById(script_id));
                     })),
             )
-            .child(
-                div()
-                    .h(px(1.0))
-                    .my(px(2.0))
-                    .bg(ShellDeckColors::border()),
-            )
+            .child(div().h(px(1.0)).my(px(2.0)).bg(ShellDeckColors::border()))
             // Delete
             .child(
                 div()

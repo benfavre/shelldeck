@@ -11,7 +11,11 @@ use crate::toast::ToastLevel;
 use super::{ActiveScript, Workspace};
 
 impl Workspace {
-    pub(super) fn handle_server_sync_event(&mut self, event: &ServerSyncEvent, cx: &mut Context<Self>) {
+    pub(super) fn handle_server_sync_event(
+        &mut self,
+        event: &ServerSyncEvent,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             ServerSyncEvent::ListFiles {
                 connection_id,
@@ -219,7 +223,12 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn list_local_files(&mut self, path: String, panel: PanelSide, cx: &mut Context<Self>) {
+    pub(super) fn list_local_files(
+        &mut self,
+        path: String,
+        panel: PanelSide,
+        cx: &mut Context<Self>,
+    ) {
         use shelldeck_core::models::discovery;
         let entries = discovery::list_local_files(&path);
         self.server_sync.update(cx, |view, cx| {
@@ -551,5 +560,4 @@ impl Workspace {
         })
         .detach();
     }
-
 }

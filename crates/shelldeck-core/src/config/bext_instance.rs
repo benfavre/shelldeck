@@ -93,14 +93,16 @@ fn map_status(status: u16) -> Option<ShellDeckError> {
 
 // The bext loopback (:80) occasionally resets a fresh connection under load — a
 // single retry on a *transport* error (never on an HTTP status) absorbs the blip.
-fn send_retry(build: impl Fn() -> reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response> {
+fn send_retry(
+    build: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response> {
     match build().send() {
         Ok(r) => Ok(r),
         Err(_) => {
             std::thread::sleep(Duration::from_millis(150));
-            build()
-                .send()
-                .map_err(|e| ShellDeckError::Connection(format!("instance SDK request failed: {}", e)))
+            build().send().map_err(|e| {
+                ShellDeckError::Connection(format!("instance SDK request failed: {}", e))
+            })
         }
     }
 }
@@ -116,10 +118,19 @@ fn get_json<T: serde::de::DeserializeOwned>(inst: &BextInstance, path: &str) -> 
         .map_err(|e| ShellDeckError::Serialization(format!("invalid instance SDK response: {}", e)))
 }
 
-fn post_json<T: serde::de::DeserializeOwned>(inst: &BextInstance, path: &str, body: &serde_json::Value) -> Result<T> {
+fn post_json<T: serde::de::DeserializeOwned>(
+    inst: &BextInstance,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T> {
     let client = http_client()?;
     let url = sdk_url(inst, path);
-    let resp = send_retry(|| client.post(&url).header("x-bext-app-id", &inst.app_id).json(body))?;
+    let resp = send_retry(|| {
+        client
+            .post(&url)
+            .header("x-bext-app-id", &inst.app_id)
+            .json(body)
+    })?;
     if let Some(e) = map_status(resp.status().as_u16()) {
         return Err(e);
     }
@@ -136,29 +147,54 @@ pub fn list_sites(inst: &BextInstance) -> Result<InstanceSites> {
 pub fn get_site(inst: &BextInstance, slug: &str) -> Result<serde_json::Value> {
     get_json(
         inst,
-        &format!("/get?slug={}", crate::config::cloud_account::percent_encode(slug)),
+        &format!(
+            "/get?slug={}",
+            crate::config::cloud_account::percent_encode(slug)
+        ),
     )
 }
 
 /// Provision a new site (`kind` e.g. "wordpress", `env` e.g. "staging").
-pub fn create_site(inst: &BextInstance, slug: &str, title: Option<&str>, kind: Option<&str>, env: Option<&str>) -> Result<serde_json::Value> {
+pub fn create_site(
+    inst: &BextInstance,
+    slug: &str,
+    title: Option<&str>,
+    kind: Option<&str>,
+    env: Option<&str>,
+) -> Result<serde_json::Value> {
     let mut body = serde_json::json!({ "slug": slug });
-    if let Some(t) = title { body["title"] = serde_json::json!(t); }
-    if let Some(k) = kind { body["kind"] = serde_json::json!(k); }
-    if let Some(e) = env { body["env"] = serde_json::json!(e); }
+    if let Some(t) = title {
+        body["title"] = serde_json::json!(t);
+    }
+    if let Some(k) = kind {
+        body["kind"] = serde_json::json!(k);
+    }
+    if let Some(e) = env {
+        body["env"] = serde_json::json!(e);
+    }
     post_json(inst, "/create", &body)
 }
 
 /// Attach a live domain to a site.
 pub fn go_live(inst: &BextInstance, slug: &str, domain: &str) -> Result<serde_json::Value> {
-    post_json(inst, "/go_live", &serde_json::json!({ "slug": slug, "domain": domain }))
+    post_json(
+        inst,
+        "/go_live",
+        &serde_json::json!({ "slug": slug, "domain": domain }),
+    )
 }
 
 /// Update a site's config (arbitrary fields merged server-side).
-pub fn config_site(inst: &BextInstance, slug: &str, extra: serde_json::Value) -> Result<serde_json::Value> {
+pub fn config_site(
+    inst: &BextInstance,
+    slug: &str,
+    extra: serde_json::Value,
+) -> Result<serde_json::Value> {
     let mut body = serde_json::json!({ "slug": slug });
     if let serde_json::Value::Object(map) = extra {
-        for (k, v) in map { body[k] = v; }
+        for (k, v) in map {
+            body[k] = v;
+        }
     }
     post_json(inst, "/config", &body)
 }
@@ -196,7 +232,9 @@ mod tests {
 
     #[test]
     fn list_sites_parses_and_sends_app_id() {
-        let (addr, h) = mock(r#"{"sites":[{"slug":"testcool","kind":"wordpress","title":"testcool","env":"staging","primary_domain":"testcool.staging.bext.dev","domains":["testcool.staging.bext.dev"],"unix_user":"wp-testcool","db_name":null}]}"#);
+        let (addr, h) = mock(
+            r#"{"sites":[{"slug":"testcool","kind":"wordpress","title":"testcool","env":"staging","primary_domain":"testcool.staging.bext.dev","domains":["testcool.staging.bext.dev"],"unix_user":"wp-testcool","db_name":null}]}"#,
+        );
         let inst = BextInstance::new(addr, "cloud-bext");
         let r = list_sites(&inst).unwrap();
         assert_eq!(r.sites.len(), 1);
@@ -211,7 +249,14 @@ mod tests {
     fn create_body_shape() {
         let (addr, h) = mock(r#"{"ok":true}"#);
         let inst = BextInstance::new(addr, "app");
-        let _ = create_site(&inst, "newsite", Some("New Site"), Some("wordpress"), Some("staging")).unwrap();
+        let _ = create_site(
+            &inst,
+            "newsite",
+            Some("New Site"),
+            Some("wordpress"),
+            Some("staging"),
+        )
+        .unwrap();
         let req = h.join().unwrap();
         assert!(req.contains("/__bext/sdk/site/create"));
         assert!(req.contains("\"slug\":\"newsite\""));

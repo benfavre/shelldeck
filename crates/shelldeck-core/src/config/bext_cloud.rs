@@ -17,8 +17,8 @@
 //! is surfaced as a clear "token rejected". All list/read types are tolerant of
 //! missing/null fields (the dashboard payload is broad and partly optional).
 
-use crate::error::{Result, ShellDeckError};
 use crate::config::cloud_account::percent_decode;
+use crate::error::{Result, ShellDeckError};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -185,7 +185,9 @@ fn api(base_url: &str, path: &str) -> String {
 
 // A single retry on a *transport* error (never on an HTTP status) absorbs the
 // occasional loopback/proxy connection reset seen on this host.
-fn send_retry(build: impl Fn() -> reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response> {
+fn send_retry(
+    build: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response> {
     match build().send() {
         Ok(r) => Ok(r),
         Err(_) => {
@@ -234,7 +236,11 @@ pub fn list_sites(cfg: &BextCloudConfig) -> Result<SitesResponse> {
 }
 
 /// Create a one-click WordPress site (`name` = lowercase slug).
-pub fn create_site(cfg: &BextCloudConfig, name: &str, title: Option<&str>) -> Result<serde_json::Value> {
+pub fn create_site(
+    cfg: &BextCloudConfig,
+    name: &str,
+    title: Option<&str>,
+) -> Result<serde_json::Value> {
     let mut body = serde_json::json!({ "name": name.trim().to_lowercase() });
     if let Some(t) = title {
         body["title"] = serde_json::json!(t);
@@ -243,7 +249,12 @@ pub fn create_site(cfg: &BextCloudConfig, name: &str, title: Option<&str>) -> Re
 }
 
 /// Run a per-site lifecycle action: `go_live` | `config` | `destroy`.
-pub fn site_action(cfg: &BextCloudConfig, slug: &str, action: &str, extra: Option<serde_json::Value>) -> Result<serde_json::Value> {
+pub fn site_action(
+    cfg: &BextCloudConfig,
+    slug: &str,
+    action: &str,
+    extra: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
     let mut body = serde_json::json!({ "slug": slug, "action": action });
     if let Some(serde_json::Value::Object(map)) = extra {
         for (k, v) in map {
@@ -267,7 +278,11 @@ pub fn list_instances(cfg: &BextCloudConfig) -> Result<InstancesResponse> {
 
 /// The URL to open in the system browser to start the cloud CLI login.
 pub fn cli_login_url(base_url: &str, port: u16) -> String {
-    format!("{}/api/auth/cli?port={}", base_url.trim_end_matches('/'), port)
+    format!(
+        "{}/api/auth/cli?port={}",
+        base_url.trim_end_matches('/'),
+        port
+    )
 }
 
 /// What the loopback callback hands back after a successful cloud CLI login.
@@ -287,9 +302,7 @@ color:#e6e6e6;display:flex;min-height:100vh;align-items:center;justify-content:c
 /// Block on the loopback listener until the cloud CLI callback arrives (or timeout).
 /// Bind the listener OUTSIDE (so the caller knows `port` before opening the browser).
 pub fn browser_connect_listen(listener: TcpListener, timeout: Duration) -> Result<CloudConnect> {
-    listener
-        .set_nonblocking(true)
-        .map_err(ShellDeckError::Io)?;
+    listener.set_nonblocking(true).map_err(ShellDeckError::Io)?;
     let deadline = Instant::now() + timeout;
     loop {
         if Instant::now() >= deadline {
@@ -348,7 +361,12 @@ fn handle_callback(mut stream: TcpStream) -> std::io::Result<Option<CloudConnect
     Ok(None)
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, reason: &str, body: &str) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> std::io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status, reason, body.len(), body
@@ -400,7 +418,8 @@ mod tests {
 
     fn send_callback(port: u16, target: &str) {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let _ = s.write_all(format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", target).as_bytes());
+        let _ =
+            s.write_all(format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", target).as_bytes());
         let mut buf = [0u8; 64];
         let _ = s.read(&mut buf);
     }
@@ -411,7 +430,10 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         let h = std::thread::spawn(move || browser_connect_listen(l, Duration::from_secs(5)));
         std::thread::sleep(Duration::from_millis(80));
-        send_callback(port, "/callback?token=bext_deadbeef&email=a%40b.com&name=Ben");
+        send_callback(
+            port,
+            "/callback?token=bext_deadbeef&email=a%40b.com&name=Ben",
+        );
         let c = h.join().unwrap().unwrap();
         assert_eq!(c.token, "bext_deadbeef");
         assert_eq!(c.email, "a@b.com");

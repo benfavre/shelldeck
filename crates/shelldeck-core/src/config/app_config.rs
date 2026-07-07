@@ -182,7 +182,9 @@ impl AppConfig {
                 if let Some(home) = crate::util::home_dir() {
                     home.join(".config").join("shelldeck")
                 } else {
-                    tracing::warn!("HOME not set and ProjectDirs unavailable; using current dir for config");
+                    tracing::warn!(
+                        "HOME not set and ProjectDirs unavailable; using current dir for config"
+                    );
                     PathBuf::from(".shelldeck")
                 }
             }
@@ -360,7 +362,10 @@ mod tests {
             pass: "x".into(),
         });
         cfg.save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path).unwrap().jeanclaude.expect("present");
+        let loaded = AppConfig::load_from(&path)
+            .unwrap()
+            .jeanclaude
+            .expect("present");
         assert_eq!(loaded.url, "http://127.0.0.1:3100");
         assert_eq!(loaded.user, "jean");
 
@@ -386,7 +391,10 @@ mod tests {
         let loaded = AppConfig::load_from(&path).expect("load");
         assert!(loaded.jean_runtime.enabled);
         assert_eq!(loaded.jean_runtime.instance_id.as_deref(), Some("4365eee9"));
-        assert_eq!(loaded.jean_runtime.workdir.as_deref(), Some("/home/x/infra"));
+        assert_eq!(
+            loaded.jean_runtime.workdir.as_deref(),
+            Some("/home/x/infra")
+        );
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

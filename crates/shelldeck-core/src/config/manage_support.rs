@@ -341,7 +341,12 @@ pub fn support_note(base_url: &str, token: &str, id: &str, text: &str) -> Result
     )
 }
 
-pub fn support_status(base_url: &str, token: &str, id: &str, status: &str) -> Result<SupportTicket> {
+pub fn support_status(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    status: &str,
+) -> Result<SupportTicket> {
     post_action(
         base_url,
         token,

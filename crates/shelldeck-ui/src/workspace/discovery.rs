@@ -674,5 +674,4 @@ impl Workspace {
         })
         .detach();
     }
-
 }

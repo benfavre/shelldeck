@@ -1,7 +1,7 @@
+use crate::scale::px;
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::themes::TerminalTheme;
@@ -763,12 +763,7 @@ impl SettingsView {
                 .flex()
                 .flex_col()
                 .justify_between()
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(fg)
-                        .child("Aa Bb 123"),
-                );
+                .child(div().text_size(px(10.0)).text_color(fg).child("Aa Bb 123"));
             let mut dots = div().flex().gap(px(3.0));
             for s in swatches {
                 dots = dots.child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(s));
@@ -776,7 +771,10 @@ impl SettingsView {
             preview = preview.child(dots);
 
             let mut card = div()
-                .id(ElementId::from(SharedString::from(format!("theme-{}", name))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "theme-{}",
+                    name
+                ))))
                 .w(px(124.0))
                 .h(px(82.0))
                 .rounded(px(6.0))
@@ -980,7 +978,10 @@ impl SettingsView {
                         let f = font_name.to_string();
                         let is_active = current == f;
                         let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!("ui-font-{}", f))))
+                            .id(ElementId::from(SharedString::from(format!(
+                                "ui-font-{}",
+                                f
+                            ))))
                             .px(px(8.0))
                             .py(px(4.0))
                             .rounded(px(4.0))
@@ -1157,10 +1158,7 @@ impl SettingsView {
                 "GitHub",
                 "github.com/benfavre/shelldeck",
             ))
-            .child(Self::render_about_row(
-                "Website",
-                "shelldeck.1clic.pro",
-            ));
+            .child(Self::render_about_row("Website", "shelldeck.1clic.pro"));
 
         root = root.child(card);
 
@@ -1174,11 +1172,7 @@ impl SettingsView {
                 .items_center()
                 .gap(px(6.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .child("Made with"),
-                )
+                .child(div().text_size(px(11.0)).child("Made with"))
                 .child(
                     svg()
                         .path("images/wd29-logo.svg")

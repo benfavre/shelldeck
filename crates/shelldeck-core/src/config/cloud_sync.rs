@@ -310,7 +310,8 @@ mod tests {
     use super::*;
 
     fn cloud_conn(id: Uuid, alias: &str) -> Connection {
-        let mut c = Connection::new_manual(alias.to_string(), "old-host".to_string(), "old".to_string());
+        let mut c =
+            Connection::new_manual(alias.to_string(), "old-host".to_string(), "old".to_string());
         c.id = id;
         c.source = ConnectionSource::CloudSync;
         c
@@ -340,7 +341,14 @@ mod tests {
         let id = Uuid::new_v4();
         let stats = merge_profiles(&mut store, &[remote(id, "activ-2", "1.2.3.4")]);
 
-        assert_eq!(stats, MergeStats { added: 1, updated: 0, removed: 0 });
+        assert_eq!(
+            stats,
+            MergeStats {
+                added: 1,
+                updated: 0,
+                removed: 0
+            }
+        );
         assert_eq!(store.connections.len(), 1);
         let c = &store.connections[0];
         assert_eq!(c.id, id);
@@ -388,7 +396,14 @@ mod tests {
 
         let stats = merge_profiles(&mut store, &[remote(id, "new-alias", "9.9.9.9")]);
 
-        assert_eq!(stats, MergeStats { added: 0, updated: 1, removed: 0 });
+        assert_eq!(
+            stats,
+            MergeStats {
+                added: 0,
+                updated: 1,
+                removed: 0
+            }
+        );
         assert_eq!(store.connections.len(), 1);
         let c = &store.connections[0];
         assert_eq!(c.alias, "new-alias");
@@ -410,7 +425,14 @@ mod tests {
 
         let stats = merge_profiles(&mut store, &[remote(keep, "keep", "1.1.1.1")]);
 
-        assert_eq!(stats, MergeStats { added: 0, updated: 1, removed: 1 });
+        assert_eq!(
+            stats,
+            MergeStats {
+                added: 0,
+                updated: 1,
+                removed: 1
+            }
+        );
         assert_eq!(store.connections.len(), 1);
         assert_eq!(store.connections[0].id, keep);
     }
@@ -432,10 +454,14 @@ mod tests {
 
         assert_eq!(stats.added, 1);
         assert_eq!(stats.removed, 0);
-        assert!(store.connections.iter().any(|c| c.id == manual_id
-            && c.source == ConnectionSource::Manual));
-        assert!(store.connections.iter().any(|c| c.id == ssh_id
-            && c.source == ConnectionSource::SshConfig));
+        assert!(store
+            .connections
+            .iter()
+            .any(|c| c.id == manual_id && c.source == ConnectionSource::Manual));
+        assert!(store
+            .connections
+            .iter()
+            .any(|c| c.id == ssh_id && c.source == ConnectionSource::SshConfig));
     }
 
     #[test]
@@ -519,7 +545,10 @@ sync_on_startup = false
             "tags": ["prod"], "forward_agent": false, "identity_file": null, "notes": null } ] }"#;
         let payload: SyncPayload = serde_json::from_str(json).expect("parse payload");
         assert_eq!(payload.version, 1);
-        assert_eq!(payload.generated_at.as_deref(), Some("2026-07-02T12:00:00Z"));
+        assert_eq!(
+            payload.generated_at.as_deref(),
+            Some("2026-07-02T12:00:00Z")
+        );
         assert_eq!(payload.connections.len(), 1);
         assert_eq!(payload.connections[0].alias, "activ-2");
     }

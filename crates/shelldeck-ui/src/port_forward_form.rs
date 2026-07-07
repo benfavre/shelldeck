@@ -1,7 +1,7 @@
+use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;
@@ -708,7 +708,12 @@ impl Render for PortForwardForm {
                                     .cursor_pointer()
                                     .text_color(ShellDeckColors::text_muted())
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
+                                    .child(
+                                        svg()
+                                            .path("images/close.svg")
+                                            .size(px(14.0))
+                                            .text_color(ShellDeckColors::text_muted()),
+                                    )
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(PortForwardFormEvent::Cancel);
                                     })),

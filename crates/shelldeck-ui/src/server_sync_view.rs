@@ -1,6 +1,6 @@
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::server_sync::*;
 use uuid::Uuid;

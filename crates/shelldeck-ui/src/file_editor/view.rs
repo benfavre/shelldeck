@@ -68,13 +68,41 @@ struct ContextMenuItem {
 }
 
 const CONTEXT_MENU_ITEMS: &[ContextMenuItem] = &[
-    ContextMenuItem { label: "Undo", shortcut: "Ctrl+Z", action: ContextMenuAction::Undo },
-    ContextMenuItem { label: "Redo", shortcut: "Ctrl+Y", action: ContextMenuAction::Redo },
-    ContextMenuItem { label: "Cut", shortcut: "Ctrl+X", action: ContextMenuAction::Cut },
-    ContextMenuItem { label: "Copy", shortcut: "Ctrl+C", action: ContextMenuAction::Copy },
-    ContextMenuItem { label: "Paste", shortcut: "Ctrl+V", action: ContextMenuAction::Paste },
-    ContextMenuItem { label: "Select All", shortcut: "Ctrl+A", action: ContextMenuAction::SelectAll },
-    ContextMenuItem { label: "Toggle Comment", shortcut: "Ctrl+/", action: ContextMenuAction::ToggleComment },
+    ContextMenuItem {
+        label: "Undo",
+        shortcut: "Ctrl+Z",
+        action: ContextMenuAction::Undo,
+    },
+    ContextMenuItem {
+        label: "Redo",
+        shortcut: "Ctrl+Y",
+        action: ContextMenuAction::Redo,
+    },
+    ContextMenuItem {
+        label: "Cut",
+        shortcut: "Ctrl+X",
+        action: ContextMenuAction::Cut,
+    },
+    ContextMenuItem {
+        label: "Copy",
+        shortcut: "Ctrl+C",
+        action: ContextMenuAction::Copy,
+    },
+    ContextMenuItem {
+        label: "Paste",
+        shortcut: "Ctrl+V",
+        action: ContextMenuAction::Paste,
+    },
+    ContextMenuItem {
+        label: "Select All",
+        shortcut: "Ctrl+A",
+        action: ContextMenuAction::SelectAll,
+    },
+    ContextMenuItem {
+        label: "Toggle Comment",
+        shortcut: "Ctrl+/",
+        action: ContextMenuAction::ToggleComment,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -484,8 +512,7 @@ impl FileEditorView {
 
     pub fn save_file(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
-            if let (Some(ref path), TabContent::Text { buffer, .. }) =
-                (&tab.path, &mut tab.content)
+            if let (Some(ref path), TabContent::Text { buffer, .. }) = (&tab.path, &mut tab.content)
             {
                 let content = buffer.text();
                 match std::fs::write(path, &content) {
@@ -531,8 +558,7 @@ impl FileEditorView {
     pub fn save_and_close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         // Save first (only for text tabs)
         if let Some(tab) = self.tabs.get_mut(index) {
-            if let (Some(ref path), TabContent::Text { buffer, .. }) =
-                (&tab.path, &mut tab.content)
+            if let (Some(ref path), TabContent::Text { buffer, .. }) = (&tab.path, &mut tab.content)
             {
                 let content = buffer.text();
                 match std::fs::write(path, &content) {
@@ -762,27 +788,25 @@ impl FileEditorView {
     fn start_cursor_blink(&mut self, cx: &mut Context<Self>) {
         self.cursor_blink_on = true;
         let handle = cx.entity().downgrade();
-        self.cursor_blink_task = Some(cx.spawn(async move |_, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(530))
-                    .await;
-                let Ok(alive) = cx.update(|cx| {
-                    if let Some(view) = handle.upgrade() {
-                        view.update(cx, |this, cx| {
-                            this.cursor_blink_on = !this.cursor_blink_on;
-                            cx.notify();
-                        });
-                        true
-                    } else {
-                        false
-                    }
-                }) else {
-                    break;
-                };
-                if !alive {
-                    break;
+        self.cursor_blink_task = Some(cx.spawn(async move |_, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(530))
+                .await;
+            let Ok(alive) = cx.update(|cx| {
+                if let Some(view) = handle.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.cursor_blink_on = !this.cursor_blink_on;
+                        cx.notify();
+                    });
+                    true
+                } else {
+                    false
                 }
+            }) else {
+                break;
+            };
+            if !alive {
+                break;
             }
         }));
     }
@@ -944,7 +968,12 @@ impl FileEditorView {
 
         let tab_idx = self.active_tab_index;
         if let Some(tab) = self.tabs.get_mut(tab_idx) {
-            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+            if let TabContent::Text {
+                buffer,
+                highlighter,
+                ..
+            } = &mut tab.content
+            {
                 // Set selection to the match and delete it, then insert replacement
                 let (sl, sc) = buffer.char_to_line_col(match_range.start);
                 let (el, ec) = buffer.char_to_line_col(match_range.end);
@@ -976,7 +1005,12 @@ impl FileEditorView {
         let replace_text = self.replace_query.clone();
 
         if let Some(tab) = self.tabs.get_mut(tab_idx) {
-            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+            if let TabContent::Text {
+                buffer,
+                highlighter,
+                ..
+            } = &mut tab.content
+            {
                 // Replace from end to start to preserve earlier positions
                 let mut matches: Vec<std::ops::Range<usize>> = self.search_matches.clone();
                 matches.reverse();
@@ -1068,14 +1102,17 @@ impl FileEditorView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.text_color(ShellDeckColors::text_primary()))
-                    .child(svg().path("images/close.svg").size(px(10.0)).text_color(ShellDeckColors::text_muted()))
+                    .child(
+                        svg()
+                            .path("images/close.svg")
+                            .size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h2.upgrade() {
                             view.update(cx, |this, cx| {
                                 // Find tab by id
-                                if let Some(pos) =
-                                    this.tabs.iter().position(|t| t.id == tab_id)
-                                {
+                                if let Some(pos) = this.tabs.iter().position(|t| t.id == tab_id) {
                                     this.close_tab(pos, cx);
                                 }
                             });
@@ -1228,7 +1265,10 @@ impl FileEditorView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()).text_color(ShellDeckColors::text_primary()))
+                    .hover(|s| {
+                        s.bg(ShellDeckColors::hover_bg())
+                            .text_color(ShellDeckColors::text_primary())
+                    })
                     .child("Replace")
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h_next.upgrade() {
@@ -1247,7 +1287,10 @@ impl FileEditorView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()).text_color(ShellDeckColors::text_primary()))
+                    .hover(|s| {
+                        s.bg(ShellDeckColors::hover_bg())
+                            .text_color(ShellDeckColors::text_primary())
+                    })
                     .child("All")
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h_all.upgrade() {
@@ -1301,7 +1344,11 @@ impl FileEditorView {
     // Rendering: Canvas (the main editor surface)
     // -----------------------------------------------------------------------
 
-    fn render_editor_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_editor_canvas(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         self.ensure_glyph_cache(window);
         let cache = match self.glyph_cache.as_ref() {
             Some(c) => c.clone(),
@@ -1475,8 +1522,6 @@ impl FileEditorView {
         let h_scroll = handle.clone();
         let focus_down = focus.clone();
 
-        
-
         div()
             .flex_grow()
             .w_full()
@@ -1532,16 +1577,40 @@ impl FileEditorView {
                     });
                 }
             })
-            .child(canvas(
-                move |bounds, _window, _cx| {
-                    // Store canvas origin and height for mouse handlers
-                    let ox = bounds.origin.x.to_f64() as f32;
-                    let oy = bounds.origin.y.to_f64() as f32;
-                    let packed = ((ox.to_bits() as u64) << 32) | (oy.to_bits() as u64);
-                    origin_arc.store(packed, std::sync::atomic::Ordering::Relaxed);
-                    let h = bounds.size.height.to_f64() as f32;
-                    height_arc.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                    (
+            .child(
+                canvas(
+                    move |bounds, _window, _cx| {
+                        // Store canvas origin and height for mouse handlers
+                        let ox = bounds.origin.x.to_f64() as f32;
+                        let oy = bounds.origin.y.to_f64() as f32;
+                        let packed = ((ox.to_bits() as u64) << 32) | (oy.to_bits() as u64);
+                        origin_arc.store(packed, std::sync::atomic::Ordering::Relaxed);
+                        let h = bounds.size.height.to_f64() as f32;
+                        height_arc.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        (
+                            cache,
+                            line_texts,
+                            line_numbers,
+                            fold_markers,
+                            highlights,
+                            total_lines,
+                            first_visible,
+                            cursor_line,
+                            cursor_col,
+                            sel_coords,
+                            gutter_w,
+                            cursor_blink_on,
+                            has_focus,
+                            search_match_coords,
+                            search_current_coord,
+                            tab_size,
+                            bracket_match,
+                            word_highlight_coords,
+                            extra_cursor_coords,
+                        )
+                    },
+                    move |bounds,
+                          (
                         cache,
                         line_texts,
                         line_numbers,
@@ -1561,59 +1630,37 @@ impl FileEditorView {
                         bracket_match,
                         word_highlight_coords,
                         extra_cursor_coords,
-                    )
-                },
-                move |bounds,
-                      (
-                    cache,
-                    line_texts,
-                    line_numbers,
-                    fold_markers,
-                    highlights,
-                    total_lines,
-                    first_visible,
-                    cursor_line,
-                    cursor_col,
-                    sel_coords,
-                    gutter_w,
-                    cursor_blink_on,
-                    has_focus,
-                    search_match_coords,
-                    search_current_coord,
-                    tab_size,
-                    bracket_match,
-                    word_highlight_coords,
-                    extra_cursor_coords,
-                ),
-                      window,
-                      cx| {
-                    Self::paint_editor(
-                        bounds,
-                        &cache,
-                        &line_texts,
-                        &line_numbers,
-                        &fold_markers,
-                        &highlights,
-                        total_lines,
-                        first_visible,
-                        cursor_line,
-                        cursor_col,
-                        sel_coords,
-                        gutter_w,
-                        cursor_blink_on,
-                        has_focus,
-                        &search_match_coords,
-                        search_current_coord,
-                        tab_size,
-                        bracket_match,
-                        &word_highlight_coords,
-                        &extra_cursor_coords,
-                        window,
-                        cx,
-                    );
-                },
+                    ),
+                          window,
+                          cx| {
+                        Self::paint_editor(
+                            bounds,
+                            &cache,
+                            &line_texts,
+                            &line_numbers,
+                            &fold_markers,
+                            &highlights,
+                            total_lines,
+                            first_visible,
+                            cursor_line,
+                            cursor_col,
+                            sel_coords,
+                            gutter_w,
+                            cursor_blink_on,
+                            has_focus,
+                            &search_match_coords,
+                            search_current_coord,
+                            tab_size,
+                            bracket_match,
+                            &word_highlight_coords,
+                            &extra_cursor_coords,
+                            window,
+                            cx,
+                        );
+                    },
+                )
+                .size_full(),
             )
-            .size_full())
     }
 
     // -----------------------------------------------------------------------
@@ -1728,10 +1775,7 @@ impl FileEditorView {
                         indent_guide_color
                     };
                     window.paint_quad(fill(
-                        Bounds::new(
-                            point(guide_x, y),
-                            size(px(1.0), cell_h),
-                        ),
+                        Bounds::new(point(guide_x, y), size(px(1.0), cell_h)),
                         color,
                     ));
                 }
@@ -1761,7 +1805,11 @@ impl FileEditorView {
                 }
                 let line_visual_len = visual_line_width(line_text, tab_size);
                 let sc = if abs_line == wh_sl { wh_sc } else { 0 };
-                let ec = if abs_line == wh_el { wh_ec } else { line_visual_len };
+                let ec = if abs_line == wh_el {
+                    wh_ec
+                } else {
+                    line_visual_len
+                };
                 if sc < ec {
                     let sx = bounds.origin.x + gutter_px + cell_w * sc as f32;
                     let sw = cell_w * (ec - sc) as f32;
@@ -1784,14 +1832,15 @@ impl FileEditorView {
                 };
                 let line_visual_len = visual_line_width(line_text, tab_size);
                 let sc = if abs_line == sm_sl { sm_sc } else { 0 };
-                let ec = if abs_line == sm_el { sm_ec } else { line_visual_len };
+                let ec = if abs_line == sm_el {
+                    sm_ec
+                } else {
+                    line_visual_len
+                };
                 if sc < ec {
                     let sx = bounds.origin.x + gutter_px + cell_w * sc as f32;
                     let sw = cell_w * (ec - sc) as f32;
-                    window.paint_quad(fill(
-                        Bounds::new(point(sx, y), size(sw, cell_h)),
-                        color,
-                    ));
+                    window.paint_quad(fill(Bounds::new(point(sx, y), size(sw, cell_h)), color));
                 }
             }
 
@@ -1799,7 +1848,11 @@ impl FileEditorView {
             if let Some((sel_start_line, sel_start_col, sel_end_line, sel_end_col)) = sel_coords {
                 if abs_line >= sel_start_line && abs_line <= sel_end_line {
                     let line_visual_len = visual_line_width(line_text, tab_size);
-                    let start_col = if abs_line == sel_start_line { sel_start_col } else { 0 };
+                    let start_col = if abs_line == sel_start_line {
+                        sel_start_col
+                    } else {
+                        0
+                    };
                     let end_col = if abs_line == sel_end_line {
                         sel_end_col
                     } else {
@@ -1839,7 +1892,8 @@ impl FileEditorView {
                 }],
                 None,
             );
-            let num_x = bounds.origin.x + px(gutter_w - (digits as f32 + 1.0) * cell_w.to_f64() as f32);
+            let num_x =
+                bounds.origin.x + px(gutter_w - (digits as f32 + 1.0) * cell_w.to_f64() as f32);
             let _ = shaped_num.paint(point(num_x, y), cell_h, window, cx);
 
             // Fold marker (▾ foldable / ▸ folded), drawn at the gutter's left edge.
@@ -1892,13 +1946,7 @@ impl FileEditorView {
                     };
 
                     if let Some((font_id, glyph_id)) = cache.lookup(ch, bold, italic) {
-                        let _ = window.paint_glyph(
-                            point(x, y),
-                            font_id,
-                            glyph_id,
-                            fs,
-                            fg_color,
-                        );
+                        let _ = window.paint_glyph(point(x, y), font_id, glyph_id, fs, fg_color);
                     } else {
                         let s: SharedString = ch.to_string().into();
                         let shaped = window.text_system().shape_line(
@@ -1933,10 +1981,7 @@ impl FileEditorView {
                 let cursor_x = bounds.origin.x + gutter_px + cell_w * cursor_col as f32;
                 let cursor_y = bounds.origin.y + cell_h * cursor_visible_line as f32;
                 window.paint_quad(fill(
-                    Bounds::new(
-                        point(cursor_x, cursor_y),
-                        size(px(2.0), cell_h),
-                    ),
+                    Bounds::new(point(cursor_x, cursor_y), size(px(2.0), cell_h)),
                     ShellDeckColors::primary(),
                 ));
             }
@@ -1979,8 +2024,8 @@ impl FileEditorView {
             let viewport_lines = line_texts.len().max(1) as f32;
             let thumb_height = (viewport_lines / total_lines as f32) * bounds.size.height;
             let thumb_height = thumb_height.max(px(20.0));
-            let thumb_y = bounds.origin.y
-                + (first_visible as f32 / total_lines as f32) * bounds.size.height;
+            let thumb_y =
+                bounds.origin.y + (first_visible as f32 / total_lines as f32) * bounds.size.height;
 
             // Track
             window.paint_quad(fill(
@@ -2022,7 +2067,9 @@ impl FileEditorView {
 
     /// Get the canvas origin (x, y) in window coordinates, set during paint.
     fn canvas_origin_xy(&self) -> (f32, f32) {
-        let packed = self.canvas_origin.load(std::sync::atomic::Ordering::Relaxed);
+        let packed = self
+            .canvas_origin
+            .load(std::sync::atomic::Ordering::Relaxed);
         let ox = f32::from_bits((packed >> 32) as u32);
         let oy = f32::from_bits(packed as u32);
         (ox, oy)
@@ -2030,13 +2077,34 @@ impl FileEditorView {
 
     fn header_height(&self) -> f32 {
         TAB_BAR_HEIGHT
-            + if self.search_visible { SEARCH_BAR_HEIGHT } else { 0.0 }
-            + if self.replace_visible { REPLACE_BAR_HEIGHT } else { 0.0 }
-            + if self.goto_line_visible { GOTO_LINE_BAR_HEIGHT } else { 0.0 }
-            + if self.pending_close_tab.is_some() { 32.0 } else { 0.0 }
+            + if self.search_visible {
+                SEARCH_BAR_HEIGHT
+            } else {
+                0.0
+            }
+            + if self.replace_visible {
+                REPLACE_BAR_HEIGHT
+            } else {
+                0.0
+            }
+            + if self.goto_line_visible {
+                GOTO_LINE_BAR_HEIGHT
+            } else {
+                0.0
+            }
+            + if self.pending_close_tab.is_some() {
+                32.0
+            } else {
+                0.0
+            }
     }
 
-    fn handle_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Dismiss context menu on any click
         if self.context_menu_visible {
             self.context_menu_visible = false;
@@ -2065,7 +2133,11 @@ impl FileEditorView {
         let cell_h = cache.cell_height.to_f64() as f32;
 
         let total_lines = self.tabs[tab_idx].buffer().unwrap().len_lines();
-        let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
+        let digits = if total_lines == 0 {
+            1
+        } else {
+            (total_lines as f64).log10().floor() as usize + 1
+        };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
         let pos = event.position;
@@ -2084,7 +2156,10 @@ impl FileEditorView {
         let canvas_w = _window.viewport_size().width.to_f64() as f32 - canvas_ox;
         if rel_x >= canvas_w - SCROLLBAR_WIDTH {
             // Scrollbar click
-            let canvas_h = f32::from_bits(self.canvas_height.load(std::sync::atomic::Ordering::Relaxed));
+            let canvas_h = f32::from_bits(
+                self.canvas_height
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
             if canvas_h > 0.0 && total_lines > 0 {
                 let ratio = rel_y / canvas_h;
                 if let Some(tab) = self.tabs.get_mut(tab_idx) {
@@ -2119,19 +2194,34 @@ impl FileEditorView {
         }
 
         let visual_col = (text_x / cell_w) as usize;
-        let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
+        let char_col = self.tabs[tab_idx]
+            .buffer()
+            .unwrap()
+            .visual_col_to_char_col(abs_line, visual_col);
 
         let extend = event.modifiers.shift;
 
         if event.click_count >= 3 {
             // Triple-click: select entire line
-            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, 0, false);
+            self.tabs[tab_idx]
+                .buffer_mut()
+                .unwrap()
+                .set_cursor_from_position(abs_line, 0, false);
             self.tabs[tab_idx].buffer_mut().unwrap().select_line();
         } else if event.click_count == 2 {
-            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, false);
-            self.tabs[tab_idx].buffer_mut().unwrap().select_word_at_cursor();
+            self.tabs[tab_idx]
+                .buffer_mut()
+                .unwrap()
+                .set_cursor_from_position(abs_line, char_col, false);
+            self.tabs[tab_idx]
+                .buffer_mut()
+                .unwrap()
+                .select_word_at_cursor();
         } else {
-            self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, extend);
+            self.tabs[tab_idx]
+                .buffer_mut()
+                .unwrap()
+                .set_cursor_from_position(abs_line, char_col, extend);
             self.mouse_selecting = true;
             self.mouse_click_origin = Some((pos.x.to_f64() as f32, pos.y.to_f64() as f32));
         }
@@ -2162,7 +2252,9 @@ impl FileEditorView {
                 let rel_y = (event.position.y.to_f64() as f32 - canvas_oy).max(0.0);
                 let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
                 // Use approximate viewport height
-                let cell_h = self.glyph_cache.as_ref()
+                let cell_h = self
+                    .glyph_cache
+                    .as_ref()
                     .map(|c| c.cell_height.to_f64() as f32)
                     .unwrap_or(20.0);
                 let viewport_h = (self.scroll_lines_per_page as f32 * cell_h).max(1.0);
@@ -2208,7 +2300,11 @@ impl FileEditorView {
         let cell_h = cache.cell_height.to_f64() as f32;
 
         let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
-        let digits = if total_lines == 0 { 1 } else { (total_lines as f64).log10().floor() as usize + 1 };
+        let digits = if total_lines == 0 {
+            1
+        } else {
+            (total_lines as f64).log10().floor() as usize + 1
+        };
         let gutter_w = (digits as f32 + 2.0) * cell_w;
 
         let (canvas_ox, canvas_oy) = self.canvas_origin_xy();
@@ -2221,9 +2317,15 @@ impl FileEditorView {
         let visible = self.tabs[tab_idx].buffer().unwrap().visible_lines();
         let vrow = (row + scroll).min(visible.len().saturating_sub(1));
         let abs_line = visible.get(vrow).copied().unwrap_or(0);
-        let char_col = self.tabs[tab_idx].buffer().unwrap().visual_col_to_char_col(abs_line, visual_col);
+        let char_col = self.tabs[tab_idx]
+            .buffer()
+            .unwrap()
+            .visual_col_to_char_col(abs_line, visual_col);
 
-        self.tabs[tab_idx].buffer_mut().unwrap().set_cursor_from_position(abs_line, char_col, true);
+        self.tabs[tab_idx]
+            .buffer_mut()
+            .unwrap()
+            .set_cursor_from_position(abs_line, char_col, true);
 
         cx.notify();
     }
@@ -2298,15 +2400,18 @@ impl FileEditorView {
             .bg(ShellDeckColors::bg_primary())
             .border_l_1()
             .border_color(ShellDeckColors::border())
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
-                if let Some(view) = h_down.upgrade() {
-                    view.update(cx, |this, cx| {
-                        this.minimap_dragging = true;
-                        let y = event.position.y.to_f64() as f32;
-                        this.handle_minimap_click(y, cx);
-                    });
-                }
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    if let Some(view) = h_down.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.minimap_dragging = true;
+                            let y = event.position.y.to_f64() as f32;
+                            this.handle_minimap_click(y, cx);
+                        });
+                    }
+                },
+            )
             .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
                 if let Some(view) = h_move.upgrade() {
                     view.update(cx, |this, cx| {
@@ -2325,32 +2430,42 @@ impl FileEditorView {
                     });
                 }
             })
-            .child(canvas(
-                move |bounds, _window, _cx| {
-                    // Store the minimap canvas origin Y for accurate click handling
-                    let oy = bounds.origin.y.to_f64() as f32;
-                    minimap_oy_arc.store(oy.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                    (line_lengths, total_lines, scroll_offset, scroll_lines_per_page)
-                },
-                move |bounds,
-                      (line_lengths, total_lines, scroll_offset, scroll_lines_per_page),
-                      window,
-                      _cx| {
-                    Self::paint_minimap(
-                        bounds,
-                        &line_lengths,
-                        total_lines,
-                        scroll_offset,
-                        scroll_lines_per_page,
-                        window,
-                    );
-                },
-            ).size_full())
+            .child(
+                canvas(
+                    move |bounds, _window, _cx| {
+                        // Store the minimap canvas origin Y for accurate click handling
+                        let oy = bounds.origin.y.to_f64() as f32;
+                        minimap_oy_arc.store(oy.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        (
+                            line_lengths,
+                            total_lines,
+                            scroll_offset,
+                            scroll_lines_per_page,
+                        )
+                    },
+                    move |bounds,
+                          (line_lengths, total_lines, scroll_offset, scroll_lines_per_page),
+                          window,
+                          _cx| {
+                        Self::paint_minimap(
+                            bounds,
+                            &line_lengths,
+                            total_lines,
+                            scroll_offset,
+                            scroll_lines_per_page,
+                            window,
+                        );
+                    },
+                )
+                .size_full(),
+            )
     }
 
     fn handle_minimap_click(&mut self, window_y: f32, cx: &mut Context<Self>) {
         let tab_idx = self.active_tab_index;
-        let total_lines = self.tabs.get(tab_idx)
+        let total_lines = self
+            .tabs
+            .get(tab_idx)
             .and_then(|t| t.buffer())
             .map_or(0, |b| b.len_lines());
         if total_lines == 0 {
@@ -2359,7 +2474,8 @@ impl FileEditorView {
 
         // Use stored minimap canvas origin for accurate positioning
         let origin_y = f32::from_bits(
-            self.minimap_origin_y.load(std::sync::atomic::Ordering::Relaxed),
+            self.minimap_origin_y
+                .load(std::sync::atomic::Ordering::Relaxed),
         );
         let rel_y = (window_y - origin_y).max(0.0);
 
@@ -2392,10 +2508,7 @@ impl FileEditorView {
         let vp_y = bounds.origin.y + line_h * scroll_offset;
         let vp_h = line_h * scroll_lines_per_page as f32;
         window.paint_quad(fill(
-            Bounds::new(
-                point(bounds.origin.x, vp_y),
-                size(bounds.size.width, vp_h),
-            ),
+            Bounds::new(point(bounds.origin.x, vp_y), size(bounds.size.width, vp_h)),
             viewport_bg,
         ));
         // Top and bottom border of viewport
@@ -2428,10 +2541,7 @@ impl FileEditorView {
             }
             let w = char_w * (visual_len as f32).min(60.0);
             window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x + px(4.0), y),
-                    size(w, line_h),
-                ),
+                Bounds::new(point(bounds.origin.x + px(4.0), y), size(w, line_h)),
                 code_color,
             ));
         }
@@ -2448,7 +2558,10 @@ impl Render for FileEditorView {
             let cell_h = cache.cell_height.to_f64() as f32;
             if cell_h > 0.0 {
                 // Use actual canvas height from prepaint (accurate, includes workspace chrome)
-                let stored_h = f32::from_bits(self.canvas_height.load(std::sync::atomic::Ordering::Relaxed));
+                let stored_h = f32::from_bits(
+                    self.canvas_height
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
                 if stored_h > 0.0 {
                     self.scroll_lines_per_page = (stored_h / cell_h) as usize;
                 } else {
@@ -2501,7 +2614,9 @@ impl Render for FileEditorView {
 
         // Unsaved changes warning bar
         if let Some(pending_idx) = self.pending_close_tab {
-            let tab_name = self.tabs.get(pending_idx)
+            let tab_name = self
+                .tabs
+                .get(pending_idx)
                 .map(|t| t.display_name())
                 .unwrap_or_else(|| "untitled".to_string());
             let h_save = cx.entity().downgrade();
@@ -2773,8 +2888,14 @@ impl Render for FileEditorView {
                     let creator = info.creator.clone();
                     let h = cx.entity().downgrade();
                     editor_area = editor_area.child(Self::render_pdf_info(
-                        &filename, path.as_deref(), page_count, file_size,
-                        title.as_deref(), author.as_deref(), creator.as_deref(), h,
+                        &filename,
+                        path.as_deref(),
+                        page_count,
+                        file_size,
+                        title.as_deref(),
+                        author.as_deref(),
+                        creator.as_deref(),
+                        h,
                     ));
                 }
                 TabContent::Binary { info } => {
@@ -2783,7 +2904,10 @@ impl Render for FileEditorView {
                     let file_size = info.file_size;
                     let h = cx.entity().downgrade();
                     editor_area = editor_area.child(Self::render_binary_info(
-                        &filename, path.as_deref(), file_size, h,
+                        &filename,
+                        path.as_deref(),
+                        file_size,
+                        h,
                     ));
                 }
                 TabContent::Text { .. } => unreachable!(),
@@ -3036,7 +3160,12 @@ impl FileEditorView {
         match action {
             ContextMenuAction::Undo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                    if let TabContent::Text {
+                        buffer,
+                        highlighter,
+                        ..
+                    } = &mut tab.content
+                    {
                         buffer.undo();
                         highlighter.parse_full(buffer.rope());
                     }
@@ -3044,7 +3173,12 @@ impl FileEditorView {
             }
             ContextMenuAction::Redo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                    if let TabContent::Text {
+                        buffer,
+                        highlighter,
+                        ..
+                    } = &mut tab.content
+                    {
                         buffer.redo();
                         highlighter.parse_full(buffer.rope());
                     }
@@ -3057,7 +3191,12 @@ impl FileEditorView {
                     }
                 }
                 if let Some(tab) = self.active_tab_mut() {
-                    if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                    if let TabContent::Text {
+                        buffer,
+                        highlighter,
+                        ..
+                    } = &mut tab.content
+                    {
                         buffer.delete_selection();
                         highlighter.parse_full(buffer.rope());
                     }
@@ -3074,7 +3213,12 @@ impl FileEditorView {
                 if let Some(item) = cx.read_from_clipboard() {
                     if let Some(text) = item.text() {
                         if let Some(tab) = self.active_tab_mut() {
-                            if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                            if let TabContent::Text {
+                                buffer,
+                                highlighter,
+                                ..
+                            } = &mut tab.content
+                            {
                                 buffer.insert_str(&text);
                                 highlighter.parse_full(buffer.rope());
                             }
@@ -3097,7 +3241,12 @@ impl FileEditorView {
                     .map(|s| s.to_string())
                 {
                     if let Some(tab) = self.active_tab_mut() {
-                        if let TabContent::Text { buffer, highlighter, .. } = &mut tab.content {
+                        if let TabContent::Text {
+                            buffer,
+                            highlighter,
+                            ..
+                        } = &mut tab.content
+                        {
                             buffer.toggle_line_comment(&prefix);
                             highlighter.parse_full(buffer.rope());
                         }
@@ -3158,9 +3307,7 @@ impl FileEditorView {
                 .child(type_name)
                 .child(format!("{} lines", total_lines));
         } else {
-            bar = bar
-                .child(type_name)
-                .child(div().flex_grow());
+            bar = bar.child(type_name).child(div().flex_grow());
         }
 
         bar
@@ -3408,15 +3555,10 @@ impl FileEditorView {
             .and_then(|(_, v)| v.as_dict())
         {
             let get_str = |key: &[u8]| -> Option<String> {
-                info_dict
-                    .get(key)
-                    .ok()
-                    .and_then(|v| match v {
-                        lopdf::Object::String(bytes, _) => {
-                            String::from_utf8(bytes.clone()).ok()
-                        }
-                        _ => None,
-                    })
+                info_dict.get(key).ok().and_then(|v| match v {
+                    lopdf::Object::String(bytes, _) => String::from_utf8(bytes.clone()).ok(),
+                    _ => None,
+                })
             };
             (get_str(b"Title"), get_str(b"Author"), get_str(b"Creator"))
         } else {

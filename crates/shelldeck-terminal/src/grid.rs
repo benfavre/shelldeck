@@ -2314,7 +2314,7 @@ mod tests {
         write_str(&mut g, "abcd");
         assert_eq!(g.cursor.row, 0);
         assert_eq!(g.cursor.col, 3); // clamped at last col, pending wrap
-        // Next char triggers the actual wrap.
+                                     // Next char triggers the actual wrap.
         g.write_char('e');
         assert_eq!(g.cursor.row, 1);
         assert_eq!(g.cursor.col, 1);
@@ -2587,7 +2587,7 @@ mod tests {
         g.set_scroll_region(1, 3);
         g.cursor_to(3, 0); // at scroll_bottom
         g.index(); // scroll within region
-        // Row 0 (outside region) untouched, row 4 untouched.
+                   // Row 0 (outside region) untouched, row 4 untouched.
         assert_eq!(g.cells[0][0].c, '0');
         assert_eq!(g.cells[4][0].c, '4');
         // Inside region, content shifted up: old row2 -> row1.
@@ -2712,8 +2712,7 @@ mod tests {
         let mut g = TerminalGrid::new(2, 4);
         g.current_bg = TermColor::Named(NamedColor::Red);
         g.erase_line(2);
-        assert!(g
-            .cells[0]
+        assert!(g.cells[0]
             .iter()
             .all(|c| c.bg == TermColor::Named(NamedColor::Red)));
     }

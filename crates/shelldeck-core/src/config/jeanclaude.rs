@@ -343,12 +343,7 @@ pub fn get_state(cfg: &JeanConfig) -> Result<JeanState> {
     get_json(cfg, "/api/state")
 }
 
-pub fn get_history(
-    cfg: &JeanConfig,
-    q: &str,
-    status: &str,
-    limit: u32,
-) -> Result<Vec<JeanTicket>> {
+pub fn get_history(cfg: &JeanConfig, q: &str, status: &str, limit: u32) -> Result<Vec<JeanTicket>> {
     let path = format!(
         "/api/history?q={}&status={}&limit={}",
         crate::config::cloud_account::percent_encode(q),
@@ -383,11 +378,19 @@ pub fn get_slack_history(cfg: &JeanConfig) -> Result<Vec<JeanSlackMsg>> {
 // ── writes ───────────────────────────────────────────────────────────────
 
 pub fn confirm(cfg: &JeanConfig, thread_ts: &str) -> Result<()> {
-    post_action(cfg, "/api/confirm", serde_json::json!({ "threadTs": thread_ts }))
+    post_action(
+        cfg,
+        "/api/confirm",
+        serde_json::json!({ "threadTs": thread_ts }),
+    )
 }
 
 pub fn reject(cfg: &JeanConfig, thread_ts: &str) -> Result<()> {
-    post_action(cfg, "/api/reject", serde_json::json!({ "threadTs": thread_ts }))
+    post_action(
+        cfg,
+        "/api/reject",
+        serde_json::json!({ "threadTs": thread_ts }),
+    )
 }
 
 pub fn cancel(cfg: &JeanConfig, id: &str) -> Result<()> {
@@ -419,7 +422,11 @@ pub fn add_target(cfg: &JeanConfig, domain: &str, ssh_host: &str, note: &str) ->
 }
 
 pub fn remove_target(cfg: &JeanConfig, domain: &str) -> Result<()> {
-    post_action(cfg, "/api/targets/remove", serde_json::json!({ "domain": domain }))
+    post_action(
+        cfg,
+        "/api/targets/remove",
+        serde_json::json!({ "domain": domain }),
+    )
 }
 
 pub fn add_memory(

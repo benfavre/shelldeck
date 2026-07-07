@@ -490,7 +490,11 @@ impl ShellDeckColors {
 
     /// Backwards-compatible dark/light toggle.
     pub fn set_dark_mode(dark: bool) {
-        *ACTIVE.write() = if dark { dark_palette() } else { light_palette() };
+        *ACTIVE.write() = if dark {
+            dark_palette()
+        } else {
+            light_palette()
+        };
     }
 
     /// The full active palette (handy for swatches/previews).

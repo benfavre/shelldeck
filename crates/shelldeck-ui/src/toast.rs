@@ -1,5 +1,5 @@
-use gpui::*;
 use crate::scale::px;
+use gpui::*;
 use std::time::Duration;
 
 use crate::theme::ShellDeckColors;
@@ -188,7 +188,12 @@ impl ToastContainer {
                     .items_center()
                     .justify_center()
                     .text_color(hsla(0.0, 0.0, 1.0, 0.5))
-                    .child(svg().path("images/close.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted())),
+                    .child(
+                        svg()
+                            .path("images/close.svg")
+                            .size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    ),
             )
     }
 }

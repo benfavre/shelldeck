@@ -6,9 +6,9 @@
 //! jobs awaiting confirmation (Exécuter / Rejeter), the instances list, and the
 //! recent-jobs feed. The view is a pure renderer; the workspace does all I/O.
 
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
 
@@ -108,16 +108,11 @@ impl FleetView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(
-                                div()
-                                    .size(px(8.0))
-                                    .rounded_full()
-                                    .bg(if enabled {
-                                        ShellDeckColors::success()
-                                    } else {
-                                        ShellDeckColors::text_muted()
-                                    }),
-                            )
+                            .child(div().size(px(8.0)).rounded_full().bg(if enabled {
+                                ShellDeckColors::success()
+                            } else {
+                                ShellDeckColors::text_muted()
+                            }))
                             .child(
                                 div()
                                     .text_size(px(12.0))
@@ -423,9 +418,9 @@ impl Render for FleetView {
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
                     .child("↻ Actualiser")
-                    .on_click(cx.listener(|_t, _: &ClickEvent, _, cx| {
-                        cx.emit(FleetViewEvent::Refresh)
-                    })),
+                    .on_click(
+                        cx.listener(|_t, _: &ClickEvent, _, cx| cx.emit(FleetViewEvent::Refresh)),
+                    ),
             );
 
         let mut instances = div().flex().flex_col().px(px(8.0));

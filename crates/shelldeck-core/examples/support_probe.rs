@@ -44,11 +44,19 @@ fn main() {
             "  - [{}] {} | {} | {} | prio {} | {} | {}",
             t.channel,
             &t.id,
-            if t.subject.is_empty() { "(sans objet)" } else { &t.subject },
+            if t.subject.is_empty() {
+                "(sans objet)"
+            } else {
+                &t.subject
+            },
             t.status,
             t.priority,
             t.contact.display(),
-            if t.is_unassigned() { "unassigned".into() } else { t.assignee.clone() },
+            if t.is_unassigned() {
+                "unassigned".into()
+            } else {
+                t.assignee.clone()
+            },
         );
     }
 

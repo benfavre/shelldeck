@@ -1,6 +1,6 @@
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::components::toggle::Toggle;
@@ -212,16 +212,17 @@ impl ConnectionForm {
     /// the Identity File input. Starts in the user's `~/.ssh/` if it exists,
     /// otherwise falls back to `$HOME`.
     fn pick_identity_file(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let starting_directory = std::env::var_os("HOME").map(std::path::PathBuf::from).map(
-            |home| {
-                let ssh = home.join(".ssh");
-                if ssh.is_dir() {
-                    ssh
-                } else {
-                    home
-                }
-            },
-        );
+        let starting_directory =
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|home| {
+                    let ssh = home.join(".ssh");
+                    if ssh.is_dir() {
+                        ssh
+                    } else {
+                        home
+                    }
+                });
         let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -249,12 +250,8 @@ impl ConnectionForm {
     /// Same layout as `render_field`, plus a "Browse…" button that opens the
     /// native file picker and writes the selected path back to the input.
     fn render_identity_file_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let input = self.render_field_input(
-            None,
-            &self.identity_file_state,
-            "~/.ssh/id_ed25519",
-            cx,
-        );
+        let input =
+            self.render_field_input(None, &self.identity_file_state, "~/.ssh/id_ed25519", cx);
         let browse = div()
             .id("connection-form-identity-browse")
             .flex_shrink_0()
@@ -568,7 +565,12 @@ impl Render for ConnectionForm {
                                     .cursor_pointer()
                                     .text_color(ShellDeckColors::text_muted())
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
+                                    .child(
+                                        svg()
+                                            .path("images/close.svg")
+                                            .size(px(14.0))
+                                            .text_color(ShellDeckColors::text_muted()),
+                                    )
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(ConnectionFormEvent::Cancel);
                                     })),

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::models::script::{Script, ScriptVariable};
 

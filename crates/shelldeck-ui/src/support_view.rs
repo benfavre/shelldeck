@@ -778,11 +778,7 @@ impl SupportView {
                 .flex()
                 .items_center()
                 .gap(px(4.0))
-                .child(lucide_icon(
-                    icon_name,
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
+                .child(lucide_icon(icon_name, 12.0, ShellDeckColors::text_muted()))
                 .child(label);
         } else {
             btn = btn.child(label);
@@ -1272,41 +1268,38 @@ impl SupportView {
 
     fn render_composer(&self, _ticket_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let is_note = self.compose_note;
-        let toggle = |label: &str,
-                      icon: &'static str,
-                      active: bool,
-                      note: bool,
-                      cx: &mut Context<Self>| {
-            let color = if active {
-                ShellDeckColors::text_primary()
-            } else {
-                ShellDeckColors::text_muted()
+        let toggle =
+            |label: &str, icon: &'static str, active: bool, note: bool, cx: &mut Context<Self>| {
+                let color = if active {
+                    ShellDeckColors::text_primary()
+                } else {
+                    ShellDeckColors::text_muted()
+                };
+                let mut b = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "compose-mode-{note}"
+                    ))))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(lucide_icon(icon, 11.0, color))
+                    .child(label.to_string())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.compose_note = note;
+                        cx.notify();
+                    }));
+                if active {
+                    b = b.bg(ShellDeckColors::selected_bg()).text_color(color);
+                } else {
+                    b = b.text_color(color);
+                }
+                b
             };
-            let mut b = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "compose-mode-{note}"
-                ))))
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(6.0))
-                .text_size(px(12.0))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .child(lucide_icon(icon, 11.0, color))
-                .child(label.to_string())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.compose_note = note;
-                    cx.notify();
-                }));
-            if active {
-                b = b.bg(ShellDeckColors::selected_bg()).text_color(color);
-            } else {
-                b = b.text_color(color);
-            }
-            b
-        };
 
         let placeholder = if is_note {
             "Note interne (non envoyée au client)…"
@@ -1885,7 +1878,11 @@ impl Render for SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child(lucide_icon("refresh-cw", 12.0, ShellDeckColors::text_muted()))
+                    .child(lucide_icon(
+                        "refresh-cw",
+                        12.0,
+                        ShellDeckColors::text_muted(),
+                    ))
                     .child("Actualiser")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(SupportViewEvent::Refresh);
