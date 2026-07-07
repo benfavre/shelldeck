@@ -14,12 +14,17 @@ use gpui::{prelude::*, *};
 use once_cell::sync::Lazy;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use unicode_segmentation::*;
 
 static EMAIL_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
         .expect("Invalid email regex pattern")
 });
+
+/// ShellDeck patch: monotonic baseline for the caret blink cycle so every
+/// focused input on screen blinks in phase. See SDPATCH-003 in PATCHES.md.
+static INPUT_BLINK_EPOCH: Lazy<Instant> = Lazy::new(Instant::now);
 
 actions!(
     input_state,
@@ -1332,9 +1337,18 @@ impl gpui::Element for InputTextElement {
             return;
         }
 
+        // ShellDeck patch: blink the caret while focused.
+        // 1000 ms cycle = 500 ms on / 500 ms off, computed from a monotonic
+        // process-start baseline so every input on screen blinks in phase.
+        // We request an animation frame each paint so the widget keeps
+        // repainting while focused.
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
-                window.paint_quad(cursor);
+                let elapsed = INPUT_BLINK_EPOCH.elapsed().as_millis() as u64;
+                if elapsed % 1000 < 500 {
+                    window.paint_quad(cursor);
+                }
+                window.request_animation_frame();
             }
         }
 
