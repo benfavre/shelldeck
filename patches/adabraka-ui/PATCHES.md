@@ -1,8 +1,8 @@
 # Patches — adabraka-ui
 
-**Vendored from**: `adabraka-ui` v0.3.0
+**Vendored from**: `adabraka-ui` v0.3.9
 **Upstream**: https://github.com/Augani/adabraka-ui
-**Last synced**: 2026-07-07 (initial inventory)
+**Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
 Total markers in code: **13**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
@@ -71,7 +71,7 @@ carries no marker of its own — see its entry).
 - **Files / symbols**:
   - `src/components/input.rs` — `Input::render` (the `.when(show_clear, …)` branch)
 - **Markers**:
-  - `src/components/input.rs:777` — ``// ShellDeck patch: `.occlude()` blocks``
+  - `src/components/input.rs:779` — ``// ShellDeck patch: `.occlude()` blocks``
 - **Why**: Upstream renders the × chip as a plain unstateful div with
   `on_mouse_down` — the event was swallowed by the input's own text-area
   mouse handler and the click just moved the caret to position 0 without
@@ -93,7 +93,7 @@ carries no marker of its own — see its entry).
   - `src/components/input_state.rs` — `previous_word_boundary`
   - `src/components/input_state.rs` — `next_word_boundary`
 - **Markers**:
-  - `src/components/input_state.rs:48` — `// ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and`
+  - `src/components/input_state.rs:34` — `// ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and`
   - `src/components/input_state.rs:732` — `// ShellDeck patch: word-level cursor movement + delete.`
   - `src/components/input_state.rs:1011` — `/// ShellDeck patch: jump to the start of the previous unicode word.`
   - `src/components/input_state.rs:1020` — `/// ShellDeck patch: jump to the end of the next unicode word.`
@@ -146,6 +146,14 @@ carries no marker of its own — see its entry).
 
 - **2026-07-07** — initial inventory. Marker count 13 = 1+1+1+3+1+4+2
   (SDPATCH-008 carries none by design). No sync yet.
+- **2026-07-07** — synced v0.3.0 → v0.3.9. All eight SDPATCHes replayed
+  clean — only line-number shifts and small mechanical adaptations
+  (v0.3.9 refactored `PrepaintState`, but the shape SDPATCH-004 targets
+  survived intact; `Input::render` grew a bit around SDPATCH-005's
+  clear-button hunk without semantic conflict). Marker count stays at
+  13. v0.3.9 also natively pins `adabraka-gpui = "0.5"`, so the temp
+  pin bump we introduced during the `adabraka-gpui` sync
+  (see `4a6c705`) becomes a no-op / redundant.
 
 ## Retired patches
 
