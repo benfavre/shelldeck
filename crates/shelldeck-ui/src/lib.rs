@@ -7,6 +7,7 @@ pub mod editor_buffer;
 pub mod file_editor;
 pub mod fleet_view;
 pub mod glyph_cache;
+pub mod icons;
 pub mod jean_view;
 pub mod login_form;
 pub mod port_forward_form;

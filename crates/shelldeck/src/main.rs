@@ -3,13 +3,91 @@ mod actions;
 use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString, WindowDecorations};
-use std::borrow::Cow;
 use shelldeck_core::config::app_config::AppConfig;
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::Workspace;
+use std::borrow::Cow;
 use tracing_subscriber::EnvFilter;
+
+/// Embed Lucide SVGs at `icons/lucide/{name}.svg`. Add new slugs here when
+/// copying icons into `assets/icons/lucide/` (see that folder's README).
+macro_rules! lucide_assets {
+    ($($name:literal),* $(,)?) => {
+        fn lucide_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(
+                    concat!("icons/lucide/", $name, ".svg") => Some(include_bytes!(concat!(
+                        "../assets/icons/lucide/",
+                        $name,
+                        ".svg"
+                    ))),
+                )*
+                _ => None,
+            }
+        }
+
+        fn lucide_asset_paths() -> Vec<SharedString> {
+            vec![$(SharedString::from(concat!("icons/lucide/", $name, ".svg")),)*]
+        }
+    };
+}
+
+lucide_assets!(
+    "arrow-down",
+    "arrow-up",
+    "calendar",
+    "check",
+    "check-check",
+    "chevron-down",
+    "chevron-left",
+    "chevron-right",
+    "chevron-up",
+    "circle-alert",
+    "circle-check",
+    "circle-help",
+    "clock",
+    "copy",
+    "database",
+    "download",
+    "ellipsis",
+    "ellipsis-vertical",
+    "external-link",
+    "eye",
+    "eye-off",
+    "filter",
+    "flag",
+    "globe",
+    "inbox",
+    "info",
+    "key",
+    "lock",
+    "mail",
+    "maximize-2",
+    "minimize-2",
+    "minus",
+    "pencil",
+    "pin",
+    "plus",
+    "refresh-cw",
+    "reply",
+    "search",
+    "send",
+    "server",
+    "settings",
+    "shield",
+    "sticky-note",
+    "tag",
+    "terminal",
+    "trash-2",
+    "triangle-alert",
+    "upload",
+    "user",
+    "user-check",
+    "users",
+    "x",
+);
 
 /// In-process asset source that ships a small set of images embedded in the
 /// binary (see `assets/images/`). GPUI's `svg()` element requires an
@@ -50,13 +128,18 @@ impl AssetSource for Assets {
             "images/logo-github.svg" => include_bytes!("../assets/images/logo-github.svg"),
             "images/logo-google.svg" => include_bytes!("../assets/images/logo-google.svg"),
             "images/logo-1clicpro.svg" => include_bytes!("../assets/images/logo-1clicpro.svg"),
-            _ => return Ok(None),
+            _ => {
+                if let Some(bytes) = lucide_bytes(path) {
+                    return Ok(Some(Cow::Borrowed(bytes)));
+                }
+                return Ok(None);
+            }
         };
         Ok(Some(Cow::Borrowed(bytes)))
     }
 
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(vec![
+        let mut paths = vec![
             SharedString::from("images/wd29-logo.svg"),
             SharedString::from("images/shelldeck-icon.svg"),
             SharedString::from("images/shelldeck-mark.svg"),
@@ -77,7 +160,9 @@ impl AssetSource for Assets {
             SharedString::from("images/logo-github.svg"),
             SharedString::from("images/logo-google.svg"),
             SharedString::from("images/logo-1clicpro.svg"),
-        ])
+        ];
+        paths.extend(lucide_asset_paths());
+        Ok(paths)
     }
 }
 
@@ -158,6 +243,8 @@ fn main() -> Result<()> {
     Application::new().with_assets(Assets).run(move |cx| {
         // Initialize adabraka-ui
         adabraka_ui::init(cx);
+        // Lucide subset — see crates/shelldeck/assets/icons/lucide/README.md
+        adabraka_ui::set_icon_base_path("icons/lucide");
         // Real text-input widget from adabraka: registers keybindings (Backspace,
         // arrows, Home/End, Ctrl/Cmd-A/C/V/X, …) inside the "Input" context so
         // that focused `Input::new(...)` widgets get proper cursor + editing.

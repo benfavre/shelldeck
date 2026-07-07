@@ -5,12 +5,13 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
+use crate::icons::lucide_icon;
+use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::config::issues::{Issue, IssueInstance};
 use shelldeck_core::config::manage_support::{
@@ -77,26 +78,60 @@ pub enum SupportViewEvent {
     Refresh,
     SelectTicket(String),
     /// Send the composer text as a reply (note=false) or internal note (note=true).
-    Send { id: String, text: String, note: bool },
-    SetStatus { id: String, status: String },
-    SetPriority { id: String, priority: String },
-    Assign { id: String, assignee: String },
-    Resolve { id: String, resolution: String },
+    Send {
+        id: String,
+        text: String,
+        note: bool,
+    },
+    SetStatus {
+        id: String,
+        status: String,
+    },
+    SetPriority {
+        id: String,
+        priority: String,
+    },
+    Assign {
+        id: String,
+        assignee: String,
+    },
+    Resolve {
+        id: String,
+        resolution: String,
+    },
     /// Confirm/reject a JeanClaude pending ticket from the Support strip.
     JeanConfirm(String),
     JeanReject(String),
     /// File the selected ticket to JeanClaude (the composed text via /api/say).
     SendToJean(String),
     /// Convert a support ticket into a tracked request (source="support").
-    ConvertToIssue { title: String, body: String },
+    ConvertToIssue {
+        title: String,
+        body: String,
+    },
     // ── Requests (issues) tab ──
     IssuesRefresh,
     SelectIssue(String),
-    IssueComment { id: String, body: String },
-    IssueStatus { id: String, status: String },
-    IssueAssign { id: String, assignee: String },
-    IssuePriority { id: String, priority: String },
-    IssueDispatch { id: String, instance_id: String },
+    IssueComment {
+        id: String,
+        body: String,
+    },
+    IssueStatus {
+        id: String,
+        status: String,
+    },
+    IssueAssign {
+        id: String,
+        assignee: String,
+    },
+    IssuePriority {
+        id: String,
+        priority: String,
+    },
+    IssueDispatch {
+        id: String,
+        instance_id: String,
+    },
     IssueGithubPush(String),
     IssueGithubRefresh(String),
 }
@@ -150,7 +185,7 @@ impl SupportView {
             selected_id: None,
             detail: None,
             filter: SupportFilter::All,
-            composer_state: cx.new(|cx| InputState::new(cx)),
+            composer_state: cx.new(InputState::new),
             compose_note: false,
             loading: false,
             error: None,
@@ -238,7 +273,10 @@ impl SupportView {
             if let Some(updated) = self.tickets.iter().find(|t| &t.id == id).cloned() {
                 if let Some(detail) = &mut self.detail {
                     let messages = std::mem::take(&mut detail.messages);
-                    *detail = SupportTicket { messages, ..updated };
+                    *detail = SupportTicket {
+                        messages,
+                        ..updated
+                    };
                 }
             }
         }
@@ -426,7 +464,9 @@ impl SupportView {
                         )
                         .child(
                             div()
-                                .id(ElementId::from(SharedString::from(format!("sj-ok-{thread}"))))
+                                .id(ElementId::from(SharedString::from(format!(
+                                    "sj-ok-{thread}"
+                                ))))
                                 .px(px(5.0))
                                 .rounded(px(4.0))
                                 .bg(ShellDeckColors::success())
@@ -440,7 +480,9 @@ impl SupportView {
                         )
                         .child(
                             div()
-                                .id(ElementId::from(SharedString::from(format!("sj-no-{thread}"))))
+                                .id(ElementId::from(SharedString::from(format!(
+                                    "sj-no-{thread}"
+                                ))))
                                 .px(px(5.0))
                                 .rounded(px(4.0))
                                 .text_size(px(11.0))
@@ -470,7 +512,10 @@ impl SupportView {
             let active = self.filter == f;
             let count = f.count(&self.counts);
             let mut chip = div()
-                .id(ElementId::from(SharedString::from(format!("sf-{}", f.label()))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "sf-{}",
+                    f.label()
+                ))))
                 .flex()
                 .items_center()
                 .gap(px(4.0))
@@ -597,7 +642,11 @@ impl SupportView {
 
     fn render_message(msg: &SupportMessage, me: &SupportMe) -> impl IntoElement {
         let (bg, align_end, label) = if msg.is_note() {
-            (ShellDeckColors::warning().opacity(0.12), false, "Note interne")
+            (
+                ShellDeckColors::warning().opacity(0.12),
+                false,
+                "Note interne",
+            )
         } else if msg.is_customer() {
             (ShellDeckColors::bg_surface(), false, "Client")
         } else {
@@ -708,10 +757,11 @@ impl SupportView {
         &self,
         id: &'static str,
         label: String,
+        icon: Option<&'static str>,
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
-        div()
+        let mut btn = div()
             .id(ElementId::from(SharedString::from(id.to_string())))
             .px(px(9.0))
             .py(px(5.0))
@@ -722,9 +772,22 @@ impl SupportView {
             .text_size(px(12.0))
             .text_color(ShellDeckColors::text_primary())
             .cursor_pointer()
-            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-            .child(label)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| on_click(this, cx)))
+            .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+        if let Some(icon_name) = icon {
+            btn = btn
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(lucide_icon(
+                    icon_name,
+                    12.0,
+                    ShellDeckColors::text_muted(),
+                ))
+                .child(label);
+        } else {
+            btn = btn.child(label);
+        }
+        btn.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| on_click(this, cx)))
     }
 
     /// Empty conversation pane — shown when no ticket is selected. Friendly
@@ -901,11 +964,15 @@ impl SupportView {
             .child(self.render_composer(&tid, cx))
     }
 
-    fn render_action_bar(&self, ticket: &SupportTicket, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_action_bar(
+        &self,
+        ticket: &SupportTicket,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let id = ticket.id.clone();
         let is_pending = ticket.status == "pending";
-        let is_mine = !self.my_email().is_empty()
-            && ticket.assignee.eq_ignore_ascii_case(self.my_email());
+        let is_mine =
+            !self.my_email().is_empty() && ticket.assignee.eq_ignore_ascii_case(self.my_email());
         let (status_next, status_label_next) = if is_pending {
             ("open".to_string(), "Rouvrir".to_string())
         } else {
@@ -921,11 +988,7 @@ impl SupportView {
         // The green "Résoudre" sits at the tail; when the row wraps it lands
         // at the end of the last visual line — no positional gymnastics with
         // flex_1 spacers that produced overlaps against the composer below.
-        let mut actions = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.0));
+        let mut actions = div().flex().flex_wrap().items_center().gap(px(6.0));
 
         // Status toggle — the most common state change.
         {
@@ -934,6 +997,7 @@ impl SupportView {
             actions = actions.child(self.action_button(
                 "sup-status",
                 status_label_next,
+                Some(if is_pending { "circle-check" } else { "clock" }),
                 cx,
                 move |_this, cx| {
                     cx.emit(SupportViewEvent::SetStatus {
@@ -949,6 +1013,7 @@ impl SupportView {
             actions = actions.child(self.action_button(
                 "sup-assign-me",
                 "M'attribuer".to_string(),
+                Some("user-check"),
                 cx,
                 move |_this, cx| {
                     cx.emit(SupportViewEvent::Assign {
@@ -963,6 +1028,7 @@ impl SupportView {
             actions = actions.child(self.action_button(
                 "sup-priority",
                 "Priorité…".to_string(),
+                Some("flag"),
                 cx,
                 move |this, cx| {
                     this.priority_menu_open = !this.priority_menu_open;
@@ -976,6 +1042,7 @@ impl SupportView {
             actions = actions.child(self.action_button(
                 "sup-assign",
                 "Attribuer…".to_string(),
+                Some("users"),
                 cx,
                 move |this, cx| {
                     this.assign_menu_open = !this.assign_menu_open;
@@ -992,6 +1059,7 @@ impl SupportView {
             actions = actions.child(self.action_button(
                 "sup-to-jean",
                 "Jean".to_string(),
+                Some("send"),
                 cx,
                 move |this, cx| {
                     if let Some(text) = this.jean_ticket_text() {
@@ -1005,6 +1073,7 @@ impl SupportView {
         actions = actions.child(self.action_button(
             "sup-to-issue",
             "Convertir".to_string(),
+            Some("tag"),
             cx,
             move |this, cx| {
                 if let Some(t) = this.detail.as_ref() {
@@ -1042,6 +1111,10 @@ impl SupportView {
                     .text_color(white())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::success().opacity(0.85)))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(lucide_icon("circle-check", 12.0, white()))
                     .child("Résoudre")
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                         cx.emit(SupportViewEvent::Resolve {
@@ -1078,7 +1151,9 @@ impl SupportView {
                 let pid = id.clone();
                 let active = ticket.priority == p;
                 let mut chip = div()
-                    .id(ElementId::from(SharedString::from(format!("sup-pchip-{p}"))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "sup-pchip-{p}"
+                    ))))
                     .p(px(2.0))
                     .rounded_full()
                     .cursor_pointer()
@@ -1094,9 +1169,7 @@ impl SupportView {
                 if active {
                     chip = chip.border_color(ShellDeckColors::primary());
                 } else {
-                    chip = chip
-                        .border_color(gpui::transparent_black())
-                        .opacity(0.55);
+                    chip = chip.border_color(gpui::transparent_black()).opacity(0.55);
                 }
                 prio_row = prio_row.child(chip);
             }
@@ -1120,6 +1193,7 @@ impl SupportView {
                 list = list.child(self.action_button(
                     "sup-unassign",
                     "— Non attribué —".to_string(),
+                    Some("user"),
                     cx,
                     move |this, cx| {
                         this.assign_menu_open = false;
@@ -1164,16 +1238,13 @@ impl SupportView {
                             .name(display_name.clone())
                             .size(AvatarSize::Xs),
                     );
-                let mut name_col = div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(display_name),
-                    );
+                let mut name_col = div().flex().flex_col().child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(display_name),
+                );
                 if !email_below.is_empty() {
                     name_col = name_col.child(
                         div()
@@ -1182,15 +1253,15 @@ impl SupportView {
                             .child(email_below),
                     );
                 }
-                row = row
-                    .child(name_col)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                row = row.child(name_col).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
                         this.assign_menu_open = false;
                         cx.emit(SupportViewEvent::Assign {
                             id: aid.clone(),
                             assignee: email.clone(),
                         });
-                    }));
+                    },
+                ));
                 list = list.child(row);
             }
             bar = bar.child(list);
@@ -1201,25 +1272,38 @@ impl SupportView {
 
     fn render_composer(&self, _ticket_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let is_note = self.compose_note;
-        let toggle = |label: &str, active: bool, note: bool, cx: &mut Context<Self>| {
+        let toggle = |label: &str,
+                      icon: &'static str,
+                      active: bool,
+                      note: bool,
+                      cx: &mut Context<Self>| {
+            let color = if active {
+                ShellDeckColors::text_primary()
+            } else {
+                ShellDeckColors::text_muted()
+            };
             let mut b = div()
-                .id(ElementId::from(SharedString::from(format!("compose-mode-{note}"))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "compose-mode-{note}"
+                ))))
                 .px(px(8.0))
                 .py(px(3.0))
                 .rounded(px(6.0))
                 .text_size(px(12.0))
                 .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(lucide_icon(icon, 11.0, color))
                 .child(label.to_string())
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.compose_note = note;
                     cx.notify();
                 }));
             if active {
-                b = b
-                    .bg(ShellDeckColors::selected_bg())
-                    .text_color(ShellDeckColors::text_primary());
+                b = b.bg(ShellDeckColors::selected_bg()).text_color(color);
             } else {
-                b = b.text_color(ShellDeckColors::text_muted());
+                b = b.text_color(color);
             }
             b
         };
@@ -1248,8 +1332,8 @@ impl SupportView {
                     .flex()
                     .items_center()
                     .gap(px(4.0))
-                    .child(toggle("Réponse", !is_note, false, cx))
-                    .child(toggle("Note interne", is_note, true, cx)),
+                    .child(toggle("Réponse", "reply", !is_note, false, cx))
+                    .child(toggle("Note interne", "sticky-note", is_note, true, cx)),
             )
             .child(
                 div()
@@ -1285,7 +1369,15 @@ impl SupportView {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(white())
                             .cursor_pointer()
-                            .child(if is_note { "Ajouter la note" } else { "Envoyer" })
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .child(lucide_icon("send", 13.0, white()))
+                            .child(if is_note {
+                                "Ajouter la note"
+                            } else {
+                                "Envoyer"
+                            })
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.send_composer(cx);
                             })),
@@ -1297,7 +1389,9 @@ impl SupportView {
         let tab = |label: &str, section: SupportSection, cx: &mut Context<Self>| {
             let active = self.section == section;
             let mut b = div()
-                .id(ElementId::from(SharedString::from(format!("sup-sec-{label}"))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "sup-sec-{label}"
+                ))))
                 .px(px(12.0))
                 .py(px(7.0))
                 .rounded(px(6.0))
@@ -1358,7 +1452,10 @@ impl SupportView {
                 let id = iss.id.clone();
                 let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
                 let mut row = div()
-                    .id(ElementId::from(SharedString::from(format!("iss-{}", iss.id))))
+                    .id(ElementId::from(SharedString::from(format!(
+                        "iss-{}",
+                        iss.id
+                    ))))
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
@@ -1513,7 +1610,11 @@ impl SupportView {
                             .text_size(px(10.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
-                            .child(if label.is_empty() { "—".to_string() } else { label }),
+                            .child(if label.is_empty() {
+                                "—".to_string()
+                            } else {
+                                label
+                            }),
                     )
                     .child(
                         div()
@@ -1592,6 +1693,7 @@ impl SupportView {
         bar = bar.child(self.action_button(
             "iss-status",
             format!("Statut : {}", issue_status_label(&iss.status)),
+            Some("filter"),
             cx,
             move |this, cx| {
                 this.issue_status_menu = !this.issue_status_menu;
@@ -1607,6 +1709,7 @@ impl SupportView {
             bar = bar.child(self.action_button(
                 "iss-prio",
                 format!("Priorité : {}", priority_label(&iss.priority)),
+                Some("flag"),
                 cx,
                 move |_this, cx| {
                     cx.emit(SupportViewEvent::IssuePriority {
@@ -1619,35 +1722,65 @@ impl SupportView {
         // Assign to me.
         {
             let aid = id.clone();
-            bar = bar.child(self.action_button("iss-assign-me", "M'attribuer".to_string(), cx, move |_t, cx| {
-                cx.emit(SupportViewEvent::IssueAssign { id: aid.clone(), assignee: "me".to_string() })
-            }));
+            bar = bar.child(self.action_button(
+                "iss-assign-me",
+                "M'attribuer".to_string(),
+                Some("user-check"),
+                cx,
+                move |_t, cx| {
+                    cx.emit(SupportViewEvent::IssueAssign {
+                        id: aid.clone(),
+                        assignee: "me".to_string(),
+                    })
+                },
+            ));
         }
         // Dispatch menu toggle.
         if !self.issue_instances.is_empty() {
-            bar = bar.child(self.action_button("iss-dispatch", "Dispatcher…".to_string(), cx, move |this, cx| {
-                this.issue_dispatch_menu = !this.issue_dispatch_menu;
-                this.issue_status_menu = false;
-                cx.notify();
-            }));
+            bar = bar.child(self.action_button(
+                "iss-dispatch",
+                "Dispatcher…".to_string(),
+                Some("server"),
+                cx,
+                move |this, cx| {
+                    this.issue_dispatch_menu = !this.issue_dispatch_menu;
+                    this.issue_status_menu = false;
+                    cx.notify();
+                },
+            ));
         }
         // GitHub.
         if iss.github.is_some() {
             let gid = id.clone();
-            bar = bar.child(self.action_button("iss-gh-refresh", "↻ GitHub".to_string(), cx, move |_t, cx| {
-                cx.emit(SupportViewEvent::IssueGithubRefresh(gid.clone()))
-            }));
+            bar = bar.child(self.action_button(
+                "iss-gh-refresh",
+                "GitHub".to_string(),
+                Some("refresh-cw"),
+                cx,
+                move |_t, cx| cx.emit(SupportViewEvent::IssueGithubRefresh(gid.clone())),
+            ));
         } else {
             let gid = id.clone();
-            bar = bar.child(self.action_button("iss-gh-push", "Créer sur GitHub".to_string(), cx, move |_t, cx| {
-                cx.emit(SupportViewEvent::IssueGithubPush(gid.clone()))
-            }));
+            bar = bar.child(self.action_button(
+                "iss-gh-push",
+                "Créer sur GitHub".to_string(),
+                Some("upload"),
+                cx,
+                move |_t, cx| cx.emit(SupportViewEvent::IssueGithubPush(gid.clone())),
+            ));
         }
 
         // Status picker popover.
         if self.issue_status_menu {
             let mut row = div().w_full().flex().flex_wrap().gap(px(4.0)).mt(px(4.0));
-            for s in ["open", "triaging", "in_progress", "blocked", "done", "closed"] {
+            for s in [
+                "open",
+                "triaging",
+                "in_progress",
+                "blocked",
+                "done",
+                "closed",
+            ] {
                 let sid = id.clone();
                 row = row.child(self.action_button(
                     match s {
@@ -1659,6 +1792,7 @@ impl SupportView {
                         _ => "iss-s-closed",
                     },
                     status_label(s).to_string(),
+                    None,
                     cx,
                     move |this, cx| {
                         this.issue_status_menu = false;
@@ -1680,6 +1814,7 @@ impl SupportView {
                 row = row.child(self.action_button(
                     "iss-disp-inst",
                     format!("{} ({})", inst.name, inst.status),
+                    Some("server"),
                     cx,
                     move |this, cx| {
                         this.issue_dispatch_menu = false;
@@ -1750,7 +1885,7 @@ impl Render for SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child(svg().path("images/refresh.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted()))
+                    .child(lucide_icon("refresh-cw", 12.0, ShellDeckColors::text_muted()))
                     .child("Actualiser")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(SupportViewEvent::Refresh);
@@ -1803,6 +1938,7 @@ impl Render for SupportView {
         };
 
         let mut root = div()
+            .track_focus(&self.focus_handle)
             .size_full()
             .flex()
             .flex_col()
