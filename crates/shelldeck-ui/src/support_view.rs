@@ -800,24 +800,22 @@ impl SupportView {
             ("pending".to_string(), "Mettre en attente client".to_string())
         };
 
-        // Two visual clusters separated by a flex spacer: left = "what state
-        // is this ticket in" (status / priority / assignee), right = "what
-        // do I do with it now" (Jean / Convert / Résoudre). The right group
-        // ends with a big green "Résoudre" so the primary happy-path action
-        // is unmistakable — the rest reads as secondary tools around it.
-        let mut left_group = div()
+        // Single flex_wrap row of buttons. Order = "meta" first (status,
+        // assign, priority) → "workflow" last (Jean, convert, résoudre).
+        // The green "Résoudre" sits at the tail; when the row wraps it lands
+        // at the end of the last visual line — no positional gymnastics with
+        // flex_1 spacers that produced overlaps against the composer below.
+        let mut actions = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.0));
 
-        // Status toggle — the most common state change (Rouvrir / Mettre en
-        // attente client), kept as a plain button because the actual current
-        // status is already visible as a badge in the header.
+        // Status toggle — the most common state change.
         {
             let sid = id.clone();
             let snext = status_next.clone();
-            left_group = left_group.child(self.action_button(
+            actions = actions.child(self.action_button(
                 "sup-status",
                 status_label_next,
                 cx,
@@ -829,11 +827,10 @@ impl SupportView {
                 },
             ));
         }
-        // "M'attribuer" — only when the ticket isn't already mine, so the
-        // bar doesn't grow a redundant button once you've claimed it.
+        // "M'attribuer" — only when not already assigned to me.
         if !is_mine {
             let aid = id.clone();
-            left_group = left_group.child(self.action_button(
+            actions = actions.child(self.action_button(
                 "sup-assign-me",
                 "M'attribuer".to_string(),
                 cx,
@@ -845,11 +842,10 @@ impl SupportView {
                 },
             ));
         }
-        // Priority menu toggle — label reads "Changer la priorité" (not
-        // "Priorité: X") because the current priority is already visible
-        // as a colored Badge in the header.
+        // Priority menu toggle — current value already visible as the header
+        // badge, so the label reads as an action verb.
         {
-            left_group = left_group.child(self.action_button(
+            actions = actions.child(self.action_button(
                 "sup-priority",
                 "Changer la priorité…".to_string(),
                 cx,
@@ -860,9 +856,9 @@ impl SupportView {
                 },
             ));
         }
-        // Assign menu toggle — same "action verb" style.
+        // Assign menu toggle.
         {
-            left_group = left_group.child(self.action_button(
+            actions = actions.child(self.action_button(
                 "sup-assign",
                 "Attribuer à…".to_string(),
                 cx,
@@ -874,15 +870,9 @@ impl SupportView {
             ));
         }
 
-        let mut right_group = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.0));
-
         // "Envoyer à Jean" — file this ticket through JeanClaude's Slack intake.
         if self.jean_available {
-            right_group = right_group.child(self.action_button(
+            actions = actions.child(self.action_button(
                 "sup-to-jean",
                 "Envoyer à Jean".to_string(),
                 cx,
@@ -894,8 +884,8 @@ impl SupportView {
             ));
         }
 
-        // "Convertir en demande" — turn this ticket into a tracked request.
-        right_group = right_group.child(self.action_button(
+        // "Convertir en demande".
+        actions = actions.child(self.action_button(
             "sup-to-issue",
             "Convertir en demande".to_string(),
             cx,
@@ -918,15 +908,16 @@ impl SupportView {
             },
         ));
 
-        // Primary "Résoudre" — bigger, greener, more padding than the rest so
-        // the happy-path close-out reads as the clear default.
+        // Primary "Résoudre" — same height as the rest (py 5, no extra
+        // vertical space) but green + semibold so the happy-path action
+        // still reads as the primary CTA without breaking the row rhythm.
         {
             let rid = id.clone();
-            right_group = right_group.child(
+            actions = actions.child(
                 div()
                     .id("sup-resolve")
-                    .px(px(14.0))
-                    .py(px(6.0))
+                    .px(px(12.0))
+                    .py(px(5.0))
                     .rounded(px(6.0))
                     .bg(ShellDeckColors::success())
                     .text_size(px(12.0))
@@ -952,16 +943,7 @@ impl SupportView {
             .py(px(8.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(left_group)
-                    .child(div().flex_1())
-                    .child(right_group),
-            );
+            .child(actions);
 
         // Priority picker — colored Badge chips (same visual as the request
         // sheet) instead of plain text buttons. The active priority gets a
