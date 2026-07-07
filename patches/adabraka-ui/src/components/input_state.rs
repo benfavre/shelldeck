@@ -301,7 +301,15 @@ impl InputState {
         &self.content
     }
 
-    /// Set the text content with validation
+    /// Set the text content with validation.
+    ///
+    /// ShellDeck patch: the upstream implementation was a no-op when the
+    /// current selection was empty (which it usually is), because
+    /// `replace_text_in_range(None, ..)` uses `selected_range` as the range
+    /// to replace and an empty range replaced with an empty string leaves
+    /// the content untouched. We select the whole existing content first
+    /// so the replacement actually overwrites it — this is what makes the
+    /// built-in "×" clear button work.
     pub fn set_value(
         &mut self,
         value: impl Into<SharedString>,
@@ -310,6 +318,7 @@ impl InputState {
     ) {
         let value = value.into();
         let filtered_value = self.filter_input(&value);
+        self.selected_range = 0..self.content.len();
         self.replace_text_in_range(None, &filtered_value, window, cx);
         let len = filtered_value.len();
         self.selected_range = len..len;
