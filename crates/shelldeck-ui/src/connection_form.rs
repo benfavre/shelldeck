@@ -206,6 +206,130 @@ impl ConnectionForm {
 
     /// A labeled `Input` widget. `error_field` variant triggers the red-error
     /// styling. Enter on any field tries to save.
+    /// Open the OS file picker and, if the user picks a file, write its path
+    /// into `identity_file_state`. Called by the "Browse…" button next to
+    /// the Identity File input. Starts in the user's `~/.ssh/` if it exists,
+    /// otherwise falls back to `$HOME`.
+    fn pick_identity_file(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let starting_directory = std::env::var_os("HOME").map(std::path::PathBuf::from).map(
+            |home| {
+                let ssh = home.join(".ssh");
+                if ssh.is_dir() {
+                    ssh
+                } else {
+                    home
+                }
+            },
+        );
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select SSH key".into()),
+            starting_directory,
+        });
+        let state = self.identity_file_state.clone();
+        cx.spawn_in(window, async move |_this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let display = path.display().to_string();
+            let _ = state.update(cx, |s, cx| {
+                s.content = display.into();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Same layout as `render_field`, plus a "Browse…" button that opens the
+    /// native file picker and writes the selected path back to the input.
+    fn render_identity_file_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.render_field_input(
+            None,
+            &self.identity_file_state,
+            "~/.ssh/id_ed25519",
+            cx,
+        );
+        let browse = div()
+            .id("connection-form-identity-browse")
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(32.0))
+            .px(px(10.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_primary())
+            .text_size(px(12.0))
+            .text_color(ShellDeckColors::text_primary())
+            .cursor_pointer()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .child("Browse…")
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.pick_identity_file(window, cx);
+            }));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child("Identity File"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(div().flex_1().child(input))
+                    .child(browse),
+            )
+    }
+
+    /// Just the `Input` (no label + column wrapper) so it can be composed
+    /// with a suffix / adjacent button as in `render_identity_file_field`.
+    fn render_field_input(
+        &self,
+        field: Option<FormField>,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Input {
+        let has_error = field.is_some() && field == self.error_field;
+        Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .error(has_error)
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| this.try_save(cx));
+                }
+            })
+            .on_change({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| {
+                        if this.error.is_some() {
+                            this.error = None;
+                            this.error_field = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+    }
+
     fn render_field(
         &self,
         field: Option<FormField>,
@@ -340,14 +464,8 @@ impl Render for ConnectionForm {
                         cx,
                     ))),
             )
-            // Identity File
-            .child(self.render_field(
-                None,
-                "Identity File",
-                &self.identity_file_state,
-                "~/.ssh/id_ed25519",
-                cx,
-            ))
+            // Identity File — text input + native file picker button.
+            .child(self.render_identity_file_field(cx))
             // ProxyJump
             .child(self.render_field(
                 None,

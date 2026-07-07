@@ -123,6 +123,11 @@ pub struct GeneralConfig {
     pub show_notifications: bool,
     pub confirm_before_close: bool,
     pub sidebar_width: f32,
+    /// Whether the sidebar's top navigation section (Connections / Terminals
+    /// / Scripts / … / Settings) is collapsed. Persisted so the layout the
+    /// user picks sticks across sessions.
+    #[serde(default)]
+    pub sidebar_nav_collapsed: bool,
     pub auto_attach_tmux: bool,
     pub auto_update: bool,
     /// Font family for the application UI (sidebar, dashboard, forms, etc.).
@@ -152,6 +157,7 @@ impl Default for GeneralConfig {
             show_notifications: true,
             confirm_before_close: true,
             sidebar_width: 260.0,
+            sidebar_nav_collapsed: false,
             auto_attach_tmux: false,
             auto_update: true,
             ui_font_family: "System Default".to_string(),

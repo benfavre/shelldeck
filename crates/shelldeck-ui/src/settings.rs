@@ -82,6 +82,16 @@ impl SettingsView {
         self.config.theme.clone()
     }
 
+    /// Update the persisted "sidebar top-nav collapsed" state. Called by the
+    /// workspace when the user clicks the sidebar's collapse chevron.
+    pub fn set_sidebar_nav_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.config.general.sidebar_nav_collapsed == collapsed {
+            return;
+        }
+        self.config.general.sidebar_nav_collapsed = collapsed;
+        self.save_config(cx);
+    }
+
     /// Nudge the UI scale (app font size) by `delta`, clamped to [10, 22], and
     /// persist immediately. Emits `ConfigChanged` so the workspace re-applies
     /// the rem size live. Shared by the Appearance settings and the titlebar

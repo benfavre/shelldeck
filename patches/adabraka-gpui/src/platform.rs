@@ -1328,7 +1328,7 @@ pub enum WindowBackgroundAppearance {
 }
 
 /// The options that can be configured for a file dialog prompt
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PathPromptOptions {
     /// Should the prompt allow files to be selected?
     pub files: bool,
@@ -1338,6 +1338,10 @@ pub struct PathPromptOptions {
     pub multiple: bool,
     /// The prompt to show to a user when selecting a path
     pub prompt: Option<SharedString>,
+    /// ShellDeck patch: initial directory the OS picker should open in (e.g.
+    /// pointing straight at `~/.ssh/` for SSH-key pickers). Ignored when the
+    /// underlying platform / portal doesn't honour it.
+    pub starting_directory: Option<std::path::PathBuf>,
 }
 
 /// What kind of prompt styling to show

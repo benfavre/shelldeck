@@ -110,6 +110,10 @@ pub enum SidebarEvent {
     SectionChanged(SidebarSection),
     QuickConnect,
     WidthChanged(f32),
+    /// User toggled the top-nav collapse chevron — workspace persists this
+    /// to `AppConfig.general.sidebar_nav_collapsed` so the layout sticks
+    /// across sessions.
+    NavCollapsedChanged(bool),
 }
 
 pub struct SidebarView {
@@ -117,6 +121,10 @@ pub struct SidebarView {
     selected_connection: Option<Uuid>,
     active_section: SidebarSection,
     collapsed: bool,
+    /// Whether the top navigation section is collapsed. When true, only the
+    /// hosts section (search + list) remains visible. Persisted by the
+    /// workspace via `AppConfig.general.sidebar_nav_collapsed`.
+    nav_collapsed: bool,
     width: f32,
     /// Whether the user is currently dragging the resize handle.
     resizing: bool,
@@ -145,6 +153,7 @@ impl SidebarView {
             selected_connection: None,
             active_section: SidebarSection::Connections,
             collapsed: false,
+            nav_collapsed: false,
             width: 260.0,
             resizing: false,
             terminal_tab_count: 0,
@@ -155,6 +164,12 @@ impl SidebarView {
             fleet_available: false,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Seed the persisted "top nav collapsed" state from the app config.
+    /// Called by the workspace on init.
+    pub fn set_nav_collapsed(&mut self, collapsed: bool) {
+        self.nav_collapsed = collapsed;
     }
 
     /// Show/hide the JeanClaude console nav entry (Dev mode + config present).
@@ -688,7 +703,47 @@ impl Render for SidebarView {
                 }),
             );
 
-        div()
+        // Collapsible top-nav separator: a click-to-toggle chevron sitting
+        // between the nav section and the hosts list. Persisted via
+        // `SidebarEvent::NavCollapsedChanged`.
+        let nav_collapsed = self.nav_collapsed;
+        let separator = div()
+            .id("sidebar-nav-toggle")
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(12.0))
+            .py(px(4.0))
+            .cursor_pointer()
+            .border_t_1()
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.nav_collapsed = !this.nav_collapsed;
+                cx.emit(SidebarEvent::NavCollapsedChanged(this.nav_collapsed));
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .path("images/chevron-down.svg")
+                    .size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        if nav_collapsed { std::f32::consts::PI } else { 0.0 },
+                    ))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(if nav_collapsed { "SHOW NAV" } else { "HIDE NAV" }),
+            );
+
+        let mut root = div()
             .relative()
             .flex()
             .flex_col()
@@ -703,9 +758,24 @@ impl Render for SidebarView {
             .border_color(ShellDeckColors::border())
             .id("sidebar")
             .track_focus(&self.focus_handle)
-            .child(logo)
-            .child(nav)
-            .child(scrollable_vertical(host_list))
+            .child(logo);
+        if !nav_collapsed {
+            root = root.child(nav);
+        }
+        root.child(separator)
+            .child(
+                // Explicit flex-grow + min_h(0) around the scrollable so the
+                // scroll container computes its viewport height correctly and
+                // stops clipping the last row above the "+ Add Connection"
+                // footer.
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_grow()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(scrollable_vertical(host_list)),
+            )
             .child(add_button)
             .child(resize_handle)
     }

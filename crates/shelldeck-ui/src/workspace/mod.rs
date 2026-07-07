@@ -353,10 +353,12 @@ impl Workspace {
             .active_site_id
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
+        let initial_nav_collapsed = config.general.sidebar_nav_collapsed;
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_connections(connections.clone());
             s.set_site_filter(initial_site_filter);
+            s.set_nav_collapsed(initial_nav_collapsed);
             s
         });
 
@@ -846,6 +848,14 @@ impl Workspace {
             }
             SidebarEvent::OpenConnectionMenu { conn_id, position } => {
                 self.sidebar_kebab_menu = Some((*conn_id, *position));
+                cx.notify();
+            }
+            SidebarEvent::NavCollapsedChanged(collapsed) => {
+                let collapsed = *collapsed;
+                self.app_config.general.sidebar_nav_collapsed = collapsed;
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_sidebar_nav_collapsed(collapsed, cx);
+                });
                 cx.notify();
             }
         }
@@ -5168,9 +5178,7 @@ impl Workspace {
 
         let panel = div()
             .id("sidebar-kebab-panel")
-            .absolute()
-            .left(pos.x)
-            .top(pos.y + px(4.0))
+            .occlude()
             .w(px(200.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -5245,9 +5253,12 @@ impl Workspace {
             ));
 
         // Transparent full-window backdrop — click anywhere outside dismisses.
+        // The panel itself is wrapped in `deferred(anchored())` with
+        // `snap_to_window_with_margin` so it flips inside the viewport when
+        // the click position would otherwise push the menu off-screen
+        // (previously the bottom items got clipped by the status bar).
         div()
             .id("sidebar-kebab-backdrop")
-            .occlude()
             .absolute()
             .top_0()
             .left_0()
@@ -5259,7 +5270,16 @@ impl Workspace {
                     cx.notify();
                 }),
             )
-            .child(panel)
+            .child(
+                deferred(
+                    anchored()
+                        .position(pos + point(gpui::px(0.0), gpui::px(4.0)))
+                        .anchor(gpui::Corner::TopLeft)
+                        .snap_to_window_with_margin(gpui::px(8.0))
+                        .child(panel),
+                )
+                .with_priority(2),
+            )
     }
 
     fn render_site_section_header(label: &str) -> impl IntoElement {

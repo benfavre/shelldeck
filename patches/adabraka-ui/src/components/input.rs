@@ -3,9 +3,10 @@
 use crate::animations::{easings, shake_offset};
 use crate::components::icon::Icon;
 pub use crate::components::input_state::{
-    Backspace, Copy, Cut, Delete, End, Enter, Escape, Home, InputEvent, InputMask, InputState,
-    InputType, Left, Paste, Right, SelectAll, SelectLeft, SelectRight, ShiftTab, Tab,
-    ValidationError, ValidationRules,
+    Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, End, Enter, Escape, Home, InputEvent,
+    InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord, SelectAll,
+    SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, ShiftTab, Tab, ValidationError,
+    ValidationRules,
 };
 use crate::layout::{HStack, VStack};
 use crate::theme::use_theme;
@@ -44,6 +45,33 @@ pub fn init(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-v", Paste, Some("Input")),
         KeyBinding::new("escape", Escape, Some("Input")),
+        // ShellDeck patch: word-level navigation and delete.
+        //   - macOS: Alt (Option) + ←/→/Backspace/Delete.
+        //   - Linux/Windows: Ctrl + ←/→/Backspace/Delete.
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-left", LeftWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-left", LeftWord, Some("Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-right", RightWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-right", RightWord, Some("Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-shift-left", SelectLeftWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-left", SelectLeftWord, Some("Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-shift-right", SelectRightWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-right", SelectRightWord, Some("Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-backspace", BackspaceWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-backspace", BackspaceWord, Some("Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("alt-delete", DeleteWord, Some("Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-delete", DeleteWord, Some("Input")),
     ]);
 }
 
@@ -697,6 +725,13 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::tab))
                             .on_action(window.listener_for(&self.state, InputState::shift_tab))
                             .on_action(window.listener_for(&self.state, InputState::escape))
+                            // ShellDeck patch: word-level actions.
+                            .on_action(window.listener_for(&self.state, InputState::left_word))
+                            .on_action(window.listener_for(&self.state, InputState::right_word))
+                            .on_action(window.listener_for(&self.state, InputState::select_left_word))
+                            .on_action(window.listener_for(&self.state, InputState::select_right_word))
+                            .on_action(window.listener_for(&self.state, InputState::backspace_word))
+                            .on_action(window.listener_for(&self.state, InputState::delete_word))
                     })
                     .child(
                         HStack::new()
