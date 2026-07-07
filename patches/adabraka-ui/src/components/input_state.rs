@@ -191,13 +191,19 @@ pub struct InputState {
     pub(crate) shake_count: u32,
     cursor_position_override: Option<usize>,
     // ShellDeck patch: SDPATCH-009 — when true, the input behaves as a
-    // multi-line textarea. Enter inserts `\n` into the content, paste keeps
-    // embedded newlines, and the element renders each `\n`-separated line
-    // stacked vertically. `last_layouts` holds one shaped line per newline
-    // segment (populated in paint) and `line_height` is snapshotted so click
-    // mapping can turn a Y coord into a line index without a window handle.
+    // multi-line textarea. Enter inserts `\n` into the content and paste
+    // keeps embedded newlines. Rendering is delegated to SDPATCH-010, which
+    // shape_texts the whole content with `wrap_width = bounds.width` so soft
+    // wraps happen automatically inside each `\n`-segment.
     pub multi_line: bool,
-    pub(crate) last_layouts: Vec<gpui::ShapedLine>,
+    // ShellDeck patch: SDPATCH-010 — one `WrappedLine` per `\n`-segment,
+    // snapshotted at paint time. Each WrappedLine internally tracks soft-wrap
+    // boundaries, so `wrapped_line_count` (the sum of visual sub-lines) can
+    // be fed back into `request_layout` on the next frame to reserve enough
+    // height for wrapped content. `line_height` is stashed so click mapping
+    // can convert a click Y to a visual-line index without a window handle.
+    pub(crate) wrapped_layouts: Vec<gpui::WrappedLine>,
+    pub(crate) wrapped_line_count: usize,
     pub(crate) line_height: Pixels,
 }
 
@@ -237,10 +243,12 @@ impl InputState {
             shake_triggered: false,
             shake_count: 0,
             cursor_position_override: None,
-            // ShellDeck patch: SDPATCH-009 — see the `multi_line` /
-            // `last_layouts` / `line_height` fields on the struct definition.
+            // ShellDeck patch: SDPATCH-009 — flag. SDPATCH-010 — layouts +
+            // wrapped-visual-line count fed back into request_layout. See the
+            // struct-level comments for the shape of each field.
             multi_line: false,
-            last_layouts: Vec::new(),
+            wrapped_layouts: Vec::new(),
+            wrapped_line_count: 0,
             line_height: px(0.0),
         }
     }
@@ -964,25 +972,33 @@ impl InputState {
             return self.content.len();
         }
 
-        // ShellDeck patch: SDPATCH-009 — multi_line click mapping. When we
-        // have per-line shaped layouts, use the click's Y to pick a line and
-        // the click's X against that line's shaped run. Byte offset is the
-        // sum of prior lines (+1 per '\n') plus the line-relative index.
-        if self.multi_line && !self.last_layouts.is_empty() && self.line_height > px(0.0) {
-            let y_local: f32 = (position.y - bounds.top()).into();
-            let lh: f32 = self.line_height.into();
-            let relative_y = if lh > 0.0 { y_local / lh } else { 0.0 };
-            let line_idx = (relative_y.floor().max(0.0) as usize)
-                .min(self.last_layouts.len().saturating_sub(1));
-            let x_local = position.x - bounds.left();
-            let line = &self.last_layouts[line_idx];
-            let in_line = line.closest_index_for_x(x_local);
-            let mut offset = 0usize;
-            for (i, seg) in self.content.split('\n').enumerate() {
-                if i == line_idx {
-                    return offset + in_line.min(seg.len());
+        // ShellDeck patch: SDPATCH-010 — multi_line click mapping. Walk the
+        // per-`\n`-segment `WrappedLine`s; each contains its own soft-wrap
+        // count so its visual height is `(wrap_boundaries.len() + 1) *
+        // line_height`. The first line whose accumulated bottom is past the
+        // click Y owns the click; ask its `WrappedLineLayout` for the byte
+        // offset via `closest_index_for_position` and add the running byte
+        // total (including `\n` separators) to get the absolute cursor byte.
+        if self.multi_line && !self.wrapped_layouts.is_empty() && self.line_height > px(0.0) {
+            let lh = self.line_height;
+            let mut y_top = bounds.top();
+            let mut byte_offset = 0usize;
+            for line in &self.wrapped_layouts {
+                let visual = (line.wrap_boundaries().len() + 1) as f32;
+                let y_bottom = y_top + lh * visual;
+                if position.y < y_bottom {
+                    let local = point(
+                        position.x - bounds.left(),
+                        position.y - y_top,
+                    );
+                    let within = match line.closest_index_for_position(local, lh) {
+                        Ok(i) => i,
+                        Err(i) => i,
+                    };
+                    return byte_offset + within.min(line.len());
                 }
-                offset += seg.len() + 1;
+                y_top = y_bottom;
+                byte_offset += line.len() + 1;
             }
             return self.content.len();
         }
@@ -1271,9 +1287,11 @@ struct InputTextElement {
 
 struct PrepaintState {
     line: Option<gpui::ShapedLine>,
-    // ShellDeck patch: SDPATCH-009 — populated in multi_line mode with one
-    // ShapedLine per `\n`-separated segment. Empty in single-line mode.
-    multi_lines: Vec<gpui::ShapedLine>,
+    // ShellDeck patch: SDPATCH-010 — populated in multi_line mode with one
+    // `WrappedLine` per `\n`-separated segment; each carries its own soft-
+    // wrap boundaries computed by gpui's `shape_text` for `bounds.width`.
+    // Empty in single-line mode.
+    wrapped_lines: Vec<gpui::WrappedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
     /// ShellDeck patch: horizontal scroll offset applied to the shaped line
@@ -1311,12 +1329,16 @@ impl gpui::Element for InputTextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        // ShellDeck patch: SDPATCH-009 — reserve one line per `\n` segment
-        // when the state is in multi_line mode, so the shaped lines stack
-        // cleanly inside the element bounds.
+        // ShellDeck patch: SDPATCH-010 — reserve enough vertical space in
+        // multi_line mode for the shaped visual-line count (hard newlines +
+        // soft wraps). We don't have the final bounds width here, so we
+        // fall back to the count computed at the last paint (updated on
+        // every prepaint), and floor at the hard-newline count so the very
+        // first paint has at least one row per `\n`-segment.
         let input = self.input.read(cx);
         let n_lines = if input.multi_line {
-            input.content.split('\n').count().max(1)
+            let hard = input.content.split('\n').count().max(1);
+            hard.max(input.wrapped_line_count).max(1)
         } else {
             1
         };
@@ -1334,11 +1356,15 @@ impl gpui::Element for InputTextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        // ShellDeck patch: SDPATCH-009 — multi_line prepaint path. Shape each
-        // `\n`-separated segment as its own line, stack them vertically, and
-        // put the caret on the segment holding the cursor byte offset.
-        // Selection quads are only rendered when the range stays within a
-        // single line — cross-line selection support is a follow-up.
+        // ShellDeck patch: SDPATCH-010 — multi_line prepaint path. gpui's
+        // `shape_text(content, fs, runs, Some(bounds.width), None)` returns
+        // one `WrappedLine` per `\n`-segment, each carrying its own
+        // soft-wrap boundaries. We walk them to find the caret's segment,
+        // ask `position_for_index` for the caret's (x, y) inside that
+        // segment, then add the cumulative vertical offset from prior
+        // segments to get the absolute caret point. Selection is rendered
+        // only when both ends land on the same visual sub-line — cross-
+        // sub-line selection support is a follow-up.
         if input.multi_line && !input.masked {
             let style = window.text_style();
             let theme = use_theme();
@@ -1362,71 +1388,81 @@ impl gpui::Element for InputTextElement {
             let selected_range = input.selected_range.clone();
             let cursor_byte = input.cursor_offset();
 
-            let segments: Vec<String> = display.split('\n').map(|s| s.to_string()).collect();
-            let mut shaped_lines: Vec<gpui::ShapedLine> = Vec::with_capacity(segments.len());
+            let run = TextRun {
+                len: display.len(),
+                font: style.font(),
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let wrap_width = if bounds.size.width > px(0.0) {
+                Some(bounds.size.width)
+            } else {
+                None
+            };
+            let wrapped: Vec<gpui::WrappedLine> = window
+                .text_system()
+                .shape_text(display.clone(), font_size, &[run], wrap_width, None)
+                .map(|sv| sv.into_iter().collect())
+                .unwrap_or_default();
+
+            let mut y_top = bounds.top();
             let mut byte_offset = 0usize;
-            let mut cursor_line_idx = 0usize;
-            let mut cursor_x_in_line = px(0.0);
+            let mut cursor_point: Option<Point<Pixels>> = None;
             let mut selection_quad: Option<PaintQuad> = None;
-            for (i, seg) in segments.iter().enumerate() {
-                let seg_len = seg.len();
-                let seg_shape: SharedString = if seg.is_empty() {
-                    " ".into()
-                } else {
-                    seg.clone().into()
-                };
-                let run = TextRun {
-                    len: seg_shape.len(),
-                    font: style.font(),
-                    color: text_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped =
-                    window
-                        .text_system()
-                        .shape_line(seg_shape, font_size, &[run], None);
+            for line in wrapped.iter() {
                 let line_start = byte_offset;
-                let line_end = line_start + seg_len;
-                if !placeholder_mode && cursor_byte >= line_start && cursor_byte <= line_end {
-                    cursor_line_idx = i;
-                    cursor_x_in_line = shaped.x_for_index(cursor_byte - line_start);
+                let line_end = line_start + line.len();
+                let visual = (line.wrap_boundaries().len() + 1) as f32;
+                let line_height_total = line_h * visual;
+                if !placeholder_mode
+                    && cursor_byte >= line_start
+                    && cursor_byte <= line_end
+                {
+                    if let Some(pos) =
+                        line.position_for_index(cursor_byte - line_start, line_h)
+                    {
+                        cursor_point = Some(point(
+                            bounds.left() + pos.x,
+                            y_top + pos.y,
+                        ));
+                    }
                 }
-                // Same-line selection quad — only when the whole range fits
-                // in this segment. Cross-line selection stays invisible.
                 if !placeholder_mode
                     && !selected_range.is_empty()
                     && selected_range.start >= line_start
                     && selected_range.end <= line_end
                 {
-                    let sx = shaped.x_for_index(selected_range.start - line_start);
-                    let ex = shaped.x_for_index(selected_range.end - line_start);
-                    let top = bounds.top() + line_h * i as f32;
-                    selection_quad = Some(fill(
-                        Bounds::from_corners(
-                            point(bounds.left() + sx, top),
-                            point(bounds.left() + ex, top + line_h),
-                        ),
-                        selection_color,
-                    ));
+                    if let (Some(sp), Some(ep)) = (
+                        line.position_for_index(selected_range.start - line_start, line_h),
+                        line.position_for_index(selected_range.end - line_start, line_h),
+                    ) {
+                        if sp.y == ep.y {
+                            selection_quad = Some(fill(
+                                Bounds::from_corners(
+                                    point(bounds.left() + sp.x, y_top + sp.y),
+                                    point(bounds.left() + ep.x, y_top + sp.y + line_h),
+                                ),
+                                selection_color,
+                            ));
+                        }
+                    }
                 }
-                shaped_lines.push(shaped);
-                byte_offset = line_end + 1; // +1 for the '\n'
+                y_top = y_top + line_height_total;
+                byte_offset = line_end + 1;
             }
 
-            let cursor_top = bounds.top() + line_h * cursor_line_idx as f32;
-            let cursor_quad = fill(
-                Bounds::new(
-                    point(bounds.left() + cursor_x_in_line, cursor_top),
-                    size(px(2.0), line_h),
-                ),
-                theme_ring,
-            );
+            let cursor_quad = cursor_point.map(|p| {
+                fill(
+                    Bounds::new(p, size(px(2.0), line_h)),
+                    theme_ring,
+                )
+            });
             return PrepaintState {
                 line: None,
-                multi_lines: shaped_lines,
-                cursor: if placeholder_mode { None } else { Some(cursor_quad) },
+                wrapped_lines: wrapped,
+                cursor: if placeholder_mode { None } else { cursor_quad },
                 selection: selection_quad,
                 scroll_offset: px(0.0),
             };
@@ -1565,7 +1601,7 @@ impl gpui::Element for InputTextElement {
         };
         PrepaintState {
             line: Some(line),
-            multi_lines: Vec::new(),
+            wrapped_lines: Vec::new(),
             cursor,
             selection,
             scroll_offset,
@@ -1594,16 +1630,33 @@ impl gpui::Element for InputTextElement {
             window.paint_quad(selection)
         }
 
-        // ShellDeck patch: SDPATCH-009 — multi_line paint path. Paint each
-        // shaped line at its own baseline (`origin + i * line_height`), then
-        // snapshot the layouts + line_height on InputState so click mapping
-        // can turn a Y coord into a line index without needing a window.
-        if !prepaint.multi_lines.is_empty() {
+        // ShellDeck patch: SDPATCH-010 — multi_line paint path. Each
+        // `WrappedLine` is painted at its own cumulative Y (accounting for
+        // its own soft-wrap count so hard-newline segments that overflow the
+        // width still get their real vertical footprint). After paint we
+        // stash the layouts + the visual-line count on the state so
+        // (a) click mapping can turn (x, y) into a byte offset, and
+        // (b) the next `request_layout` reserves enough height for the
+        // wrapped content — `cx.notify()` triggers that re-layout when the
+        // count changed. `last_layout` stays None (single-line paths don't
+        // fit the wrapped model — IME / bounds_for_range simply degrade).
+        if !prepaint.wrapped_lines.is_empty() {
             let line_h = window.line_height();
-            let multi_lines = std::mem::take(&mut prepaint.multi_lines);
-            for (i, line) in multi_lines.iter().enumerate() {
-                let y = bounds.origin.y + line_h * i as f32;
-                let _ = line.paint(point(bounds.origin.x, y), line_h, window, cx);
+            let wrapped = std::mem::take(&mut prepaint.wrapped_lines);
+            let mut y = bounds.origin.y;
+            let mut visual_total = 0usize;
+            for line in wrapped.iter() {
+                let _ = line.paint(
+                    point(bounds.origin.x, y),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                let visual = line.wrap_boundaries().len() + 1;
+                y = y + line_h * visual as f32;
+                visual_total += visual;
             }
             if focus_handle.is_focused(window) {
                 if let Some(cursor) = prepaint.cursor.take() {
@@ -1614,13 +1667,16 @@ impl gpui::Element for InputTextElement {
                     window.request_animation_frame();
                 }
             }
-            self.input.update(cx, |input, _cx| {
-                // Keep the first line in `last_layout` so IME / bounds_for_range
-                // paths that predate SDPATCH-009 still see something sensible.
-                input.last_layout = multi_lines.first().cloned();
-                input.last_layouts = multi_lines;
+            let prev_count = self.input.read(cx).wrapped_line_count;
+            self.input.update(cx, |input, cx| {
+                input.last_layout = None;
+                input.wrapped_layouts = wrapped;
+                input.wrapped_line_count = visual_total;
                 input.line_height = line_h;
                 input.last_bounds = Some(bounds);
+                if prev_count != visual_total {
+                    cx.notify();
+                }
             });
             return;
         }
@@ -1656,7 +1712,8 @@ impl gpui::Element for InputTextElement {
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
-            input.last_layouts.clear();
+            input.wrapped_layouts.clear();
+            input.wrapped_line_count = 0;
             input.line_height = window.line_height();
             input.last_bounds = Some(bounds);
         });
