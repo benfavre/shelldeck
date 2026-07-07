@@ -620,7 +620,7 @@ version = "1.0"
 version = "0.3"
 
 [dependencies.gpui]
-version = "0.3"
+version = "0.5"
 package = "adabraka-gpui"
 
 [dependencies.isahc]
