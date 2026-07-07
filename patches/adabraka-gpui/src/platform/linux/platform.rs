@@ -353,8 +353,14 @@ impl<P: LinuxClient + 'static> Platform for P {
         #[cfg(not(any(feature = "wayland", feature = "x11")))]
         let _ = (done_tx.send(Ok(None)), options);
 
+        // ShellDeck patch: capture two identifier futures so the picker can
+        // fall back to a builder without `current_folder()` on error (the
+        // ashpd builder consumes `self` and `WindowIdentifier` isn't `Clone`,
+        // so a second future is the cleanest way to rebuild).
         #[cfg(any(feature = "wayland", feature = "x11"))]
         let identifier = self.window_identifier();
+        #[cfg(any(feature = "wayland", feature = "x11"))]
+        let identifier_fallback = self.window_identifier();
 
         #[cfg(any(feature = "wayland", feature = "x11"))]
         self.foreground_executor()
@@ -365,16 +371,33 @@ impl<P: LinuxClient + 'static> Platform for P {
                     "Open File"
                 };
 
-                let request = match ashpd::desktop::file_chooser::OpenFileRequest::default()
+                // ShellDeck patch: pre-seed the picker's starting folder
+                // when the caller supplied one. If `current_folder()` rejects
+                // the path (it consumes the builder on error and
+                // `WindowIdentifier` isn't `Clone`) we rebuild the request
+                // using the second identifier future captured above.
+                let accept_label = options.prompt.as_ref().map(crate::SharedString::as_str);
+                let primary = ashpd::desktop::file_chooser::OpenFileRequest::default()
                     .identifier(identifier.await)
                     .modal(true)
                     .title(title)
-                    .accept_label(options.prompt.as_ref().map(crate::SharedString::as_str))
+                    .accept_label(accept_label)
                     .multiple(options.multiple)
-                    .directory(options.directories)
-                    .send()
-                    .await
-                {
+                    .directory(options.directories);
+                let request_builder = match options.starting_directory.as_ref() {
+                    Some(dir) => match primary.current_folder(dir) {
+                        Ok(with_folder) => with_folder,
+                        Err(_) => ashpd::desktop::file_chooser::OpenFileRequest::default()
+                            .identifier(identifier_fallback.await)
+                            .modal(true)
+                            .title(title)
+                            .accept_label(accept_label)
+                            .multiple(options.multiple)
+                            .directory(options.directories),
+                    },
+                    None => primary,
+                };
+                let request = match request_builder.send().await {
                     Ok(request) => request,
                     Err(err) => {
                         let result = match err {
