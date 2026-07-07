@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **29**
+Total markers in code: **30**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -135,61 +135,94 @@ carries no marker of its own — see its entry).
 - **Upstream status**: N/A — companion patch. Removed automatically if
   we ever retire SDPATCH-101.
 
-### SDPATCH-009 — `multi_line` mode on `InputState` / `Input` (real textarea)
+### SDPATCH-009 — `multi_line` flag + API on `InputState` / `Input`
 
 - **Files / symbols**:
-  - `src/components/input_state.rs` — `InputState` (fields `multi_line`,
-    `last_layouts`, `line_height`), `InputState::new`,
-    `InputState::multi_line` (builder), `InputState::paste`,
-    `InputState::enter`, `InputState::index_for_mouse_position`,
-    `PrepaintState` (field `multi_lines`),
-    `<InputTextElement as gpui::Element>::request_layout`,
-    `<InputTextElement as gpui::Element>::prepaint`,
-    `<InputTextElement as gpui::Element>::paint`
-  - `src/components/input.rs` — `Input` (fields `multi_line`, `min_rows`),
-    `Input::new`, `Input::multi_line` (builder), `Input::min_rows`
-    (builder), `<Input as RenderOnce>::render` (state propagation +
-    HStack sizing swap in the container)
+  - `src/components/input_state.rs` — `InputState` (`multi_line` field),
+    `InputState::new` (init the flag), `InputState::multi_line` (builder),
+    `InputState::paste` (keep `\n` when multi_line),
+    `InputState::enter` (insert `\n` when multi_line)
+  - `src/components/input.rs` — `Input` (`multi_line`, `min_rows` fields),
+    `Input::new` (init the fields), `Input::multi_line` (builder),
+    `Input::min_rows` (builder),
+    `<Input as RenderOnce>::render` (propagate flag to state + swap
+    `.h(height).items_center()` for `.min_h(min_rows * line_h + pad)
+    .items_start()` in the HStack container)
 - **Markers**:
   - `src/components/input_state.rs:193` — `// ShellDeck patch: SDPATCH-009 — when true, the input behaves as a`
-  - `src/components/input_state.rs:240` — `// ShellDeck patch: SDPATCH-009 — see the `multi_line` /`
-  - `src/components/input_state.rs:248` — `/// ShellDeck patch: SDPATCH-009 — enable multi-line textarea mode. See`
-  - `src/components/input_state.rs:861` — `// ShellDeck patch: SDPATCH-009 — keep embedded newlines when in`
-  - `src/components/input_state.rs:892` — `// ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a`
-  - `src/components/input_state.rs:967` — `// ShellDeck patch: SDPATCH-009 — multi_line click mapping. When we`
-  - `src/components/input_state.rs:1274` — `// ShellDeck patch: SDPATCH-009 — populated in multi_line mode with one`
-  - `src/components/input_state.rs:1314` — `// ShellDeck patch: SDPATCH-009 — reserve one line per `\n` segment`
-  - `src/components/input_state.rs:1337` — `// ShellDeck patch: SDPATCH-009 — multi_line prepaint path. Shape each`
-  - `src/components/input_state.rs:1597` — `// ShellDeck patch: SDPATCH-009 — multi_line paint path. Paint each`
+  - `src/components/input_state.rs:246` — `// ShellDeck patch: SDPATCH-009 — flag. SDPATCH-010 — layouts +`
+  - `src/components/input_state.rs:256` — `/// ShellDeck patch: SDPATCH-009 — enable multi-line textarea mode. See`
+  - `src/components/input_state.rs:869` — `// ShellDeck patch: SDPATCH-009 — keep embedded newlines when in`
+  - `src/components/input_state.rs:900` — `// ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a`
   - `src/components/input.rs:131` — `// ShellDeck patch: SDPATCH-009 — multi_line mirrors the same-named flag`
   - `src/components/input.rs:179` — `// ShellDeck patch: SDPATCH-009 — default single-line; opt in with`
   - `src/components/input.rs:186` — `/// ShellDeck patch: SDPATCH-009 — turn this Input into a multi-line`
   - `src/components/input.rs:195` — `/// ShellDeck patch: SDPATCH-009 — visible height of the textarea, in`
   - `src/components/input.rs:501` — `// ShellDeck patch: SDPATCH-009 — propagate the wrapper's flag to`
   - `src/components/input.rs:769` — `// ShellDeck patch: SDPATCH-009 — in multi_line mode`
-- **Why**: adabraka's `Input` is strictly single-line — `InputState::enter`
-  always emits `InputEvent::Enter`, `paste` strips `\n`, and
-  `InputTextElement` shapes exactly one line with a fixed
-  `window.line_height()` layout. Its sibling `Textarea` is a
-  `RenderOnce` display-only stub with no state backing. ShellDeck's User-
-  mode "Nouvelle demande" needs a real textarea for the Détails field,
-  and the ShellDeck `.agents/ui-components.md` rules require extending
+- **Why**: adabraka's `Input` is strictly single-line — `enter` always
+  emits `InputEvent::Enter`, `paste` strips `\n`. Its sibling `Textarea`
+  is a `RenderOnce` display-only stub with no state backing. ShellDeck's
+  User-mode "Nouvelle demande" needs a real textarea for the Détails
+  field, and the `.agents/ui-components.md` rules require extending
   adabraka rather than forking a private widget in `shelldeck-ui`. This
-  patch adds a `multi_line: bool` on `InputState` / `Input` that:
-  Enter inserts `\n` into the content, paste keeps embedded newlines,
-  `request_layout` reserves `n_lines * line_height`, `prepaint` shapes
-  one line per `\n`-segment and places the caret on the right line,
-  `paint` stacks the shaped lines and snapshots `last_layouts` +
-  `line_height` on the state for click mapping, and
-  `index_for_mouse_position` uses the click's `y` to pick a line and the
-  click's `x` against that line's shaped run. Cross-line selection
-  quads are intentionally not drawn (would need Vec<PaintQuad>) — a
-  follow-up patch can add them. Up/Down line navigation is also
-  deferred; arrows still walk across `\n` via the existing byte-level
-  left/right handlers, and mouse click always lands on the right line.
+  patch is the "surface" half — a `multi_line: bool` on `InputState` and
+  `Input`, plus a `min_rows` for visible height on `Input`, plus the
+  behavior swaps in `enter` / `paste` / the render container's sizing.
+  The rendering half (shape_text with wrap, cursor placement, click
+  mapping) lives in **SDPATCH-010** — the two are kept separate so a
+  future refactor can retire one without disturbing the other.
 - **Upstream status**: not filed yet — big enough to be worth a real
   design conversation upstream before filing (they may prefer a
   separate `TextareaState` type instead of a flag on `InputState`).
+
+### SDPATCH-010 — wrap-aware multi_line rendering via gpui `shape_text`
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState` (fields
+    `wrapped_layouts`, `wrapped_line_count`, `line_height`),
+    `InputState::index_for_mouse_position` (multi_line click mapping via
+    `WrappedLine::closest_index_for_position`),
+    `PrepaintState` (field `wrapped_lines`),
+    `<InputTextElement as gpui::Element>::request_layout` (multi_line
+    height uses last-paint wrapped-visual-line count),
+    `<InputTextElement as gpui::Element>::prepaint` (multi_line branch
+    calls `window.text_system().shape_text` with
+    `wrap_width = Some(bounds.width)` and places the caret via
+    `WrappedLine::position_for_index`),
+    `<InputTextElement as gpui::Element>::paint` (multi_line branch
+    paints each `WrappedLine` at its cumulative Y, then feeds the
+    visual-line count back to the state + `cx.notify()` when it changes
+    so the next `request_layout` reserves enough height)
+- **Markers**:
+  - `src/components/input_state.rs:199` — `// ShellDeck patch: SDPATCH-010 — one \`WrappedLine\` per \`\\n\`-segment,`
+  - `src/components/input_state.rs:975` — `// ShellDeck patch: SDPATCH-010 — multi_line click mapping. Walk the`
+  - `src/components/input_state.rs:1290` — `// ShellDeck patch: SDPATCH-010 — populated in multi_line mode with one`
+  - `src/components/input_state.rs:1332` — `// ShellDeck patch: SDPATCH-010 — reserve enough vertical space in`
+  - `src/components/input_state.rs:1359` — `// ShellDeck patch: SDPATCH-010 — multi_line prepaint path. gpui's`
+  - `src/components/input_state.rs:1633` — `// ShellDeck patch: SDPATCH-010 — multi_line paint path. Each`
+- **Why**: the initial SDPATCH-009 landed with a naive multi_line
+  renderer that called `shape_line` once per `\n`-separated segment.
+  `shape_line` doesn't wrap — a long paragraph without hard breaks was
+  laid out as a single visual line running past the input's right edge
+  (visible bug, screenshot linked from the ShellDeck session on
+  2026-07-07). gpui already ships `TextSystem::shape_text(text, fs,
+  runs, Some(wrap_width), None)` which returns
+  `Vec<WrappedLine>` — one per `\n`-segment with `wrap_boundaries` for
+  each soft-wrap. This patch replaces the `shape_line`-per-segment
+  approach with a single `shape_text` call at the input's inner width,
+  walks the returned `WrappedLine`s (each carries a
+  `WrappedLineLayout` via Deref) to place the caret with
+  `position_for_index`, paints each with `WrappedLine::paint(...,
+  TextAlign::Left, None, ...)`, and stores the resulting
+  visual-line count on the state so the next `request_layout` reserves
+  enough vertical room (previous frame's count → this frame's reserved
+  height, one-frame lag). Click mapping walks the same layouts via
+  `closest_index_for_position`. Selection quads still only render when
+  both ends land on the same visual sub-line — cross-sub-line
+  selection is a follow-up.
+- **Upstream status**: not filed yet — bundles with SDPATCH-009's
+  design conversation.
 
 ## Preserved files (do not overwrite on sync)
 
@@ -217,6 +250,16 @@ carries no marker of its own — see its entry).
   upstream single-line box) and `.min_h(min_rows*line_h+pad)` +
   `.items_start()` (textarea box); a future upstream refactor of that
   container will need eyes on that hunk.
+- **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
+  `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
+  inner width so long paragraphs actually wrap instead of running past
+  the right edge. Moved 5 rendering markers from SDPATCH-009 to
+  SDPATCH-010 (SDPATCH-009 now covers the surface — flag, builder,
+  container-sizing swap; SDPATCH-010 covers the shape/paint guts).
+  Added 1 new marker (`wrapped_layouts` field replaces the old
+  `last_layouts: Vec<ShapedLine>` with `Vec<WrappedLine>` + a
+  `wrapped_line_count` for the request_layout feedback loop). Net
+  marker count 29 → 30.
 
 ## Retired patches
 
