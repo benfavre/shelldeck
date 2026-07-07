@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **13**
+Total markers in code: **29**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -135,6 +135,62 @@ carries no marker of its own — see its entry).
 - **Upstream status**: N/A — companion patch. Removed automatically if
   we ever retire SDPATCH-101.
 
+### SDPATCH-009 — `multi_line` mode on `InputState` / `Input` (real textarea)
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState` (fields `multi_line`,
+    `last_layouts`, `line_height`), `InputState::new`,
+    `InputState::multi_line` (builder), `InputState::paste`,
+    `InputState::enter`, `InputState::index_for_mouse_position`,
+    `PrepaintState` (field `multi_lines`),
+    `<InputTextElement as gpui::Element>::request_layout`,
+    `<InputTextElement as gpui::Element>::prepaint`,
+    `<InputTextElement as gpui::Element>::paint`
+  - `src/components/input.rs` — `Input` (fields `multi_line`, `min_rows`),
+    `Input::new`, `Input::multi_line` (builder), `Input::min_rows`
+    (builder), `<Input as RenderOnce>::render` (state propagation +
+    HStack sizing swap in the container)
+- **Markers**:
+  - `src/components/input_state.rs:193` — `// ShellDeck patch: SDPATCH-009 — when true, the input behaves as a`
+  - `src/components/input_state.rs:240` — `// ShellDeck patch: SDPATCH-009 — see the `multi_line` /`
+  - `src/components/input_state.rs:248` — `/// ShellDeck patch: SDPATCH-009 — enable multi-line textarea mode. See`
+  - `src/components/input_state.rs:861` — `// ShellDeck patch: SDPATCH-009 — keep embedded newlines when in`
+  - `src/components/input_state.rs:892` — `// ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a`
+  - `src/components/input_state.rs:967` — `// ShellDeck patch: SDPATCH-009 — multi_line click mapping. When we`
+  - `src/components/input_state.rs:1274` — `// ShellDeck patch: SDPATCH-009 — populated in multi_line mode with one`
+  - `src/components/input_state.rs:1314` — `// ShellDeck patch: SDPATCH-009 — reserve one line per `\n` segment`
+  - `src/components/input_state.rs:1337` — `// ShellDeck patch: SDPATCH-009 — multi_line prepaint path. Shape each`
+  - `src/components/input_state.rs:1597` — `// ShellDeck patch: SDPATCH-009 — multi_line paint path. Paint each`
+  - `src/components/input.rs:131` — `// ShellDeck patch: SDPATCH-009 — multi_line mirrors the same-named flag`
+  - `src/components/input.rs:179` — `// ShellDeck patch: SDPATCH-009 — default single-line; opt in with`
+  - `src/components/input.rs:186` — `/// ShellDeck patch: SDPATCH-009 — turn this Input into a multi-line`
+  - `src/components/input.rs:195` — `/// ShellDeck patch: SDPATCH-009 — visible height of the textarea, in`
+  - `src/components/input.rs:501` — `// ShellDeck patch: SDPATCH-009 — propagate the wrapper's flag to`
+  - `src/components/input.rs:769` — `// ShellDeck patch: SDPATCH-009 — in multi_line mode`
+- **Why**: adabraka's `Input` is strictly single-line — `InputState::enter`
+  always emits `InputEvent::Enter`, `paste` strips `\n`, and
+  `InputTextElement` shapes exactly one line with a fixed
+  `window.line_height()` layout. Its sibling `Textarea` is a
+  `RenderOnce` display-only stub with no state backing. ShellDeck's User-
+  mode "Nouvelle demande" needs a real textarea for the Détails field,
+  and the ShellDeck `.agents/ui-components.md` rules require extending
+  adabraka rather than forking a private widget in `shelldeck-ui`. This
+  patch adds a `multi_line: bool` on `InputState` / `Input` that:
+  Enter inserts `\n` into the content, paste keeps embedded newlines,
+  `request_layout` reserves `n_lines * line_height`, `prepaint` shapes
+  one line per `\n`-segment and places the caret on the right line,
+  `paint` stacks the shaped lines and snapshots `last_layouts` +
+  `line_height` on the state for click mapping, and
+  `index_for_mouse_position` uses the click's `y` to pick a line and the
+  click's `x` against that line's shaped run. Cross-line selection
+  quads are intentionally not drawn (would need Vec<PaintQuad>) — a
+  follow-up patch can add them. Up/Down line navigation is also
+  deferred; arrows still walk across `\n` via the existing byte-level
+  left/right handlers, and mouse click always lands on the right line.
+- **Upstream status**: not filed yet — big enough to be worth a real
+  design conversation upstream before filing (they may prefer a
+  separate `TextareaState` type instead of a flag on `InputState`).
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -154,6 +210,13 @@ carries no marker of its own — see its entry).
   13. v0.3.9 also natively pins `adabraka-gpui = "0.5"`, so the temp
   pin bump we introduced during the `adabraka-gpui` sync
   (see `4a6c705`) becomes a no-op / redundant.
+- **2026-07-07** — added SDPATCH-009 (real textarea via `multi_line` on
+  `InputState`/`Input`). Marker count 13 → 29 (16 new markers). No sync
+  in this entry — pure additive extension. `Input::render` now branches
+  in the HStack container between `.h(height)` + `.items_center()` (the
+  upstream single-line box) and `.min_h(min_rows*line_h+pad)` +
+  `.items_start()` (textarea box); a future upstream refactor of that
+  container will need eyes on that hunk.
 
 ## Retired patches
 
