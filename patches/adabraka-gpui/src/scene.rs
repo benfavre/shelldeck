@@ -460,7 +460,12 @@ pub(crate) struct Quad {
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
     pub continuous_corners: u32,
-    /// Padding to match WGSL struct alignment (vec2<f32> in Bounds gives align 8)
+    /// ShellDeck patch: WGSL alignment fix — `Bounds` contains `vec2<f32>`
+    /// which forces 8-byte struct alignment in WGSL, but Rust `#[repr(C)]`
+    /// with a trailing `u32` leaves a 4-byte gap. Explicit pad so the Rust
+    /// struct size matches WGSL's `array<Quad>` element stride and storage
+    /// buffer indexing lines up. Paired with the `Shadow::_pad` sibling and
+    /// the two initialisers in `window.rs`. See SDPATCH-104.
     pub _pad: u32,
 }
 
@@ -498,7 +503,9 @@ pub(crate) struct Shadow {
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
     pub inset: u32,
-    /// Padding to match WGSL struct alignment (vec2<f32> in Bounds gives align 8)
+    /// ShellDeck patch: WGSL alignment fix — same reasoning as `Quad::_pad`
+    /// above; keeps `array<Shadow>` element stride consistent with the Rust
+    /// struct size. See SDPATCH-104.
     pub _pad: u32,
 }
 

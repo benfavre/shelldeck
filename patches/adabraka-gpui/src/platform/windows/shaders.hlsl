@@ -302,6 +302,11 @@ float quad_sdf(float2 pt, Bounds bounds, Corners corner_radii) {
     return quad_sdf_impl(corner_center_to_point, corner_radius);
 }
 
+// ShellDeck patch: HLSL keyword collision — the parameter was originally
+// named `point`, which is a reserved token in HLSL and makes `fxc.exe` bail
+// with "unexpected token 'point'" on Windows. Renamed to `pt` inside the
+// whole function scope. Retire on the next sync — v0.5.1 upstream ships
+// the same rename natively.
 float squircle_sdf(float2 pt, Bounds bounds, Corners corner_radii) {
     float2 half_size = bounds.size / 2.0;
     float2 center = bounds.origin + half_size;
