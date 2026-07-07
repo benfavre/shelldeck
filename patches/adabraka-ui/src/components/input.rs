@@ -128,6 +128,11 @@ pub struct Input {
 
     // Style refinement for Styled trait
     style: StyleRefinement,
+    // ShellDeck patch: SDPATCH-009 — multi_line mirrors the same-named flag
+    // on `InputState`, and `min_rows` sizes the visible height of the
+    // textarea (defaults to 3 rows so opting into `multi_line` is enough).
+    multi_line: bool,
+    min_rows: usize,
 }
 
 impl Input {
@@ -170,7 +175,28 @@ impl Input {
 
             // Style refinement
             style: StyleRefinement::default(),
+
+            // ShellDeck patch: SDPATCH-009 — default single-line; opt in with
+            // `.multi_line(true)`, tune the visible height via `.min_rows(n)`.
+            multi_line: false,
+            min_rows: 3,
         }
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — turn this Input into a multi-line
+    /// textarea. Enter inserts a newline, paste keeps embedded newlines, the
+    /// visible height stretches to `min_rows` lines (see `min_rows`), and the
+    /// underlying `InputState` is flipped into multi-line mode at render.
+    pub fn multi_line(mut self, enabled: bool) -> Self {
+        self.multi_line = enabled;
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — visible height of the textarea, in
+    /// line-heights. Ignored when `multi_line` is false.
+    pub fn min_rows(mut self, rows: usize) -> Self {
+        self.min_rows = rows.max(1);
+        self
     }
 
     /// Set the initial value (will be set when rendering)
@@ -472,6 +498,12 @@ impl RenderOnce for Input {
         self.state.update(cx, |state, cx| {
             state.disabled = self.disabled;
             state.placeholder = self.placeholder.clone();
+            // ShellDeck patch: SDPATCH-009 — propagate the wrapper's flag to
+            // the state, so `.multi_line(true)` on either side is enough to
+            // switch behaviors. Setting it on the state directly still works.
+            if self.multi_line {
+                state.multi_line = true;
+            }
 
             // If password flag is enabled, ensure password input type is set.
             // Do not force `masked` here so user interactions can toggle it.
@@ -734,8 +766,24 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::delete_word))
                     })
                     .child(
+                        // ShellDeck patch: SDPATCH-009 — in multi_line mode
+                        // the input grows vertically instead of being pinned
+                        // to `height`. `min_h` reserves space for `min_rows`
+                        // lines (font_size * 1.4 line-height + vertical
+                        // padding matching the single-line box). Content
+                        // aligns to the top so extra rows sit below.
                         HStack::new()
-                            .h(height)
+                            .when(!self.multi_line, |h| h.h(height))
+                            .when(self.multi_line, |h| {
+                                let fs_px: f32 = font_size.into();
+                                let box_h_px: f32 = height.into();
+                                let line_h = fs_px * 1.4;
+                                let padding_y = (box_h_px - line_h).max(8.0);
+                                h.min_h(gpui::px(
+                                    line_h * self.min_rows as f32 + padding_y,
+                                ))
+                                .py(gpui::px(padding_y / 2.0))
+                            })
                             .w_full()
                             .px(padding_x)
                             .gap(gap)
@@ -743,7 +791,8 @@ impl RenderOnce for Input {
                             .border_1()
                             .border_color(border_color)
                             .rounded(theme.tokens.radius_md)
-                            .items_center()
+                            .when(!self.multi_line, |h| h.items_center())
+                            .when(self.multi_line, |h| h.items_start())
                             .text_size(font_size)
                             .font_family(theme.tokens.font_mono.clone())
                             .text_color(text_color)

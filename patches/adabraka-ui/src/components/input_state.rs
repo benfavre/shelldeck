@@ -190,6 +190,15 @@ pub struct InputState {
     pub shake_triggered: bool,
     pub(crate) shake_count: u32,
     cursor_position_override: Option<usize>,
+    // ShellDeck patch: SDPATCH-009 — when true, the input behaves as a
+    // multi-line textarea. Enter inserts `\n` into the content, paste keeps
+    // embedded newlines, and the element renders each `\n`-separated line
+    // stacked vertically. `last_layouts` holds one shaped line per newline
+    // segment (populated in paint) and `line_height` is snapshotted so click
+    // mapping can turn a Y coord into a line index without a window handle.
+    pub multi_line: bool,
+    pub(crate) last_layouts: Vec<gpui::ShapedLine>,
+    pub(crate) line_height: Pixels,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -228,7 +237,19 @@ impl InputState {
             shake_triggered: false,
             shake_count: 0,
             cursor_position_override: None,
+            // ShellDeck patch: SDPATCH-009 — see the `multi_line` /
+            // `last_layouts` / `line_height` fields on the struct definition.
+            multi_line: false,
+            last_layouts: Vec::new(),
+            line_height: px(0.0),
         }
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — enable multi-line textarea mode. See
+    /// the struct-level comment on `multi_line` for the full contract.
+    pub fn multi_line(mut self, enabled: bool) -> Self {
+        self.multi_line = enabled;
+        self
     }
 
     /// Set the input type
@@ -837,7 +858,15 @@ impl InputState {
 
     pub fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let filtered_text = self.filter_input(&text.replace("\n", " "));
+            // ShellDeck patch: SDPATCH-009 — keep embedded newlines when in
+            // multi_line mode so pasting a multi-line snippet lays out
+            // correctly. Single-line inputs preserve upstream behavior.
+            let normalized = if self.multi_line {
+                text
+            } else {
+                text.replace("\n", " ")
+            };
+            let filtered_text = self.filter_input(&normalized);
             self.replace_text_in_range(None, &filtered_text, window, cx);
         }
     }
@@ -859,8 +888,16 @@ impl InputState {
         }
     }
 
-    pub fn enter(&mut self, _: &Enter, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(InputEvent::Enter);
+    pub fn enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        // ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a
+        // newline into the content instead of emitting the Enter event.
+        // Parents that want a submit binding in multi_line mode should wire
+        // a dedicated button or a Cmd/Ctrl+Enter shortcut.
+        if self.multi_line {
+            self.replace_text_in_range(None, "\n", window, cx);
+        } else {
+            cx.emit(InputEvent::Enter);
+        }
     }
 
     pub fn escape(&mut self, _: &Escape, _window: &mut Window, cx: &mut Context<Self>) {
@@ -917,8 +954,7 @@ impl InputState {
             return 0;
         }
 
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
+        let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
         if position.y < bounds.top() {
@@ -928,6 +964,32 @@ impl InputState {
             return self.content.len();
         }
 
+        // ShellDeck patch: SDPATCH-009 — multi_line click mapping. When we
+        // have per-line shaped layouts, use the click's Y to pick a line and
+        // the click's X against that line's shaped run. Byte offset is the
+        // sum of prior lines (+1 per '\n') plus the line-relative index.
+        if self.multi_line && !self.last_layouts.is_empty() && self.line_height > px(0.0) {
+            let y_local: f32 = (position.y - bounds.top()).into();
+            let lh: f32 = self.line_height.into();
+            let relative_y = if lh > 0.0 { y_local / lh } else { 0.0 };
+            let line_idx = (relative_y.floor().max(0.0) as usize)
+                .min(self.last_layouts.len().saturating_sub(1));
+            let x_local = position.x - bounds.left();
+            let line = &self.last_layouts[line_idx];
+            let in_line = line.closest_index_for_x(x_local);
+            let mut offset = 0usize;
+            for (i, seg) in self.content.split('\n').enumerate() {
+                if i == line_idx {
+                    return offset + in_line.min(seg.len());
+                }
+                offset += seg.len() + 1;
+            }
+            return self.content.len();
+        }
+
+        let Some(line) = self.last_layout.as_ref() else {
+            return 0;
+        };
         let display_index = line.closest_index_for_x(position.x - bounds.left());
 
         if self.masked {
@@ -1209,6 +1271,9 @@ struct InputTextElement {
 
 struct PrepaintState {
     line: Option<gpui::ShapedLine>,
+    // ShellDeck patch: SDPATCH-009 — populated in multi_line mode with one
+    // ShapedLine per `\n`-separated segment. Empty in single-line mode.
+    multi_lines: Vec<gpui::ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
     /// ShellDeck patch: horizontal scroll offset applied to the shaped line
@@ -1246,7 +1311,16 @@ impl gpui::Element for InputTextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        // ShellDeck patch: SDPATCH-009 — reserve one line per `\n` segment
+        // when the state is in multi_line mode, so the shaped lines stack
+        // cleanly inside the element bounds.
+        let input = self.input.read(cx);
+        let n_lines = if input.multi_line {
+            input.content.split('\n').count().max(1)
+        } else {
+            1
+        };
+        style.size.height = (window.line_height() * n_lines as f32).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1260,6 +1334,103 @@ impl gpui::Element for InputTextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
+        // ShellDeck patch: SDPATCH-009 — multi_line prepaint path. Shape each
+        // `\n`-separated segment as its own line, stack them vertically, and
+        // put the caret on the segment holding the cursor byte offset.
+        // Selection quads are only rendered when the range stays within a
+        // single line — cross-line selection support is a follow-up.
+        if input.multi_line && !input.masked {
+            let style = window.text_style();
+            let theme = use_theme();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let line_h = window.line_height();
+            let theme_ring = theme.tokens.ring;
+            let mut selection_color = theme_ring;
+            selection_color.a = 0.25;
+
+            let placeholder_mode = input.content.is_empty();
+            let display: SharedString = if placeholder_mode {
+                input.placeholder.clone()
+            } else {
+                input.content.clone()
+            };
+            let text_color = if placeholder_mode {
+                theme.tokens.muted_foreground
+            } else {
+                style.color
+            };
+            let selected_range = input.selected_range.clone();
+            let cursor_byte = input.cursor_offset();
+
+            let segments: Vec<String> = display.split('\n').map(|s| s.to_string()).collect();
+            let mut shaped_lines: Vec<gpui::ShapedLine> = Vec::with_capacity(segments.len());
+            let mut byte_offset = 0usize;
+            let mut cursor_line_idx = 0usize;
+            let mut cursor_x_in_line = px(0.0);
+            let mut selection_quad: Option<PaintQuad> = None;
+            for (i, seg) in segments.iter().enumerate() {
+                let seg_len = seg.len();
+                let seg_shape: SharedString = if seg.is_empty() {
+                    " ".into()
+                } else {
+                    seg.clone().into()
+                };
+                let run = TextRun {
+                    len: seg_shape.len(),
+                    font: style.font(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped =
+                    window
+                        .text_system()
+                        .shape_line(seg_shape, font_size, &[run], None);
+                let line_start = byte_offset;
+                let line_end = line_start + seg_len;
+                if !placeholder_mode && cursor_byte >= line_start && cursor_byte <= line_end {
+                    cursor_line_idx = i;
+                    cursor_x_in_line = shaped.x_for_index(cursor_byte - line_start);
+                }
+                // Same-line selection quad — only when the whole range fits
+                // in this segment. Cross-line selection stays invisible.
+                if !placeholder_mode
+                    && !selected_range.is_empty()
+                    && selected_range.start >= line_start
+                    && selected_range.end <= line_end
+                {
+                    let sx = shaped.x_for_index(selected_range.start - line_start);
+                    let ex = shaped.x_for_index(selected_range.end - line_start);
+                    let top = bounds.top() + line_h * i as f32;
+                    selection_quad = Some(fill(
+                        Bounds::from_corners(
+                            point(bounds.left() + sx, top),
+                            point(bounds.left() + ex, top + line_h),
+                        ),
+                        selection_color,
+                    ));
+                }
+                shaped_lines.push(shaped);
+                byte_offset = line_end + 1; // +1 for the '\n'
+            }
+
+            let cursor_top = bounds.top() + line_h * cursor_line_idx as f32;
+            let cursor_quad = fill(
+                Bounds::new(
+                    point(bounds.left() + cursor_x_in_line, cursor_top),
+                    size(px(2.0), line_h),
+                ),
+                theme_ring,
+            );
+            return PrepaintState {
+                line: None,
+                multi_lines: shaped_lines,
+                cursor: if placeholder_mode { None } else { Some(cursor_quad) },
+                selection: selection_quad,
+                scroll_offset: px(0.0),
+            };
+        }
         let (content, selected_range, cursor) = if input.masked {
             let char_count = input.content.chars().count();
             let masked_text = "•".repeat(char_count).into();
@@ -1394,6 +1565,7 @@ impl gpui::Element for InputTextElement {
         };
         PrepaintState {
             line: Some(line),
+            multi_lines: Vec::new(),
             cursor,
             selection,
             scroll_offset,
@@ -1421,6 +1593,38 @@ impl gpui::Element for InputTextElement {
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection)
         }
+
+        // ShellDeck patch: SDPATCH-009 — multi_line paint path. Paint each
+        // shaped line at its own baseline (`origin + i * line_height`), then
+        // snapshot the layouts + line_height on InputState so click mapping
+        // can turn a Y coord into a line index without needing a window.
+        if !prepaint.multi_lines.is_empty() {
+            let line_h = window.line_height();
+            let multi_lines = std::mem::take(&mut prepaint.multi_lines);
+            for (i, line) in multi_lines.iter().enumerate() {
+                let y = bounds.origin.y + line_h * i as f32;
+                let _ = line.paint(point(bounds.origin.x, y), line_h, window, cx);
+            }
+            if focus_handle.is_focused(window) {
+                if let Some(cursor) = prepaint.cursor.take() {
+                    let elapsed = INPUT_BLINK_EPOCH.elapsed().as_millis() as u64;
+                    if elapsed % 1000 < 500 {
+                        window.paint_quad(cursor);
+                    }
+                    window.request_animation_frame();
+                }
+            }
+            self.input.update(cx, |input, _cx| {
+                // Keep the first line in `last_layout` so IME / bounds_for_range
+                // paths that predate SDPATCH-009 still see something sensible.
+                input.last_layout = multi_lines.first().cloned();
+                input.last_layouts = multi_lines;
+                input.line_height = line_h;
+                input.last_bounds = Some(bounds);
+            });
+            return;
+        }
+
         let Some(line) = prepaint.line.take() else {
             return;
         };
@@ -1452,6 +1656,8 @@ impl gpui::Element for InputTextElement {
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
+            input.last_layouts.clear();
+            input.line_height = window.line_height();
             input.last_bounds = Some(bounds);
         });
     }
