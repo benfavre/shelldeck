@@ -22,8 +22,6 @@ static EMAIL_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("Invalid email regex pattern")
 });
 
-/// ShellDeck patch: monotonic baseline for the caret blink cycle so every
-/// focused input on screen blinks in phase. See SDPATCH-003 in PATCHES.md.
 static INPUT_BLINK_EPOCH: Lazy<Instant> = Lazy::new(Instant::now);
 
 actions!(

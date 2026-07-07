@@ -534,6 +534,7 @@ impl RenderOnce for FileUpload {
                                 directories: false,
                                 multiple,
                                 prompt: Some("Select files".into()),
+                                starting_directory: None,
                             });
 
                             let state_entity = state_entity.clone();
