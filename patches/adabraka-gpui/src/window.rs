@@ -2871,11 +2871,15 @@ impl Window {
             border_widths: quad.border_widths.scale(scale_factor),
             border_style: quad.border_style,
             continuous_corners: if quad.continuous_corners { 1 } else { 0 },
+            // ShellDeck patch: initialise the interior WGSL alignment
+            // padding before `transform` (SDPATCH-104, `Quad::_pad_transform`
+            // in scene.rs).
+            _pad_transform: 0,
             transform: quad.transform,
             blend_mode: quad.blend_mode as u32,
-            // ShellDeck patch: initialise the WGSL alignment padding
-            // (SDPATCH-104, `Quad::_pad` in scene.rs).
-            _pad: [0; 2],
+            // ShellDeck patch: initialise the trailing WGSL alignment
+            // padding (SDPATCH-104, `Quad::_pad` in scene.rs).
+            _pad: 0,
         });
     }
 

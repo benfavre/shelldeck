@@ -517,19 +517,24 @@ pub(crate) struct Quad {
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
     pub continuous_corners: u32,
+    /// ShellDeck patch: interior padding — WGSL's `TransformationMatrix`
+    /// contains `mat2x2<f32>` (align 8), so the shader inserts an implicit
+    /// 4-byte pad here to align `transform` to 8 before it starts. Rust's
+    /// `[[f32; 2]; 2]` is align 4, so `#[repr(C)]` doesn't emit that pad on
+    /// its own — every field after `continuous_corners` would land at a
+    /// 4-byte offset from what the shader reads. That misalignment reads
+    /// `background` / `border_color` from the wrong bytes and turns every
+    /// solid fill translucent. Explicit pad fixes it. See SDPATCH-104.
+    pub _pad_transform: u32,
     pub transform: TransformationMatrix,
     pub blend_mode: u32,
-    /// ShellDeck patch: WGSL alignment fix — `Bounds` contains `vec2<f32>`
-    /// which forces 8-byte struct alignment in WGSL, but Rust `#[repr(C)]`
-    /// on this tail leaves the struct size at a 4-aligned (not 8-aligned)
-    /// multiple. Explicit trailing pad so Rust `sizeof(Quad)` matches WGSL's
-    /// `array<Quad>` element stride and storage buffer indexing lines up.
-    /// Paired with the `Shadow::_pad` sibling and the two initialisers in
-    /// `window.rs`. See SDPATCH-104. NOTE: v0.5.1 added `transform` +
-    /// `blend_mode` fields (both align 4) to the tail — the pad is 2×u32
-    /// so the shader-side assertion (`blade_graphics::shader:105`) sees a
-    /// matching 256-byte struct.
-    pub _pad: [u32; 2],
+    /// ShellDeck patch: trailing pad — with `_pad_transform` above the tail
+    /// ends at 252 bytes; WGSL rounds `array<Quad>` element stride up to
+    /// 256 (Bounds forces struct-level align 8). Explicit trailing pad
+    /// keeps Rust `sizeof(Quad)` at 256 so storage buffer indexing lines
+    /// up. See SDPATCH-104. Paired with the `Shadow::_pad` sibling and
+    /// the two initialisers in `window.rs`.
+    pub _pad: u32,
 }
 
 impl From<Quad> for Primitive {
