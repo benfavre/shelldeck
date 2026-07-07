@@ -1,6 +1,6 @@
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
@@ -157,7 +157,7 @@ impl SidebarView {
             width: 260.0,
             resizing: false,
             terminal_tab_count: 0,
-            search_state: cx.new(|cx| InputState::new(cx)),
+            search_state: cx.new(InputState::new),
             search_query: String::new(),
             site_filter: None,
             jean_available: false,
@@ -328,7 +328,7 @@ impl SidebarView {
             .clearable(true)
             .prefix(
                 svg()
-                    .path("images/search.svg")
+                    .path("icons/lucide/search.svg")
                     .size(px(12.0))
                     .flex_shrink_0()
                     .text_color(ShellDeckColors::text_muted()),
@@ -343,11 +343,7 @@ impl SidebarView {
                 }
             });
 
-        div()
-            .flex_shrink_0()
-            .px(px(8.0))
-            .py(px(6.0))
-            .child(input)
+        div().flex_shrink_0().px(px(8.0)).py(px(6.0)).child(input)
     }
 
     fn render_connection_item_highlighted(
@@ -415,7 +411,7 @@ impl SidebarView {
             }))
             .child(
                 svg()
-                    .path("images/kebab.svg")
+                    .path("icons/lucide/ellipsis-vertical.svg")
                     .size(px(14.0))
                     .text_color(ShellDeckColors::text_muted()),
             );
@@ -543,7 +539,6 @@ impl SidebarView {
         row = row.child(action_buttons);
         row
     }
-
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
@@ -612,7 +607,11 @@ impl Render for SidebarView {
             .child(self.render_nav_item(
                 SidebarSection::Terminals,
                 "Terminals",
-                if self.terminal_tab_count > 0 { Some(self.terminal_tab_count) } else { None },
+                if self.terminal_tab_count > 0 {
+                    Some(self.terminal_tab_count)
+                } else {
+                    None
+                },
                 cx,
             ))
             .child(self.render_nav_item(SidebarSection::Scripts, "Scripts", None, cx))
@@ -621,7 +620,12 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::Sites, "Sites", None, cx))
             .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx));
         if self.jean_available {
-            nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, "JeanClaude", None, cx));
+            nav = nav.child(self.render_nav_item(
+                SidebarSection::JeanConsole,
+                "JeanClaude",
+                None,
+                cx,
+            ));
         }
         if self.fleet_available {
             nav = nav.child(self.render_nav_item(SidebarSection::Fleet, "Fleet", None, cx));
@@ -727,11 +731,15 @@ impl Render for SidebarView {
             }))
             .child(
                 svg()
-                    .path("images/chevron-down.svg")
+                    .path("icons/lucide/chevron-down.svg")
                     .size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                        if nav_collapsed { std::f32::consts::PI } else { 0.0 },
+                        if nav_collapsed {
+                            std::f32::consts::PI
+                        } else {
+                            0.0
+                        },
                     ))),
             )
             .child(
@@ -740,7 +748,11 @@ impl Render for SidebarView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(if nav_collapsed { "SHOW NAV" } else { "HIDE NAV" }),
+                    .child(if nav_collapsed {
+                        "SHOW NAV"
+                    } else {
+                        "HIDE NAV"
+                    }),
             );
 
         let mut root = div()

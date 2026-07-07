@@ -32,12 +32,16 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxcb1-dev \
-            libxkbcommon-x11-dev
+            libxkbcommon-x11-dev \
+            libdbus-1-dev
 
       - name: Install Rust toolchain
+        # Pinned to match rust-toolchain.toml — a floating nightly drops the
+        # simd_fmin/simd_fmax intrinsics pathfinder_simd needs and silently
+        # breaks the macOS release build (see AGENTS.md → Critical Rules).
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-03-06
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -58,7 +62,10 @@ jobs:
         run: cargo test --workspace
 
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        # `--no-deps` skips lints from vendored path deps under `patches/`
+        # (adabraka-gpui / adabraka-ui): we don't own that code and per
+        # `.agents/patches.md` we don't creatively refactor upstream.
+        run: cargo clippy --workspace --no-deps -- -D warnings
 
       - name: cargo fmt
         run: cargo fmt --all -- --check

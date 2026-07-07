@@ -6,14 +6,12 @@
 //! The view holds cached data + input buffers and emits [`JeanViewEvent`]; all
 //! network is serviced by the `Workspace` on the background executor.
 
+use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
-use shelldeck_core::config::jeanclaude::{
-    JeanMemory, JeanState, JeanTargets, JeanTicket,
-};
+use shelldeck_core::config::jeanclaude::{JeanMemory, JeanState, JeanTargets, JeanTicket};
 
 use crate::theme::ShellDeckColors;
 
@@ -46,12 +44,23 @@ pub enum JeanViewEvent {
     Cancel(String),
     Force(String),
     SelectTicket(String),
-    LoadHistory { q: String, status: String },
+    LoadHistory {
+        q: String,
+        status: String,
+    },
     LoadTargets,
     LoadMemory,
-    AddTarget { domain: String, ssh_host: String, note: String },
+    AddTarget {
+        domain: String,
+        ssh_host: String,
+        note: String,
+    },
     RemoveTarget(String),
-    AddMemory { kind: String, match_: String, text: String },
+    AddMemory {
+        kind: String,
+        match_: String,
+        text: String,
+    },
     RemoveMemory(String),
 }
 
@@ -81,7 +90,7 @@ pub struct JeanView {
 
 impl JeanView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let mk = |cx: &mut Context<Self>| cx.new(|cx| InputState::new(cx));
+        let mk = |cx: &mut Context<Self>| cx.new(InputState::new);
         Self {
             tab: JeanTab::Overview,
             state: None,
@@ -173,7 +182,9 @@ impl JeanView {
     }
 
     fn submit_target(&mut self, cx: &mut Context<Self>) {
-        let domain = Self::field_value(&self.t_domain_state, cx).trim().to_string();
+        let domain = Self::field_value(&self.t_domain_state, cx)
+            .trim()
+            .to_string();
         let ssh_host = Self::field_value(&self.t_host_state, cx).trim().to_string();
         if domain.is_empty() || ssh_host.is_empty() {
             return;
@@ -191,8 +202,12 @@ impl JeanView {
     }
 
     fn submit_memory(&mut self, cx: &mut Context<Self>) {
-        let text = Self::field_value(&self.mem_text_state, cx).trim().to_string();
-        let match_ = Self::field_value(&self.mem_match_state, cx).trim().to_string();
+        let text = Self::field_value(&self.mem_text_state, cx)
+            .trim()
+            .to_string();
+        let match_ = Self::field_value(&self.mem_match_state, cx)
+            .trim()
+            .to_string();
         if text.is_empty() && match_.is_empty() {
             return;
         }
@@ -377,11 +392,9 @@ impl JeanView {
                         cx.emit(JeanViewEvent::SetConcurrency(max + 1))
                     })),
             )
-            .child(
-                Self::btn("jean-refresh", "↻ Actualiser", cx, |_t, cx| {
-                    cx.emit(JeanViewEvent::Refresh)
-                }),
-            )
+            .child(Self::btn("jean-refresh", "↻ Actualiser", cx, |_t, cx| {
+                cx.emit(JeanViewEvent::Refresh)
+            }))
     }
 
     fn render_say(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -424,7 +437,11 @@ impl JeanView {
             .p(px(14.0));
 
         // Pending confirmations.
-        let pending = self.state.as_ref().map(|s| s.pending.clone()).unwrap_or_default();
+        let pending = self
+            .state
+            .as_ref()
+            .map(|s| s.pending.clone())
+            .unwrap_or_default();
         col = col.child(Self::section_title(&format!(
             "Confirmations en attente ({})",
             pending.len()
@@ -510,12 +527,19 @@ impl JeanView {
         }
 
         // Active (running/queued) tickets.
-        let tickets = self.state.as_ref().map(|s| s.tickets.clone()).unwrap_or_default();
+        let tickets = self
+            .state
+            .as_ref()
+            .map(|s| s.tickets.clone())
+            .unwrap_or_default();
         let active: Vec<&JeanTicket> = tickets
             .iter()
             .filter(|t| t.is_running() || t.is_queued())
             .collect();
-        col = col.child(Self::section_title(&format!("Tickets actifs ({})", active.len())));
+        col = col.child(Self::section_title(&format!(
+            "Tickets actifs ({})",
+            active.len()
+        )));
         if active.is_empty() {
             col = col.child(Self::muted("Aucun ticket en cours."));
         } else {
@@ -768,13 +792,19 @@ impl JeanView {
             .py(px(8.0))
             .border_t_1()
             .border_color(ShellDeckColors::border());
-        bar = bar.child(Self::btn("jean-force", "Forcer (ticket)", cx, move |_t, cx| {
-            cx.emit(JeanViewEvent::Force(id_force.clone()))
-        }));
+        bar = bar.child(Self::btn(
+            "jean-force",
+            "Forcer (ticket)",
+            cx,
+            move |_t, cx| cx.emit(JeanViewEvent::Force(id_force.clone())),
+        ));
         if can_cancel {
-            bar = bar.child(Self::btn("jean-detail-cancel", "Annuler", cx, move |_t, cx| {
-                cx.emit(JeanViewEvent::Cancel(id_cancel.clone()))
-            }));
+            bar = bar.child(Self::btn(
+                "jean-detail-cancel",
+                "Annuler",
+                cx,
+                move |_t, cx| cx.emit(JeanViewEvent::Cancel(id_cancel.clone())),
+            ));
         }
 
         div()
@@ -839,7 +869,9 @@ impl JeanView {
             .flex_col()
             .gap(px(10.0))
             .p(px(14.0))
-            .child(Self::section_title("Cibles apprises (domaine → serveur SSH)"))
+            .child(Self::section_title(
+                "Cibles apprises (domaine → serveur SSH)",
+            ))
             .child(list)
             .child(Self::section_title("Ajouter une cible"))
             .child(
@@ -931,7 +963,9 @@ impl JeanView {
             .flex_col()
             .gap(px(10.0))
             .p(px(14.0))
-            .child(Self::section_title("Mémoire (règles de notification + notes)"))
+            .child(Self::section_title(
+                "Mémoire (règles de notification + notes)",
+            ))
             .child(list)
             .child(Self::section_title("Ajouter"))
             .child(

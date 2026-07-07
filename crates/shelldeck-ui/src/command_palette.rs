@@ -1,7 +1,7 @@
+use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 use shelldeck_core::config::app_config::ThemePreference;
 use shelldeck_core::config::cloud_account::AppMode;
 
@@ -106,7 +106,7 @@ impl CommandPalette {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             visible: false,
-            query_state: cx.new(|cx| InputState::new(cx)),
+            query_state: cx.new(InputState::new),
             query: String::new(),
             actions: Vec::new(),
             filtered: Vec::new(),

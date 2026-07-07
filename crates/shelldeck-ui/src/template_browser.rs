@@ -1,7 +1,7 @@
+use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::models::script::{Script, ScriptCategory};
 use shelldeck_core::models::templates::{all_templates, ScriptTemplate};
@@ -33,7 +33,7 @@ impl TemplateBrowser {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             templates: all_templates(),
-            search_state: cx.new(|cx| InputState::new(cx)),
+            search_state: cx.new(InputState::new),
             search_query: String::new(),
             selected_category: None,
             selected_index: 0,
@@ -178,7 +178,7 @@ impl Render for TemplateBrowser {
             .clearable(true)
             .prefix(
                 svg()
-                    .path("images/search.svg")
+                    .path("icons/lucide/search.svg")
                     .size(px(12.0))
                     .flex_shrink_0()
                     .text_color(ShellDeckColors::text_muted()),
@@ -460,7 +460,12 @@ impl Render for TemplateBrowser {
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(TemplateBrowserEvent::Cancel);
                                     }))
-                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
+                                    .child(
+                                        svg()
+                                            .path("icons/lucide/x.svg")
+                                            .size(px(14.0))
+                                            .text_color(ShellDeckColors::text_muted()),
+                                    ),
                             ),
                     )
                     // Category tabs + search

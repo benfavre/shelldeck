@@ -4,9 +4,9 @@
 //! Text entry mirrors `connection_form.rs`: a focused root captures `on_key_down`
 //! and edits the active field. The password field renders masked.
 
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
@@ -15,7 +15,10 @@ use crate::theme::ShellDeckColors;
 #[derive(Debug, Clone)]
 pub enum LoginFormEvent {
     /// Submit email + password for password login.
-    SubmitPassword { email: String, password: String },
+    SubmitPassword {
+        email: String,
+        password: String,
+    },
     /// Start the browser OIDC flow. `None` = generic SSO; otherwise
     /// "google"/"github"/"sso".
     StartOidc(Option<String>),
@@ -39,8 +42,8 @@ pub struct LoginForm {
 impl LoginForm {
     pub fn new(server: String, device: String, cx: &mut Context<Self>) -> Self {
         Self {
-            email_state: cx.new(|cx| InputState::new(cx)),
-            password_state: cx.new(|cx| InputState::new(cx)),
+            email_state: cx.new(InputState::new),
+            password_state: cx.new(InputState::new),
             device,
             server,
             busy: false,
@@ -134,7 +137,9 @@ impl LoginForm {
         if busy {
             btn = btn.opacity(0.5);
         } else {
-            btn = btn.cursor_pointer().hover(|s| s.bg(ShellDeckColors::hover_bg()));
+            btn = btn
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
             btn = btn.on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                 cx.emit(LoginFormEvent::StartOidc(provider.clone()));
             }));
@@ -226,7 +231,12 @@ impl Render for LoginForm {
                         .cursor_pointer()
                         .text_color(ShellDeckColors::text_muted())
                         .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                        .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
+                        .child(
+                            svg()
+                                .path("icons/lucide/x.svg")
+                                .size(px(14.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
                         .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                             cx.emit(LoginFormEvent::Cancel);
                         })),
@@ -285,7 +295,11 @@ impl Render for LoginForm {
 
         // Primary "Se connecter" button.
         let can_submit = self.can_submit(cx);
-        let submit_label = if self.busy { "Connexion…" } else { "Se connecter" };
+        let submit_label = if self.busy {
+            "Connexion…"
+        } else {
+            "Se connecter"
+        };
         let mut submit_btn = div()
             .id("login-submit")
             .w_full()
