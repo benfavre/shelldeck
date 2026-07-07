@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **30**
+Total markers in code: **38**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -224,6 +224,47 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — bundles with SDPATCH-009's
   design conversation.
 
+### SDPATCH-011 — fix leaking `cx.subscribe` in `Input::render` (duplicate event dispatch)
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState` (fields
+    `on_change_cb`, `on_enter_cb`, `on_focus_cb`, `on_blur_cb`,
+    `on_validate_cb`), `InputState::new` (init the slots),
+    `InputState::replace_text_in_range` (fires `on_change_cb`),
+    `InputState::enter` (fires `on_enter_cb`),
+    `InputState::escape` (fires `on_blur_cb`),
+    `InputState::on_focus` (fires `on_focus_cb`),
+    `InputState::on_blur` (fires `on_blur_cb`)
+  - `src/components/input.rs` — `<Input as RenderOnce>::render` (drops
+    the `cx.subscribe(...).detach()` block and writes the callbacks
+    into the state's slots in place)
+- **Markers**:
+  - `src/components/input_state.rs:193` — `// ShellDeck patch: SDPATCH-011 — direct callback slots for the Input`
+  - `src/components/input_state.rs:260` — `// ShellDeck patch: SDPATCH-011 — initialise the direct callback`
+  - `src/components/input_state.rs:395` — `// ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly`
+  - `src/components/input_state.rs:937` — `// ShellDeck patch: SDPATCH-011 — invoke the direct callback`
+  - `src/components/input_state.rs:950` — `// ShellDeck patch: SDPATCH-011 — direct callback slot fires here so`
+  - `src/components/input_state.rs:969` — `// ShellDeck patch: SDPATCH-011 — direct callback slot.`
+  - `src/components/input_state.rs:991` — `// ShellDeck patch: SDPATCH-011 — direct callback slot.`
+  - `src/components/input.rs:588` — `// ShellDeck patch: SDPATCH-011 — replace the leaking \`cx.subscribe\``
+- **Why**: `Input::render` in v0.3.9 (and upstream `main` at the time of
+  writing) calls `cx.subscribe(&state, ...).detach()` on every render
+  pass. `Subscription::detach()` only cancels the drop-unsubscribe
+  callback — the underlying listener stays alive until the observed
+  entity is dropped. Every render therefore appends a new listener; after
+  N frames a single Enter press invokes the `on_enter` handler N times.
+  In-session repro (2026-07-07): sending one Support reply produced
+  ~400 duplicated `send_composer` calls. The fix swaps the pub/sub for
+  five Rc-boxed callback slots on `InputState`; each render calls
+  `state.update` to write the current wrapper closures into the slots
+  (replace, not append), and the InputState action handlers invoke the
+  slot directly, exactly once per event. Existing subscribers to
+  `InputEvent::*` still work — we did not drop the `cx.emit(...)` calls,
+  only added the direct call alongside.
+- **Upstream status**: not filed yet — clear bug with a small repro,
+  worth a PR (the reproducer is `on_enter` called N times after N
+  renders of the same Input).
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -250,6 +291,11 @@ carries no marker of its own — see its entry).
   upstream single-line box) and `.min_h(min_rows*line_h+pad)` +
   `.items_start()` (textarea box); a future upstream refactor of that
   container will need eyes on that hunk.
+- **2026-07-07** — SDPATCH-011: fixed the leaking `cx.subscribe` in
+  `Input::render` (each render pass appended a fresh listener → single
+  Enter press invoked `on_enter` N times). Swapped for five direct
+  `Rc<Fn>` slots on `InputState` populated via `state.update`. Marker
+  count 30 → 38 (8 new markers).
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past
