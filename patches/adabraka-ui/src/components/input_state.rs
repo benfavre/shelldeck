@@ -1258,6 +1258,12 @@ impl gpui::Element for InputTextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
+        // ShellDeck patch: cursor / selection colors from the active theme
+        // (`ring` token) so inputs match the rest of the app.
+        let theme_ring = crate::theme::use_theme().tokens.ring;
+        let mut selection_color = theme_ring;
+        selection_color.a = 0.25;
+
         let cursor_pos = line.x_for_index(cursor);
         let (selection, cursor) = if selected_range.is_empty() {
             (
@@ -1267,7 +1273,7 @@ impl gpui::Element for InputTextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(0x0066ff),
+                    theme_ring,
                 )),
             )
         } else {
@@ -1283,7 +1289,7 @@ impl gpui::Element for InputTextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x3311ff30),
+                    selection_color,
                 )),
                 None,
             )
