@@ -1137,6 +1137,10 @@ struct PrepaintState {
     line: Option<gpui::ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    /// ShellDeck patch: horizontal scroll offset applied to the shaped line
+    /// and cursor at paint time so the caret stays visible when the content
+    /// is wider than the input. See SDPATCH-004.
+    scroll_offset: Pixels,
 }
 
 impl IntoElement for InputTextElement {
@@ -1269,13 +1273,24 @@ impl gpui::Element for InputTextElement {
         let mut selection_color = theme_ring;
         selection_color.a = 0.25;
 
+        // ShellDeck patch: horizontal scroll — when the caret would be past
+        // the visible width, shift the line left so the caret stays about
+        // `right_margin` px from the right edge.
         let cursor_pos = line.x_for_index(cursor);
+        let visible_width = bounds.right() - bounds.left();
+        let right_margin = px(4.0);
+        let scroll_offset = if cursor_pos > visible_width - right_margin {
+            visible_width - right_margin - cursor_pos
+        } else {
+            px(0.0)
+        };
+
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(bounds.left() + cursor_pos + scroll_offset, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     theme_ring,
@@ -1286,11 +1301,15 @@ impl gpui::Element for InputTextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left()
+                                + line.x_for_index(selected_range.start)
+                                + scroll_offset,
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left()
+                                + line.x_for_index(selected_range.end)
+                                + scroll_offset,
                             bounds.bottom(),
                         ),
                     ),
@@ -1303,6 +1322,7 @@ impl gpui::Element for InputTextElement {
             line: Some(line),
             cursor,
             selection,
+            scroll_offset,
         }
     }
 
@@ -1330,8 +1350,12 @@ impl gpui::Element for InputTextElement {
         let Some(line) = prepaint.line.take() else {
             return;
         };
+        // ShellDeck patch: shift the whole line by the horizontal scroll
+        // offset computed at prepaint so the caret stays visible when the
+        // content overflows the input width.
+        let line_origin = point(bounds.origin.x + prepaint.scroll_offset, bounds.origin.y);
         if line
-            .paint(bounds.origin, window.line_height(), window, cx)
+            .paint(line_origin, window.line_height(), window, cx)
             .is_err()
         {
             return;
