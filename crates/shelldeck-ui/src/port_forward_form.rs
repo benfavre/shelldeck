@@ -1,3 +1,4 @@
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -16,54 +17,48 @@ pub enum PortForwardFormEvent {
 
 impl EventEmitter<PortForwardFormEvent> for PortForwardForm {}
 
+/// Identifies which field an error belongs to, so the matching `Input` (or
+/// picker) renders red. Focus is owned by each `Input` widget individually.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormField {
     Connection,
-    Label,
-    Direction,
-    LocalHost,
     LocalPort,
-    RemoteHost,
     RemotePort,
-}
-
-impl FormField {
-    const ALL: &[FormField] = &[
-        FormField::Connection,
-        FormField::Label,
-        FormField::Direction,
-        FormField::LocalHost,
-        FormField::LocalPort,
-        FormField::RemoteHost,
-        FormField::RemotePort,
-    ];
-
-    fn next(self) -> FormField {
-        let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
-    }
 }
 
 pub struct PortForwardForm {
     editing_id: Option<Uuid>,
     connections: Vec<(Uuid, String, String)>,
     selected_connection_idx: usize,
-    label: String,
+    label_state: Entity<InputState>,
     direction: ForwardDirection,
-    local_host: String,
-    local_port: String,
-    remote_host: String,
-    remote_port: String,
+    local_host_state: Entity<InputState>,
+    local_port_state: Entity<InputState>,
+    remote_host_state: Entity<InputState>,
+    remote_port_state: Entity<InputState>,
     error: Option<String>,
     error_field: Option<FormField>,
-    active_field: Option<FormField>,
     focus_handle: FocusHandle,
     needs_focus: bool,
-    // Dropdown state
+    // Connection-picker dropdown state
     dropdown_open: bool,
+    dropdown_query_state: Entity<InputState>,
     dropdown_query: String,
     dropdown_filtered: Vec<usize>,
     dropdown_selected: usize,
+}
+
+/// Create a new `InputState` entity with an optional initial value. `set_value`
+/// requires a `Window` we don't have in constructors — write `content` directly.
+fn new_input_state(cx: &mut Context<PortForwardForm>, initial: &str) -> Entity<InputState> {
+    let initial = initial.to_string();
+    cx.new(|cx| {
+        let mut s = InputState::new(cx);
+        if !initial.is_empty() {
+            s.content = initial.into();
+        }
+        s
+    })
 }
 
 impl PortForwardForm {
@@ -73,18 +68,18 @@ impl PortForwardForm {
             editing_id: None,
             connections,
             selected_connection_idx: 0,
-            label: String::new(),
+            label_state: new_input_state(cx, ""),
             direction: ForwardDirection::LocalToRemote,
-            local_host: "127.0.0.1".to_string(),
-            local_port: String::new(),
-            remote_host: "127.0.0.1".to_string(),
-            remote_port: String::new(),
+            local_host_state: new_input_state(cx, "127.0.0.1"),
+            local_port_state: new_input_state(cx, ""),
+            remote_host_state: new_input_state(cx, "127.0.0.1"),
+            remote_port_state: new_input_state(cx, ""),
             error: None,
             error_field: None,
-            active_field: Some(FormField::Label),
             focus_handle: cx.focus_handle(),
             needs_focus: true,
             dropdown_open: false,
+            dropdown_query_state: new_input_state(cx, ""),
             dropdown_query: String::new(),
             dropdown_filtered,
             dropdown_selected: 0,
@@ -105,18 +100,18 @@ impl PortForwardForm {
             editing_id: Some(forward.id),
             connections,
             selected_connection_idx: selected_idx,
-            label: forward.label.clone().unwrap_or_default(),
+            label_state: new_input_state(cx, forward.label.as_deref().unwrap_or("")),
             direction: forward.direction,
-            local_host: forward.local_host.clone(),
-            local_port: forward.local_port.to_string(),
-            remote_host: forward.remote_host.clone(),
-            remote_port: forward.remote_port.to_string(),
+            local_host_state: new_input_state(cx, &forward.local_host),
+            local_port_state: new_input_state(cx, &forward.local_port.to_string()),
+            remote_host_state: new_input_state(cx, &forward.remote_host),
+            remote_port_state: new_input_state(cx, &forward.remote_port.to_string()),
             error: None,
             error_field: None,
-            active_field: Some(FormField::Label),
             focus_handle: cx.focus_handle(),
             needs_focus: true,
             dropdown_open: false,
+            dropdown_query_state: new_input_state(cx, ""),
             dropdown_query: String::new(),
             dropdown_filtered,
             dropdown_selected: 0,
@@ -127,33 +122,30 @@ impl PortForwardForm {
         self.focus_handle.focus(window);
     }
 
-    fn is_valid(&self) -> bool {
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
+    }
+
+    fn is_valid(&self, cx: &Context<Self>) -> bool {
         if self.connections.is_empty() {
             return false;
         }
-        let local_ok = matches!(self.local_port.parse::<u16>(), Ok(p) if p > 0);
-        let remote_ok = matches!(self.remote_port.parse::<u16>(), Ok(p) if p > 0);
+        let local_ok = matches!(
+            Self::field_value(&self.local_port_state, cx).parse::<u16>(),
+            Ok(p) if p > 0
+        );
+        let remote_ok = matches!(
+            Self::field_value(&self.remote_port_state, cx).parse::<u16>(),
+            Ok(p) if p > 0
+        );
         local_ok && remote_ok
     }
 
-    fn active_field_mut(&mut self) -> Option<&mut String> {
-        self.active_field.map(move |f| match f {
-            FormField::Connection => None,
-            FormField::Label => Some(&mut self.label),
-            FormField::Direction => None,
-            FormField::LocalHost => Some(&mut self.local_host),
-            FormField::LocalPort => Some(&mut self.local_port),
-            FormField::RemoteHost => Some(&mut self.remote_host),
-            FormField::RemotePort => Some(&mut self.remote_port),
-        })?
-    }
-
-    fn cycle_direction(&mut self) {
-        self.direction = match self.direction {
-            ForwardDirection::LocalToRemote => ForwardDirection::RemoteToLocal,
-            ForwardDirection::RemoteToLocal => ForwardDirection::Dynamic,
-            ForwardDirection::Dynamic => ForwardDirection::LocalToRemote,
-        };
+    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
+        state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
     }
 
     fn update_dropdown_filter(&mut self) {
@@ -174,21 +166,30 @@ impl PortForwardForm {
         self.dropdown_selected = 0;
     }
 
-    fn close_dropdown(&mut self) {
+    fn close_dropdown(&mut self, cx: &mut Context<Self>) {
         self.dropdown_open = false;
+        Self::reset_input(&self.dropdown_query_state.clone(), cx);
         self.dropdown_query.clear();
         self.dropdown_filtered = (0..self.connections.len()).collect();
         self.dropdown_selected = 0;
     }
 
+    fn commit_dropdown_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(&conn_idx) = self.dropdown_filtered.get(self.dropdown_selected) {
+            self.selected_connection_idx = conn_idx;
+        }
+        self.close_dropdown(cx);
+    }
+
+    /// Non-text keys — text is consumed by whichever `Input` widget has focus.
+    /// Handles Escape (close dropdown / cancel) and dropdown Up/Down navigation.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
-        // When dropdown is open, intercept all keys
         if self.dropdown_open {
             match key {
                 "escape" => {
-                    self.close_dropdown();
+                    self.close_dropdown(cx);
                     cx.notify();
                 }
                 "up" => {
@@ -204,123 +205,22 @@ impl PortForwardForm {
                     }
                     cx.notify();
                 }
-                "enter" => {
-                    if let Some(&conn_idx) = self.dropdown_filtered.get(self.dropdown_selected) {
-                        self.selected_connection_idx = conn_idx;
-                    }
-                    self.close_dropdown();
-                    cx.notify();
-                }
-                "backspace" => {
-                    self.dropdown_query.pop();
-                    self.update_dropdown_filter();
-                    cx.notify();
-                }
-                _ => {
-                    if let Some(ref kc) = event.keystroke.key_char {
-                        if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                            self.dropdown_query.push_str(kc);
-                            self.update_dropdown_filter();
-                            cx.notify();
-                        }
-                    } else if key.len() == 1
-                        && !event.keystroke.modifiers.control
-                        && !event.keystroke.modifiers.alt
-                    {
-                        self.dropdown_query.push_str(key);
-                        self.update_dropdown_filter();
-                        cx.notify();
-                    }
-                }
+                _ => {}
             }
             return;
         }
 
-        match key {
-            "escape" => {
-                cx.emit(PortForwardFormEvent::Cancel);
-            }
-            "enter" => {
-                if self.active_field == Some(FormField::Connection) {
-                    self.dropdown_open = true;
-                    self.dropdown_query.clear();
-                    self.update_dropdown_filter();
-                    cx.notify();
-                    return;
-                }
-                self.try_save(cx);
-            }
-            "tab" => {
-                if let Some(field) = self.active_field {
-                    self.active_field = Some(field.next());
-                    cx.notify();
-                }
-            }
-            "backspace" => {
-                if let Some(field) = self.active_field_mut() {
-                    field.pop();
-                    self.error = None;
-                    self.error_field = None;
-                    cx.notify();
-                }
-            }
-            " " => {
-                // Space cycles direction when that field is active
-                if self.active_field == Some(FormField::Direction) {
-                    self.cycle_direction();
-                    self.error = None;
-                    self.error_field = None;
-                    cx.notify();
-                    return;
-                }
-                // Space opens dropdown when connection field is active
-                if self.active_field == Some(FormField::Connection) {
-                    self.dropdown_open = true;
-                    self.dropdown_query.clear();
-                    self.update_dropdown_filter();
-                    cx.notify();
-                    return;
-                }
-                // Otherwise treat as normal char
-                if let Some(field) = self.active_field_mut() {
-                    field.push(' ');
-                    self.error = None;
-                    self.error_field = None;
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        if let Some(field) = self.active_field_mut() {
-                            field.push_str(kc);
-                            self.error = None;
-                            self.error_field = None;
-                            cx.notify();
-                        }
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    if let Some(field) = self.active_field_mut() {
-                        field.push_str(key);
-                        self.error = None;
-                        self.error_field = None;
-                        cx.notify();
-                    }
-                }
-            }
+        if key == "escape" {
+            cx.emit(PortForwardFormEvent::Cancel);
         }
     }
 
-    fn try_save(&mut self, cx: &mut Context<Self>) {
-        match self.validate() {
+    pub fn try_save(&mut self, cx: &mut Context<Self>) {
+        match self.validate(cx) {
             Ok(forward) => {
                 cx.emit(PortForwardFormEvent::Save(forward));
             }
             Err(msg) => {
-                // Set error_field based on the validation error message
                 if msg.contains("No connections") {
                     self.error_field = Some(FormField::Connection);
                 } else if msg.contains("Local port") {
@@ -334,22 +234,24 @@ impl PortForwardForm {
         }
     }
 
-    fn validate(&self) -> Result<PortForward, String> {
+    fn validate(&self, cx: &Context<Self>) -> Result<PortForward, String> {
         if self.connections.is_empty() {
             return Err("No connections available".to_string());
         }
         let (connection_id, _, _) = &self.connections[self.selected_connection_idx];
+        let label = Self::field_value(&self.label_state, cx);
+        let local_host = Self::field_value(&self.local_host_state, cx);
+        let local_port_str = Self::field_value(&self.local_port_state, cx);
+        let remote_host = Self::field_value(&self.remote_host_state, cx);
+        let remote_port_str = Self::field_value(&self.remote_port_state, cx);
 
-        let local_port: u16 = self
-            .local_port
+        let local_port: u16 = local_port_str
             .parse()
             .map_err(|_| "Local port must be a number (1-65535)".to_string())?;
         if local_port == 0 {
             return Err("Local port must be between 1 and 65535".to_string());
         }
-
-        let remote_port: u16 = self
-            .remote_port
+        let remote_port: u16 = remote_port_str
             .parse()
             .map_err(|_| "Remote port must be a number (1-65535)".to_string())?;
         if remote_port == 0 {
@@ -358,105 +260,60 @@ impl PortForwardForm {
 
         let mut forward = match self.direction {
             ForwardDirection::LocalToRemote => {
-                PortForward::new_local(*connection_id, local_port, &self.remote_host, remote_port)
+                PortForward::new_local(*connection_id, local_port, &remote_host, remote_port)
             }
             ForwardDirection::RemoteToLocal => {
-                PortForward::new_remote(*connection_id, remote_port, &self.local_host, local_port)
+                PortForward::new_remote(*connection_id, remote_port, &local_host, local_port)
             }
             ForwardDirection::Dynamic => {
-                let mut f = PortForward::new_local(
-                    *connection_id,
-                    local_port,
-                    &self.remote_host,
-                    remote_port,
-                );
+                let mut f =
+                    PortForward::new_local(*connection_id, local_port, &remote_host, remote_port);
                 f.direction = ForwardDirection::Dynamic;
                 f
             }
         };
-
-        // Override hosts from form (new_local/new_remote use defaults)
-        forward.local_host = self.local_host.clone();
-        forward.remote_host = self.remote_host.clone();
-
-        if !self.label.is_empty() {
-            forward.label = Some(self.label.clone());
+        forward.local_host = local_host;
+        forward.remote_host = remote_host;
+        if !label.is_empty() {
+            forward.label = Some(label);
         }
-
         if let Some(id) = self.editing_id {
             forward.id = id;
         }
-
         Ok(forward)
     }
 
     fn render_text_field(
         &self,
-        field: FormField,
-        label: &str,
-        value: &str,
-        placeholder: &str,
+        field: Option<FormField>,
+        label: &'static str,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_active = self.active_field == Some(field);
-        let has_error = self.error_field == Some(field);
-
-        let mut input_box = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "pf-field-{field:?}"
-            ))))
-            .w_full()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .text_size(px(13.0))
-            .cursor_text()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = Some(field);
-                cx.notify();
-            }));
-
-        if has_error {
-            input_box = input_box.border_color(ShellDeckColors::error());
-        } else if is_active {
-            input_box = input_box.border_color(ShellDeckColors::primary());
-        } else {
-            input_box = input_box.border_color(ShellDeckColors::border());
-        }
-
-        if value.is_empty() {
-            input_box = input_box.child(
-                div()
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(placeholder.to_string()),
-            );
-        } else {
-            let mut text_el = div()
-                .text_color(ShellDeckColors::text_primary())
-                .flex()
-                .child(value.to_string());
-
-            if is_active {
-                text_el =
-                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
-            }
-
-            input_box = input_box.child(text_el);
-        }
-
-        if value.is_empty() && is_active {
-            input_box = input_box.child(
-                div()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(6.0))
-                    .w(px(1.0))
-                    .h(px(16.0))
-                    .bg(ShellDeckColors::primary()),
-            );
-        }
+        let has_error = field.is_some() && field == self.error_field;
+        let input = Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .error(has_error)
+            .on_change({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| {
+                        if this.error.is_some() {
+                            this.error = None;
+                            this.error_field = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |this, cx| this.try_save(cx));
+                }
+            });
 
         div()
             .flex()
@@ -467,13 +324,12 @@ impl PortForwardForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label.to_string()),
+                    .child(label),
             )
-            .child(input_box)
+            .child(input)
     }
 
     fn render_direction_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_active = self.active_field == Some(FormField::Direction);
         let options = [
             (ForwardDirection::LocalToRemote, "L -> R"),
             (ForwardDirection::RemoteToLocal, "R -> L"),
@@ -496,7 +352,6 @@ impl PortForwardForm {
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.direction = dir;
-                    this.active_field = Some(FormField::Direction);
                     this.error = None;
                     cx.notify();
                 }));
@@ -519,11 +374,6 @@ impl PortForwardForm {
             chips = chips.child(chip.child(label));
         }
 
-        let mut wrapper_border = ShellDeckColors::border();
-        if is_active {
-            wrapper_border = ShellDeckColors::primary();
-        }
-
         div()
             .flex()
             .flex_col()
@@ -543,13 +393,12 @@ impl PortForwardForm {
                     .rounded(px(6.0))
                     .bg(ShellDeckColors::bg_primary())
                     .border_1()
-                    .border_color(wrapper_border)
+                    .border_color(ShellDeckColors::border())
                     .child(chips),
             )
     }
 
     fn render_connection_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_active = self.active_field == Some(FormField::Connection);
         let has_error = self.error_field == Some(FormField::Connection);
         let conn_name = if self.connections.is_empty() {
             "(no connections)".to_string()
@@ -557,12 +406,13 @@ impl PortForwardForm {
             self.connections[self.selected_connection_idx].1.clone()
         };
 
-        let mut border_color = ShellDeckColors::border();
-        if has_error {
-            border_color = ShellDeckColors::error();
-        } else if is_active {
-            border_color = ShellDeckColors::primary();
-        }
+        let border_color = if has_error {
+            ShellDeckColors::error()
+        } else if self.dropdown_open {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::border()
+        };
 
         let mut wrapper = div()
             .flex()
@@ -590,11 +440,11 @@ impl PortForwardForm {
                     .items_center()
                     .justify_between()
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.active_field = Some(FormField::Connection);
                         if this.dropdown_open {
-                            this.close_dropdown();
+                            this.close_dropdown(cx);
                         } else {
                             this.dropdown_open = true;
+                            Self::reset_input(&this.dropdown_query_state.clone(), cx);
                             this.dropdown_query.clear();
                             this.update_dropdown_filter();
                         }
@@ -617,26 +467,41 @@ impl PortForwardForm {
 
         // Dropdown list
         if self.dropdown_open {
-            // Search input area
+            // Real `Input` search — clearable, on_change updates filter,
+            // on_enter commits the highlighted selection.
             let search_area = div()
-                .px(px(8.0))
+                .px(px(6.0))
                 .py(px(6.0))
                 .border_b_1()
                 .border_color(ShellDeckColors::border())
-                .text_size(px(12.0))
-                .child(if self.dropdown_query.is_empty() {
-                    div()
-                        .text_color(ShellDeckColors::text_muted())
-                        .flex()
-                        .child("Type to filter...")
-                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-                } else {
-                    div()
-                        .text_color(ShellDeckColors::text_primary())
-                        .flex()
-                        .child(self.dropdown_query.clone())
-                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-                });
+                .child(
+                    Input::new(&self.dropdown_query_state)
+                        .size(InputSize::Sm)
+                        .placeholder("Type to filter...")
+                        .prefix(
+                            svg()
+                                .path("images/search.svg")
+                                .size(px(12.0))
+                                .flex_shrink_0()
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                        .on_change({
+                            let entity = cx.entity();
+                            move |value, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.dropdown_query = value.to_string();
+                                    this.update_dropdown_filter();
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .on_enter({
+                            let entity = cx.entity();
+                            move |_v, cx| {
+                                entity.update(cx, |this, cx| this.commit_dropdown_selection(cx));
+                            }
+                        }),
+                );
 
             let mut items_list = div()
                 .id("pf-dropdown-list")
@@ -669,7 +534,7 @@ impl PortForwardForm {
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.selected_connection_idx = conn_idx;
-                            this.close_dropdown();
+                            this.close_dropdown(cx);
                             cx.notify();
                         }));
 
@@ -729,52 +594,48 @@ impl Render for PortForwardForm {
             .p(px(20.0))
             // Connection picker
             .child(self.render_connection_picker(cx))
-            // Label
             .child(self.render_text_field(
-                FormField::Label,
+                None,
                 "Label (optional)",
-                &self.label.clone(),
+                &self.label_state,
                 "My Web Server",
                 cx,
             ))
-            // Direction chips
             .child(self.render_direction_chips(cx))
-            // Row: LocalHost + LocalPort
             .child(
                 div()
                     .flex()
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_text_field(
-                        FormField::LocalHost,
+                        None,
                         "Local Host",
-                        &self.local_host.clone(),
+                        &self.local_host_state,
                         "127.0.0.1",
                         cx,
                     )))
                     .child(div().w(px(120.0)).child(self.render_text_field(
-                        FormField::LocalPort,
+                        Some(FormField::LocalPort),
                         "Local Port",
-                        &self.local_port.clone(),
+                        &self.local_port_state,
                         "8080",
                         cx,
                     ))),
             )
-            // Row: RemoteHost + RemotePort
             .child(
                 div()
                     .flex()
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_text_field(
-                        FormField::RemoteHost,
+                        None,
                         "Remote Host",
-                        &self.remote_host.clone(),
+                        &self.remote_host_state,
                         "127.0.0.1",
                         cx,
                     )))
                     .child(div().w(px(120.0)).child(self.render_text_field(
-                        FormField::RemotePort,
+                        Some(FormField::RemotePort),
                         "Remote Port",
-                        &self.remote_port.clone(),
+                        &self.remote_port_state,
                         "80",
                         cx,
                     ))),
@@ -878,7 +739,7 @@ impl Render for PortForwardForm {
                                     ),
                             )
                             .child({
-                                let valid = self.is_valid();
+                                let valid = self.is_valid(cx);
                                 let btn_label = if self.editing_id.is_some() {
                                     "Save Forward"
                                 } else {

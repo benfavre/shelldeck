@@ -1,3 +1,4 @@
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -90,6 +91,10 @@ impl EventEmitter<CommandPaletteEvent> for CommandPalette {}
 
 pub struct CommandPalette {
     pub visible: bool,
+    /// Real adabraka `Input` state — owns the cursor / selection / undo. The
+    /// `query` string below is kept in sync via `on_change` for the filter
+    /// helpers that need `&str` access.
+    query_state: Entity<InputState>,
     pub query: String,
     pub actions: Vec<PaletteAction>,
     pub filtered: Vec<usize>,
@@ -101,6 +106,7 @@ impl CommandPalette {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             visible: false,
+            query_state: cx.new(|cx| InputState::new(cx)),
             query: String::new(),
             actions: Vec::new(),
             filtered: Vec::new(),
@@ -109,18 +115,33 @@ impl CommandPalette {
         }
     }
 
-    pub fn toggle(&mut self, window: &mut Window) {
+    /// Empty the `Input` buffer without needing a `Window` — `set_value`
+    /// requires one and we don't always have it. We clear the public
+    /// `content` field directly and let the widget re-read on next paint.
+    fn reset_input(&self, cx: &mut Context<Self>) {
+        self.query_state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
+    }
+
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = !self.visible;
         if self.visible {
+            self.reset_input(cx);
             self.query.clear();
             self.selected_index = 0;
             self.update_filter();
-            self.focus_handle.focus(window);
+            // Focus the `Input` widget so typing goes straight into it;
+            // Up/Down/Escape bubble to the palette root's `on_key_down`.
+            let input_focus = self.query_state.read(cx).focus_handle(cx);
+            input_focus.focus(window);
         }
     }
 
-    pub fn dismiss(&mut self) {
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
+        self.reset_input(cx);
         self.query.clear();
     }
 
@@ -184,21 +205,19 @@ impl CommandPalette {
                 action.action.boxed_clone(),
             ));
         }
-        self.dismiss();
+        self.dismiss(cx);
         cx.notify();
     }
 
-    /// Handle key events for the palette input.
+    /// Non-text keys only — typing is handled inside the focused `Input`
+    /// widget (which also fires `on_enter` for Enter). We intercept the
+    /// list-navigation keys (Up/Down) and Escape.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        match key {
+        match event.keystroke.key.as_str() {
             "escape" => {
                 cx.emit(CommandPaletteEvent::Dismissed);
-                self.dismiss();
+                self.dismiss(cx);
                 cx.notify();
-            }
-            "enter" => {
-                self.confirm(cx);
             }
             "up" => {
                 self.select_prev();
@@ -210,30 +229,7 @@ impl CommandPalette {
                 self.emit_selection_preview(cx);
                 cx.notify();
             }
-            "backspace" => {
-                self.query.pop();
-                self.update_filter();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        self.query.push_str(kc);
-                        self.update_filter();
-                        self.emit_selection_preview(cx);
-                        cx.notify();
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    self.query.push_str(key);
-                    self.update_filter();
-                    self.emit_selection_preview(cx);
-                    cx.notify();
-                }
-            }
+            _ => {}
         }
     }
 }
@@ -324,7 +320,7 @@ impl Render for CommandPalette {
                     cx.emit(CommandPaletteEvent::ActionSelected(
                         action_clone.boxed_clone(),
                     ));
-                    this.dismiss();
+                    this.dismiss(cx);
                     cx.notify();
                 }));
 
@@ -369,27 +365,38 @@ impl Render for CommandPalette {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    // Query input area
+                    // Query input — real `Input` widget with cursor / undo /
+                    // selection. `on_change` mirrors the value back into
+                    // `self.query` for the fuzzy-match helper; `on_enter`
+                    // confirms the currently-selected action.
                     .child(
                         div()
-                            .px(px(14.0))
-                            .py(px(12.0))
+                            .px(px(8.0))
+                            .py(px(8.0))
                             .border_b_1()
                             .border_color(ShellDeckColors::border())
-                            .text_size(px(15.0))
-                            .child(if self.query.is_empty() {
-                                div()
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child("Type a command...")
-                            } else {
-                                div()
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .flex()
-                                    .child(self.query.clone())
-                                    .child(
-                                        div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()),
-                                    )
-                            }),
+                            .child(
+                                Input::new(&self.query_state)
+                                    .size(InputSize::Md)
+                                    .placeholder("Type a command...")
+                                    .on_change({
+                                        let entity = cx.entity();
+                                        move |value, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.query = value.to_string();
+                                                this.update_filter();
+                                                this.emit_selection_preview(cx);
+                                                cx.notify();
+                                            });
+                                        }
+                                    })
+                                    .on_enter({
+                                        let entity = cx.entity();
+                                        move |_v, cx| {
+                                            entity.update(cx, |this, cx| this.confirm(cx));
+                                        }
+                                    }),
+                            ),
                     )
                     // Results list
                     .child(list),

@@ -10,6 +10,7 @@
 //!
 //! Pure renderer: the workspace does all I/O and feeds state via setters.
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -25,15 +26,12 @@ pub enum BextTab {
     Instance,
 }
 
+/// Which composer group `Input::on_enter` should submit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
-    None,
-    SiteName,
-    SiteTitle,
-    InstBase,
-    InstAppId,
-    InstSlug,
-    InstDomain,
+    Site,
+    Instance,
+    InstanceRefresh,
 }
 
 #[derive(Debug, Clone)]
@@ -62,19 +60,29 @@ pub struct BextCloudView {
     instances: Vec<CloudInstance>,
     // Instance state.
     instance_sites: Vec<InstanceSite>,
-    // Inputs.
-    site_name: String,
-    site_title: String,
-    inst_base: String,
-    inst_app_id: String,
-    inst_slug: String,
-    inst_domain: String,
-    active_field: Field,
+    // Real `Input` states — one per composer field.
+    site_name_state: Entity<InputState>,
+    site_title_state: Entity<InputState>,
+    inst_base_state: Entity<InputState>,
+    inst_app_id_state: Entity<InputState>,
+    inst_slug_state: Entity<InputState>,
+    inst_domain_state: Entity<InputState>,
     confirm_destroy: Option<String>,
     confirm_instance_destroy: Option<String>,
     loading: bool,
     error: Option<String>,
     focus_handle: FocusHandle,
+}
+
+fn new_input_state_bx(cx: &mut Context<BextCloudView>, initial: &str) -> Entity<InputState> {
+    let initial = initial.to_string();
+    cx.new(|cx| {
+        let mut s = InputState::new(cx);
+        if !initial.is_empty() {
+            s.content = initial.into();
+        }
+        s
+    })
 }
 
 impl BextCloudView {
@@ -87,19 +95,37 @@ impl BextCloudView {
             stats: CloudStats::default(),
             instances: Vec::new(),
             instance_sites: Vec::new(),
-            site_name: String::new(),
-            site_title: String::new(),
-            inst_base: "http://127.0.0.1".to_string(),
-            inst_app_id: "default".to_string(),
-            inst_slug: String::new(),
-            inst_domain: String::new(),
-            active_field: Field::None,
+            site_name_state: new_input_state_bx(cx, ""),
+            site_title_state: new_input_state_bx(cx, ""),
+            inst_base_state: new_input_state_bx(cx, "http://127.0.0.1"),
+            inst_app_id_state: new_input_state_bx(cx, "default"),
+            inst_slug_state: new_input_state_bx(cx, ""),
+            inst_domain_state: new_input_state_bx(cx, ""),
             confirm_destroy: None,
             confirm_instance_destroy: None,
             loading: false,
             error: None,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
+    }
+
+    fn set_input(state: &Entity<InputState>, value: &str, cx: &mut Context<Self>) {
+        let v = value.to_string();
+        state.update(cx, |s, cx| {
+            s.content = v.into();
+            cx.notify();
+        });
+    }
+
+    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
+        state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
     }
 
     pub fn set_connection(&mut self, connected: bool, user: Option<CloudUser>) {
@@ -117,17 +143,23 @@ impl BextCloudView {
     pub fn set_instances(&mut self, instances: Vec<CloudInstance>) {
         self.instances = instances;
     }
-    pub fn set_instance_sites(&mut self, sites: Vec<InstanceSite>, base: String, app_id: String) {
+    pub fn set_instance_sites(
+        &mut self,
+        sites: Vec<InstanceSite>,
+        base: String,
+        app_id: String,
+        cx: &mut Context<Self>,
+    ) {
         self.instance_sites = sites;
-        self.inst_base = base;
-        self.inst_app_id = app_id;
+        Self::set_input(&self.inst_base_state.clone(), &base, cx);
+        Self::set_input(&self.inst_app_id_state.clone(), &app_id, cx);
         self.loading = false;
     }
     /// Open the Instance tab targeting a given box (from "Gérer bext").
-    pub fn open_instance(&mut self, base: String, app_id: String) {
+    pub fn open_instance(&mut self, base: String, app_id: String, cx: &mut Context<Self>) {
         self.tab = BextTab::Instance;
-        self.inst_base = base;
-        self.inst_app_id = app_id;
+        Self::set_input(&self.inst_base_state.clone(), &base, cx);
+        Self::set_input(&self.inst_app_id_state.clone(), &app_id, cx);
     }
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
@@ -137,138 +169,67 @@ impl BextCloudView {
         self.loading = false;
     }
 
-    fn field_buf(&mut self, f: Field) -> Option<&mut String> {
-        match f {
-            Field::SiteName => Some(&mut self.site_name),
-            Field::SiteTitle => Some(&mut self.site_title),
-            Field::InstBase => Some(&mut self.inst_base),
-            Field::InstAppId => Some(&mut self.inst_app_id),
-            Field::InstSlug => Some(&mut self.inst_slug),
-            Field::InstDomain => Some(&mut self.inst_domain),
-            Field::None => None,
-        }
-    }
-
-    fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let f = self.active_field;
-        if f == Field::None {
-            return;
-        }
-        match key {
-            "enter" => self.submit_active(cx),
-            "backspace" => {
-                if let Some(b) = self.field_buf(f) {
-                    b.pop();
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        if let Some(b) = self.field_buf(f) {
-                            b.push_str(kc);
-                            cx.notify();
-                        }
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    if let Some(b) = self.field_buf(f) {
-                        b.push_str(key);
-                        cx.notify();
-                    }
-                }
-            }
-        }
-    }
-
-    fn submit_active(&mut self, cx: &mut Context<Self>) {
-        match self.active_field {
-            Field::SiteName | Field::SiteTitle => self.submit_create_site(cx),
-            Field::InstSlug => self.submit_instance_create(cx),
-            Field::InstBase | Field::InstAppId => {
-                cx.emit(BextViewEvent::RefreshInstance {
-                    base: self.inst_base.trim().to_string(),
-                    app_id: self.inst_app_id.trim().to_string(),
-                });
-            }
-            _ => {}
+    fn submit(&mut self, which: Field, cx: &mut Context<Self>) {
+        match which {
+            Field::Site => self.submit_create_site(cx),
+            Field::Instance => self.submit_instance_create(cx),
+            Field::InstanceRefresh => cx.emit(BextViewEvent::RefreshInstance {
+                base: Self::field_value(&self.inst_base_state, cx).trim().to_string(),
+                app_id: Self::field_value(&self.inst_app_id_state, cx).trim().to_string(),
+            }),
         }
     }
 
     fn submit_create_site(&mut self, cx: &mut Context<Self>) {
-        let name = self.site_name.trim().to_lowercase();
+        let name = Self::field_value(&self.site_name_state, cx)
+            .trim()
+            .to_lowercase();
         if name.is_empty() {
             return;
         }
-        let title = self.site_title.trim().to_string();
-        self.site_name.clear();
-        self.site_title.clear();
+        let title = Self::field_value(&self.site_title_state, cx).trim().to_string();
+        Self::reset_input(&self.site_name_state.clone(), cx);
+        Self::reset_input(&self.site_title_state.clone(), cx);
         cx.emit(BextViewEvent::CreateSite { name, title });
         cx.notify();
     }
 
     fn submit_instance_create(&mut self, cx: &mut Context<Self>) {
-        let slug = self.inst_slug.trim().to_lowercase();
+        let slug = Self::field_value(&self.inst_slug_state, cx)
+            .trim()
+            .to_lowercase();
         if slug.is_empty() {
             return;
         }
-        self.inst_slug.clear();
+        let base = Self::field_value(&self.inst_base_state, cx).trim().to_string();
+        let app_id = Self::field_value(&self.inst_app_id_state, cx).trim().to_string();
+        Self::reset_input(&self.inst_slug_state.clone(), cx);
         cx.emit(BextViewEvent::InstanceCreate {
-            base: self.inst_base.trim().to_string(),
-            app_id: self.inst_app_id.trim().to_string(),
+            base,
+            app_id,
             slug,
             title: String::new(),
         });
         cx.notify();
     }
 
+    /// Real `Input` widget, submit-routed via `submit(which, ...)` on Enter.
     fn input(
         &self,
-        field: Field,
-        value: &str,
-        placeholder: &str,
+        submit_field: Field,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let active = self.active_field == field;
-        let content = if value.is_empty() {
-            div()
-                .text_color(ShellDeckColors::text_muted())
-                .child(placeholder.to_string())
-        } else {
-            div()
-                .flex()
-                .text_color(ShellDeckColors::text_primary())
-                .child(value.to_string())
-                .child(if active {
-                    div().w(px(1.0)).h(px(15.0)).bg(ShellDeckColors::primary())
-                } else {
-                    div()
-                })
-        };
-        div()
-            .id(ElementId::from(SharedString::from(format!("bxf-{placeholder}"))))
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| this.handle_key(e, cx)))
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .border_color(if active {
-                ShellDeckColors::primary()
-            } else {
-                ShellDeckColors::border()
+        Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .on_enter({
+                let entity = cx.entity();
+                move |_v, cx| {
+                    entity.update(cx, |this, cx| this.submit(submit_field, cx));
+                }
             })
-            .text_size(px(13.0))
-            .cursor_text()
-            .child(content)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = field;
-                cx.notify();
-            }))
     }
 
     fn btn(id: &'static str, label: &str, cx: &mut Context<Self>, on: impl Fn(&mut Self, &mut Context<Self>) + 'static) -> Stateful<Div> {
@@ -303,8 +264,8 @@ impl BextCloudView {
                 this.tab = tab;
                 if tab == BextTab::Instance {
                     cx.emit(BextViewEvent::RefreshInstance {
-                        base: this.inst_base.trim().to_string(),
-                        app_id: this.inst_app_id.trim().to_string(),
+                        base: Self::field_value(&this.inst_base_state, cx).trim().to_string(),
+                        app_id: Self::field_value(&this.inst_app_id_state, cx).trim().to_string(),
                     });
                 }
                 cx.notify();
@@ -493,8 +454,8 @@ impl BextCloudView {
                             .child(format!("{}/{}", self.sites.count, self.sites.max.max(1))),
                     ),
             )
-            .child(self.input(Field::SiteName, &self.site_name.clone(), "slug (minuscules)", cx))
-            .child(self.input(Field::SiteTitle, &self.site_title.clone(), "Titre (facultatif)", cx))
+            .child(self.input(Field::Site, &self.site_name_state, "slug (minuscules)", cx))
+            .child(self.input(Field::Site, &self.site_title_state, "Titre (facultatif)", cx))
             .child({
                 let mut b = div()
                     .id("bx-create-site")
@@ -728,12 +689,12 @@ impl BextCloudView {
                     .text_color(ShellDeckColors::text_muted())
                     .child("Cible"),
             )
-            .child(div().w(px(200.0)).child(self.input(Field::InstBase, &self.inst_base.clone(), "http://127.0.0.1", cx)))
-            .child(div().w(px(130.0)).child(self.input(Field::InstAppId, &self.inst_app_id.clone(), "app-id", cx)))
+            .child(div().w(px(200.0)).child(self.input(Field::InstanceRefresh, &self.inst_base_state, "http://127.0.0.1", cx)))
+            .child(div().w(px(130.0)).child(self.input(Field::InstanceRefresh, &self.inst_app_id_state, "app-id", cx)))
             .child(Self::btn("bx-inst-refresh", "Charger", cx, |this, cx| {
                 cx.emit(BextViewEvent::RefreshInstance {
-                    base: this.inst_base.trim().to_string(),
-                    app_id: this.inst_app_id.trim().to_string(),
+                    base: Self::field_value(&this.inst_base_state, cx).trim().to_string(),
+                    app_id: Self::field_value(&this.inst_app_id_state, cx).trim().to_string(),
                 });
             }));
 
@@ -771,7 +732,7 @@ impl BextCloudView {
                     .text_color(ShellDeckColors::text_primary())
                     .child("Nouveau site (SDK)"),
             )
-            .child(self.input(Field::InstSlug, &self.inst_slug.clone(), "slug", cx))
+            .child(self.input(Field::Instance, &self.inst_slug_state, "slug", cx))
             .child(
                 div()
                     .flex()
@@ -784,8 +745,8 @@ impl BextCloudView {
                             .child("Domaine (mise en ligne)"),
                     )
                     .child(div().flex_1().child(self.input(
-                        Field::InstDomain,
-                        &self.inst_domain.clone(),
+                        Field::Instance,
+                        &self.inst_domain_state,
                         "exemple.com",
                         cx,
                     )))
@@ -854,8 +815,10 @@ impl BextCloudView {
             );
 
         {
-            let (base, app, s) = (self.inst_base.trim().to_string(), self.inst_app_id.trim().to_string(), slug.clone());
-            let dom = self.inst_domain.trim().to_string();
+            let base = Self::field_value(&self.inst_base_state, cx).trim().to_string();
+            let app = Self::field_value(&self.inst_app_id_state, cx).trim().to_string();
+            let s = slug.clone();
+            let dom = Self::field_value(&self.inst_domain_state, cx).trim().to_string();
             row = row.child(Self::btn("bx-inst-golive", "Mettre en ligne", cx, move |this, cx| {
                 if dom.is_empty() {
                     this.set_error("Saisissez un domaine pour la mise en ligne.");
@@ -871,7 +834,9 @@ impl BextCloudView {
             }));
         }
         if confirming {
-            let (base, app, s) = (self.inst_base.trim().to_string(), self.inst_app_id.trim().to_string(), slug.clone());
+            let base = Self::field_value(&self.inst_base_state, cx).trim().to_string();
+            let app = Self::field_value(&self.inst_app_id_state, cx).trim().to_string();
+            let s = slug.clone();
             row = row
                 .child(
                     div()
@@ -943,8 +908,8 @@ impl Render for BextCloudView {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| match this.tab {
                         BextTab::Cloud => cx.emit(BextViewEvent::RefreshCloud),
                         BextTab::Instance => cx.emit(BextViewEvent::RefreshInstance {
-                            base: this.inst_base.trim().to_string(),
-                            app_id: this.inst_app_id.trim().to_string(),
+                            base: Self::field_value(&this.inst_base_state, cx).trim().to_string(),
+                            app_id: Self::field_value(&this.inst_app_id_state, cx).trim().to_string(),
                         }),
                     })),
             );

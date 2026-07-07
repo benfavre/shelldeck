@@ -1,3 +1,4 @@
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -19,6 +20,9 @@ impl EventEmitter<TemplateBrowserEvent> for TemplateBrowser {}
 
 pub struct TemplateBrowser {
     templates: Vec<ScriptTemplate>,
+    /// Real adabraka `Input` state for the templates search bar.
+    search_state: Entity<InputState>,
+    /// Sync'd copy of `search_state.content` for `filtered_templates`.
     search_query: String,
     selected_category: Option<ScriptCategory>,
     selected_index: usize,
@@ -29,6 +33,7 @@ impl TemplateBrowser {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             templates: all_templates(),
+            search_state: cx.new(|cx| InputState::new(cx)),
             search_query: String::new(),
             selected_category: None,
             selected_index: 0,
@@ -62,21 +67,19 @@ impl TemplateBrowser {
             .collect()
     }
 
+    /// Text keys are handled inside the focused `Input`; here we only catch
+    /// Escape (cancel) and Up/Down navigation. Enter is wired to the input's
+    /// `on_enter` callback so it can fire the import event.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-
-        match key {
+        match event.keystroke.key.as_str() {
             "escape" => {
                 cx.emit(TemplateBrowserEvent::Cancel);
-                return;
             }
             "up" => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                 }
                 cx.notify();
-                return;
             }
             "down" => {
                 let count = self.filtered_templates().len();
@@ -84,51 +87,15 @@ impl TemplateBrowser {
                     self.selected_index += 1;
                 }
                 cx.notify();
-                return;
-            }
-            "enter" => {
-                let filtered = self.filtered_templates();
-                if let Some(tmpl) = filtered.get(self.selected_index) {
-                    let script = tmpl.to_script();
-                    cx.emit(TemplateBrowserEvent::Import(script));
-                }
-                return;
-            }
-            "backspace" => {
-                self.search_query.pop();
-                self.selected_index = 0;
-                cx.notify();
-                return;
             }
             _ => {}
         }
+    }
 
-        // Ctrl+V paste
-        if key == "v" && mods.secondary() {
-            if let Some(item) = cx.read_from_clipboard() {
-                if let Some(text) = item.text() {
-                    self.search_query.push_str(&text);
-                    self.selected_index = 0;
-                    cx.notify();
-                }
-            }
-            return;
-        }
-
-        // Printable characters
-        if let Some(ref kc) = event.keystroke.key_char {
-            if !mods.control && !mods.alt {
-                self.search_query.push_str(kc);
-                self.selected_index = 0;
-                cx.notify();
-                return;
-            }
-        }
-
-        if key.len() == 1 && !mods.control && !mods.alt {
-            self.search_query.push_str(key);
-            self.selected_index = 0;
-            cx.notify();
+    fn import_selected(&self, cx: &mut Context<Self>) {
+        let filtered = self.filtered_templates();
+        if let Some(tmpl) = filtered.get(self.selected_index) {
+            cx.emit(TemplateBrowserEvent::Import(tmpl.to_script()));
         }
     }
 }
@@ -204,26 +171,33 @@ impl Render for TemplateBrowser {
             tabs = tabs.child(tab.child(cat.label().to_string()));
         }
 
-        // Search bar
-        let search_bar = div()
-            .w_full()
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(4.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .text_size(px(12.0))
-            .child(if self.search_query.is_empty() {
-                div()
-                    .text_color(ShellDeckColors::text_muted())
-                    .child("Search templates...")
-            } else {
-                div()
-                    .text_color(ShellDeckColors::text_primary())
-                    .flex()
-                    .child(self.search_query.clone())
-                    .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
+        // Real `Input` search bar. Enter imports the selected template.
+        let search_bar = Input::new(&self.search_state)
+            .size(InputSize::Sm)
+            .placeholder("Search templates...")
+            .clearable(true)
+            .prefix(
+                svg()
+                    .path("images/search.svg")
+                    .size(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .on_change({
+                let entity = cx.entity();
+                move |value, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.search_query = value.to_string();
+                        this.selected_index = 0;
+                        cx.notify();
+                    });
+                }
+            })
+            .on_enter({
+                let entity = cx.entity();
+                move |_v, cx| {
+                    entity.update(cx, |this, cx| this.import_selected(cx));
+                }
             });
 
         // Template list

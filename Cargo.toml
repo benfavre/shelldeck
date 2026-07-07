@@ -63,6 +63,12 @@ criterion = "0.5"
 
 [patch.crates-io]
 adabraka-gpui = { path = "patches/adabraka-gpui" }
+# Local fork of adabraka-ui with:
+#   - `InputState` cursor color pulled from `theme.tokens.ring` instead of a
+#     hardcoded #0066ff.
+#   - Cursor blink (~500 ms on/off) driven by `Instant::now()` inside the
+#     input's paint, requesting an animation frame while focused.
+adabraka-ui = { path = "patches/adabraka-ui" }
 # Fix core-graphics 0.24 vs 0.25 conflict on macOS (zed-font-kit depends on core-graphics 0.24)
 zed-font-kit = { git = "https://github.com/benfavre/font-kit-fix", branch = "fix-core-graphics" }
 

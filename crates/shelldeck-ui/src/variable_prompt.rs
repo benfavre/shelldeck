@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -20,22 +21,31 @@ impl EventEmitter<VariablePromptEvent> for VariablePrompt {}
 pub struct VariablePrompt {
     script: Script,
     variables: Vec<ScriptVariable>,
-    values: Vec<String>,
-    active_field: usize,
+    /// One `InputState` per variable, initialised with the variable's default.
+    /// Cursor / selection / undo are owned by each widget individually.
+    states: Vec<Entity<InputState>>,
     focus_handle: FocusHandle,
 }
 
 impl VariablePrompt {
     pub fn new(script: Script, variables: Vec<ScriptVariable>, cx: &mut Context<Self>) -> Self {
-        let values: Vec<String> = variables
+        let states: Vec<Entity<InputState>> = variables
             .iter()
-            .map(|v| v.default_value.clone().unwrap_or_default())
+            .map(|v| {
+                let initial = v.default_value.clone().unwrap_or_default();
+                cx.new(|cx| {
+                    let mut s = InputState::new(cx);
+                    if !initial.is_empty() {
+                        s.content = initial.into();
+                    }
+                    s
+                })
+            })
             .collect();
         Self {
             script,
             variables,
-            values,
-            active_field: 0,
+            states,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -59,87 +69,22 @@ impl VariablePrompt {
         }
     }
 
+    /// Escape only — typing / Tab / Enter are handled by the focused `Input`
+    /// (Enter fires per-field `on_enter` which submits the whole prompt).
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-
-        match key {
-            "escape" => {
-                cx.emit(VariablePromptEvent::Cancel);
-                return;
-            }
-            "enter" => {
-                if !mods.shift {
-                    self.submit(cx);
-                    return;
-                }
-            }
-            "tab" => {
-                if mods.shift {
-                    if self.active_field > 0 {
-                        self.active_field -= 1;
-                    } else {
-                        self.active_field = self.variables.len().saturating_sub(1);
-                    }
-                } else if !self.variables.is_empty() {
-                    self.active_field = (self.active_field + 1) % self.variables.len();
-                }
-                cx.notify();
-                return;
-            }
-            "backspace" => {
-                if self.active_field < self.values.len() {
-                    self.values[self.active_field].pop();
-                    cx.notify();
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        // Ctrl+V paste
-        if key == "v" && mods.secondary() {
-            if let Some(item) = cx.read_from_clipboard() {
-                if let Some(text) = item.text() {
-                    if self.active_field < self.values.len() {
-                        self.values[self.active_field].push_str(&text);
-                        cx.notify();
-                    }
-                }
-            }
-            return;
-        }
-
-        // Ctrl+A select all (clear field)
-        if key == "a" && mods.secondary() {
-            if self.active_field < self.values.len() {
-                self.values[self.active_field].clear();
-                cx.notify();
-            }
-            return;
-        }
-
-        // Printable characters
-        if let Some(ref kc) = event.keystroke.key_char {
-            if !mods.control && !mods.alt {
-                if self.active_field < self.values.len() {
-                    self.values[self.active_field].push_str(kc);
-                    cx.notify();
-                }
-                return;
-            }
-        }
-
-        if key.len() == 1 && !mods.control && !mods.alt && self.active_field < self.values.len() {
-            self.values[self.active_field].push_str(key);
-            cx.notify();
+        if event.keystroke.key == "escape" {
+            cx.emit(VariablePromptEvent::Cancel);
         }
     }
 
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, cx: &mut Context<Self>) {
         let mut map = HashMap::new();
         for (i, var) in self.variables.iter().enumerate() {
-            let value = self.values.get(i).cloned().unwrap_or_default();
+            let value = self
+                .states
+                .get(i)
+                .map(|s| s.read(cx).content().to_string())
+                .unwrap_or_default();
             if !value.is_empty() {
                 map.insert(var.name.clone(), value);
             }
@@ -154,59 +99,26 @@ impl Render for VariablePrompt {
 
         let field_count = self.variables.len();
 
-        // Build variable fields
+        // Build variable fields — each is a real `Input`. Enter submits the
+        // whole prompt (matches the pre-migration behavior).
         let mut fields = div().flex().flex_col().gap(px(12.0));
 
         for (idx, var) in self.variables.iter().enumerate() {
             let label_text = self.display_label(var);
-            let is_active = idx == self.active_field;
-            let value = self.values.get(idx).cloned().unwrap_or_default();
-
-            let display_value: SharedString = if value.is_empty() {
-                SharedString::from(format!("{{{{{}}}}}", var.name))
-            } else {
-                SharedString::from(value)
+            let placeholder = SharedString::from(format!("{{{{{}}}}}", var.name));
+            let Some(state) = self.states.get(idx) else {
+                continue;
             };
-            let value_is_empty = self.values.get(idx).map(|v| v.is_empty()).unwrap_or(true);
 
-            let mut input = div()
-                .id(SharedString::from(format!("var-input-{}", idx)))
-                .px(px(10.0))
-                .py(px(7.0))
-                .rounded(px(6.0))
-                .border_1()
-                .text_size(px(13.0))
-                .w_full()
-                .cursor_text()
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.active_field = idx;
-                    cx.notify();
-                }));
-
-            if is_active {
-                input = input
-                    .border_color(ShellDeckColors::primary())
-                    .bg(ShellDeckColors::bg_primary());
-            } else {
-                input = input
-                    .border_color(ShellDeckColors::border())
-                    .bg(ShellDeckColors::bg_primary());
-            }
-
-            if value_is_empty {
-                input = input
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(display_value);
-            } else {
-                input = input
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(display_value);
-            }
-
-            // Cursor indicator for active field
-            if is_active {
-                // The cursor is shown via a blinking border effect
-            }
+            let input = Input::new(state)
+                .size(InputSize::Sm)
+                .placeholder(placeholder)
+                .on_enter({
+                    let entity = cx.entity();
+                    move |_v, cx| {
+                        entity.update(cx, |this, cx| this.submit(cx));
+                    }
+                });
 
             let mut field = div()
                 .flex()
@@ -221,7 +133,6 @@ impl Render for VariablePrompt {
                 )
                 .child(input);
 
-            // Description help text
             if let Some(ref desc) = var.description {
                 field = field.child(
                     div()
@@ -248,8 +159,7 @@ impl Render for VariablePrompt {
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
                     .child(format!(
-                        "Tab to switch fields ({}/{}) | Enter to run | Esc to cancel",
-                        self.active_field + 1,
+                        "Tab to switch fields ({}) | Enter to run | Esc to cancel",
                         field_count
                     )),
             )

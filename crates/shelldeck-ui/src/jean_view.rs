@@ -6,6 +6,7 @@
 //! The view holds cached data + input buffers and emits [`JeanViewEvent`]; all
 //! network is serviced by the `Workspace` on the background executor.
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -24,16 +25,14 @@ pub enum JeanTab {
     Memory,
 }
 
+/// Which composer's submit was invoked by `Input::on_enter`. Focus lives
+/// inside each `Input` widget; only the submit routing needs an id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
-    None,
     Say,
     HistorySearch,
-    TargetDomain,
-    TargetHost,
-    TargetNote,
-    MemMatch,
-    MemText,
+    Target,
+    Memory,
 }
 
 #[derive(Debug, Clone)]
@@ -68,21 +67,21 @@ pub struct JeanView {
     history_status: String,
     loading: bool,
     error: Option<String>,
-    // input buffers
-    active_field: Field,
-    say_input: String,
-    history_search: String,
-    t_domain: String,
-    t_host: String,
-    t_note: String,
-    mem_kind_note: bool, // false = note, true = notify
-    mem_match: String,
-    mem_text: String,
+    // Real `Input` states — one per composer field.
+    say_state: Entity<InputState>,
+    history_search_state: Entity<InputState>,
+    t_domain_state: Entity<InputState>,
+    t_host_state: Entity<InputState>,
+    t_note_state: Entity<InputState>,
+    mem_kind_note: bool,
+    mem_match_state: Entity<InputState>,
+    mem_text_state: Entity<InputState>,
     focus_handle: FocusHandle,
 }
 
 impl JeanView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let mk = |cx: &mut Context<Self>| cx.new(|cx| InputState::new(cx));
         Self {
             tab: JeanTab::Overview,
             state: None,
@@ -93,17 +92,27 @@ impl JeanView {
             history_status: String::new(),
             loading: false,
             error: None,
-            active_field: Field::None,
-            say_input: String::new(),
-            history_search: String::new(),
-            t_domain: String::new(),
-            t_host: String::new(),
-            t_note: String::new(),
+            say_state: mk(cx),
+            history_search_state: mk(cx),
+            t_domain_state: mk(cx),
+            t_host_state: mk(cx),
+            t_note_state: mk(cx),
             mem_kind_note: true,
-            mem_match: String::new(),
-            mem_text: String::new(),
+            mem_match_state: mk(cx),
+            mem_text_state: mk(cx),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
+    }
+
+    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
+        state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
     }
 
     pub fn set_state(&mut self, state: JeanState) {
@@ -135,89 +144,44 @@ impl JeanView {
         self.loading = false;
     }
 
-    fn field_buf(&mut self, f: Field) -> Option<&mut String> {
-        match f {
-            Field::Say => Some(&mut self.say_input),
-            Field::HistorySearch => Some(&mut self.history_search),
-            Field::TargetDomain => Some(&mut self.t_domain),
-            Field::TargetHost => Some(&mut self.t_host),
-            Field::TargetNote => Some(&mut self.t_note),
-            Field::MemMatch => Some(&mut self.mem_match),
-            Field::MemText => Some(&mut self.mem_text),
-            Field::None => None,
-        }
-    }
-
-    fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let active = self.active_field;
-        if active == Field::None {
-            return;
-        }
-        match key {
-            "enter" => self.submit_active(cx),
-            "backspace" => {
-                if let Some(b) = self.field_buf(active) {
-                    b.pop();
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        if let Some(b) = self.field_buf(active) {
-                            b.push_str(kc);
-                            cx.notify();
-                        }
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    if let Some(b) = self.field_buf(active) {
-                        b.push_str(key);
-                        cx.notify();
-                    }
-                }
-            }
-        }
-    }
-
-    fn submit_active(&mut self, cx: &mut Context<Self>) {
-        match self.active_field {
+    /// Route `Input::on_enter` for the four submittable groups.
+    fn submit(&mut self, which: Field, cx: &mut Context<Self>) {
+        match which {
             Field::Say => self.submit_say(cx),
             Field::HistorySearch => {
+                let q = Self::field_value(&self.history_search_state, cx)
+                    .trim()
+                    .to_string();
                 cx.emit(JeanViewEvent::LoadHistory {
-                    q: self.history_search.trim().to_string(),
+                    q,
                     status: self.history_status.clone(),
                 });
             }
-            Field::TargetHost | Field::TargetDomain | Field::TargetNote => self.submit_target(cx),
-            Field::MemMatch | Field::MemText => self.submit_memory(cx),
-            Field::None => {}
+            Field::Target => self.submit_target(cx),
+            Field::Memory => self.submit_memory(cx),
         }
     }
 
     fn submit_say(&mut self, cx: &mut Context<Self>) {
-        let text = self.say_input.trim().to_string();
+        let text = Self::field_value(&self.say_state, cx).trim().to_string();
         if text.is_empty() {
             return;
         }
-        self.say_input.clear();
+        Self::reset_input(&self.say_state.clone(), cx);
         cx.emit(JeanViewEvent::Say(text));
         cx.notify();
     }
 
     fn submit_target(&mut self, cx: &mut Context<Self>) {
-        let domain = self.t_domain.trim().to_string();
-        let ssh_host = self.t_host.trim().to_string();
+        let domain = Self::field_value(&self.t_domain_state, cx).trim().to_string();
+        let ssh_host = Self::field_value(&self.t_host_state, cx).trim().to_string();
         if domain.is_empty() || ssh_host.is_empty() {
             return;
         }
-        let note = self.t_note.trim().to_string();
-        self.t_domain.clear();
-        self.t_host.clear();
-        self.t_note.clear();
+        let note = Self::field_value(&self.t_note_state, cx).trim().to_string();
+        Self::reset_input(&self.t_domain_state.clone(), cx);
+        Self::reset_input(&self.t_host_state.clone(), cx);
+        Self::reset_input(&self.t_note_state.clone(), cx);
         cx.emit(JeanViewEvent::AddTarget {
             domain,
             ssh_host,
@@ -227,14 +191,14 @@ impl JeanView {
     }
 
     fn submit_memory(&mut self, cx: &mut Context<Self>) {
-        let text = self.mem_text.trim().to_string();
-        let match_ = self.mem_match.trim().to_string();
+        let text = Self::field_value(&self.mem_text_state, cx).trim().to_string();
+        let match_ = Self::field_value(&self.mem_match_state, cx).trim().to_string();
         if text.is_empty() && match_.is_empty() {
             return;
         }
         let kind = if self.mem_kind_note { "note" } else { "notify" };
-        self.mem_match.clear();
-        self.mem_text.clear();
+        Self::reset_input(&self.mem_match_state.clone(), cx);
+        Self::reset_input(&self.mem_text_state.clone(), cx);
         cx.emit(JeanViewEvent::AddMemory {
             kind: kind.to_string(),
             match_,
@@ -245,48 +209,24 @@ impl JeanView {
 
     // ── small building blocks ────────────────────────────────────────────
 
+    /// A single-line `Input` with an `on_enter` that submits the given
+    /// composer group (Say / HistorySearch / Target / Memory).
     fn input_box(
         &self,
-        field: Field,
-        value: &str,
-        placeholder: &str,
+        submit_field: Field,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let active = self.active_field == field;
-        let content = if value.is_empty() {
-            div()
-                .text_color(ShellDeckColors::text_muted())
-                .child(placeholder.to_string())
-        } else {
-            div()
-                .flex()
-                .text_color(ShellDeckColors::text_primary())
-                .child(value.to_string())
-                .child(if active {
-                    div().w(px(1.0)).h(px(15.0)).bg(ShellDeckColors::primary())
-                } else {
-                    div()
-                })
-        };
-        div()
-            .id(ElementId::from(SharedString::from(format!("jf-{placeholder}"))))
-            .px(px(9.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .border_color(if active {
-                ShellDeckColors::primary()
-            } else {
-                ShellDeckColors::border()
+        Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .on_enter({
+                let entity = cx.entity();
+                move |_v, cx| {
+                    entity.update(cx, |this, cx| this.submit(submit_field, cx));
+                }
             })
-            .text_size(px(13.0))
-            .cursor_text()
-            .child(content)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = field;
-                cx.notify();
-            }))
     }
 
     fn btn(
@@ -327,10 +267,15 @@ impl JeanView {
                 match tab {
                     JeanTab::Targets => cx.emit(JeanViewEvent::LoadTargets),
                     JeanTab::Memory => cx.emit(JeanViewEvent::LoadMemory),
-                    JeanTab::History => cx.emit(JeanViewEvent::LoadHistory {
-                        q: this.history_search.trim().to_string(),
-                        status: this.history_status.clone(),
-                    }),
+                    JeanTab::History => {
+                        let q = Self::field_value(&this.history_search_state, cx)
+                            .trim()
+                            .to_string();
+                        cx.emit(JeanViewEvent::LoadHistory {
+                            q,
+                            status: this.history_status.clone(),
+                        });
+                    }
                     JeanTab::Overview => {}
                 }
                 cx.notify();
@@ -448,7 +393,7 @@ impl JeanView {
             .py(px(8.0))
             .child(div().flex_1().child(self.input_box(
                 Field::Say,
-                &self.say_input.clone(),
+                &self.say_state,
                 "Dire dans #jean…",
                 cx,
             )))
@@ -672,8 +617,11 @@ impl JeanView {
                 .child(label.to_string())
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.history_status = sval.clone();
+                    let q = Self::field_value(&this.history_search_state, cx)
+                        .trim()
+                        .to_string();
                     cx.emit(JeanViewEvent::LoadHistory {
-                        q: this.history_search.trim().to_string(),
+                        q,
                         status: this.history_status.clone(),
                     });
                     cx.notify();
@@ -744,7 +692,7 @@ impl JeanView {
             .p(px(12.0))
             .child(self.input_box(
                 Field::HistorySearch,
-                &self.history_search.clone(),
+                &self.history_search_state,
                 "Rechercher (Entrée)…",
                 cx,
             ))
@@ -899,20 +847,20 @@ impl JeanView {
                     .flex()
                     .gap(px(6.0))
                     .child(div().flex_1().child(self.input_box(
-                        Field::TargetDomain,
-                        &self.t_domain.clone(),
+                        Field::Target,
+                        &self.t_domain_state,
                         "domaine",
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
-                        Field::TargetHost,
-                        &self.t_host.clone(),
+                        Field::Target,
+                        &self.t_host_state,
                         "serveur ssh",
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
-                        Field::TargetNote,
-                        &self.t_note.clone(),
+                        Field::Target,
+                        &self.t_note_state,
                         "note (option)",
                         cx,
                     )))
@@ -1009,14 +957,14 @@ impl JeanView {
                             })),
                     )
                     .child(div().w(px(140.0)).child(self.input_box(
-                        Field::MemMatch,
-                        &self.mem_match.clone(),
+                        Field::Memory,
+                        &self.mem_match_state,
                         "match (mot-clé)",
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
-                        Field::MemText,
-                        &self.mem_text.clone(),
+                        Field::Memory,
+                        &self.mem_text_state,
                         "texte",
                         cx,
                     )))
@@ -1067,7 +1015,6 @@ impl Render for JeanView {
         let mut root = div()
             .id("jean-view-root")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| this.handle_key(e, cx)))
             .size_full()
             .flex()
             .flex_col()

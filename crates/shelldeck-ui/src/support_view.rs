@@ -5,6 +5,7 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -108,7 +109,8 @@ pub struct SupportView {
     selected_id: Option<String>,
     detail: Option<SupportTicket>,
     filter: SupportFilter,
-    composer: String,
+    /// Real `Input` state backing the reply / internal-note composer.
+    composer_state: Entity<InputState>,
     compose_note: bool,
     loading: bool,
     error: Option<String>,
@@ -141,7 +143,7 @@ impl SupportView {
             selected_id: None,
             detail: None,
             filter: SupportFilter::All,
-            composer: String::new(),
+            composer_state: cx.new(|cx| InputState::new(cx)),
             compose_note: false,
             loading: false,
             error: None,
@@ -243,7 +245,7 @@ impl SupportView {
     }
 
     /// Install a freshly-fetched detail (with messages) for the selected ticket.
-    pub fn set_detail(&mut self, ticket: SupportTicket) {
+    pub fn set_detail(&mut self, ticket: SupportTicket, cx: &mut Context<Self>) {
         // Merge the updated slim ticket into the list too.
         if let Some(existing) = self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             let msgs = existing.messages.clone();
@@ -254,9 +256,16 @@ impl SupportView {
         }
         self.selected_id = Some(ticket.id.clone());
         self.detail = Some(ticket);
-        self.composer.clear();
+        self.reset_composer(cx);
         self.loading = false;
         self.error = None;
+    }
+
+    fn reset_composer(&self, cx: &mut Context<Self>) {
+        self.composer_state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
     }
 
     pub fn set_loading(&mut self, loading: bool) {
@@ -288,41 +297,11 @@ impl SupportView {
         }
     }
 
-    fn handle_composer_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        match key {
-            "enter" => {
-                // Enter sends; Shift+Enter inserts a newline (multi-line notes).
-                if event.keystroke.modifiers.shift {
-                    self.composer.push('\n');
-                    cx.notify();
-                } else {
-                    self.send_composer(cx);
-                }
-            }
-            "backspace" => {
-                self.composer.pop();
-                cx.notify();
-            }
-            _ => {
-                if let Some(ref kc) = event.keystroke.key_char {
-                    if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        self.composer.push_str(kc);
-                        cx.notify();
-                    }
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                {
-                    self.composer.push_str(key);
-                    cx.notify();
-                }
-            }
-        }
-    }
-
-    fn send_composer(&mut self, cx: &mut Context<Self>) {
-        let text = self.composer.trim().to_string();
+    /// Read the composer content once and, if non-empty, emit the right event
+    /// (reply / note / issue comment). Called from `Input::on_enter` and the
+    /// send button.
+    pub fn send_composer(&mut self, cx: &mut Context<Self>) {
+        let text = self.composer_state.read(cx).content().trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -337,7 +316,7 @@ impl SupportView {
             }
             SupportSection::Requests => {
                 if let Some(id) = self.issue_selected.clone() {
-                    self.composer.clear();
+                    self.reset_composer(cx);
                     cx.emit(SupportViewEvent::IssueComment { id, body: text });
                     cx.notify();
                 }
@@ -1002,22 +981,7 @@ impl SupportView {
         let placeholder = if is_note {
             "Note interne (non envoyée au client)…"
         } else {
-            "Votre réponse… (Entrée pour envoyer, Maj+Entrée = nouvelle ligne)"
-        };
-        let input_display = if self.composer.is_empty() {
-            div()
-                .text_color(ShellDeckColors::text_muted())
-                .child(placeholder.to_string())
-        } else {
-            div()
-                .text_color(ShellDeckColors::text_primary())
-                .child(self.composer.clone())
-        };
-
-        let composer_border = if is_note {
-            ShellDeckColors::warning()
-        } else {
-            ShellDeckColors::border()
+            "Votre réponse… (Entrée pour envoyer)"
         };
 
         div()
@@ -1037,23 +1001,15 @@ impl SupportView {
                     .child(toggle("Note interne", is_note, true, cx)),
             )
             .child(
-                div()
-                    .id("support-composer")
-                    .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
-                        this.handle_composer_key(e, cx);
-                    }))
-                    .w_full()
-                    .min_h(px(52.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(composer_border)
-                    .text_size(px(13.0))
-                    .cursor_text()
-                    .child(input_display),
+                Input::new(&self.composer_state)
+                    .size(InputSize::Md)
+                    .placeholder(placeholder)
+                    .on_enter({
+                        let entity = cx.entity();
+                        move |_v, cx| {
+                            entity.update(cx, |this, cx| this.send_composer(cx));
+                        }
+                    }),
             )
             .child(
                 div().flex().justify_end().child(
@@ -1330,15 +1286,6 @@ impl SupportView {
     }
 
     fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let display = if self.composer.is_empty() {
-            div()
-                .text_color(ShellDeckColors::text_muted())
-                .child("Commenter la demande…")
-        } else {
-            div()
-                .text_color(ShellDeckColors::text_primary())
-                .child(self.composer.clone())
-        };
         div()
             .flex()
             .items_center()
@@ -1348,23 +1295,17 @@ impl SupportView {
             .border_t_1()
             .border_color(ShellDeckColors::border())
             .child(
-                div()
-                    .id("sup-issue-composer")
-                    .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
-                        this.handle_composer_key(e, cx);
-                    }))
-                    .flex_1()
-                    .min_h(px(32.0))
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(13.0))
-                    .cursor_text()
-                    .child(display),
+                div().flex_1().child(
+                    Input::new(&self.composer_state)
+                        .size(InputSize::Sm)
+                        .placeholder("Commenter la demande…")
+                        .on_enter({
+                            let entity = cx.entity();
+                            move |_v, cx| {
+                                entity.update(cx, |this, cx| this.send_composer(cx));
+                            }
+                        }),
+                ),
             )
             .child(
                 div()

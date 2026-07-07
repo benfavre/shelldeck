@@ -109,8 +109,6 @@ dependencies = [
 [[package]]
 name = "adabraka-ui"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "742dc08a945a681c75f14653bdb6ae9ee3260f008bc1e28e32fd2d3be25fa679"
 dependencies = [
  "adabraka-gpui",
  "bytes",

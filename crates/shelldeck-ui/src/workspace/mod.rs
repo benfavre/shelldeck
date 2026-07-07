@@ -2003,7 +2003,7 @@ impl Workspace {
                 match detail {
                     Ok(t) => {
                         ws.support.update(cx, |v, cx| {
-                            v.set_detail(t);
+                            v.set_detail(t, cx);
                             cx.notify();
                         });
                         // Refresh the list so unread flags/counts update.
@@ -2108,7 +2108,7 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(t) => {
                     ws.support.update(cx, |v, cx| {
-                        v.set_detail(t);
+                        v.set_detail(t, cx);
                         cx.notify();
                     });
                     ws.refresh_support(cx);
@@ -3262,7 +3262,7 @@ impl Workspace {
         self.active_view = ActiveView::BextCloud;
         let base = "http://127.0.0.1".to_string();
         self.bext_view.update(cx, |v, cx| {
-            v.open_instance(base.clone(), app_id.clone());
+            v.open_instance(base.clone(), app_id.clone(), cx);
             cx.notify();
         });
         self.show_toast(
@@ -3505,7 +3505,7 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match r {
                 Ok(sites) => ws.bext_view.update(cx, |v, cx| {
-                    v.set_instance_sites(sites.sites, b2.clone(), a2.clone());
+                    v.set_instance_sites(sites.sites, b2.clone(), a2.clone(), cx);
                     cx.notify();
                 }),
                 Err(e) => ws.bext_view.update(cx, |v, cx| {
@@ -6414,7 +6414,7 @@ impl Render for Workspace {
                 if let Some(ws) = h5.upgrade() {
                     ws.update(cx, |ws, cx| {
                         ws.command_palette.update(cx, |palette, cx| {
-                            palette.toggle(window);
+                            palette.toggle(window, cx);
                             cx.notify();
                         });
                         cx.notify();

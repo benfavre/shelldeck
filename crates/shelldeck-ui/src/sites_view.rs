@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -115,6 +116,10 @@ enum FlatItem {
 pub struct SitesView {
     pub sites: Vec<ManagedSite>,
     pub connections: Vec<Connection>,
+    /// Real adabraka `Input` state for the toolbar search bar.
+    search_state: Entity<InputState>,
+    /// Mirror of `search_state.content` kept in sync via `on_change` for the
+    /// filter helpers that need `&str` access.
     search_query: String,
     type_filter: SiteTypeFilter,
     server_filter: Option<Uuid>,
@@ -139,6 +144,7 @@ impl SitesView {
         Self {
             sites: Vec::new(),
             connections: Vec::new(),
+            search_state: cx.new(|cx| InputState::new(cx)),
             search_query: String::new(),
             type_filter: SiteTypeFilter::All,
             server_filter: None,
@@ -325,62 +331,32 @@ impl SitesView {
 
     // -- Key handling --------------------------------------------------------
 
+    /// Only Escape reaches us — the toolbar's `Input` widget consumes all
+    /// text keys. Escape closes the detail panel or clears the search.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-
-        match key {
-            "escape" => {
-                if self.detail_panel_open {
-                    self.detail_panel_open = false;
-                    self.selected_site = None;
-                } else if !self.search_query.is_empty() {
-                    self.search_query.clear();
-                }
-                cx.notify();
-                return;
-            }
-            "backspace" => {
-                self.search_query.pop();
-                self.visible_card_count = PAGE_SIZE;
-                self.collapsed_groups.clear();
-                cx.notify();
-                return;
-            }
-            _ => {}
-        }
-
-        // Ctrl+V paste
-        if key == "v" && mods.secondary() {
-            if let Some(item) = cx.read_from_clipboard() {
-                if let Some(text) = item.text() {
-                    let clean: String = text.lines().next().unwrap_or("").trim().to_string();
-                    self.search_query.push_str(&clean);
-                    self.visible_card_count = PAGE_SIZE;
-                    self.collapsed_groups.clear();
-                    cx.notify();
-                }
-            }
+        if event.keystroke.key != "escape" {
             return;
         }
-
-        // Printable characters
-        if let Some(ref kc) = event.keystroke.key_char {
-            if !mods.control && !mods.alt {
-                self.search_query.push_str(kc);
-                self.visible_card_count = PAGE_SIZE;
-                self.collapsed_groups.clear();
-                cx.notify();
-                return;
-            }
-        }
-
-        if key.len() == 1 && !mods.control && !mods.alt {
-            self.search_query.push_str(key);
+        if self.detail_panel_open {
+            self.detail_panel_open = false;
+            self.selected_site = None;
+        } else if !self.search_query.is_empty() {
+            Self::reset_input(&self.search_state.clone(), cx);
+            self.search_query.clear();
             self.visible_card_count = PAGE_SIZE;
             self.collapsed_groups.clear();
-            cx.notify();
         }
+        cx.notify();
+    }
+
+    /// Empty the search input without needing a `Window`. Public `content`
+    /// is written directly (`set_value` requires a Window we can't produce
+    /// from a key handler).
+    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
+        state.update(cx, |s, cx| {
+            s.content = "".into();
+            cx.notify();
+        });
     }
 
     fn toggle_group_collapse(&mut self, group_key: String, cx: &mut Context<Self>) {
@@ -604,47 +580,35 @@ impl SitesView {
             .flex_shrink_0()
             .flex_wrap();
 
-        // Search input display
-        let search_display = if self.search_query.is_empty() {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .px(px(10.0))
-                .py(px(5.0))
-                .rounded(px(6.0))
-                .bg(ShellDeckColors::bg_surface())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .min_w(px(180.0))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child("/ Filter sites..."),
+        // Real `Input` — cursor, selection, clearable × chip, search-glass
+        // prefix. `on_change` mirrors the value into `self.search_query` for
+        // the fuzzy-match helpers.
+        let search_input = div().min_w(px(220.0)).child(
+            Input::new(&self.search_state)
+                .size(InputSize::Sm)
+                .placeholder("Filter sites...")
+                .clearable(true)
+                .prefix(
+                    svg()
+                        .path("images/search.svg")
+                        .size(px(12.0))
+                        .flex_shrink_0()
+                        .text_color(ShellDeckColors::text_muted()),
                 )
-        } else {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .px(px(10.0))
-                .py(px(5.0))
-                .rounded(px(6.0))
-                .bg(ShellDeckColors::bg_surface())
-                .border_1()
-                .border_color(ShellDeckColors::primary())
-                .min_w(px(180.0))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(self.search_query.clone()),
-                )
-                .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-        };
+                .on_change({
+                    let entity = cx.entity();
+                    move |value, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.search_query = value.to_string();
+                            this.visible_card_count = PAGE_SIZE;
+                            this.collapsed_groups.clear();
+                            cx.notify();
+                        });
+                    }
+                }),
+        );
 
-        toolbar = toolbar.child(search_display);
+        toolbar = toolbar.child(search_input);
 
         // Type filter badges
         toolbar = toolbar

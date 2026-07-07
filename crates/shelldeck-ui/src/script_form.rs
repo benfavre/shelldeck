@@ -1,3 +1,4 @@
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 use crate::scale::px;
@@ -51,22 +52,36 @@ pub struct ScriptForm {
     editing_id: Option<Uuid>,
     connections: Vec<(Uuid, String, String)>,
     selected_connection_idx: usize,
-    name: String,
-    description: String,
+    name_state: Entity<InputState>,
+    description_state: Entity<InputState>,
     language: ScriptLanguage,
     category: ScriptCategory,
     body: EditorBuffer,
     target: ScriptTarget,
     error: Option<String>,
     error_field: Option<FormField>,
+    /// Non-text active field (Body / Target / Language / Category / Connection).
+    /// Text fields (Name / Description) own their own focus via `InputState`.
     active_field: Option<FormField>,
     focus_handle: FocusHandle,
     needs_focus: bool,
     // Dropdown state
     dropdown_open: bool,
+    dropdown_query_state: Entity<InputState>,
     dropdown_query: String,
     dropdown_filtered: Vec<usize>,
     dropdown_selected: usize,
+}
+
+fn new_input_state_sf(cx: &mut Context<ScriptForm>, initial: &str) -> Entity<InputState> {
+    let initial = initial.to_string();
+    cx.new(|cx| {
+        let mut s = InputState::new(cx);
+        if !initial.is_empty() {
+            s.content = initial.into();
+        }
+        s
+    })
 }
 
 impl ScriptForm {
@@ -76,18 +91,19 @@ impl ScriptForm {
             editing_id: None,
             connections,
             selected_connection_idx: 0,
-            name: String::new(),
-            description: String::new(),
+            name_state: new_input_state_sf(cx, ""),
+            description_state: new_input_state_sf(cx, ""),
             language: ScriptLanguage::Shell,
             category: ScriptCategory::Uncategorized,
             body: EditorBuffer::new(),
             target: ScriptTarget::Local,
             error: None,
             error_field: None,
-            active_field: Some(FormField::Name),
+            active_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
             dropdown_open: false,
+            dropdown_query_state: new_input_state_sf(cx, ""),
             dropdown_query: String::new(),
             dropdown_filtered,
             dropdown_selected: 0,
@@ -114,18 +130,19 @@ impl ScriptForm {
             editing_id: Some(script.id),
             connections,
             selected_connection_idx: selected_idx,
-            name: script.name.clone(),
-            description: script.description.clone().unwrap_or_default(),
+            name_state: new_input_state_sf(cx, &script.name),
+            description_state: new_input_state_sf(cx, script.description.as_deref().unwrap_or("")),
             language: script.language.clone(),
             category: script.category,
             body: EditorBuffer::from_text(script.body.clone()),
             target,
             error: None,
             error_field: None,
-            active_field: Some(FormField::Name),
+            active_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
             dropdown_open: false,
+            dropdown_query_state: new_input_state_sf(cx, ""),
             dropdown_query: String::new(),
             dropdown_filtered,
             dropdown_selected: 0,
@@ -136,22 +153,19 @@ impl ScriptForm {
         self.focus_handle.focus(window);
     }
 
-    fn is_valid(&self) -> bool {
-        !self.name.is_empty()
+    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+        state.read(cx).content().to_string()
     }
 
-    /// Returns mutable reference to the active text field (Name/Description only).
-    /// Body uses EditorBuffer and is handled separately.
+    fn is_valid(&self, cx: &Context<Self>) -> bool {
+        !Self::field_value(&self.name_state, cx).is_empty()
+    }
+
+    /// Text field editing lives inside the focused `Input` widget now — this
+    /// helper only exists for legacy callers still asking for a mutable ref
+    /// to a text buffer. Always returns None post-migration.
     fn active_field_mut(&mut self) -> Option<&mut String> {
-        self.active_field.map(move |f| match f {
-            FormField::Name => Some(&mut self.name),
-            FormField::Description => Some(&mut self.description),
-            FormField::Body => None,
-            FormField::Target => None,
-            FormField::Language => None,
-            FormField::Category => None,
-            FormField::Connection => None,
-        })?
+        None
     }
 
     fn cycle_target(&mut self) {
@@ -446,8 +460,8 @@ impl ScriptForm {
         }
     }
 
-    fn try_save(&mut self, cx: &mut Context<Self>) {
-        match self.validate() {
+    pub fn try_save(&mut self, cx: &mut Context<Self>) {
+        match self.validate(cx) {
             Ok(script) => {
                 cx.emit(ScriptFormEvent::Save(script));
             }
@@ -465,8 +479,10 @@ impl ScriptForm {
         }
     }
 
-    fn validate(&self) -> Result<Script, String> {
-        if self.name.is_empty() {
+    fn validate(&self, cx: &Context<Self>) -> Result<Script, String> {
+        let name = Self::field_value(&self.name_state, cx);
+        let description = Self::field_value(&self.description_state, cx);
+        if name.is_empty() {
             return Err("Script name is required".to_string());
         }
         let target = match &self.target {
@@ -480,14 +496,14 @@ impl ScriptForm {
         };
 
         let mut script = Script::new_with_language(
-            self.name.clone(),
+            name,
             self.body.text().to_string(),
             target,
             self.language.clone(),
             self.category,
         );
-        if !self.description.is_empty() {
-            script.description = Some(self.description.clone());
+        if !description.is_empty() {
+            script.description = Some(description);
         }
 
         if let Some(id) = self.editing_id {
@@ -499,71 +515,35 @@ impl ScriptForm {
 
     fn render_text_field(
         &self,
-        field: FormField,
-        label: &str,
-        value: &str,
-        placeholder: &str,
+        field: Option<FormField>,
+        label: &'static str,
+        state: &Entity<InputState>,
+        placeholder: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_active = self.active_field == Some(field);
-        let has_error = self.error_field == Some(field);
-
-        let mut input_box = div()
-            .id(ElementId::from(SharedString::from(format!(
-                "sf-field-{field:?}"
-            ))))
-            .w_full()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .bg(ShellDeckColors::bg_primary())
-            .border_1()
-            .text_size(px(13.0))
-            .cursor_text()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.active_field = Some(field);
-                cx.notify();
-            }));
-
-        if has_error {
-            input_box = input_box.border_color(ShellDeckColors::error());
-        } else if is_active {
-            input_box = input_box.border_color(ShellDeckColors::primary());
-        } else {
-            input_box = input_box.border_color(ShellDeckColors::border());
-        }
-
-        if value.is_empty() {
-            input_box = input_box.child(
-                div()
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(placeholder.to_string()),
-            );
-        } else {
-            let mut text_el = div()
-                .text_color(ShellDeckColors::text_primary())
-                .flex()
-                .child(value.to_string());
-
-            if is_active {
-                text_el =
-                    text_el.child(div().w(px(1.0)).h(px(16.0)).bg(ShellDeckColors::primary()));
-            }
-
-            input_box = input_box.child(text_el);
-        }
-
-        if value.is_empty() && is_active {
-            input_box = input_box.child(
-                div()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(6.0))
-                    .w(px(1.0))
-                    .h(px(16.0))
-                    .bg(ShellDeckColors::primary()),
-            );
-        }
+        let has_error = field.is_some() && field == self.error_field;
+        let input = Input::new(state)
+            .size(InputSize::Sm)
+            .placeholder(placeholder)
+            .error(has_error)
+            .on_change({
+                let entity = cx.entity();
+                move |_v, cx| {
+                    entity.update(cx, |this, cx| {
+                        if this.error.is_some() {
+                            this.error = None;
+                            this.error_field = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_enter({
+                let entity = cx.entity();
+                move |_v, cx| {
+                    entity.update(cx, |this, cx| this.try_save(cx));
+                }
+            });
 
         div()
             .flex()
@@ -574,9 +554,9 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label.to_string()),
+                    .child(label),
             )
-            .child(input_box)
+            .child(input)
     }
 
     fn render_body_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -976,24 +956,32 @@ impl ScriptForm {
         // Dropdown list
         if self.dropdown_open {
             let search_area = div()
-                .px(px(8.0))
+                .px(px(6.0))
                 .py(px(6.0))
                 .border_b_1()
                 .border_color(ShellDeckColors::border())
-                .text_size(px(12.0))
-                .child(if self.dropdown_query.is_empty() {
-                    div()
-                        .text_color(ShellDeckColors::text_muted())
-                        .flex()
-                        .child("Type to filter...")
-                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-                } else {
-                    div()
-                        .text_color(ShellDeckColors::text_primary())
-                        .flex()
-                        .child(self.dropdown_query.clone())
-                        .child(div().w(px(1.0)).h(px(14.0)).bg(ShellDeckColors::primary()))
-                });
+                .child(
+                    Input::new(&self.dropdown_query_state)
+                        .size(InputSize::Sm)
+                        .placeholder("Type to filter...")
+                        .prefix(
+                            svg()
+                                .path("images/search.svg")
+                                .size(px(12.0))
+                                .flex_shrink_0()
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                        .on_change({
+                            let entity = cx.entity();
+                            move |value, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.dropdown_query = value.to_string();
+                                    this.update_dropdown_filter();
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                );
 
             let mut items_list = div()
                 .id("sf-dropdown-list")
@@ -1091,17 +1079,16 @@ impl Render for ScriptForm {
             .p(px(20.0))
             // Name
             .child(self.render_text_field(
-                FormField::Name,
+                Some(FormField::Name),
                 "Script Name",
-                &self.name.clone(),
+                &self.name_state,
                 "My Script",
                 cx,
             ))
-            // Description
             .child(self.render_text_field(
-                FormField::Description,
+                None,
                 "Description (optional)",
-                &self.description.clone(),
+                &self.description_state,
                 "What does this script do?",
                 cx,
             ))
@@ -1217,7 +1204,7 @@ impl Render for ScriptForm {
                                     ),
                             )
                             .child({
-                                let valid = self.is_valid();
+                                let valid = self.is_valid(cx);
                                 let btn_label = if self.editing_id.is_some() {
                                     "Save Script"
                                 } else {
