@@ -526,9 +526,10 @@ pub(crate) struct Quad {
     /// `array<Quad>` element stride and storage buffer indexing lines up.
     /// Paired with the `Shadow::_pad` sibling and the two initialisers in
     /// `window.rs`. See SDPATCH-104. NOTE: v0.5.1 added `transform` +
-    /// `blend_mode` fields (both align 4) to the tail — trailing `_pad`
-    /// remains needed on both `Quad` and `Shadow`.
-    pub _pad: u32,
+    /// `blend_mode` fields (both align 4) to the tail — the pad is 2×u32
+    /// so the shader-side assertion (`blade_graphics::shader:105`) sees a
+    /// matching 256-byte struct.
+    pub _pad: [u32; 2],
 }
 
 impl From<Quad> for Primitive {

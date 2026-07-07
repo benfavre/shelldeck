@@ -2875,7 +2875,7 @@ impl Window {
             blend_mode: quad.blend_mode as u32,
             // ShellDeck patch: initialise the WGSL alignment padding
             // (SDPATCH-104, `Quad::_pad` in scene.rs).
-            _pad: 0,
+            _pad: [0; 2],
         });
     }
 
