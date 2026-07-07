@@ -756,7 +756,11 @@ impl SupportView {
             )
             .child(meta_row);
 
-        // Messages (scrollable).
+        // Messages (scrollable). Subtle background tint so the thread reads
+        // as a distinct "conversation surface", separate from the white
+        // header + action bar chrome. `bg_surface` is the same token adabraka
+        // uses for card bodies — light-mode = warm cream, dark-mode = darker
+        // panel, so the contrast stays gentle in both themes.
         let mut messages = div()
             .id("support-messages")
             .flex_1()
@@ -764,7 +768,8 @@ impl SupportView {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .p(px(14.0));
+            .p(px(14.0))
+            .bg(ShellDeckColors::bg_surface());
         if ticket.messages.is_empty() {
             messages = messages.child(
                 div()
@@ -797,7 +802,11 @@ impl SupportView {
         let (status_next, status_label_next) = if is_pending {
             ("open".to_string(), "Rouvrir".to_string())
         } else {
-            ("pending".to_string(), "Mettre en attente client".to_string())
+            // Short label so the whole action bar fits on one row on a
+            // typical sheet width — the meaning "put on hold, waiting on
+            // the customer" is carried by the status Badge already visible
+            // in the header ("en attente client").
+            ("pending".to_string(), "En attente".to_string())
         };
 
         // Single flex_wrap row of buttons. Order = "meta" first (status,
@@ -842,12 +851,11 @@ impl SupportView {
                 },
             ));
         }
-        // Priority menu toggle — current value already visible as the header
-        // badge, so the label reads as an action verb.
+        // Priority menu toggle — value already visible in the header badge.
         {
             actions = actions.child(self.action_button(
                 "sup-priority",
-                "Changer la priorité…".to_string(),
+                "Priorité…".to_string(),
                 cx,
                 move |this, cx| {
                     this.priority_menu_open = !this.priority_menu_open;
@@ -860,7 +868,7 @@ impl SupportView {
         {
             actions = actions.child(self.action_button(
                 "sup-assign",
-                "Attribuer à…".to_string(),
+                "Attribuer…".to_string(),
                 cx,
                 move |this, cx| {
                     this.assign_menu_open = !this.assign_menu_open;
@@ -870,11 +878,13 @@ impl SupportView {
             ));
         }
 
-        // "Envoyer à Jean" — file this ticket through JeanClaude's Slack intake.
+        // "Jean" — file this ticket through JeanClaude's Slack intake. Short
+        // label so the row stays on one line; the tooltip / bot name reads
+        // long enough for a non-tech agent to recognize it.
         if self.jean_available {
             actions = actions.child(self.action_button(
                 "sup-to-jean",
-                "Envoyer à Jean".to_string(),
+                "Jean".to_string(),
                 cx,
                 move |this, cx| {
                     if let Some(text) = this.jean_ticket_text() {
@@ -884,10 +894,10 @@ impl SupportView {
             ));
         }
 
-        // "Convertir en demande".
+        // "Convertir" — turn this ticket into a tracked request.
         actions = actions.child(self.action_button(
             "sup-to-issue",
-            "Convertir en demande".to_string(),
+            "Convertir".to_string(),
             cx,
             move |this, cx| {
                 if let Some(t) = this.detail.as_ref() {
@@ -925,7 +935,7 @@ impl SupportView {
                     .text_color(white())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::success().opacity(0.85)))
-                    .child("Résoudre le ticket")
+                    .child("Résoudre")
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                         cx.emit(SupportViewEvent::Resolve {
                             id: rid.clone(),
