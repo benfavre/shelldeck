@@ -1,4 +1,11 @@
-# ShellDeck - CLAUDE.md
+# ShellDeck - AGENTS.md
+
+> This is the canonical agent instruction file for ShellDeck. `CLAUDE.md` at the
+> repo root is a thin pointer that imports this file, so Claude Code, Cursor,
+> Codex, and any other AGENTS.md-aware tool all read the same source of truth.
+>
+> Modular topic-specific rules live in [`.agents/`](.agents/) — see the imports
+> section at the bottom of this file.
 
 ## Project Overview
 
@@ -158,3 +165,24 @@ Core clients (committed by the lead, `3d961cf`): `shelldeck-core::config::bext_c
 - Terminal grid operations must be fast - they're on the rendering hot path
 - Use `parking_lot::Mutex` for thread-safe grid access, not `std::sync::Mutex`
 - Terminal repaint is event-driven (PTY reader → channel → refresh task), not polled — don't reintroduce a fixed-interval poll. The main grid paint loop must keep using `shape_line`; the `paint_glyph`/`GlyphCache` fast path silently fails to render (breaks bold/colored glyphs).
+
+## Modular rules (`.agents/`)
+
+Topic-scoped instructions live under [`.agents/`](.agents/). Each `.md` file there
+covers one focused area (a subsystem, a workflow, a class of bugs). Add a new
+file for each new topic — keep them small and self-contained.
+
+Claude Code auto-imports these via the `@`-directives below. Other AGENTS.md
+readers (Cursor, Codex, …) that don't support imports will see the list as
+prose — they can still open the referenced files manually or via their own
+rules loader.
+
+@.agents/cross-platform.md
+@.agents/ui-components.md
+@.agents/patches.md
+
+<!-- Add one @-import per rule file above this comment. Example:
+@.agents/gpui-patterns.md
+@.agents/ssh-safety.md
+-->
+
