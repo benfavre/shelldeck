@@ -253,10 +253,39 @@ impl SupportView {
     }
 
     /// Install a freshly-fetched detail (with messages) for the selected ticket.
+    ///
+    /// Preserves the current thread when the incoming ticket has no messages:
+    /// the Manage API's state-change endpoints (`support_assign`,
+    /// `support_status`, `support_priority`, `support_resolve`) return only
+    /// the meta ticket. Blindly replacing `self.detail` with that response
+    /// wiped the conversation until the next full fetch. We keep the
+    /// existing messages when the incoming payload is empty.
     pub fn set_detail(&mut self, ticket: SupportTicket, cx: &mut Context<Self>) {
-        // Merge the updated slim ticket into the list too.
+        let preserved_msgs = if ticket.messages.is_empty() {
+            self.detail
+                .as_ref()
+                .filter(|d| d.id == ticket.id)
+                .map(|d| d.messages.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let ticket = if !preserved_msgs.is_empty() {
+            SupportTicket {
+                messages: preserved_msgs,
+                ..ticket
+            }
+        } else {
+            ticket
+        };
+        // Merge the updated slim ticket into the list too (keeping any
+        // messages we may have cached alongside).
         if let Some(existing) = self.tickets.iter_mut().find(|t| t.id == ticket.id) {
-            let msgs = existing.messages.clone();
+            let msgs = if !ticket.messages.is_empty() {
+                ticket.messages.clone()
+            } else {
+                existing.messages.clone()
+            };
             *existing = SupportTicket {
                 messages: msgs,
                 ..ticket.clone()
