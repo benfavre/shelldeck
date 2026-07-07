@@ -595,7 +595,7 @@ impl SupportView {
         row
     }
 
-    fn render_message(msg: &SupportMessage) -> impl IntoElement {
+    fn render_message(msg: &SupportMessage, me: &SupportMe) -> impl IntoElement {
         let (bg, align_end, label) = if msg.is_note() {
             (ShellDeckColors::warning().opacity(0.12), false, "Note interne")
         } else if msg.is_customer() {
@@ -603,14 +603,42 @@ impl SupportView {
         } else {
             (ShellDeckColors::primary().opacity(0.12), true, "Agent")
         };
+        // Fallback for the sender label: `msg.name` first (Manage API sets
+        // it for messages typed from the web dashboard), then — for
+        // agent-side messages with no name — the currently signed-in
+        // agent's own name/email (this console is mono-agent, so a
+        // nameless agent-side message is always ours). Notes and customer
+        // messages keep the generic label.
         let who = msg
             .name
             .clone()
             .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                if !msg.is_note() && !msg.is_customer() {
+                    let name = me.name.trim();
+                    if !name.is_empty() {
+                        Some(name.to_string())
+                    } else {
+                        let email = me.email.trim();
+                        if !email.is_empty() {
+                            Some(email.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| label.to_string());
 
+        // Bubble: max_w caps the pill width on wide screens, `min_w_0`
+        // and `flex_shrink` on the text container let it wrap all the
+        // way down to the parent's width on narrow screens (previously
+        // long paragraphs bled past the bubble's right edge).
         let bubble = div()
             .max_w(px(560.0))
+            .min_w_0()
             .rounded(px(8.0))
             .bg(bg)
             .border_1()
@@ -635,6 +663,7 @@ impl SupportView {
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
                             .child(rel_time(msg.at)),
@@ -642,6 +671,7 @@ impl SupportView {
             )
             .child(
                 div()
+                    .w_full()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_primary())
                     .child(msg.text.clone()),
@@ -820,7 +850,7 @@ impl SupportView {
             );
         } else {
             for m in &ticket.messages {
-                messages = messages.child(Self::render_message(m));
+                messages = messages.child(Self::render_message(m, &self.me));
             }
         }
 
