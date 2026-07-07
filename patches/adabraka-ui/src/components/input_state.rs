@@ -33,6 +33,16 @@ actions!(
         Delete,
         Left,
         Right,
+        // ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and
+        // Ctrl+Backspace/Delete on Linux/Windows; ⌥←/→ + ⌥Backspace/Delete
+        // on macOS). Impl lives in the six methods below; keybindings are
+        // registered in `input.rs::init` (SDPATCH-007).
+        LeftWord,
+        RightWord,
+        SelectLeftWord,
+        SelectRightWord,
+        BackspaceWord,
+        DeleteWord,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -721,6 +731,52 @@ impl InputState {
         self.replace_text_in_range(None, "", window, cx)
     }
 
+    // ShellDeck patch: word-level cursor movement + delete.
+    pub fn left_word(&mut self, _: &LeftWord, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    pub fn right_word(&mut self, _: &RightWord, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    pub fn select_left_word(
+        &mut self,
+        _: &SelectLeftWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    pub fn select_right_word(
+        &mut self,
+        _: &SelectRightWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    pub fn backspace_word(
+        &mut self,
+        _: &BackspaceWord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    pub fn delete_word(&mut self, _: &DeleteWord, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
     pub fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
         window.focus_next();
         cx.emit(InputEvent::Tab);
@@ -951,6 +1007,26 @@ impl InputState {
         self.content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
+            .unwrap_or(self.content.len())
+    }
+
+    /// ShellDeck patch: jump to the start of the previous unicode word.
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .rev()
+            .find_map(|(idx, _)| (idx < offset).then_some(idx))
+            .unwrap_or(0)
+    }
+
+    /// ShellDeck patch: jump to the end of the next unicode word.
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .find_map(|(idx, w)| {
+                let end = idx + w.len();
+                (end > offset).then_some(end)
+            })
             .unwrap_or(self.content.len())
     }
 
