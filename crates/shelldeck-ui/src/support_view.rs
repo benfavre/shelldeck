@@ -133,6 +133,11 @@ pub struct SupportView {
     issue_assign_menu: bool,
     issue_dispatch_menu: bool,
     focus_handle: FocusHandle,
+    /// Scroll handle for the messages pane. `set_detail` calls
+    /// `scroll_to_bottom()` on it so opening a ticket lands the reader on
+    /// the latest message (the classic chat/messaging behavior), not on
+    /// the top of the history.
+    messages_scroll: ScrollHandle,
 }
 
 impl SupportView {
@@ -164,6 +169,7 @@ impl SupportView {
             issue_assign_menu: false,
             issue_dispatch_menu: false,
             focus_handle: cx.focus_handle(),
+            messages_scroll: ScrollHandle::new(),
         }
     }
 
@@ -261,6 +267,9 @@ impl SupportView {
         self.reset_composer(cx);
         self.loading = false;
         self.error = None;
+        // Land on the latest message — every chat / messaging UX defaults
+        // to bottom-of-thread on open, not top.
+        self.messages_scroll.scroll_to_bottom();
     }
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
@@ -760,11 +769,14 @@ impl SupportView {
         // as a distinct "conversation surface", separate from the white
         // header + action bar chrome. `bg_surface` is the same token adabraka
         // uses for card bodies — light-mode = warm cream, dark-mode = darker
-        // panel, so the contrast stays gentle in both themes.
+        // panel, so the contrast stays gentle in both themes. `track_scroll`
+        // wires the ScrollHandle that `set_detail` calls `scroll_to_bottom`
+        // on, so opening a ticket lands on the newest message.
         let mut messages = div()
             .id("support-messages")
             .flex_1()
             .overflow_y_scroll()
+            .track_scroll(&self.messages_scroll)
             .flex()
             .flex_col()
             .gap(px(8.0))
@@ -1123,6 +1135,11 @@ impl SupportView {
             "Votre réponse… (Entrée pour envoyer)"
         };
 
+        // 2-row composer: (1) mode toggle Réponse / Note interne (small
+        // chips), (2) the Input widget flex_1 with the send button pinned
+        // to its right so the reply flow reads as a single line. Previously
+        // the send button sat on its own row below the Input, adding an
+        // otherwise pointless third row of chrome.
         div()
             .flex()
             .flex_col()
@@ -1140,37 +1157,44 @@ impl SupportView {
                     .child(toggle("Note interne", is_note, true, cx)),
             )
             .child(
-                Input::new(&self.composer_state)
-                    .size(InputSize::Md)
-                    .placeholder(placeholder)
-                    .on_enter({
-                        let entity = cx.entity();
-                        move |_v, cx| {
-                            entity.update(cx, |this, cx| this.send_composer(cx));
-                        }
-                    }),
-            )
-            .child(
-                div().flex().justify_end().child(
-                    div()
-                        .id("support-send")
-                        .px(px(14.0))
-                        .py(px(7.0))
-                        .rounded(px(6.0))
-                        .bg(if is_note {
-                            ShellDeckColors::warning()
-                        } else {
-                            ShellDeckColors::primary()
-                        })
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(white())
-                        .cursor_pointer()
-                        .child(if is_note { "Ajouter la note" } else { "Envoyer" })
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.send_composer(cx);
-                        })),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div().flex_1().child(
+                            Input::new(&self.composer_state)
+                                .size(InputSize::Md)
+                                .placeholder(placeholder)
+                                .on_enter({
+                                    let entity = cx.entity();
+                                    move |_v, cx| {
+                                        entity.update(cx, |this, cx| this.send_composer(cx));
+                                    }
+                                }),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .id("support-send")
+                            .flex_shrink_0()
+                            .px(px(14.0))
+                            .py(px(7.0))
+                            .rounded(px(6.0))
+                            .bg(if is_note {
+                                ShellDeckColors::warning()
+                            } else {
+                                ShellDeckColors::primary()
+                            })
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child(if is_note { "Ajouter la note" } else { "Envoyer" })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.send_composer(cx);
+                            })),
+                    ),
             )
     }
 
