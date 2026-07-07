@@ -632,13 +632,15 @@ impl SupportView {
             })
             .unwrap_or_else(|| label.to_string());
 
-        // Bubble: max_w caps the pill width on wide screens, `min_w_0`
-        // and `flex_shrink` on the text container let it wrap all the
-        // way down to the parent's width on narrow screens (previously
-        // long paragraphs bled past the bubble's right edge).
+        // Bubble: `max_w(560)` caps the pill width; leaving the width
+        // otherwise unconstrained lets the flex parent (`justify_end` on
+        // the wrap when this is an agent-side message) push the bubble to
+        // the correct edge. `min_w_0` + `w_full` on the text child were
+        // added earlier to force horizontal wrap, but they made the bubble
+        // stretch past its cap and broke the right-alignment for agent
+        // messages — reverted to the pre-SDPATCH-011-hotfix layout.
         let bubble = div()
             .max_w(px(560.0))
-            .min_w_0()
             .rounded(px(8.0))
             .bg(bg)
             .border_1()
@@ -669,13 +671,31 @@ impl SupportView {
                             .child(rel_time(msg.at)),
                     ),
             )
-            .child(
-                div()
-                    .w_full()
+            .child({
+                // Split by hard newlines and give each line its own div
+                // with a `max_w`. gpui's text element uses
+                // `available_space.width` as `wrap_width` when the parent
+                // constrains it; `max_w` on a per-line wrapper feeds a
+                // Definite width down to `shape_text` so long lines wrap
+                // to the right height, while short lines' wrappers stay
+                // as narrow as their content. Result: bubble auto-sizes
+                // to the widest actual line, capped at max_w, with a
+                // correct measured height (no more bleed past the border).
+                let mut body = div()
+                    .flex()
+                    .flex_col()
                     .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(msg.text.clone()),
-            );
+                    .text_color(ShellDeckColors::text_primary());
+                for line in msg.text.split('\n') {
+                    let display: SharedString = if line.is_empty() {
+                        " ".into()
+                    } else {
+                        line.to_string().into()
+                    };
+                    body = body.child(div().max_w(px(540.0)).child(display));
+                }
+                body
+            });
 
         let mut wrap = div().w_full().flex();
         if align_end {
