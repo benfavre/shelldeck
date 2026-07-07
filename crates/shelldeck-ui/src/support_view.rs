@@ -834,12 +834,21 @@ impl SupportView {
         let mut messages = div()
             .id("support-messages")
             .flex_1()
+            // `min_h_0` on a flex_1 child is what actually lets the pane
+            // shrink below its content height and enable overflow_y_scroll;
+            // without it the tall content pushes the whole conversation
+            // column past the composer.
+            .min_h(px(0.0))
             .overflow_y_scroll()
             .track_scroll(&self.messages_scroll)
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .p(px(14.0))
+            .px(px(14.0))
+            .pt(px(14.0))
+            // Extra bottom padding so scroll_to_bottom leaves visible air
+            // between the last bubble and the action bar's top border.
+            .pb(px(20.0))
             .bg(ShellDeckColors::bg_surface());
         if ticket.messages.is_empty() {
             messages = messages.child(
@@ -859,6 +868,13 @@ impl SupportView {
             .flex()
             .flex_col()
             .min_w(px(0.0))
+            // Without min_h(0) on the flex_col, the flex_1 messages pane
+            // below can't correctly compute its "remaining height" — tall
+            // conversations then stack past the composer instead of
+            // scrolling internally, and the last bubble ends up crushed
+            // against the action bar. Same idiom as parent uses at line
+            // 1762.
+            .min_h(px(0.0))
             .child(header)
             .child(messages)
             .child(self.render_action_bar(&ticket, cx))
