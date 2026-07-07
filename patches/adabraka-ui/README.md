@@ -7,14 +7,14 @@
 [![Rust](https://img.shields.io/badge/rust-nightly-orange.svg)](https://www.rust-lang.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/Augani/adabraka-ui?style=social)](https://github.com/Augani/adabraka-ui)
 
-A comprehensive, professional UI component library for [GPUI](https://github.com/zed-industries/zed), the GPU-accelerated UI framework powering the Zed editor. Inspired by [shadcn/ui](https://ui.shadcn.com/), adabraka-ui provides 80+ polished, accessible components for building beautiful desktop applications in Rust.
+A comprehensive, professional UI component library for [GPUI](https://github.com/zed-industries/zed), the GPU-accelerated UI framework powering the Zed editor. Inspired by [shadcn/ui](https://ui.shadcn.com/), adabraka-ui provides 85+ polished, accessible components for building beautiful desktop applications in Rust.
 
 **[📖 Documentation](https://augani.github.io/adabraka-ui/)** · **[🚀 Getting Started](#installation)** · **[📦 Components](#components)** · **[💡 Examples](#examples)**
 
 ## ✨ Features
 
 - 🎨 **Complete Theme System** - Built-in light/dark themes with semantic color tokens
-- 🧩 **80+ Components** - Comprehensive library covering all UI needs from buttons to data tables
+- 🧩 **85+ Components** - Comprehensive library covering all UI needs from buttons to data tables
 - 📱 **Responsive Layout** - Flexible layout utilities (VStack, HStack, Grid)
 - 🎭 **Professional Animations** - Smooth transitions with cubic-bezier easing and spring physics
 - ✍️ **Typography System** - Built-in Text component with semantic variants
@@ -46,8 +46,8 @@ Add adabraka-ui to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-adabraka-ui = "0.2.4"
-gpui = "0.2.0"
+adabraka-ui = "0.3"
+gpui = { package = "adabraka-gpui", version = "0.3" }
 ```
 
 Build your project with nightly:
@@ -55,92 +55,26 @@ Build your project with nightly:
 cargo +nightly build
 ```
 
-## ✨ What's New in v0.2.4
+## What's New in v0.3.4
 
-**Latest Release (January 2026)** - 7 new components including media players, data visualization, and enhanced input controls!
+**Latest Release (February 2026)**
 
-### 🎵 AudioPlayer Component
-Real audio playback with rodio integration. Full-featured player with play/pause, seek, volume control, mute toggle, and playback speed adjustment.
+### v0.3.4 - docs.rs Fix
+- Fixed docs.rs build failure by gating `Arc` import behind `#[cfg(feature = "audio")]`
+- Added `[package.metadata.docs.rs]` with `all-features = true` for reliable documentation builds
 
-```rust
-let audio_state = cx.new(|cx| {
-    let mut state = AudioPlayerState::new(cx);
-    state.load_file("path/to/audio.mp3", cx);
-    state
-});
+### v0.3.3 - Editor UTF-8 Bug Fix
+- Fixed rope byte/char offset mismatch that caused cursor drift and incorrect text placement in files with multi-byte UTF-8 characters
 
-AudioPlayer::new(audio_state)
-    .full()  // or .compact()
-    .title("Track Name")
-    .on_play(|_, _| println!("Playing"))
-    .on_seek(|time, _, _| println!("Seek to: {:.1}s", time))
-```
+### v0.3.2 - Clean Build
+- Suppressed all compiler warnings across charts and components for a zero-warning build
 
-### 🎬 VideoPlayer Component
-Video player UI controls with flexible integration for custom video backends. Supports frame-by-frame rendering and overlay mode.
+### v0.3.1 - Editor Improvements
+- Fixed editor cursor positioning with horizontal scroll offset
+- Fixed UTF-8 backspace/delete handling in the editor
 
-```rust
-let video_state = cx.new(|cx| VideoPlayerState::new(cx));
-
-VideoPlayer::new(video_state)
-    .on_play(|_, _| decoder.play())
-    .on_pause(|_, _| decoder.pause())
-    .on_seek(|time, _, _| decoder.seek(time))
-```
-
-### ⭐ Rating Component
-Interactive star rating with half-star support, customizable max stars, and read-only mode.
-
-```rust
-Rating::new(rating_state)
-    .max_stars(5)
-    .allow_half(true)
-    .on_change(|value, _, _| println!("Rating: {}", value))
-```
-
-### 📊 Sparkline Component
-Lightweight inline charts in three variants: Line, Bar, and Area.
-
-```rust
-Sparkline::new(data_points)
-    .variant(SparklineVariant::Area)
-    .color(theme.tokens.primary)
-    .height(px(40.0))
-```
-
-### 💬 MentionInput Component
-Text input with @mention support and user dropdown suggestions.
-
-```rust
-MentionInput::new(input_state)
-    .users(user_list)
-    .on_mention(|user, _, _| println!("Mentioned: {}", user.name))
-```
-
-### 🧱 MasonryGrid Component
-Pinterest-style masonry layout for dynamic content grids.
-
-```rust
-MasonryGrid::new()
-    .columns(3)
-    .gap(px(16.0))
-    .children(cards)
-```
-
-### ⏱️ Countdown Component
-Countdown timer with customizable format and completion callback.
-
-```rust
-Countdown::new(countdown_state)
-    .format(CountdownFormat::HoursMinutesSeconds)
-    .on_complete(|_, _| println!("Timer finished!"))
-```
-
-### 🔊 Optional Audio Feature
-Enable real audio playback with the `audio` feature flag:
-```toml
-adabraka-ui = { version = "0.2.4", features = ["audio"] }
-```
+### v0.3.0 - Major Release
+Published full adabraka-gpui ecosystem to crates.io, GPUI fork enhancements (inset shadows, letter spacing, squircle corners, text shadows, animation cancellation), 5 new components (Form, InfiniteScroll, SortableList, DataGrid, Animation Builder), comprehensive animation/polish system with 30+ easings, spring physics, gestures, and exit animations.
 
 ---
 

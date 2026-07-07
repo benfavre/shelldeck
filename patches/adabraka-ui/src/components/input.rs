@@ -3,10 +3,9 @@
 use crate::animations::{easings, shake_offset};
 use crate::components::icon::Icon;
 pub use crate::components::input_state::{
-    Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, End, Enter, Escape, Home, InputEvent,
-    InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord, SelectAll,
-    SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, ShiftTab, Tab, ValidationError,
-    ValidationRules,
+    Backspace, Copy, Cut, Delete, End, Enter, Escape, Home, InputEvent, InputMask, InputState,
+    InputType, Left, Paste, Right, SelectAll, SelectLeft, SelectRight, ShiftTab, Tab,
+    ValidationError, ValidationRules,
 };
 use crate::layout::{HStack, VStack};
 use crate::theme::use_theme;
@@ -45,33 +44,6 @@ pub fn init(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-v", Paste, Some("Input")),
         KeyBinding::new("escape", Escape, Some("Input")),
-        // ShellDeck patch: word-level navigation and delete.
-        //   - macOS: Alt (Option) + ←/→/Backspace/Delete.
-        //   - Linux/Windows: Ctrl + ←/→/Backspace/Delete.
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-left", LeftWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-left", LeftWord, Some("Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-right", RightWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-right", RightWord, Some("Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-shift-left", SelectLeftWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-left", SelectLeftWord, Some("Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-shift-right", SelectRightWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-right", SelectRightWord, Some("Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-backspace", BackspaceWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-backspace", BackspaceWord, Some("Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("alt-delete", DeleteWord, Some("Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-delete", DeleteWord, Some("Input")),
     ]);
 }
 
@@ -725,13 +697,6 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::tab))
                             .on_action(window.listener_for(&self.state, InputState::shift_tab))
                             .on_action(window.listener_for(&self.state, InputState::escape))
-                            // ShellDeck patch: word-level actions.
-                            .on_action(window.listener_for(&self.state, InputState::left_word))
-                            .on_action(window.listener_for(&self.state, InputState::right_word))
-                            .on_action(window.listener_for(&self.state, InputState::select_left_word))
-                            .on_action(window.listener_for(&self.state, InputState::select_right_word))
-                            .on_action(window.listener_for(&self.state, InputState::backspace_word))
-                            .on_action(window.listener_for(&self.state, InputState::delete_word))
                     })
                     .child(
                         HStack::new()
@@ -747,7 +712,8 @@ impl RenderOnce for Input {
                             .text_size(font_size)
                             .font_family(theme.tokens.font_mono.clone())
                             .text_color(text_color)
-                            .shadow(vec![shadow_xs])
+                            .shadow(smallvec::smallvec![shadow_xs])
+                            .when(!self.disabled, |h| h.cursor(gpui::CursorStyle::IBeam))
                             .when(!self.disabled, |h| {
                                 h.hover(move |style| {
                                     style.border_color(if self.error {
@@ -760,45 +726,29 @@ impl RenderOnce for Input {
                             .when(is_focused && !self.disabled, |h| {
                                 if self.error {
                                     h.border_color(destructive_color)
-                                        .shadow(vec![error_ring_focused])
+                                        .shadow(smallvec::smallvec![error_ring_focused])
                                 } else {
-                                    h.border_color(ring_color).shadow(vec![focus_ring])
+                                    h.border_color(ring_color)
+                                        .shadow(smallvec::smallvec![focus_ring])
                                 }
                             })
                             .when(self.error && !is_focused, |h| {
-                                h.shadow(vec![error_ring_unfocused])
+                                h.shadow(smallvec::smallvec![error_ring_unfocused])
                             })
                             .children(self.prefix)
                             .child(div().flex_1().overflow_hidden().child(self.state.clone()))
                             .when(show_clear, |h| {
-                                let state_entity_id = self.state.entity_id();
                                 h.child(
                                     div()
-                                        // ShellDeck patch: `.occlude()` blocks
-                                        // mouse events from falling through to
-                                        // the input's text area (which would
-                                        // otherwise reposition the cursor at
-                                        // the click point instead of clearing).
-                                        // An id makes the div stateful so
-                                        // `on_click` works reliably.
-                                        .id(("input-clear", state_entity_id))
-                                        .occlude()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .w(px(20.0))
-                                        .h(px(20.0))
+                                        .px(px(4.0))
+                                        .py(px(4.0))
                                         .rounded(px(4.0))
                                         .cursor_pointer()
                                         .hover(|style| style.bg(theme.tokens.muted))
-                                        .on_click({
-                                            let state_for_clear = state_for_clear.clone();
-                                            move |_e, window, cx| {
-                                                state_for_clear.update(cx, |state, cx| {
-                                                    state.set_value("", window, cx);
-                                                });
-                                            }
+                                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                            state_for_clear.update(cx, |state, cx| {
+                                                state.set_value("", window, cx);
+                                            })
                                         })
                                         .child("×")
                                         .text_color(theme.tokens.muted_foreground),

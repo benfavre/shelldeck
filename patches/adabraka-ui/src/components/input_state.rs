@@ -14,17 +14,12 @@ use gpui::{prelude::*, *};
 use once_cell::sync::Lazy;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
 use unicode_segmentation::*;
 
 static EMAIL_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
         .expect("Invalid email regex pattern")
 });
-
-/// Monotonic baseline for the caret-blink cycle. Every focused `Input` on
-/// screen samples `.elapsed()` and blinks in phase.
-static INPUT_BLINK_EPOCH: Lazy<Instant> = Lazy::new(Instant::now);
 
 actions!(
     input_state,
@@ -45,14 +40,6 @@ actions!(
         Tab,
         ShiftTab,
         Escape,
-        // ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and
-        // Ctrl+Backspace on Linux/Windows, Alt+←/→/Backspace on macOS).
-        LeftWord,
-        RightWord,
-        SelectLeftWord,
-        SelectRightWord,
-        BackspaceWord,
-        DeleteWord,
     ]
 );
 
@@ -314,15 +301,7 @@ impl InputState {
         &self.content
     }
 
-    /// Set the text content with validation.
-    ///
-    /// ShellDeck patch: the upstream implementation was a no-op when the
-    /// current selection was empty (which it usually is), because
-    /// `replace_text_in_range(None, ..)` uses `selected_range` as the range
-    /// to replace and an empty range replaced with an empty string leaves
-    /// the content untouched. We select the whole existing content first
-    /// so the replacement actually overwrites it — this is what makes the
-    /// built-in "×" clear button work.
+    /// Set the text content with validation
     pub fn set_value(
         &mut self,
         value: impl Into<SharedString>,
@@ -331,7 +310,6 @@ impl InputState {
     ) {
         let value = value.into();
         let filtered_value = self.filter_input(&value);
-        self.selected_range = 0..self.content.len();
         self.replace_text_in_range(None, &filtered_value, window, cx);
         let len = filtered_value.len();
         self.selected_range = len..len;
@@ -729,52 +707,6 @@ impl InputState {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    // ShellDeck patch: word-level cursor movement + delete.
-    pub fn left_word(&mut self, _: &LeftWord, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
-    }
-
-    pub fn right_word(&mut self, _: &RightWord, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
-    }
-
-    pub fn select_left_word(
-        &mut self,
-        _: &SelectLeftWord,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
-    }
-
-    pub fn select_right_word(
-        &mut self,
-        _: &SelectRightWord,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
-    }
-
-    pub fn backspace_word(
-        &mut self,
-        _: &BackspaceWord,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
-    }
-
-    pub fn delete_word(&mut self, _: &DeleteWord, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
-    }
-
     pub fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
         window.focus_next();
         cx.emit(InputEvent::Tab);
@@ -1008,26 +940,6 @@ impl InputState {
             .unwrap_or(self.content.len())
     }
 
-    /// ShellDeck patch: jump to the start of the previous unicode word.
-    fn previous_word_boundary(&self, offset: usize) -> usize {
-        self.content
-            .unicode_word_indices()
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
-    }
-
-    /// ShellDeck patch: jump to the end of the next unicode word.
-    fn next_word_boundary(&self, offset: usize) -> usize {
-        self.content
-            .unicode_word_indices()
-            .find_map(|(idx, w)| {
-                let end = idx + w.len();
-                (end > offset).then_some(end)
-            })
-            .unwrap_or(self.content.len())
-    }
-
     pub fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -1211,10 +1123,6 @@ struct PrepaintState {
     line: Option<gpui::ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
-    /// ShellDeck patch: horizontal scroll offset applied to the shaped line
-    /// and cursor at paint time so the caret stays visible when the content
-    /// is wider than the input.
-    scroll_offset: Pixels,
 }
 
 impl IntoElement for InputTextElement {
@@ -1341,33 +1249,16 @@ impl gpui::Element for InputTextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
-        // ShellDeck patch: cursor / selection colors from the active theme
-        // (`ring` token) so inputs match the rest of the app.
-        let theme_ring = crate::theme::use_theme().tokens.ring;
-        let mut selection_color = theme_ring;
-        selection_color.a = 0.25;
-
-        // ShellDeck patch: horizontal scroll — when the caret would be past
-        // the visible width, shift the line left so the caret stays about
-        // `right_margin` px from the right edge.
         let cursor_pos = line.x_for_index(cursor);
-        let visible_width = bounds.right() - bounds.left();
-        let right_margin = px(4.0);
-        let scroll_offset = if cursor_pos > visible_width - right_margin {
-            visible_width - right_margin - cursor_pos
-        } else {
-            px(0.0)
-        };
-
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos + scroll_offset, bounds.top()),
+                        point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    theme_ring,
+                    rgb(0x0066ff),
                 )),
             )
         } else {
@@ -1375,19 +1266,15 @@ impl gpui::Element for InputTextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left()
-                                + line.x_for_index(selected_range.start)
-                                + scroll_offset,
+                            bounds.left() + line.x_for_index(selected_range.start),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left()
-                                + line.x_for_index(selected_range.end)
-                                + scroll_offset,
+                            bounds.left() + line.x_for_index(selected_range.end),
                             bounds.bottom(),
                         ),
                     ),
-                    selection_color,
+                    rgba(0x3311ff30),
                 )),
                 None,
             )
@@ -1396,7 +1283,6 @@ impl gpui::Element for InputTextElement {
             line: Some(line),
             cursor,
             selection,
-            scroll_offset,
         }
     }
 
@@ -1424,29 +1310,16 @@ impl gpui::Element for InputTextElement {
         let Some(line) = prepaint.line.take() else {
             return;
         };
-        // ShellDeck patch: shift the whole line by the horizontal scroll
-        // offset computed in prepaint so long content keeps the caret in
-        // view.
-        let line_origin = point(bounds.origin.x + prepaint.scroll_offset, bounds.origin.y);
         if line
-            .paint(line_origin, window.line_height(), window, cx)
+            .paint(bounds.origin, window.line_height(), window, cx)
             .is_err()
         {
             return;
         }
 
-        // ShellDeck patch: blink the caret while focused.
-        // 1000 ms cycle = 500 ms on / 500 ms off, computed from a monotonic
-        // process-start baseline so every input on screen blinks in phase.
-        // We request an animation frame each paint so the widget keeps
-        // repainting while focused.
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
-                let elapsed = INPUT_BLINK_EPOCH.elapsed().as_millis() as u64;
-                if elapsed % 1000 < 500 {
-                    window.paint_quad(cursor);
-                }
-                window.request_animation_frame();
+                window.paint_quad(cursor);
             }
         }
 
