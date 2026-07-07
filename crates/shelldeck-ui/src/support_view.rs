@@ -5,6 +5,7 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
+use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use gpui::prelude::*;
@@ -638,55 +639,122 @@ impl SupportView {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| on_click(this, cx)))
     }
 
+    /// Empty conversation pane — shown when no ticket is selected. Friendly
+    /// onboarding block instead of a bare "Sélectionnez un ticket" so a
+    /// first-time agent knows what the pane is for and how to get started.
+    fn render_empty_conversation(&self) -> Div {
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(10.0))
+            .p(px(24.0))
+            .child(
+                div()
+                    .size(px(48.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::primary().opacity(0.12))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(22.0))
+                            .text_color(ShellDeckColors::primary())
+                            .child("💬"),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child("Aucun ticket ouvert"),
+            )
+            .child(
+                div()
+                    .max_w(px(320.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(
+                        "Choisis un ticket dans la liste à gauche pour lire l'échange, \
+                         y répondre, changer le statut ou l'attribuer à un collègue.",
+                    ),
+            )
+    }
+
     fn render_conversation(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(ticket) = self.detail.clone() else {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(13.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child("Sélectionnez un ticket");
+            return self.render_empty_conversation();
         };
         let tid = ticket.id.clone();
 
-        // Header: subject + contact + status/priority.
-        let header = div()
+        // Header — context card. Big subject, then a single meta row with the
+        // contact avatar + name, the status + priority as color-coded Badges,
+        // the assignee in plain French, and the "last activity" time. Aim is
+        // that a non-tech agent can read the whole context in ~2 seconds.
+        let contact_name = ticket.contact.display();
+        let assignee = assignee_display(&ticket.assignee, Some(self.my_email()));
+        let last_at = ticket.last_at;
+        let subject = if ticket.subject.trim().is_empty() {
+            "(sans objet)".to_string()
+        } else {
+            ticket.subject.clone()
+        };
+
+        let meta_row = div()
             .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
+            .items_center()
+            .flex_wrap()
+            .gap(px(8.0))
+            .child(
+                Avatar::new()
+                    .name(contact_name.clone())
+                    .size(AvatarSize::Xs),
+            )
             .child(
                 div()
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(if ticket.subject.trim().is_empty() {
-                        "(sans objet)".to_string()
-                    } else {
-                        ticket.subject.clone()
-                    }),
+                    .child(contact_name),
             )
+            .child(status_badge(&ticket.status))
+            .child(priority_badge(&ticket.priority))
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!(
-                        "{} · {} · priorité {} · {}",
-                        ticket.contact.display(),
-                        status_label(&ticket.status),
-                        priority_label(&ticket.priority),
-                        if ticket.is_unassigned() {
-                            "non attribué".to_string()
-                        } else {
-                            ticket.assignee.clone()
-                        }
-                    )),
+                    .child(format!("Assigné à {assignee}")),
             );
+        let mut meta_row = meta_row;
+        if last_at > 0.0 {
+            meta_row = meta_row.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!("· dernier échange {}", rel_time(last_at))),
+            );
+        }
+
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .px(px(16.0))
+            .py(px(12.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(subject),
+            )
+            .child(meta_row);
 
         // Messages (scrollable).
         let mut messages = div()
@@ -724,27 +792,32 @@ impl SupportView {
     fn render_action_bar(&self, ticket: &SupportTicket, cx: &mut Context<Self>) -> impl IntoElement {
         let id = ticket.id.clone();
         let is_pending = ticket.status == "pending";
+        let is_mine = !self.my_email().is_empty()
+            && ticket.assignee.eq_ignore_ascii_case(self.my_email());
         let (status_next, status_label_next) = if is_pending {
             ("open".to_string(), "Rouvrir".to_string())
         } else {
-            ("pending".to_string(), "Mettre en attente".to_string())
+            ("pending".to_string(), "Mettre en attente client".to_string())
         };
 
-        let mut bar = div()
+        // Two visual clusters separated by a flex spacer: left = "what state
+        // is this ticket in" (status / priority / assignee), right = "what
+        // do I do with it now" (Jean / Convert / Résoudre). The right group
+        // ends with a big green "Résoudre" so the primary happy-path action
+        // is unmistakable — the rest reads as secondary tools around it.
+        let mut left_group = div()
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(6.0))
-            .px(px(14.0))
-            .py(px(8.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border());
+            .gap(px(6.0));
 
-        // Status toggle.
+        // Status toggle — the most common state change (Rouvrir / Mettre en
+        // attente client), kept as a plain button because the actual current
+        // status is already visible as a badge in the header.
         {
             let sid = id.clone();
             let snext = status_next.clone();
-            bar = bar.child(self.action_button(
+            left_group = left_group.child(self.action_button(
                 "sup-status",
                 status_label_next,
                 cx,
@@ -756,10 +829,11 @@ impl SupportView {
                 },
             ));
         }
-        // Assign to me.
-        {
+        // "M'attribuer" — only when the ticket isn't already mine, so the
+        // bar doesn't grow a redundant button once you've claimed it.
+        if !is_mine {
             let aid = id.clone();
-            bar = bar.child(self.action_button(
+            left_group = left_group.child(self.action_button(
                 "sup-assign-me",
                 "M'attribuer".to_string(),
                 cx,
@@ -771,11 +845,13 @@ impl SupportView {
                 },
             ));
         }
-        // Priority menu toggle.
+        // Priority menu toggle — label reads "Changer la priorité" (not
+        // "Priorité: X") because the current priority is already visible
+        // as a colored Badge in the header.
         {
-            bar = bar.child(self.action_button(
+            left_group = left_group.child(self.action_button(
                 "sup-priority",
-                format!("Priorité : {}", priority_label(&ticket.priority)),
+                "Changer la priorité…".to_string(),
                 cx,
                 move |this, cx| {
                     this.priority_menu_open = !this.priority_menu_open;
@@ -784,11 +860,11 @@ impl SupportView {
                 },
             ));
         }
-        // Assign menu toggle.
+        // Assign menu toggle — same "action verb" style.
         {
-            bar = bar.child(self.action_button(
+            left_group = left_group.child(self.action_button(
                 "sup-assign",
-                "Attribuer…".to_string(),
+                "Attribuer à…".to_string(),
                 cx,
                 move |this, cx| {
                     this.assign_menu_open = !this.assign_menu_open;
@@ -797,33 +873,16 @@ impl SupportView {
                 },
             ));
         }
-        // Resolve.
-        {
-            let rid = id.clone();
-            bar = bar.child(
-                div()
-                    .id("sup-resolve")
-                    .px(px(9.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::success())
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(white())
-                    .cursor_pointer()
-                    .child("Résoudre")
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SupportViewEvent::Resolve {
-                            id: rid.clone(),
-                            resolution: "solved".to_string(),
-                        });
-                    })),
-            );
-        }
+
+        let mut right_group = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.0));
 
         // "Envoyer à Jean" — file this ticket through JeanClaude's Slack intake.
         if self.jean_available {
-            bar = bar.child(self.action_button(
+            right_group = right_group.child(self.action_button(
                 "sup-to-jean",
                 "Envoyer à Jean".to_string(),
                 cx,
@@ -836,7 +895,7 @@ impl SupportView {
         }
 
         // "Convertir en demande" — turn this ticket into a tracked request.
-        bar = bar.child(self.action_button(
+        right_group = right_group.child(self.action_button(
             "sup-to-issue",
             "Convertir en demande".to_string(),
             cx,
@@ -859,28 +918,88 @@ impl SupportView {
             },
         ));
 
-        // Priority picker popover (inline row).
+        // Primary "Résoudre" — bigger, greener, more padding than the rest so
+        // the happy-path close-out reads as the clear default.
+        {
+            let rid = id.clone();
+            right_group = right_group.child(
+                div()
+                    .id("sup-resolve")
+                    .px(px(14.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::success())
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(white())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::success().opacity(0.85)))
+                    .child("Résoudre le ticket")
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        cx.emit(SupportViewEvent::Resolve {
+                            id: rid.clone(),
+                            resolution: "solved".to_string(),
+                        });
+                    })),
+            );
+        }
+
+        let mut bar = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(8.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(left_group)
+                    .child(div().flex_1())
+                    .child(right_group),
+            );
+
+        // Priority picker — colored Badge chips (same visual as the request
+        // sheet) instead of plain text buttons. The active priority gets a
+        // 2px primary ring; the rest sit at 0.55 opacity so they still
+        // read as clickable options.
         if self.priority_menu_open {
-            let mut prio_row = div().w_full().flex().flex_wrap().gap(px(4.0)).mt(px(4.0));
+            let mut prio_row = div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.0))
+                .mt(px(2.0));
             for p in ["low", "normal", "high", "urgent"] {
                 let pid = id.clone();
-                prio_row = prio_row.child(self.action_button(
-                    match p {
-                        "low" => "sup-p-low",
-                        "normal" => "sup-p-normal",
-                        "high" => "sup-p-high",
-                        _ => "sup-p-urgent",
-                    },
-                    priority_label(p).to_string(),
-                    cx,
-                    move |this, cx| {
+                let active = ticket.priority == p;
+                let mut chip = div()
+                    .id(ElementId::from(SharedString::from(format!("sup-pchip-{p}"))))
+                    .p(px(2.0))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .border_2()
+                    .child(priority_badge(p))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.priority_menu_open = false;
                         cx.emit(SupportViewEvent::SetPriority {
                             id: pid.clone(),
                             priority: p.to_string(),
                         });
-                    },
-                ));
+                    }));
+                if active {
+                    chip = chip.border_color(ShellDeckColors::primary());
+                } else {
+                    chip = chip
+                        .border_color(gpui::transparent_black())
+                        .opacity(0.55);
+                }
+                prio_row = prio_row.child(chip);
             }
             bar = bar.child(prio_row);
         }
@@ -915,33 +1034,65 @@ impl SupportView {
             for agent in &self.agents {
                 let aid = id.clone();
                 let email = agent.email.clone();
-                let label = if agent.name.trim().is_empty() {
+                let display_name = if agent.name.trim().is_empty() {
                     agent.email.clone()
                 } else {
-                    format!("{} <{}>", agent.name, agent.email)
+                    agent.name.clone()
                 };
-                list = list.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "sup-ag-{}",
-                            agent.email
-                        ))))
-                        .px(px(9.0))
-                        .py(px(5.0))
-                        .rounded(px(6.0))
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_primary())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.assign_menu_open = false;
-                            cx.emit(SupportViewEvent::Assign {
-                                id: aid.clone(),
-                                assignee: email.clone(),
-                            });
-                        })),
-                );
+                let email_below = if agent.name.trim().is_empty() {
+                    String::new()
+                } else {
+                    agent.email.clone()
+                };
+                // Row = tiny avatar (auto-initials) + display name over the
+                // muted email. Much easier to scan than a raw
+                // `"Name <email>"` string when the assignee list gets long.
+                let mut row = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "sup-ag-{}",
+                        agent.email
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(9.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                    .child(
+                        Avatar::new()
+                            .name(display_name.clone())
+                            .size(AvatarSize::Xs),
+                    );
+                let mut name_col = div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(display_name),
+                    );
+                if !email_below.is_empty() {
+                    name_col = name_col.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(email_below),
+                    );
+                }
+                row = row
+                    .child(name_col)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.assign_menu_open = false;
+                        cx.emit(SupportViewEvent::Assign {
+                            id: aid.clone(),
+                            assignee: email.clone(),
+                        });
+                    }));
+                list = list.child(row);
             }
             bar = bar.child(list);
         }
@@ -1118,7 +1269,7 @@ impl SupportView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(issue_status_pill(&iss.status))
+                            .child(issue_status_badge(&iss.status))
                             .child(
                                 div()
                                     .flex_1()
@@ -1434,25 +1585,6 @@ impl SupportView {
     }
 }
 
-fn issue_status_pill(status: &str) -> impl IntoElement {
-    let color = match status {
-        "open" => ShellDeckColors::primary(),
-        "triaging" | "in_progress" => ShellDeckColors::warning(),
-        "blocked" => ShellDeckColors::error(),
-        "done" | "closed" => ShellDeckColors::success(),
-        _ => ShellDeckColors::text_muted(),
-    };
-    div()
-        .flex_shrink_0()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(6.0))
-        .bg(color.opacity(0.15))
-        .text_size(px(10.0))
-        .text_color(color)
-        .child(issue_status_label(status).to_string())
-}
-
 impl Render for SupportView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filtered: Vec<SupportTicket> = self
@@ -1587,13 +1719,27 @@ impl Render for SupportView {
     }
 }
 
-fn status_label(s: &str) -> &str {
+/// Human-facing label for a support ticket's status.
+pub(crate) fn status_label(s: &str) -> &str {
     match s {
-        "open" => "ouvert",
-        "pending" => "en attente",
+        "open" => "à traiter",
+        "pending" => "en attente client",
         "closed" => "résolu",
         other => other,
     }
+}
+
+/// Support ticket status rendered as a color-coded adabraka `Badge`.
+/// `open` = Default (primary, "à faire"), `pending` = Warning (waiting on
+/// the customer), `closed` = Outline (calm, done).
+pub(crate) fn status_badge(s: &str) -> Badge {
+    let variant = match s {
+        "open" => BadgeVariant::Default,
+        "pending" => BadgeVariant::Warning,
+        "closed" => BadgeVariant::Outline,
+        _ => BadgeVariant::Secondary,
+    };
+    Badge::new(status_label(s).to_string()).variant(variant)
 }
 
 pub(crate) fn priority_label(p: &str) -> &str {
@@ -1620,16 +1766,49 @@ pub(crate) fn priority_badge(p: &str) -> Badge {
     Badge::new(priority_label(p).to_string()).variant(variant)
 }
 
-fn issue_status_label(s: &str) -> &str {
+pub(crate) fn issue_status_label(s: &str) -> &str {
     match s {
-        "open" => "ouverte",
-        "triaging" => "tri",
+        "open" => "à traiter",
+        "triaging" => "en analyse",
         "in_progress" => "en cours",
         "blocked" => "bloquée",
         "done" => "terminée",
-        "closed" => "fermée",
+        "closed" => "clôturée",
         other => other,
     }
+}
+
+/// Issue status rendered as a color-coded adabraka `Badge`, mirroring the
+/// severity/state mapping used across the app: `open` / `in_progress` are
+/// primary (active work), `triaging` is neutral grey, `blocked` is
+/// destructive (something's stuck), `done` / `closed` are outline (calm).
+pub(crate) fn issue_status_badge(s: &str) -> Badge {
+    let variant = match s {
+        "open" | "in_progress" => BadgeVariant::Default,
+        "triaging" => BadgeVariant::Secondary,
+        "blocked" => BadgeVariant::Destructive,
+        "done" | "closed" => BadgeVariant::Outline,
+        _ => BadgeVariant::Secondary,
+    };
+    Badge::new(issue_status_label(s).to_string()).variant(variant)
+}
+
+/// Human-friendly assignee label: `me` / empty → "Non attribué"; email
+/// stays as email; a full-name assignee stays as-is.
+pub(crate) fn assignee_display(assignee: &str, self_email: Option<&str>) -> String {
+    let a = assignee.trim();
+    if a.is_empty() {
+        return "Non attribué".to_string();
+    }
+    if a.eq_ignore_ascii_case("me") {
+        return "Moi".to_string();
+    }
+    if let Some(me) = self_email {
+        if a.eq_ignore_ascii_case(me) {
+            return "Moi".to_string();
+        }
+    }
+    a.to_string()
 }
 
 /// The next priority in a low→normal→high→urgent→low cycle.

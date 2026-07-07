@@ -38,7 +38,7 @@ use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::jean_view::{JeanView, JeanViewEvent};
-use crate::support_view::{priority_badge, SupportView, SupportViewEvent};
+use crate::support_view::{issue_status_badge, priority_badge, SupportView, SupportViewEvent};
 use crate::template_browser::TemplateBrowser;
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -101,28 +101,6 @@ enum RuntimeStep {
     HeartbeatOnly(String, String, String, String),
     /// Heartbeat + claim (+ auto-execute).
     Tick(RuntimeTickCtx),
-}
-
-/// A small colored status pill for a hosted issue (User-mode rows).
-fn user_issue_status_pill(status: &str) -> gpui::Div {
-    let (color, label) = match status {
-        "open" => (ShellDeckColors::primary(), "ouverte"),
-        "triaging" => (ShellDeckColors::warning(), "tri"),
-        "in_progress" => (ShellDeckColors::warning(), "en cours"),
-        "blocked" => (ShellDeckColors::error(), "bloquée"),
-        "done" => (ShellDeckColors::success(), "terminée"),
-        "closed" => (ShellDeckColors::success(), "fermée"),
-        other => (ShellDeckColors::text_muted(), other),
-    };
-    div()
-        .flex_shrink_0()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(6.0))
-        .bg(color.opacity(0.15))
-        .text_size(px(10.0))
-        .text_color(color)
-        .child(label.to_string())
 }
 
 /// The active content view
@@ -5740,7 +5718,7 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.select_issue(id.clone(), cx)
                 }))
-                .child(user_issue_status_pill(&iss.status))
+                .child(issue_status_badge(&iss.status))
                 .child(
                     div()
                         .flex_1()
@@ -6121,7 +6099,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(user_issue_status_pill(&iss.status))
+                    .child(issue_status_badge(&iss.status))
                     .child(
                         div()
                             .flex_1()
