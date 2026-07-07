@@ -738,17 +738,34 @@ impl RenderOnce for Input {
                             .children(self.prefix)
                             .child(div().flex_1().overflow_hidden().child(self.state.clone()))
                             .when(show_clear, |h| {
+                                let state_entity_id = self.state.entity_id();
                                 h.child(
                                     div()
-                                        .px(px(4.0))
-                                        .py(px(4.0))
+                                        // ShellDeck patch: `.occlude()` blocks
+                                        // mouse events from falling through to
+                                        // the input's text area (which would
+                                        // otherwise reposition the cursor at
+                                        // the click point instead of clearing).
+                                        // An id makes the div stateful so
+                                        // `on_click` works reliably.
+                                        .id(("input-clear", state_entity_id))
+                                        .occlude()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(20.0))
+                                        .h(px(20.0))
                                         .rounded(px(4.0))
                                         .cursor_pointer()
                                         .hover(|style| style.bg(theme.tokens.muted))
-                                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                            state_for_clear.update(cx, |state, cx| {
-                                                state.set_value("", window, cx);
-                                            })
+                                        .on_click({
+                                            let state_for_clear = state_for_clear.clone();
+                                            move |_e, window, cx| {
+                                                state_for_clear.update(cx, |state, cx| {
+                                                    state.set_value("", window, cx);
+                                                });
+                                            }
                                         })
                                         .child("×")
                                         .text_color(theme.tokens.muted_foreground),
