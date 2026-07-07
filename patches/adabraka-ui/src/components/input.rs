@@ -585,63 +585,26 @@ impl RenderOnce for Input {
             }
         });
 
-        let on_change_callback = self.on_change.clone();
-        let on_enter_callback = self.on_enter.clone();
-        let on_focus_callback = self.on_focus.clone();
-        let on_blur_callback = self.on_blur.clone();
-        let on_validate_callback = self.on_validate.clone();
-
-        if on_change_callback.is_some()
-            || on_enter_callback.is_some()
-            || on_focus_callback.is_some()
-            || on_blur_callback.is_some()
-            || on_validate_callback.is_some()
+        // ShellDeck patch: SDPATCH-011 — replace the leaking `cx.subscribe`
+        // (which added a fresh listener on every render pass and caused N
+        // duplicate `on_enter` fires after N frames — visible bug: sending
+        // one Support reply produced ~400 duplicated sends) with direct
+        // callback slots on `InputState`. Each render `state.update`s the
+        // slot in place (replace, not append); the InputState action
+        // handlers invoke the slot directly, exactly once per event.
         {
-            let state_entity = self.state.clone();
-            let state_for_callback = state_entity.clone();
-            cx.subscribe(
-                &state_entity,
-                move |_emitter: Entity<InputState>, event: &InputEvent, cx: &mut App| {
-                    match event {
-                        InputEvent::Change => {
-                            if let Some(callback) = on_change_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Enter => {
-                            if let Some(callback) = on_enter_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Focus => {
-                            if let Some(callback) = on_focus_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Blur => {
-                            if let Some(callback) = on_blur_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Validate(result) => {
-                            if let Some(callback) = on_validate_callback.as_ref() {
-                                callback(result.clone(), cx);
-                            }
-                        }
-                        InputEvent::Tab => {
-                            // Focus navigation handled in InputState action handlers
-                        }
-                        InputEvent::ShiftTab => {
-                            // Focus navigation handled in InputState action handlers
-                        }
-                    }
-                },
-            )
-            .detach();
+            let on_change_callback = self.on_change.clone();
+            let on_enter_callback = self.on_enter.clone();
+            let on_focus_callback = self.on_focus.clone();
+            let on_blur_callback = self.on_blur.clone();
+            let on_validate_callback = self.on_validate.clone();
+            self.state.update(cx, |state, _cx| {
+                state.on_change_cb = on_change_callback;
+                state.on_enter_cb = on_enter_callback;
+                state.on_focus_cb = on_focus_callback;
+                state.on_blur_cb = on_blur_callback;
+                state.on_validate_cb = on_validate_callback;
+            });
         }
 
         let (bg_color, border_color, text_color) = if self.disabled {

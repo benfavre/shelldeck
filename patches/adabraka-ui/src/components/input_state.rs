@@ -190,6 +190,20 @@ pub struct InputState {
     pub shake_triggered: bool,
     pub(crate) shake_count: u32,
     cursor_position_override: Option<usize>,
+    // ShellDeck patch: SDPATCH-011 — direct callback slots for the Input
+    // wrapper. Upstream `Input::render` calls `cx.subscribe(...).detach()`
+    // on every render pass, which piles up N listeners after N frames and
+    // fires the `on_enter` handler N times on a single Enter press
+    // (verified: sending one message resulted in ~400 duplicate sends).
+    // We swap the pub/sub for a plain `Rc<Fn>` slot on the state — each
+    // render `state.update`s the slot in place (replace, not append) and
+    // the action handlers below invoke the slot directly.
+    pub(crate) on_change_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_enter_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_focus_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_blur_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_validate_cb:
+        Option<std::rc::Rc<dyn Fn(Result<(), ValidationError>, &mut App)>>,
     // ShellDeck patch: SDPATCH-009 — when true, the input behaves as a
     // multi-line textarea. Enter inserts `\n` into the content and paste
     // keeps embedded newlines. Rendering is delegated to SDPATCH-010, which
@@ -243,6 +257,14 @@ impl InputState {
             shake_triggered: false,
             shake_count: 0,
             cursor_position_override: None,
+            // ShellDeck patch: SDPATCH-011 — initialise the direct callback
+            // slots that replace the leaking `cx.subscribe`. See the field
+            // group's comment on the struct definition.
+            on_change_cb: None,
+            on_enter_cb: None,
+            on_focus_cb: None,
+            on_blur_cb: None,
+            on_validate_cb: None,
             // ShellDeck patch: SDPATCH-009 — flag. SDPATCH-010 — layouts +
             // wrapped-visual-line count fed back into request_layout. See the
             // struct-level comments for the shape of each field.
@@ -370,6 +392,13 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Change);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly
+        // once per change, replacing the leaking `cx.subscribe` in the Input
+        // wrapper.
+        if let Some(cb) = self.on_change_cb.clone() {
+            let value = self.content.clone();
+            cb(value, cx);
+        }
     }
 
     /// Validate the current input value
@@ -905,12 +934,25 @@ impl InputState {
             self.replace_text_in_range(None, "\n", window, cx);
         } else {
             cx.emit(InputEvent::Enter);
+            // ShellDeck patch: SDPATCH-011 — invoke the direct callback
+            // slot instead of relying on the leaking `cx.subscribe` in the
+            // Input wrapper.
+            if let Some(cb) = self.on_enter_cb.clone() {
+                let value = self.content.clone();
+                cb(value, cx);
+            }
         }
     }
 
     pub fn escape(&mut self, _: &Escape, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected_range = self.content.len()..self.content.len();
         cx.emit(InputEvent::Blur);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot fires here so
+        // the wrapper's `.on_blur(...)` runs exactly once per Escape.
+        if let Some(cb) = self.on_blur_cb.clone() {
+            let value = self.content.clone();
+            cb(value, cx);
+        }
         cx.notify();
     }
 
@@ -924,6 +966,11 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Focus);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot.
+        if let Some(cb) = self.on_focus_cb.clone() {
+            let value = self.content.clone();
+            cb(value, cx);
+        }
         cx.notify();
     }
 
@@ -941,6 +988,11 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Blur);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot.
+        if let Some(cb) = self.on_blur_cb.clone() {
+            let value = self.content.clone();
+            cb(value, cx);
+        }
         cx.notify();
     }
 
