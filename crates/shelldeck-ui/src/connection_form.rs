@@ -3,6 +3,7 @@ use gpui::*;
 use crate::scale::px;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;
 use uuid::Uuid;
@@ -390,22 +391,20 @@ impl Render for ConnectionForm {
             "New Connection"
         };
 
-        let mut toggle = div()
-            .id("toggle-forward-agent")
-            .w(px(36.0))
-            .h(px(20.0))
-            .rounded_full()
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.forward_agent = !this.forward_agent;
-                cx.notify();
-            }));
-
-        if self.forward_agent {
-            toggle = toggle.bg(ShellDeckColors::primary());
-        } else {
-            toggle = toggle.bg(ShellDeckColors::toggle_off_bg());
-        }
+        // "Forward Agent" — real adabraka `Toggle` (built-in animated switch,
+        // themed via `theme.tokens.primary`).
+        let toggle = Toggle::new("toggle-forward-agent")
+            .checked(self.forward_agent)
+            .on_click({
+                let entity = cx.entity();
+                move |checked, _window, cx| {
+                    let checked = *checked;
+                    entity.update(cx, |this, cx| {
+                        this.forward_agent = checked;
+                        cx.notify();
+                    });
+                }
+            });
 
         let mut form_fields = div()
             .id("connection-form-fields")
