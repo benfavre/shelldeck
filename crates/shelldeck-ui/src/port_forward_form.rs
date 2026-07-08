@@ -1,4 +1,5 @@
 use crate::scale::px;
+use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
@@ -6,7 +7,7 @@ use gpui::*;
 use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;
 
-use crate::command_palette::fuzzy_match;
+use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -40,12 +41,7 @@ pub struct PortForwardForm {
     error_field: Option<FormField>,
     focus_handle: FocusHandle,
     needs_focus: bool,
-    // Connection-picker dropdown state
-    dropdown_open: bool,
-    dropdown_query_state: Entity<InputState>,
-    dropdown_query: String,
-    dropdown_filtered: Vec<usize>,
-    dropdown_selected: usize,
+    connection_combobox: Entity<Combobox<Uuid>>,
 }
 
 /// Create a new `InputState` entity with an optional initial value. `set_value`
@@ -62,8 +58,38 @@ fn new_input_state(cx: &mut Context<PortForwardForm>, initial: &str) -> Entity<I
 }
 
 impl PortForwardForm {
+    fn init_connection_combobox(
+        connections: &[(Uuid, String, String)],
+        selected_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Entity<Combobox<Uuid>> {
+        let parent = cx.entity();
+        let placeholder = if connections.is_empty() {
+            "(no connections)"
+        } else {
+            "Select connection..."
+        };
+        let (_state, combobox) = build_connection_combobox(
+            connections,
+            selected_idx,
+            placeholder,
+            move |id, _window, cx| {
+                parent.update(cx, |form, cx| {
+                    if let Some(idx) = connection_idx_for_id(&form.connections, *id) {
+                        form.selected_connection_idx = idx;
+                        form.error = None;
+                        form.error_field = None;
+                    }
+                    cx.notify();
+                });
+            },
+            cx,
+        );
+        combobox
+    }
+
     pub fn new(connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
-        let dropdown_filtered = (0..connections.len()).collect();
+        let connection_combobox = Self::init_connection_combobox(&connections, 0, cx);
         Self {
             editing_id: None,
             connections,
@@ -78,11 +104,7 @@ impl PortForwardForm {
             error_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
-            dropdown_open: false,
-            dropdown_query_state: new_input_state(cx, ""),
-            dropdown_query: String::new(),
-            dropdown_filtered,
-            dropdown_selected: 0,
+            connection_combobox,
         }
     }
 
@@ -95,7 +117,7 @@ impl PortForwardForm {
             .iter()
             .position(|(id, _, _)| *id == forward.connection_id)
             .unwrap_or(0);
-        let dropdown_filtered = (0..connections.len()).collect();
+        let connection_combobox = Self::init_connection_combobox(&connections, selected_idx, cx);
         Self {
             editing_id: Some(forward.id),
             connections,
@@ -110,11 +132,7 @@ impl PortForwardForm {
             error_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
-            dropdown_open: false,
-            dropdown_query_state: new_input_state(cx, ""),
-            dropdown_query: String::new(),
-            dropdown_filtered,
-            dropdown_selected: 0,
+            connection_combobox,
         }
     }
 
@@ -141,76 +159,9 @@ impl PortForwardForm {
         local_ok && remote_ok
     }
 
-    fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
-        state.update(cx, |s, cx| {
-            s.content = "".into();
-            cx.notify();
-        });
-    }
-
-    fn update_dropdown_filter(&mut self) {
-        let query_lower = self.dropdown_query.to_lowercase();
-        if query_lower.is_empty() {
-            self.dropdown_filtered = (0..self.connections.len()).collect();
-        } else {
-            self.dropdown_filtered = self
-                .connections
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, name, host))| {
-                    fuzzy_match(name, &query_lower) || fuzzy_match(host, &query_lower)
-                })
-                .map(|(i, _)| i)
-                .collect();
-        }
-        self.dropdown_selected = 0;
-    }
-
-    fn close_dropdown(&mut self, cx: &mut Context<Self>) {
-        self.dropdown_open = false;
-        Self::reset_input(&self.dropdown_query_state.clone(), cx);
-        self.dropdown_query.clear();
-        self.dropdown_filtered = (0..self.connections.len()).collect();
-        self.dropdown_selected = 0;
-    }
-
-    fn commit_dropdown_selection(&mut self, cx: &mut Context<Self>) {
-        if let Some(&conn_idx) = self.dropdown_filtered.get(self.dropdown_selected) {
-            self.selected_connection_idx = conn_idx;
-        }
-        self.close_dropdown(cx);
-    }
-
     /// Non-text keys — text is consumed by whichever `Input` widget has focus.
-    /// Handles Escape (close dropdown / cancel) and dropdown Up/Down navigation.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-
-        if self.dropdown_open {
-            match key {
-                "escape" => {
-                    self.close_dropdown(cx);
-                    cx.notify();
-                }
-                "up" => {
-                    if !self.dropdown_filtered.is_empty() && self.dropdown_selected > 0 {
-                        self.dropdown_selected -= 1;
-                    }
-                    cx.notify();
-                }
-                "down" => {
-                    if !self.dropdown_filtered.is_empty() {
-                        self.dropdown_selected =
-                            (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
-                    }
-                    cx.notify();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if key == "escape" {
+        if event.keystroke.key.as_str() == "escape" {
             cx.emit(PortForwardFormEvent::Cancel);
         }
     }
@@ -398,23 +349,10 @@ impl PortForwardForm {
             )
     }
 
-    fn render_connection_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_connection_picker(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         let has_error = self.error_field == Some(FormField::Connection);
-        let conn_name = if self.connections.is_empty() {
-            "(no connections)".to_string()
-        } else {
-            self.connections[self.selected_connection_idx].1.clone()
-        };
 
-        let border_color = if has_error {
-            ShellDeckColors::error()
-        } else if self.dropdown_open {
-            ShellDeckColors::primary()
-        } else {
-            ShellDeckColors::border()
-        };
-
-        let mut wrapper = div()
+        div()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -427,157 +365,16 @@ impl PortForwardForm {
             )
             .child(
                 div()
-                    .id("pf-connection-picker")
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(border_color)
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if this.dropdown_open {
-                            this.close_dropdown(cx);
-                        } else {
-                            this.dropdown_open = true;
-                            Self::reset_input(&this.dropdown_query_state.clone(), cx);
-                            this.dropdown_query.clear();
-                            this.update_dropdown_filter();
-                        }
-                        this.error = None;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(conn_name),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(if self.dropdown_open { "^" } else { "v" }),
-                    ),
-            );
-
-        // Dropdown list
-        if self.dropdown_open {
-            // Real `Input` search — clearable, on_change updates filter,
-            // on_enter commits the highlighted selection.
-            let search_area = div()
-                .px(px(6.0))
-                .py(px(6.0))
-                .border_b_1()
-                .border_color(ShellDeckColors::border())
-                .child(
-                    Input::new(&self.dropdown_query_state)
-                        .size(InputSize::Sm)
-                        .placeholder("Type to filter...")
-                        .prefix(
-                            svg()
-                                .path("icons/lucide/search.svg")
-                                .size(px(12.0))
-                                .flex_shrink_0()
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                        .on_change({
-                            let entity = cx.entity();
-                            move |value, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.dropdown_query = value.to_string();
-                                    this.update_dropdown_filter();
-                                    cx.notify();
-                                });
-                            }
-                        })
-                        .on_enter({
-                            let entity = cx.entity();
-                            move |_v, cx| {
-                                entity.update(cx, |this, cx| this.commit_dropdown_selection(cx));
-                            }
-                        }),
-                );
-
-            let mut items_list = div()
-                .id("pf-dropdown-list")
-                .flex()
-                .flex_col()
-                .max_h(px(200.0))
-                .overflow_y_scroll();
-
-            if self.dropdown_filtered.is_empty() {
-                items_list = items_list.child(
-                    div()
-                        .px(px(8.0))
-                        .py(px(10.0))
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child("No matching connections"),
-                );
-            } else {
-                for (fi, &conn_idx) in self.dropdown_filtered.iter().enumerate() {
-                    let (_, ref name, ref hostname) = self.connections[conn_idx];
-                    let is_highlighted = fi == self.dropdown_selected;
-
-                    let mut item = div()
-                        .id(ElementId::from(SharedString::from(format!("pf-dd-{}", fi))))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.0))
-                        .px(px(8.0))
-                        .py(px(5.0))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_connection_idx = conn_idx;
-                            this.close_dropdown(cx);
-                            cx.notify();
-                        }));
-
-                    if is_highlighted {
-                        item = item.bg(ShellDeckColors::primary().opacity(0.15));
-                    } else {
-                        item = item.hover(|el| el.bg(ShellDeckColors::hover_bg()));
-                    }
-
-                    item = item
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(hostname.clone()),
-                        );
-
-                    items_list = items_list.child(item);
-                }
-            }
-
-            wrapper = wrapper.child(
-                div()
-                    .w_full()
-                    .mt(px(2.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .rounded(px(6.0))
+                    .min_w(px(0.0))
                     .overflow_hidden()
-                    .shadow_md()
-                    .child(search_area)
-                    .child(items_list),
-            );
-        }
-
-        wrapper
+                    .when(has_error, |el| {
+                        el.rounded(px(6.0))
+                            .border_1()
+                            .border_color(ShellDeckColors::error())
+                    })
+                    .child(self.connection_combobox.clone()),
+            )
     }
 }
 

@@ -19,6 +19,7 @@ use shelldeck_core::config::bext_cloud::{
     CloudInstance, CloudSite, CloudStats, CloudUser, SitesResponse,
 };
 use shelldeck_core::config::bext_instance::InstanceSite;
+use crate::t;
 
 use crate::theme::ShellDeckColors;
 
@@ -415,7 +416,7 @@ impl BextCloudView {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(white())
                         .cursor_pointer()
-                        .child("Se connecter")
+                        .child(t!("account.sign_in").to_string())
                         .on_click(
                             cx.listener(|_t, _: &ClickEvent, _, cx| {
                                 cx.emit(BextViewEvent::Connect)

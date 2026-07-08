@@ -19,3 +19,8 @@ ssh2-config = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+
+[package.metadata.i18n]
+available-locales = ["fr", "en"]
+default-locale = "fr"
+load-path = "locales"

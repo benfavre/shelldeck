@@ -2181,28 +2181,38 @@ impl TerminalView {
             .is_some_and(|s| s.grid.lock().selected_text().is_some());
 
         let toolbar_btn = |id: &str, label: &str, hint: &str| {
-            div()
+            let mut btn = div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
                 .flex()
                 .items_center()
-                .gap(px(4.0))
+                .gap(px(6.0))
                 .px(px(8.0))
                 .py(px(3.0))
                 .rounded(px(4.0))
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
                 .cursor_pointer()
-                .hover(|el| {
-                    el.bg(ShellDeckColors::hover_bg())
-                        .text_color(ShellDeckColors::text_primary())
-                })
-                .child(label.to_string())
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                 .child(
                     div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(label.to_string()),
+                );
+            if !hint.is_empty() {
+                btn = btn.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(4.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
+                        .bg(ShellDeckColors::hint_bg())
                         .text_size(px(9.0))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(ShellDeckColors::text_muted())
                         .child(hint.to_string()),
-                )
+                );
+            }
+            btn
         };
 
         let toolbar_icon = |id: &str, label: &str| {
@@ -2291,9 +2301,7 @@ impl TerminalView {
             .child({
                 let mut btn = toolbar_btn("tb-copy", "Copy", &format!("{}{}C", ctrl, shift));
                 if !has_selection {
-                    btn = btn
-                        .text_color(ShellDeckColors::text_muted())
-                        .cursor_default();
+                    btn = btn.opacity(0.45).cursor_default();
                 } else {
                     btn = btn.on_click(cx.listener(|this, _, _, cx| {
                         this.copy_selection(cx);

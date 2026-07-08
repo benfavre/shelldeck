@@ -1,0 +1,43 @@
+---
+description: ShellDeck doit tourner sur Linux, macOS et Windows — règles cross-platform
+alwaysApply: true
+---
+
+# Cross-platform support
+
+> Source canonique : `.agents/cross-platform.md`
+
+ShellDeck is a **multi-function companion app that must run on Linux, macOS,
+and Windows**. All three platforms are first-class targets — none is a
+"best-effort" afterthought.
+
+**Why:** the release pipeline (`.github/workflows/release.yml`) builds and
+ships all three. If any of the three builds fails, the release + update
+manifest jobs are skipped entirely, so a regression on any one platform
+blocks *every* user from getting an update.
+
+**How to apply:**
+
+- **Before writing platform-specific code**, ask whether a portable
+  alternative exists in an already-vendored dep (`tokio`, `portable-pty`,
+  `keyring`, `notify`, `russh`, GPUI/adabraka-ui). Prefer the portable path.
+- **When platform-specific code is unavoidable**, gate it with
+  `#[cfg(target_os = "...")]` and provide a working implementation for all
+  three targets — not a `todo!()` / `unimplemented!()` for the others.
+- **Paths:** never hardcode `/`, `~`, or backslashes. Use `std::path::PathBuf`,
+  `dirs::` (config/data/cache dirs), or the existing config-location helpers.
+- **Shell-outs:** `xdg-open` (Linux) / `open` (macOS) / `start` (Windows) —
+  see the existing `open_in_browser()` helper in
+  `shelldeck-core::config::cloud_account` and reuse that pattern.
+- **Line endings, env var casing, process spawning:** verify the Windows path
+  explicitly. `cargo check` on Linux does **not** catch these.
+- **CI is the source of truth.** `cargo check` locally on Linux is not
+  sufficient — a change that touches build config, deps, or platform code
+  must be validated against the full CI matrix before tagging a release. The
+  pinned nightly (`rust-toolchain.toml`) is there specifically because a
+  newer nightly broke the macOS release build silently — do not float it.
+- **Install scripts:** any change to install/update flow must land in *both*
+  `install.sh` (Linux + macOS) and `install.ps1` (Windows) in
+  `cloudflare/update-worker/`.
+- **Platform keys** in the update manifest use `macos-*`, never `darwin-*` —
+  manifest, workflow, `shelldeck-update` client, and worker must all agree.

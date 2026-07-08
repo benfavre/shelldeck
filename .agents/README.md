@@ -12,6 +12,11 @@ repo-root [`AGENTS.md`](../AGENTS.md).
   Code loads the same content.
 - At the bottom of `AGENTS.md` there is a "Modular rules" section listing
   `@.agents/<file>.md` imports. Claude Code follows those imports recursively.
+- **Cursor** does not expand `@` imports — it loads `AGENTS.md` via `CLAUDE.md`
+  but not the `.agents/` modules automatically. The bridge lives in
+  [`.cursor/rules/`](../.cursor/rules/) (one `.mdc` per module, with `globs`
+  or `alwaysApply`). Keep `.agents/` and `.cursor/rules/` in sync when you
+  edit a rule file.
 
 ## Adding a rule file
 

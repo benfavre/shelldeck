@@ -13,3 +13,5 @@ node_modules/
 # see crates/shelldeck/assets/icons/lucide/README.md for how we pick
 # icons out of it.
 /.cache/
+# Logo exploration / prototypes — production assets live in assets/images/brand/
+/crates/shelldeck/assets/images/logo-concepts/

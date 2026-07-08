@@ -32,6 +32,8 @@ wrapping div), prefer `svg().path(lucide_path("minus"))` instead of
 | Zone | Source | Notes |
 |------|--------|-------|
 | App views (Support, sidebar, forms, terminal tabs, …) | **Lucide** (`icons/lucide/…`) | Default for new UI icons |
+| Script **language** chips / badges | **Simple Icons** (`icons/simple/…`) | Tech marks (Python, Docker, …) — slugs on `ScriptLanguage::simple_icon()` |
+| Script **category** chips | **Lucide** | Semantic slugs on `ScriptCategory::lucide_icon()` |
 | **Titlebar / window chrome** | **Legacy** `images/` | Minimize, maximize, restore, close, chevron site chip, ± UI scale — **do not migrate** unless explicitly asked |
 | Brand / OIDC logos | `images/logo-*.svg`, `shelldeck-*.svg` | Multi-color or bespoke marks |
 | Unpinned tab pin | `images/pin-outline.svg` | No Lucide slug in our subset yet |

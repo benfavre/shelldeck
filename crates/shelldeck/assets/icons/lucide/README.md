@@ -77,13 +77,14 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (52 icons)
+## Inventory (55 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
 | Slug | Category | Used / reserved for |
 |------|----------|---------------------|
 | `arrow-down` | navigation | scroll / sort down |
+| `arrow-left-right` | infra | port forwards |
 | `arrow-up` | navigation | scroll / sort up |
 | `calendar` | time | date pickers, due dates |
 | `check` | action | confirm, done |
@@ -96,6 +97,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `circle-check` | status | success state |
 | `circle-help` | status | help tooltips |
 | `clock` | time | timestamps, SLA |
+| `cloud` | infra | bext Cloud nav |
 | `copy` | action | copy to clipboard |
 | `database` | infra | DB connections, sync |
 | `download` | action | export, pull |
@@ -121,6 +123,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `refresh-cw` | action | **Support refresh**, reload lists |
 | `reply` | support | reply composer mode |
 | `search` | chrome | search inputs |
+| `scroll-text` | chrome | Dev sidebar — Scripts |
 | `send` | support | send message / reply |
 | `server` | ssh | host, fleet instance |
 | `settings` | chrome | settings entry |

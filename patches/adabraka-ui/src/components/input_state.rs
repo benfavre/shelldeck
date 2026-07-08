@@ -223,6 +223,18 @@ pub struct InputState {
 
 impl EventEmitter<InputEvent> for InputState {}
 
+/// ShellDeck patch: SDPATCH-012 — parent callbacks must not run synchronously
+/// inside `InputState` mutation handlers. They often `entity.update` + re-render,
+/// which reads/updates the same `InputState` while it is still leased
+/// ("cannot read InputState while it is already being updated").
+fn defer_input_callback(
+    cb: std::rc::Rc<dyn Fn(SharedString, &mut App)>,
+    value: SharedString,
+    cx: &mut Context<InputState>,
+) {
+    cx.defer(move |app| cb(value, app));
+}
+
 impl InputState {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
@@ -397,7 +409,8 @@ impl InputState {
         // wrapper.
         if let Some(cb) = self.on_change_cb.clone() {
             let value = self.content.clone();
-            cb(value, cx);
+            // ShellDeck patch: SDPATCH-012 — defer; see helper above.
+            defer_input_callback(cb, value, cx);
         }
     }
 
@@ -939,7 +952,8 @@ impl InputState {
             // Input wrapper.
             if let Some(cb) = self.on_enter_cb.clone() {
                 let value = self.content.clone();
-                cb(value, cx);
+                // ShellDeck patch: SDPATCH-012 — defer; see helper above.
+                defer_input_callback(cb, value, cx);
             }
         }
     }
@@ -951,7 +965,7 @@ impl InputState {
         // the wrapper's `.on_blur(...)` runs exactly once per Escape.
         if let Some(cb) = self.on_blur_cb.clone() {
             let value = self.content.clone();
-            cb(value, cx);
+            defer_input_callback(cb, value, cx);
         }
         cx.notify();
     }
@@ -969,7 +983,7 @@ impl InputState {
         // ShellDeck patch: SDPATCH-011 — direct callback slot.
         if let Some(cb) = self.on_focus_cb.clone() {
             let value = self.content.clone();
-            cb(value, cx);
+            defer_input_callback(cb, value, cx);
         }
         cx.notify();
     }
@@ -991,7 +1005,7 @@ impl InputState {
         // ShellDeck patch: SDPATCH-011 — direct callback slot.
         if let Some(cb) = self.on_blur_cb.clone() {
             let value = self.content.clone();
-            cb(value, cx);
+            defer_input_callback(cb, value, cx);
         }
         cx.notify();
     }

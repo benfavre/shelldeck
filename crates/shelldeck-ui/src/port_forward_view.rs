@@ -5,6 +5,7 @@ use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus, Port
 use uuid::Uuid;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 use shelldeck_core::models::port_forward::PortForward as PortForwardModel;
 
@@ -139,9 +140,15 @@ impl PortForwardView {
                 let fwd_id = forward.id;
                 let is_active = forward.status == ForwardStatus::Active;
                 let (label, event) = if is_active {
-                    ("Stop", PortForwardEvent::StopForward(fwd_id))
+                    (
+                        t!("forwards.stop").to_string(),
+                        PortForwardEvent::StopForward(fwd_id),
+                    )
                 } else {
-                    ("Start", PortForwardEvent::StartForward(fwd_id))
+                    (
+                        t!("forwards.start").to_string(),
+                        PortForwardEvent::StartForward(fwd_id),
+                    )
                 };
                 div()
                     .flex()
@@ -166,7 +173,7 @@ impl PortForwardView {
                             .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                                 cx.emit(PortForwardEvent::EditForward(fwd_id));
                             }))
-                            .child("Edit"),
+                            .child(t!("forwards.edit").to_string()),
                     )
                     .child(
                         div()
@@ -221,7 +228,7 @@ impl PortForwardView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("LABEL"),
+                    .child(t!("forwards.col.label").to_string()),
             )
             .child(
                 div()
@@ -229,7 +236,7 @@ impl PortForwardView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("DIRECTION"),
+                    .child(t!("forwards.col.direction").to_string()),
             )
             .child(
                 div()
@@ -237,7 +244,7 @@ impl PortForwardView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("LOCAL"),
+                    .child(t!("forwards.col.local").to_string()),
             )
             .child(
                 div()
@@ -252,7 +259,7 @@ impl PortForwardView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("REMOTE"),
+                    .child(t!("forwards.col.remote").to_string()),
             )
             .child(
                 div()
@@ -260,14 +267,14 @@ impl PortForwardView {
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("TRAFFIC"),
+                    .child(t!("forwards.col.traffic").to_string()),
             )
             .child(
                 div()
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
                     .font_weight(FontWeight::BOLD)
-                    .child("ACTIONS"),
+                    .child(t!("forwards.col.actions").to_string()),
             )
     }
 
@@ -295,14 +302,14 @@ impl PortForwardView {
                         .text_size(px(12.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(ShellDeckColors::primary())
-                        .child("LOCAL"),
+                        .child(t!("forwards.col.local").to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(ShellDeckColors::warning())
-                        .child("REMOTE"),
+                        .child(t!("forwards.col.remote").to_string()),
                 ),
         );
 
@@ -355,7 +362,7 @@ impl PortForwardView {
                     .text_color(ShellDeckColors::text_muted())
                     .text_center()
                     .py(px(12.0))
-                    .child("No active port forwards"),
+                    .child(t!("forwards.empty_map").to_string()),
             );
         }
 
@@ -451,7 +458,7 @@ impl PortForwardView {
                     .text_size(px(11.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("PRESETS"),
+                    .child(t!("forwards.presets").to_string()),
             )
             // Preset cards row
             .child(
@@ -461,8 +468,8 @@ impl PortForwardView {
                     .flex_wrap()
                     .child(Self::render_preset_card(
                         "preset-opencode",
-                        "OpenCode Web",
-                        "Forward remote OpenCode web UI to local browser",
+                        &t!("forwards.preset.opencode.title").to_string(),
+                        &t!("forwards.preset.opencode.desc").to_string(),
                         "localhost:4096",
                         "remote:4096",
                         "-->",
@@ -471,8 +478,8 @@ impl PortForwardView {
                     ))
                     .child(Self::render_preset_card(
                         "preset-chrome-devtools",
-                        "Chrome DevTools",
-                        "Expose local Chrome DevTools to remote server",
+                        &t!("forwards.preset.chrome.title").to_string(),
+                        &t!("forwards.preset.chrome.desc").to_string(),
                         "localhost:9222",
                         "remote:9222",
                         "<--",
@@ -481,8 +488,8 @@ impl PortForwardView {
                     ))
                     .child(Self::render_preset_card(
                         "preset-dev-server",
-                        "Dev Server",
-                        "Forward remote dev server port 3060 to local",
+                        &t!("forwards.preset.dev_server.title").to_string(),
+                        &t!("forwards.preset.dev_server.desc").to_string(),
                         "localhost:3060",
                         "remote:3060",
                         "-->",
@@ -517,7 +524,7 @@ impl Render for PortForwardView {
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Port Forwards"),
+                            .child(t!("forwards.title").to_string()),
                     )
                     .child(
                         div().flex().gap(px(8.0)).child(
@@ -527,7 +534,7 @@ impl Render for PortForwardView {
                                     cx.emit(PortForwardEvent::AddForward);
                                 }))
                                 .child(
-                                    Button::new("add-forward", "+ Add Forward")
+                                    Button::new("add-forward", t!("forwards.add_button").to_string())
                                         .variant(ButtonVariant::Default),
                                 ),
                         ),

@@ -136,15 +136,35 @@ impl ToastContainer {
         let label = toast.level.label();
         let message = toast.message.clone();
 
+        // Message column width: toast max_w(420) minus padding, badge, gaps,
+        // close affordance (~100px chrome). Per-line max_w gives gpui a
+        // Definite wrap width (see `.agents/overflow.md`).
+        const MSG_MAX_W: f32 = 310.0;
+
+        let mut message_body = div()
+            .flex()
+            .flex_col()
+            .text_size(px(13.0))
+            .text_color(text_col);
+        for line in message.split('\n') {
+            let display: SharedString = if line.is_empty() {
+                " ".into()
+            } else {
+                line.to_string().into()
+            };
+            message_body = message_body.child(div().max_w(px(MSG_MAX_W)).child(display));
+        }
+
         div()
             .id(ElementId::Name(format!("toast-{}", id).into()))
             .flex()
-            .items_center()
+            .items_start()
             .gap(px(8.0))
             .px(px(14.0))
             .py(px(10.0))
             .min_w(px(240.0))
             .max_w(px(420.0))
+            .overflow_hidden()
             .rounded(px(8.0))
             .bg(bg)
             .shadow_lg()
@@ -173,12 +193,13 @@ impl ToastContainer {
                     ),
             )
             .child(
-                // Message text
+                // Message text — flex_grow + min_w(0) so long content wraps
+                // inside max_w instead of spilling past the toast edge.
                 div()
                     .flex_grow()
-                    .text_size(px(13.0))
-                    .text_color(text_col)
-                    .child(message),
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(message_body),
             )
             .child(
                 // Dismiss hint (x)
@@ -187,12 +208,12 @@ impl ToastContainer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_color(hsla(0.0, 0.0, 1.0, 0.5))
+                    .text_color(text_col.opacity(0.55))
                     .child(
                         svg()
                             .path("icons/lucide/x.svg")
                             .size(px(12.0))
-                            .text_color(ShellDeckColors::text_muted()),
+                            .text_color(text_col.opacity(0.55)),
                     ),
             )
     }
@@ -210,6 +231,7 @@ impl Render for ToastContainer {
             .absolute()
             .bottom(px(40.0)) // above the status bar
             .right(px(16.0))
+            .max_w(px(420.0))
             .flex()
             .flex_col()
             .gap(px(8.0))

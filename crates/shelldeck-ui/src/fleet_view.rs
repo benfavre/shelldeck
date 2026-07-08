@@ -496,21 +496,5 @@ impl Render for FleetView {
 }
 
 fn rel_time(at_ms: f64) -> String {
-    if at_ms <= 0.0 {
-        return String::new();
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(at_ms);
-    let secs = ((now - at_ms) / 1000.0).max(0.0);
-    if secs < 60.0 {
-        "à l'instant".to_string()
-    } else if secs < 3600.0 {
-        format!("il y a {} min", (secs / 60.0) as i64)
-    } else if secs < 86400.0 {
-        format!("il y a {} h", (secs / 3600.0) as i64)
-    } else {
-        format!("il y a {} j", (secs / 86400.0) as i64)
-    }
+    crate::i18n::rel_time(at_ms)
 }

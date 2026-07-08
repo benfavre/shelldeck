@@ -124,7 +124,7 @@ if condition {
 
 ### Account login
 
-`shelldeck-core::config::cloud_account` signs in to Inklura Manage and mints an account-bound sync token. `login_password()` (`POST …/auth {action:"login"}`), `whoami()` (`GET …/auth?action=whoami`, Bearer), and `logout()` (`{action:"logout"}`, best-effort revoke) mirror the sync module's reqwest-blocking + 4s/10s style. The browser/OIDC device flow is std-only: `browser_connect_url()` builds `…/manage/shelldeck/connect?port&state&device[&provider]`, `open_in_browser()` shells out to `xdg-open`/`open`/`start`, and `browser_connect_listen()` runs a loopback `TcpListener` that verifies the `state` echo and returns the redirected token (ignores favicon / mismatches, 180s timeout). `provider=sso|google|github|linkedin` → CM on-host OIDC; **omitting `provider` → the Manage password login page** (round-trips back via `?next=`), surfaced as the modal's "Via le navigateur (mot de passe)" button (`StartOidc(None)`). The signed-in identity persists in `AppConfig.account: Option<AccountInfo>` (`[account]`, `skip_serializing_if` so it's absent when logged out). UI: a titlebar account chip (`Workspace::render_account_menu`, mirrors the theme dropdown) with a status dot; the `LoginForm` modal (`login_form.rs`, mirrors `connection_form`) captures email/password + OIDC buttons; `Workspace::{show_login_form,start_password_login,start_oidc_login,apply_login,logout_account,check_account_on_startup}` drive the flows (all network on `background_executor`). On login, `apply_login` enables cloud_sync + saves the token, then syncs and toasts the profile count.
+`shelldeck-core::config::cloud_account` signs in to Inklura Manage and mints an account-bound sync token. `login_password()` (`POST …/auth {action:"login"}`), `whoami()` (`GET …/auth?action=whoami`, Bearer), and `logout()` (`{action:"logout"}`, best-effort revoke) mirror the sync module's reqwest-blocking + 4s/10s style. The browser/OIDC device flow is std-only: `browser_connect_url()` builds `…/manage/shelldeck/connect?port&state&device[&provider]`, `open_in_browser()` shells out to `xdg-open`/`open`/`start`, and `browser_connect_listen()` runs a loopback `TcpListener` that verifies the `state` echo and returns the redirected token (ignores favicon / mismatches, 180s timeout). `provider=sso|google|github|linkedin` → CM on-host OIDC; **omitting `provider` → the Manage password login page** (round-trips back via `?next=`), surfaced as the modal's "Via le navigateur (mot de passe)" button (`StartOidc(None)`). The signed-in identity persists in `AppConfig.account: Option<AccountInfo>` (`[account]`, `skip_serializing_if` so it's absent when logged out). UI: a titlebar account chip (`Workspace::render_account_menu`, mirrors the theme dropdown) with a status dot; the `LoginForm` modal (`login_form.rs`, mirrors `connection_form`) captures email/password + OIDC buttons; `Workspace::{show_login_form,start_password_login,start_oidc_login,apply_login,logout_account,check_account_on_startup}` drive the flows (all network on `background_executor`). On login, `apply_login` enables cloud_sync + saves the token, then syncs and toasts the profile count. **Config sync:** `Workspace::app_config` is authoritative for session fields; refresh `SettingsView`'s snapshot via `sync_settings_config` after login/logout/401 — never `app_config = config.clone()` from `ConfigChanged` ([`.agents/session-state.md`](.agents/session-state.md)).
 
 ### Site switcher
 
@@ -179,8 +179,13 @@ rules loader.
 
 @.agents/cross-platform.md
 @.agents/ui-components.md
+@.agents/theming.md
 @.agents/icons.md
+@.agents/overflow.md
+@.agents/session-state.md
 @.agents/patches.md
+@.agents/testing.md
+@.agents/i18n.md
 
 <!-- Add one @-import per rule file above this comment. Example:
 @.agents/gpui-patterns.md

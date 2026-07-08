@@ -1,3 +1,4 @@
+use crate::icons::lucide_icon;
 use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
@@ -6,6 +7,7 @@ use shelldeck_core::config::app_config::ThemePreference;
 use shelldeck_core::config::cloud_account::AppMode;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 actions!(shelldeck, [ToggleCommandPalette]);
 
@@ -45,6 +47,7 @@ pub struct SetAppMode {
 pub struct PaletteAction {
     pub name: String,
     pub shortcut: Option<String>,
+    pub icon: &'static str,
     pub action: Box<dyn Action>,
 }
 
@@ -53,16 +56,23 @@ impl Clone for PaletteAction {
         Self {
             name: self.name.clone(),
             shortcut: self.shortcut.clone(),
+            icon: self.icon,
             action: self.action.boxed_clone(),
         }
     }
 }
 
 impl PaletteAction {
-    pub fn new(name: &str, shortcut: Option<&str>, action: Box<dyn Action>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        shortcut: Option<&str>,
+        icon: &'static str,
+        action: Box<dyn Action>,
+    ) -> Self {
         Self {
-            name: name.to_string(),
+            name: name.into(),
             shortcut: shortcut.map(String::from),
+            icon,
             action,
         }
     }
@@ -250,6 +260,11 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     true
 }
 
+/// Lucide slug for a palette row — stable per action, independent of locale.
+fn palette_icon_for(action: &PaletteAction) -> &'static str {
+    action.icon
+}
+
 impl Render for CommandPalette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
@@ -265,7 +280,7 @@ impl Render for CommandPalette {
                     .py(px(12.0))
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No matching commands"),
+                    .child(t!("palette.no_match").to_string()),
             );
         }
 
@@ -275,6 +290,17 @@ impl Render for CommandPalette {
             }
             let action = &self.actions[action_idx];
             let is_selected = fi == self.selected_index;
+            let icon = palette_icon_for(action);
+            let label_color = if is_selected {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::text_primary()
+            };
+            let icon_color = if is_selected {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::text_muted()
+            };
 
             let mut item = div()
                 .id(ElementId::from(SharedString::from(format!(
@@ -313,8 +339,19 @@ impl Render for CommandPalette {
             item = item
                 .child(
                     div()
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(name),
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(lucide_icon(icon, 14.0, icon_color))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_color(label_color)
+                                .child(name),
+                        ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.emit(CommandPaletteEvent::ActionSelected(
@@ -378,7 +415,12 @@ impl Render for CommandPalette {
                             .child(
                                 Input::new(&self.query_state)
                                     .size(InputSize::Md)
-                                    .placeholder("Type a command...")
+                                    .placeholder(t!("palette.placeholder").to_string())
+                                    .prefix(lucide_icon(
+                                        "search",
+                                        14.0,
+                                        ShellDeckColors::text_muted(),
+                                    ))
                                     .on_change({
                                         let entity = cx.entity();
                                         move |value, cx| {

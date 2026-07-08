@@ -599,6 +599,13 @@ impl<T: Clone + PartialEq + 'static> Render for Combobox<T> {
                                                                 let is_focused = focused_idx == Some(display_idx);
                                                                 let is_selected = state.is_selected(item);
                                                                 let item_text = (self.render_item)(item);
+                                                                let item_fg = if is_focused {
+                                                                    theme.tokens.accent_foreground
+                                                                } else if is_selected {
+                                                                    theme.tokens.primary
+                                                                } else {
+                                                                    theme.tokens.popover_foreground
+                                                                };
 
                                                                 div()
                                                                     .px(px(12.0))
@@ -606,11 +613,7 @@ impl<T: Clone + PartialEq + 'static> Render for Combobox<T> {
                                                                     .flex()
                                                                     .items_center()
                                                                     .justify_between()
-                                                                    .text_color(if is_selected {
-                                                                        theme.tokens.primary
-                                                                    } else {
-                                                                        theme.tokens.popover_foreground
-                                                                    })
+                                                                    .text_color(item_fg)
                                                                     .bg(if is_focused {
                                                                         theme.tokens.accent
                                                                     } else {

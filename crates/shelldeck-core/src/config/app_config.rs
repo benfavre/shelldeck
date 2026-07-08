@@ -116,6 +116,23 @@ pub struct TerminalConfig {
     pub theme: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiLanguage {
+    /// Follow the OS locale (`fr*` → French, otherwise English). Unknown → French.
+    #[default]
+    System,
+    Fr,
+    En,
+}
+
+impl UiLanguage {
+    pub fn all() -> &'static [UiLanguage] {
+        use UiLanguage::*;
+        &[System, Fr, En]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
@@ -130,6 +147,9 @@ pub struct GeneralConfig {
     pub sidebar_nav_collapsed: bool,
     pub auto_attach_tmux: bool,
     pub auto_update: bool,
+    /// Interface language. `system` follows the OS locale (French default).
+    #[serde(default)]
+    pub ui_language: UiLanguage,
     /// Font family for the application UI (sidebar, dashboard, forms, etc.).
     pub ui_font_family: String,
     /// Base font size in pixels for the application UI.
@@ -160,6 +180,7 @@ impl Default for GeneralConfig {
             sidebar_nav_collapsed: false,
             auto_attach_tmux: false,
             auto_update: true,
+            ui_language: UiLanguage::default(),
             ui_font_family: "System Default".to_string(),
             ui_font_size: 14.0,
         }

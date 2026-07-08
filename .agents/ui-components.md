@@ -41,16 +41,38 @@ don't want to grow.
    rather than duplicating a helper in `shelldeck-ui`. Treat the vendored
    crate as ours to extend.
 
+## Modals & form overlays
+
+**Incident (2026-07):** `ScriptForm` ("New Script") used a hand-rolled
+`absolute()` backdrop + centered `div`. No `max_h`, no scroll body — language /
+category chip rows + body editor pushed the footer off-screen.
+
+**Rule:** centered modals (create/edit forms, variable prompts, login) →
+**`adabraka_ui::overlays::dialog::Dialog`** (or `ConfirmDialog` for yes/no).
+Side panels → **`Sheet`**. Do **not** add new `*-form-overlay` div stacks.
+
+`Dialog` already ships focus trap, backdrop dismiss, escape, close button, and
+**`max_h(relative(0.85))`** per `DialogSize` — the sizing bug we hit manually.
+
+**If you must keep a legacy overlay temporarily** (large migration), follow
+`.agents/overflow.md` § Centered modals — same PR, no exceptions. Add a
+one-line `// TODO: migrate to adabraka Dialog` on the overlay root.
+
+**Enum pickers (Language / Category / Target chips)** are fine as inline
+`Badge` / toggle rows when the set is small and fixed — not every row of pills
+needs a `Select`. Connection / server pickers **do** need `Select` / `Combobox`.
+
 **Current migration backlog** (non-binding hints from the audit — where
 the biggest wins live if you're already touching the area):
 
-| Custom today | adabraka target |
-|---|---|
-| Chips / pills / status badges | `Badge` |
-| Kebabs, theme / account / site / mode / sidebar switchers | `PopoverMenu` / `ContextMenu` |
-| Destroy / delete confirms (bext, connections) | `ConfirmDialog` |
-| Connection pickers (port_forward, script_form) | `Select` / `Combobox` |
-| Support / Jean / Bext section tabs | `Tabs` |
-| Right-side sheet chrome (workspace + connection_form) | `Sheet` |
-| OIDC buttons (login_form), toolbar chips (sites_view) | `Button` variants |
-| Dashboard stat cards | `Card` |
+| Custom today | adabraka target | Notes |
+|---|---|---|
+| Centered form modals (`script_form`, `port_forward_form`, `variable_prompt`, `login_form`, `connection_form`) | `Dialog` | Prefer `DialogSize::Md` + scroll body; see `patches/adabraka-ui/src/overlays/dialog.rs` |
+| Right-side sheet chrome (workspace + connection_form) | `Sheet` | |
+| Chips / pills / status badges | `Badge` | Small fixed enums OK inline until touched |
+| Kebabs, theme / account / site / mode / sidebar switchers | `PopoverMenu` / `ContextMenu` | |
+| Destroy / delete confirms (bext, connections) | `ConfirmDialog` | `support_view` already uses `UiDialog` for some flows |
+| ~~Connection pickers (port_forward, script_form, server_sync)~~ | ~~`Select` / `Combobox`~~ | **Done** — `connection_combobox.rs` + `Select` in server_sync |
+| Support / Jean / Bext section tabs | `Tabs` | |
+| OIDC buttons (login_form), toolbar chips (sites_view) | `Button` variants | |
+| Dashboard stat cards | `Card` | |

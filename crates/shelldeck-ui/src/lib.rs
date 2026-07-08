@@ -1,6 +1,7 @@
 pub mod bext_cloud_view;
 pub mod brand;
 pub mod command_palette;
+pub mod connection_combobox;
 pub mod connection_form;
 pub mod dashboard;
 pub mod editor_buffer;
@@ -27,6 +28,18 @@ pub mod terminal_view;
 pub mod theme;
 pub mod toast;
 pub mod variable_prompt;
+pub mod i18n;
 pub mod workspace;
 
+rust_i18n::i18n!("../shelldeck-core/locales", fallback = "fr");
+
+/// UI string lookup — keys in `shelldeck-core/locales/{fr,en}.toml`.
+#[macro_export]
+macro_rules! t {
+    ($($all:tt)*) => {
+        $crate::_rust_i18n_t!($($all)*)
+    };
+}
+
+pub use i18n::{apply_ui_language, rel_time};
 pub use workspace::Workspace;

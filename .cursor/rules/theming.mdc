@@ -1,0 +1,24 @@
+---
+description: Thèmes changeables — ShellDeckColors / adabraka tokens, pas de couleurs en dur
+globs: crates/shelldeck-ui/**
+alwaysApply: false
+---
+
+# Theming & colors
+
+> Source canonique : `.agents/theming.md`
+
+L'utilisateur **change de thème à la volée**. Ne jamais figer une palette light/dark
+dans une vue.
+
+## Must-do
+
+- App chrome → **`ShellDeckColors::*`** (pas de `rgb` / `hsla` literals dans les vues)
+- Widgets standard → **adabraka-ui** (tokens resynchronisés via `adabraka_theme_from_palette()`)
+- Surfaces teintées → `ShellDeckColors::primary().opacity(0.12)`, pas un beige/gray en dur
+- Vérifier mentalement sur **dark + light** (ex. Dark et Solarized Light)
+
+## Rappel adabraka
+
+Dropdowns / pickers / inputs : préférer `Select`, `Combobox`, `Input`, `Button` —
+voir `.agents/ui-components.md`.

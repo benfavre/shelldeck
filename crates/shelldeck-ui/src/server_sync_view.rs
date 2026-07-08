@@ -1,4 +1,5 @@
 use crate::scale::px;
+use adabraka_ui::components::select::{Select, SelectOption};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::models::connection::Connection;
@@ -105,8 +106,8 @@ pub struct ServerSyncView {
     pub wizard_options: SyncOptions,
     pub active_operation: Option<SyncOperation>,
     pub log_lines: Vec<String>,
-    source_picker_open: bool,
-    dest_picker_open: bool,
+    source_select: Entity<Select<Uuid>>,
+    dest_select: Entity<Select<Uuid>>,
     pub log_panel_height: f32,
     pub log_panel_resizing: bool,
     focus_handle: FocusHandle,
@@ -118,6 +119,11 @@ impl EventEmitter<ServerSyncEvent> for ServerSyncView {}
 
 impl ServerSyncView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let parent = cx.entity();
+        let source_select =
+            Self::build_connection_select(PanelSide::Source, &[], None, parent.clone(), cx);
+        let dest_select =
+            Self::build_connection_select(PanelSide::Destination, &[], None, parent, cx);
         Self {
             source_panel: ServerPanelState::new(),
             dest_panel: ServerPanelState::new(),
@@ -130,8 +136,8 @@ impl ServerSyncView {
             wizard_options: SyncOptions::default(),
             active_operation: None,
             log_lines: Vec::new(),
-            source_picker_open: false,
-            dest_picker_open: false,
+            source_select,
+            dest_select,
             log_panel_height: 200.0,
             log_panel_resizing: false,
             focus_handle: cx.focus_handle(),
@@ -157,15 +163,16 @@ impl ServerSyncView {
         self.dest_panel.discovery_resizing = false;
     }
 
-    pub fn set_connections(&mut self, connections: Vec<Connection>) {
+    pub fn set_connections(&mut self, connections: Vec<Connection>, cx: &mut Context<Self>) {
         self.connections = connections;
+        self.refresh_connection_selects(cx);
     }
 
     pub fn set_profiles(&mut self, profiles: Vec<SyncProfile>) {
         self.profiles = profiles;
     }
 
-    pub fn load_profile(&mut self, profile_id: Uuid) {
+    pub fn load_profile(&mut self, profile_id: Uuid, cx: &mut Context<Self>) {
         self.selected_profile = Some(profile_id);
         if let Some(profile) = self.profiles.iter().find(|p| p.id == profile_id) {
             // Set source connection
@@ -200,6 +207,7 @@ impl ServerSyncView {
             self.wizard_items = profile.items.clone();
             self.wizard_options = profile.options.clone();
         }
+        self.refresh_connection_selects(cx);
     }
 
     pub fn set_file_entries(&mut self, panel: PanelSide, path: String, entries: Vec<FileEntry>) {
@@ -270,7 +278,13 @@ impl ServerSyncView {
             .bg(bg_secondary());
 
         // Left side: title + profile selector
-        let mut left = div().flex().items_center().gap(px(12.0));
+        let mut left = div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .flex_grow()
+            .min_w(px(0.0))
+            .overflow_hidden();
         left = left.child(
             div()
                 .text_size(px(16.0))
@@ -281,7 +295,12 @@ impl ServerSyncView {
 
         // Profile dropdown
         if !self.profiles.is_empty() {
-            let mut profile_section = div().flex().items_center().gap(px(4.0));
+            let mut profile_section = div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .min_w(px(0.0))
+                .overflow_hidden();
             for profile in &self.profiles {
                 let pid = profile.id;
                 let pname = profile.name.clone();
@@ -292,12 +311,15 @@ impl ServerSyncView {
                             "profile-{}",
                             pid
                         ))))
+                        .max_w(px(180.0))
                         .px(px(8.0))
                         .py(px(4.0))
                         .rounded(px(6.0))
                         .border_1()
                         .text_size(px(11.0))
                         .cursor_pointer()
+                        .overflow_hidden()
+                        .truncate()
                         .when(is_active, |el| {
                             el.border_color(ShellDeckColors::primary())
                                 .bg(ShellDeckColors::primary().opacity(0.1))
@@ -310,7 +332,7 @@ impl ServerSyncView {
                                 .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.load_profile(pid);
+                            this.load_profile(pid, cx);
                             cx.notify();
                         }))
                         .child(pname),
@@ -322,7 +344,11 @@ impl ServerSyncView {
         toolbar = toolbar.child(left);
 
         // Right side: buttons
-        let mut right = div().flex().items_center().gap(px(8.0));
+        let mut right = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .flex_shrink_0();
 
         // Save Profile button
         if both_connected {
@@ -421,272 +447,114 @@ impl ServerSyncView {
     }
 
     // -----------------------------------------------------------------------
-    // Connection picker
+    // Connection picker (adabraka-ui Select — see .agents/ui-components.md)
     // -----------------------------------------------------------------------
+    fn connection_select_options(connections: &[Connection]) -> Vec<SelectOption<Uuid>> {
+        let mut options = vec![SelectOption::new(LOCAL_MACHINE_ID, "Local Machine")
+            .with_group("Local")
+            .with_icon("icons/lucide/user.svg")];
+        for conn in connections {
+            let label = format!("{} — {}", conn.display_name(), conn.hostname);
+            options.push(
+                SelectOption::new(conn.id, label)
+                    .with_group("Connections")
+                    .with_icon("icons/lucide/server.svg"),
+            );
+        }
+        options
+    }
+
+    fn build_connection_select(
+        side: PanelSide,
+        connections: &[Connection],
+        selected_id: Option<Uuid>,
+        parent: Entity<ServerSyncView>,
+        cx: &mut Context<ServerSyncView>,
+    ) -> Entity<Select<Uuid>> {
+        let options = Self::connection_select_options(connections);
+        let selected_index = selected_id.and_then(|id| options.iter().position(|o| o.value == id));
+        let placeholder = match side {
+            PanelSide::Source => "Select Source...",
+            PanelSide::Destination => "Select Destination...",
+        };
+        cx.new(|select_cx| {
+            Select::new(select_cx)
+                .options(options)
+                .selected_index(selected_index)
+                .placeholder(placeholder)
+                .searchable(true)
+                .on_change({
+                    move |conn_id, _window, cx| {
+                        parent.update(cx, |view, cx| {
+                            view.on_connection_picked(side, *conn_id, cx);
+                        });
+                    }
+                })
+        })
+    }
+
+    fn refresh_connection_selects(&mut self, cx: &mut Context<Self>) {
+        let parent = cx.entity();
+        let src_id = self.source_panel.connection_id;
+        let dest_id = self.dest_panel.connection_id;
+        let conns = self.connections.clone();
+        self.source_select = Self::build_connection_select(
+            PanelSide::Source,
+            &conns,
+            src_id,
+            parent.clone(),
+            cx,
+        );
+        self.dest_select = Self::build_connection_select(
+            PanelSide::Destination,
+            &conns,
+            dest_id,
+            parent,
+            cx,
+        );
+    }
+
+    fn on_connection_picked(&mut self, side: PanelSide, conn_id: Uuid, cx: &mut Context<Self>) {
+        let is_local = conn_id == LOCAL_MACHINE_ID;
+        let (name, path) = if is_local {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            ("Local Machine".to_string(), home)
+        } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+            (conn.display_name().to_string(), "/".to_string())
+        } else {
+            return;
+        };
+
+        let state = match side {
+            PanelSide::Source => &mut self.source_panel,
+            PanelSide::Destination => &mut self.dest_panel,
+        };
+        state.connection_id = Some(conn_id);
+        state.connection_name = name;
+        state.is_local = is_local;
+        state.current_path = path.clone();
+        state.file_entries.clear();
+        state.discovered_sites.clear();
+        state.discovered_databases.clear();
+        state.files_loading = true;
+
+        cx.emit(ServerSyncEvent::ListFiles {
+            connection_id: conn_id,
+            path,
+            panel: side,
+        });
+        cx.notify();
+    }
+
     fn render_connection_picker(
         &self,
         side: PanelSide,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let state = self.panel_state(side);
-        let label = if state.connection_name.is_empty() {
-            match side {
-                PanelSide::Source => "Select Source...",
-                PanelSide::Destination => "Select Destination...",
-            }
-        } else {
-            &state.connection_name
-        };
-        let is_local = state.is_local;
-
-        let picker_open = match side {
-            PanelSide::Source => self.source_picker_open,
-            PanelSide::Destination => self.dest_picker_open,
-        };
-
-        let mut picker = div().flex().flex_col().w_full().relative();
-
-        // Picker button
-        picker = picker.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "conn-picker-{:?}",
-                    side
-                ))))
-                .flex()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .px(px(10.0))
-                .py(px(8.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_primary())
-                .cursor_pointer()
-                .hover(|el| el.border_color(ShellDeckColors::primary()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    match side {
-                        PanelSide::Source => this.source_picker_open = !this.source_picker_open,
-                        PanelSide::Destination => this.dest_picker_open = !this.dest_picker_open,
-                    }
-                    cx.notify();
-                }))
-                .when(state.connection_id.is_some(), |el| {
-                    let indicator_color = if is_local {
-                        ShellDeckColors::success()
-                    } else {
-                        ShellDeckColors::primary()
-                    };
-                    el.child(
-                        div()
-                            .w(px(8.0))
-                            .h(px(8.0))
-                            .rounded_full()
-                            .bg(indicator_color),
-                    )
-                })
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(if state.connection_id.is_some() {
-                            ShellDeckColors::text_primary()
-                        } else {
-                            ShellDeckColors::text_muted()
-                        })
-                        .child(label.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(if picker_open { "▲" } else { "▼" }),
-                ),
-        );
-
-        // Dropdown list
-        if picker_open {
-            let mut dropdown = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "conn-dropdown-{:?}",
-                    side
-                ))))
-                .absolute()
-                .top(px(40.0))
-                .left_0()
-                .w_full()
-                .max_h(px(200.0))
-                .overflow_y_scroll()
-                .bg(bg_secondary())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(6.0))
-                .shadow_md();
-
-            // Local Machine option (always first)
-            let is_local_selected = state.is_local;
-            dropdown = dropdown.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-opt-local-{:?}",
-                        side
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .cursor_pointer()
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .when(is_local_selected, |el| {
-                        el.bg(ShellDeckColors::primary().opacity(0.08))
-                    })
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-                        let state = match side {
-                            PanelSide::Source => &mut this.source_panel,
-                            PanelSide::Destination => &mut this.dest_panel,
-                        };
-                        state.connection_id = Some(LOCAL_MACHINE_ID);
-                        state.connection_name = "Local Machine".to_string();
-                        state.is_local = true;
-                        state.current_path = home.clone();
-                        state.file_entries.clear();
-                        state.discovered_sites.clear();
-                        state.discovered_databases.clear();
-                        state.files_loading = true;
-
-                        match side {
-                            PanelSide::Source => this.source_picker_open = false,
-                            PanelSide::Destination => this.dest_picker_open = false,
-                        }
-
-                        cx.emit(ServerSyncEvent::ListFiles {
-                            connection_id: LOCAL_MACHINE_ID,
-                            path: home,
-                            panel: side,
-                        });
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded(px(4.0))
-                            .bg(ShellDeckColors::success().opacity(0.15))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::success())
-                            .child("~"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Local Machine"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child("This computer"),
-                            ),
-                    ),
-            );
-
-            // Remote connections
-            for conn in &self.connections {
-                let conn_id = conn.id;
-                let conn_name = conn.display_name().to_string();
-                let hostname = conn.hostname.clone();
-                let display = conn_name.clone();
-                dropdown = dropdown.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "conn-opt-{}-{:?}",
-                            conn_id, side
-                        ))))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .w_full()
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .cursor_pointer()
-                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let state = match side {
-                                PanelSide::Source => &mut this.source_panel,
-                                PanelSide::Destination => &mut this.dest_panel,
-                            };
-                            state.connection_id = Some(conn_id);
-                            state.connection_name = display.clone();
-                            state.is_local = false;
-                            state.current_path = "/".to_string();
-                            state.file_entries.clear();
-                            state.discovered_sites.clear();
-                            state.discovered_databases.clear();
-                            state.files_loading = true;
-
-                            match side {
-                                PanelSide::Source => this.source_picker_open = false,
-                                PanelSide::Destination => this.dest_picker_open = false,
-                            }
-
-                            cx.emit(ServerSyncEvent::ListFiles {
-                                connection_id: conn_id,
-                                path: "/".to_string(),
-                                panel: side,
-                            });
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded(px(4.0))
-                                .bg(ShellDeckColors::primary().opacity(0.15))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(12.0))
-                                .text_color(ShellDeckColors::primary())
-                                .child("@"),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(ShellDeckColors::text_primary())
-                                        .child(conn_name),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(ShellDeckColors::text_muted())
-                                        .child(hostname),
-                                ),
-                        ),
-                );
-            }
-
-            picker = picker.child(dropdown);
+        match side {
+            PanelSide::Source => self.source_select.clone(),
+            PanelSide::Destination => self.dest_select.clone(),
         }
-
-        picker
     }
 
     // -----------------------------------------------------------------------
@@ -700,8 +568,9 @@ impl ServerSyncView {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .px(px(8.0))
-            .py(px(4.0))
+            .px(px(10.0))
+            .pt(px(4.0))
+            .pb(px(6.0))
             .overflow_hidden()
             .w_full();
 
@@ -1290,37 +1159,50 @@ impl ServerSyncView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .px(px(10.0))
                     .py(px(6.0))
                     .border_b_1()
                     .border_color(accent_color.opacity(0.3))
-                    .bg(accent_color.opacity(0.05))
+                    .bg(accent_color.opacity(0.12))
                     .child(
                         div()
                             .w(px(3.0))
                             .h(px(14.0))
                             .rounded(px(2.0))
-                            .bg(accent_color),
+                            .bg(accent_color)
+                            .flex_shrink_0(),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(accent_color)
+                            .flex_shrink_0()
                             .child(label),
                     )
                     .child(
                         div()
+                            .flex_grow()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
+                            .truncate()
                             .child(format!("— {}", status_text)),
                     ),
             )
-            // Connection picker
+            // Connection picker — top padding separates it from the header band.
             .child(
                 div()
-                    .px(px(8.0))
-                    .pb(px(4.0))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .px(px(10.0))
+                    .pt(px(10.0))
+                    .pb(px(6.0))
                     .child(self.render_connection_picker(side, cx)),
             );
 
@@ -2405,12 +2287,6 @@ impl Render for ServerSyncView {
                 if event.keystroke.key.as_str() == "escape" {
                     if this.wizard_active && this.wizard_step != WizardStep::Executing {
                         this.wizard_active = false;
-                        cx.notify();
-                    } else if this.source_picker_open {
-                        this.source_picker_open = false;
-                        cx.notify();
-                    } else if this.dest_picker_open {
-                        this.dest_picker_open = false;
                         cx.notify();
                     }
                 }

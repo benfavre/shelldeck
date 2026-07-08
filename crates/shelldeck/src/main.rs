@@ -37,6 +37,8 @@ macro_rules! lucide_assets {
 lucide_assets!(
     "arrow-down",
     "arrow-up",
+    "arrow-left-right",
+    "box",
     "calendar",
     "check",
     "check-check",
@@ -45,10 +47,12 @@ lucide_assets!(
     "chevron-right",
     "chevron-up",
     "circle-alert",
+    "cloud",
     "circle-check",
     "circle-help",
     "clock",
     "copy",
+    "cpu",
     "database",
     "download",
     "ellipsis",
@@ -73,6 +77,7 @@ lucide_assets!(
     "refresh-cw",
     "reply",
     "search",
+    "scroll-text",
     "send",
     "server",
     "settings",
@@ -89,6 +94,45 @@ lucide_assets!(
     "x",
 );
 
+/// Embed Simple Icons SVGs at `icons/simple/{name}.svg` (brand / tech marks).
+/// Sourced from https://github.com/LitoMore/simple-icons-cdn — GPUI tints via
+/// `text_color` like Lucide.
+macro_rules! simple_assets {
+    ($($name:literal),* $(,)?) => {
+        fn simple_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(
+                    concat!("icons/simple/", $name, ".svg") => Some(include_bytes!(concat!(
+                        "../assets/icons/simple/",
+                        $name,
+                        ".svg"
+                    ))),
+                )*
+                _ => None,
+            }
+        }
+
+        fn simple_asset_paths() -> Vec<SharedString> {
+            vec![$(SharedString::from(concat!("icons/simple/", $name, ".svg")),)*]
+        }
+    };
+}
+
+simple_assets!(
+    "bun",
+    "docker",
+    "dockercompose",
+    "gnubash",
+    "linux",
+    "mysql",
+    "nginx",
+    "nodedotjs",
+    "php",
+    "postgresql",
+    "python",
+    "systemd",
+);
+
 /// In-process asset source that ships a small set of images embedded in the
 /// binary (see `assets/images/`). GPUI's `svg()` element requires an
 /// `AssetSource` to resolve `.path("images/…")`.
@@ -99,12 +143,20 @@ impl AssetSource for Assets {
         let path = path.strip_prefix('/').unwrap_or(path);
         let bytes: &'static [u8] = match path {
             "images/wd29-logo.svg" => include_bytes!("../assets/images/wd29-logo.svg"),
-            // Filled brand icon: `currentColor` fills the rounded square, prompt
-            // stays white. Use with `.text_color(ShellDeckColors::primary())`.
+            // Monolith app icon (Dark, coins arrondis, expression >_<).
             "images/shelldeck-icon.svg" => include_bytes!("../assets/images/shelldeck-icon.svg"),
-            // Outline monochrome mark, everything `currentColor`. Use when you
-            // want the whole logo tinted with one color (e.g. muted footer).
+            // Monochrome mark — cadre evenodd + visage, `currentColor`.
             "images/shelldeck-mark.svg" => include_bytes!("../assets/images/shelldeck-mark.svg"),
+            // Hi-res Monolith source for future expression swaps (neutral, wink, …).
+            "images/shelldeck-monolith.svg" => {
+                include_bytes!("../assets/images/shelldeck-monolith.svg")
+            }
+            "images/shelldeck-monolith-neutral.svg" => {
+                include_bytes!("../assets/images/shelldeck-monolith-neutral.svg")
+            }
+            "images/shelldeck-monolith-wink.svg" => {
+                include_bytes!("../assets/images/shelldeck-monolith-wink.svg")
+            }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
             // Vertical three-dot "kebab" menu handle used by list row actions.
@@ -129,6 +181,9 @@ impl AssetSource for Assets {
             "images/logo-google.svg" => include_bytes!("../assets/images/logo-google.svg"),
             "images/logo-1clicpro.svg" => include_bytes!("../assets/images/logo-1clicpro.svg"),
             _ => {
+                if let Some(bytes) = simple_bytes(path) {
+                    return Ok(Some(Cow::Borrowed(bytes)));
+                }
                 if let Some(bytes) = lucide_bytes(path) {
                     return Ok(Some(Cow::Borrowed(bytes)));
                 }
@@ -161,6 +216,7 @@ impl AssetSource for Assets {
             SharedString::from("images/logo-google.svg"),
             SharedString::from("images/logo-1clicpro.svg"),
         ];
+        paths.extend(simple_asset_paths());
         paths.extend(lucide_asset_paths());
         Ok(paths)
     }
@@ -182,6 +238,8 @@ fn main() -> Result<()> {
         tracing::warn!("Failed to load config, using defaults: {}", e);
         AppConfig::default()
     });
+
+    shelldeck_ui::i18n::apply_ui_language(&config.general.ui_language);
 
     // Parse SSH config
     let ssh_connections = parse_ssh_config().unwrap_or_else(|e| {

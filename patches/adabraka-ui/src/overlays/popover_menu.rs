@@ -2,8 +2,7 @@
 
 use crate::components::icon::Icon;
 use crate::theme::use_theme;
-use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{prelude::*, *};
 use std::rc::Rc;
 
 pub struct PopoverMenuItem {
@@ -48,6 +47,7 @@ impl PopoverMenuItem {
 pub struct PopoverMenu {
     position: Point<Pixels>,
     items: Vec<PopoverMenuItem>,
+    max_height: Option<Pixels>,
     on_close: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
@@ -57,9 +57,16 @@ impl PopoverMenu {
         Self {
             position,
             items,
+            max_height: None,
             on_close: None,
             style: StyleRefinement::default(),
         }
+    }
+
+    /// Cap menu height and scroll when the item list is long (connection pickers, etc.).
+    pub fn max_height(mut self, height: Pixels) -> Self {
+        self.max_height = Some(height);
+        self
     }
 
     pub fn on_close<F>(mut self, handler: F) -> Self
@@ -117,48 +124,62 @@ impl RenderOnce for PopoverMenu {
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
                                 })
-                                .children(self.items.into_iter().map(|item| {
-                                    let on_click = item.on_click;
-                                    let disabled = item.disabled;
-
-                                    div()
+                                .child({
+                                    let items = div()
+                                        .id("popover-menu-items")
                                         .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .px(px(12.0))
-                                        .py(px(8.0))
-                                        .rounded(px(4.0))
-                                        .cursor(if disabled {
-                                            CursorStyle::Arrow
-                                        } else {
-                                            CursorStyle::PointingHand
-                                        })
-                                        .when(!disabled, |this| {
-                                            this.hover(|style| {
-                                                style.bg(theme.tokens.accent.opacity(0.1))
-                                            })
-                                        })
-                                        .when(disabled, |this| this.opacity(0.5))
-                                        .when_some(item.icon, |this, icon_name| {
-                                            this.child(
-                                                Icon::new(icon_name)
-                                                    .size(px(16.0))
-                                                    .color(theme.tokens.foreground),
-                                            )
-                                        })
-                                        .child(div().text_size(px(14.0)).child(item.label))
-                                        .when(!disabled && on_click.is_some(), |this| {
-                                            this.on_mouse_down(
-                                                MouseButton::Left,
-                                                move |_, window, cx| {
-                                                    if let Some(ref handler) = on_click {
-                                                        handler(window, cx);
-                                                    }
-                                                    cx.stop_propagation();
-                                                },
-                                            )
-                                        })
-                                })),
+                                        .flex_col()
+                                        .children(
+                                        self.items.into_iter().map(|item| {
+                                            let on_click = item.on_click;
+                                            let disabled = item.disabled;
+
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .px(px(12.0))
+                                                .py(px(8.0))
+                                                .rounded(px(4.0))
+                                                .cursor(if disabled {
+                                                    CursorStyle::Arrow
+                                                } else {
+                                                    CursorStyle::PointingHand
+                                                })
+                                                .when(!disabled, |this| {
+                                                    this.hover(|style| {
+                                                        style.bg(theme.tokens.accent.opacity(0.1))
+                                                    })
+                                                })
+                                                .when(disabled, |this| this.opacity(0.5))
+                                                .when_some(item.icon, |this, icon_name| {
+                                                    this.child(
+                                                        Icon::new(icon_name)
+                                                            .size(px(16.0))
+                                                            .color(theme.tokens.foreground),
+                                                    )
+                                                })
+                                                .child(div().text_size(px(14.0)).child(item.label))
+                                                .when(!disabled && on_click.is_some(), |this| {
+                                                    this.on_mouse_down(
+                                                        MouseButton::Left,
+                                                        move |_, window, cx| {
+                                                            if let Some(ref handler) = on_click {
+                                                                handler(window, cx);
+                                                            }
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                })
+                                        }),
+                                    );
+
+                                    if let Some(max_h) = self.max_height {
+                                        items.max_h(max_h).overflow_y_scroll()
+                                    } else {
+                                        items
+                                    }
+                                }),
                         ),
                     ),
                 )

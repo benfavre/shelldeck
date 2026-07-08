@@ -1,0 +1,38 @@
+---
+description: Préférer adabraka-ui aux div GPUI custom dans shelldeck-ui
+globs: crates/shelldeck-ui/**
+alwaysApply: false
+---
+
+# UI components
+
+> Source canonique : `.agents/ui-components.md`
+
+**Prefer `adabraka-ui` components over hand-rolled `div`s.** Only build a
+custom widget when adabraka-ui genuinely has no equivalent.
+
+## Must-do
+
+1. **Search adabraka first** — `patches/adabraka-ui/` (`Dialog`, `Sheet`,
+   `Select`, `Combobox`, `PopoverMenu`, `ConfirmDialog`, …).
+2. **Centered modals / forms** → **`Dialog`**, not new `*-form-overlay` stacks.
+3. **Connection / server pickers** → **`Select` / `Combobox`** (see
+   `connection_combobox.rs`).
+4. Hand-roll only as exception — one-line comment *why* + link to backlog item.
+
+## Modals (critical)
+
+Do **not** ship `absolute()` backdrop + centered `div` without `max_h` + scroll
+body. Footer buttons get clipped (incident: `script_form` "New Script").
+
+Target: `adabraka_ui::overlays::dialog::Dialog` (`max_h` ~85vh built-in).
+Interim legacy pattern: `.agents/overflow.md` § Centered modals.
+
+## Backlog highlights
+
+| Area | Target |
+|------|--------|
+| Form modals (script, port forward, login, …) | `Dialog` |
+| Side panels | `Sheet` |
+| Menus / kebabs | `PopoverMenu` |
+| Connection pickers | ✅ `Combobox` / `Select` done |

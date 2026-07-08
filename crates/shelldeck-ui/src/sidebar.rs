@@ -9,6 +9,8 @@ use shelldeck_core::models::connection::{Connection, ConnectionStatus};
 use uuid::Uuid;
 
 use crate::command_palette::fuzzy_match;
+use crate::icons::lucide_icon;
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 /// Returns indices of matched characters in haystack for a fuzzy needle.
@@ -90,6 +92,42 @@ pub enum SidebarSection {
     Fleet,
     BextCloud,
     Settings,
+}
+
+impl SidebarSection {
+    /// Lucide slug for the Dev sidebar nav row (see `icons/lucide/` inventory).
+    pub fn lucide_icon(&self) -> &'static str {
+        match self {
+            SidebarSection::Connections => "server",
+            SidebarSection::Terminals => "terminal",
+            SidebarSection::Scripts => "scroll-text",
+            SidebarSection::PortForwards => "arrow-left-right",
+            SidebarSection::ServerSync => "refresh-cw",
+            SidebarSection::Sites => "globe",
+            SidebarSection::FileEditor => "pencil",
+            SidebarSection::JeanConsole => "cpu",
+            SidebarSection::Fleet => "box",
+            SidebarSection::BextCloud => "cloud",
+            SidebarSection::Settings => "settings",
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            SidebarSection::Connections => t!("sidebar.nav.connections"),
+            SidebarSection::Terminals => t!("sidebar.nav.terminals"),
+            SidebarSection::Scripts => t!("sidebar.nav.scripts"),
+            SidebarSection::PortForwards => t!("sidebar.nav.port_forwards"),
+            SidebarSection::ServerSync => t!("sidebar.nav.server_sync"),
+            SidebarSection::Sites => t!("sidebar.nav.sites"),
+            SidebarSection::FileEditor => t!("sidebar.nav.editor"),
+            SidebarSection::JeanConsole => t!("sidebar.nav.jean"),
+            SidebarSection::Fleet => t!("sidebar.nav.fleet"),
+            SidebarSection::BextCloud => t!("sidebar.nav.bext"),
+            SidebarSection::Settings => t!("sidebar.nav.settings"),
+        }
+        .to_string()
+    }
 }
 
 /// Events emitted by the sidebar
@@ -232,11 +270,17 @@ impl SidebarView {
     fn render_nav_item(
         &self,
         section: SidebarSection,
-        label: &str,
         count: Option<usize>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let label = section.label();
         let is_active = self.active_section == section;
+        let icon = section.lucide_icon();
+        let icon_color = if is_active {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::text_muted()
+        };
 
         div()
             .id(ElementId::from(SharedString::from(format!(
@@ -247,7 +291,7 @@ impl SidebarView {
             .justify_between()
             .w_full()
             .overflow_hidden()
-            .px(px(12.0))
+            .px(px(10.0))
             .py(px(6.0))
             .rounded(px(6.0))
             .cursor_pointer()
@@ -266,11 +310,20 @@ impl SidebarView {
             })
             .child(
                 div()
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .whitespace_nowrap()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
                     .min_w(px(0.0))
-                    .child(label.to_string()),
+                    .overflow_hidden()
+                    .child(lucide_icon(icon, 14.0, icon_color))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(label.to_string()),
+                    ),
             )
             .when_some(count, |el, count| {
                 el.child(
@@ -324,7 +377,7 @@ impl SidebarView {
         // had with the fake-input version.
         let input = Input::new(&self.search_state)
             .size(InputSize::Sm)
-            .placeholder("Filter hosts...")
+            .placeholder(t!("sidebar.filter_placeholder").to_string())
             .clearable(true)
             .prefix(
                 svg()
@@ -600,13 +653,11 @@ impl Render for SidebarView {
             .py(px(8.0))
             .child(self.render_nav_item(
                 SidebarSection::Connections,
-                "Connections",
                 Some(connected_count),
                 cx,
             ))
             .child(self.render_nav_item(
                 SidebarSection::Terminals,
-                "Terminals",
                 if self.terminal_tab_count > 0 {
                     Some(self.terminal_tab_count)
                 } else {
@@ -614,31 +665,30 @@ impl Render for SidebarView {
                 },
                 cx,
             ))
-            .child(self.render_nav_item(SidebarSection::Scripts, "Scripts", None, cx))
-            .child(self.render_nav_item(SidebarSection::PortForwards, "Port Forwards", None, cx))
-            .child(self.render_nav_item(SidebarSection::ServerSync, "Server Sync", None, cx))
-            .child(self.render_nav_item(SidebarSection::Sites, "Sites", None, cx))
-            .child(self.render_nav_item(SidebarSection::FileEditor, "Editor", None, cx));
+            .child(self.render_nav_item(SidebarSection::Scripts, None, cx))
+            .child(self.render_nav_item(SidebarSection::PortForwards, None, cx))
+            .child(self.render_nav_item(SidebarSection::ServerSync, None, cx))
+            .child(self.render_nav_item(SidebarSection::Sites, None, cx))
+            .child(self.render_nav_item(SidebarSection::FileEditor, None, cx));
         if self.jean_available {
             nav = nav.child(self.render_nav_item(
                 SidebarSection::JeanConsole,
-                "JeanClaude",
                 None,
                 cx,
             ));
         }
         if self.fleet_available {
-            nav = nav.child(self.render_nav_item(SidebarSection::Fleet, "Fleet", None, cx));
+            nav = nav.child(self.render_nav_item(SidebarSection::Fleet, None, cx));
         }
-        nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, "bext Cloud", None, cx));
-        nav = nav.child(self.render_nav_item(SidebarSection::Settings, "Settings", None, cx));
+        nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, None, cx));
+        nav = nav.child(self.render_nav_item(SidebarSection::Settings, None, cx));
 
         // Scrollable host list (fills remaining space, wrapped in scrollable_vertical below)
         let mut host_list = div()
             .flex()
             .flex_col()
             .id("sidebar-host-list")
-            .child(Self::render_section_header("Hosts"))
+            .child(Self::render_section_header(&t!("sidebar.hosts").to_string()))
             .child(self.render_search_bar(cx));
 
         // Ungrouped connections (with highlights)
@@ -664,7 +714,7 @@ impl Render for SidebarView {
                     .py(px(16.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No matching hosts"),
+                    .child(t!("sidebar.no_matches").to_string()),
             );
         }
 
@@ -684,7 +734,13 @@ impl Render for SidebarView {
             .on_click(cx.listener(|_this, _event: &ClickEvent, _window, cx| {
                 cx.emit(SidebarEvent::AddConnection);
             }))
-            .child(Button::new("add-connection", "+ Add Connection").variant(ButtonVariant::Ghost));
+            .child(
+                Button::new(
+                    "add-connection",
+                    t!("sidebar.add_connection").to_string(),
+                )
+                .variant(ButtonVariant::Ghost),
+            );
 
         // Invisible resize hit-area overlapping the right border.
         let resize_handle = div()
@@ -749,9 +805,9 @@ impl Render for SidebarView {
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_muted())
                     .child(if nav_collapsed {
-                        "SHOW NAV"
+                        t!("sidebar.show_nav").to_string()
                     } else {
-                        "HIDE NAV"
+                        t!("sidebar.hide_nav").to_string()
                     }),
             );
 

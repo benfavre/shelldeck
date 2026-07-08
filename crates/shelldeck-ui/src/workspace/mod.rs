@@ -45,6 +45,7 @@ use crate::support_view::{issue_status_badge, priority_badge, SupportView, Suppo
 use crate::template_browser::TemplateBrowser;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::ShellDeckColors;
+use crate::t;
 use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::VariablePrompt;
 use shelldeck_update::{AutoUpdateEvent, AutoUpdateStatus, AutoUpdater};
@@ -328,6 +329,8 @@ impl Workspace {
         connections: Vec<Connection>,
         store: ConnectionStore,
     ) -> Self {
+        crate::i18n::apply_ui_language(&config.general.ui_language);
+
         // Restore the persisted active-site filter (if any) so the sidebar
         // opens scoped to the last-selected site.
         let initial_site_filter = config
@@ -365,7 +368,7 @@ impl Workspace {
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
             let mut view = ServerSyncView::new(cx);
-            view.set_connections(connections.clone());
+            view.set_connections(connections.clone(), cx);
             view.set_profiles(store.sync_profiles.clone());
             view
         });
@@ -977,41 +980,43 @@ impl Workspace {
         match event {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
-                // Keep the in-memory config in sync so runtime behavior
-                // (notifications gate, tmux auto-attach, etc.) reads current values.
-                self.app_config = config.clone();
+                // Merge settings-owned slices only — see `.agents/session-state.md`.
+                self.app_config.general = config.general.clone();
+                self.app_config.terminal = config.terminal.clone();
                 // Apply terminal settings to running view
-                let terminal_theme = TerminalTheme::by_name(&config.terminal.theme);
+                let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_font_size(config.terminal.font_size);
-                    terminal.set_font_family(config.terminal.font_family.clone());
-                    terminal.set_cursor_style(&config.terminal.cursor_style);
-                    terminal.set_cursor_blink(config.terminal.cursor_blink);
-                    terminal.set_scrollback_lines(config.terminal.scrollback_lines);
+                    terminal.set_font_size(self.app_config.terminal.font_size);
+                    terminal.set_font_family(self.app_config.terminal.font_family.clone());
+                    terminal.set_cursor_style(&self.app_config.terminal.cursor_style);
+                    terminal.set_cursor_blink(self.app_config.terminal.cursor_blink);
+                    terminal.set_scrollback_lines(self.app_config.terminal.scrollback_lines);
                     terminal.set_terminal_theme(&terminal_theme);
                     cx.notify();
                 });
                 // Apply sidebar width
-                self.sidebar_width = config.general.sidebar_width;
+                self.sidebar_width = self.app_config.general.sidebar_width;
                 self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(config.general.sidebar_width);
+                    terminal.set_sidebar_width(self.app_config.general.sidebar_width);
                 });
                 // Apply application UI font (cascades to all child views on re-render)
-                self.ui_font_family = config.general.ui_font_family.clone();
-                self.ui_font_size = config.general.ui_font_size;
+                self.ui_font_family = self.app_config.general.ui_font_family.clone();
+                self.ui_font_size = self.app_config.general.ui_font_size;
                 // The file editor's text scales with the app font size too.
-                let ed_size = config.general.ui_font_size;
-                let ed_family = config.general.ui_font_family.clone();
+                let ed_size = self.app_config.general.ui_font_size;
+                let ed_family = self.app_config.general.ui_font_family.clone();
                 self.file_editor.update(cx, |ed, cx| {
                     ed.set_font_size(ed_size);
                     ed.set_font_family(ed_family);
                     cx.notify();
                 });
                 // Apply auto-update preference
-                let auto_update = config.general.auto_update;
+                let auto_update = self.app_config.general.auto_update;
                 self.auto_updater.update(cx, |updater, cx| {
                     updater.set_enabled(auto_update, cx);
                 });
+                crate::i18n::apply_ui_language(&self.app_config.general.ui_language);
+                self.refresh_command_palette(cx);
                 cx.notify();
             }
             SettingsEvent::ThemeChanged(pref) => {
@@ -1338,8 +1343,8 @@ impl Workspace {
             sidebar.set_connections(conns.clone());
             cx.notify();
         });
-        self.server_sync.update(cx, |view, _| {
-            view.set_connections(conns.clone());
+        self.server_sync.update(cx, |view, cx| {
+            view.set_connections(conns.clone(), cx);
         });
         self.sites.update(cx, |view, _| {
             view.set_connections(conns);
@@ -1388,6 +1393,7 @@ impl Workspace {
                         ws.activate_current_mode(cx);
                     }
                     Err(e) if cloud_account::is_auth_rejected(&e) => {
+                        ws.invalidate_cloud_session(cx);
                         ws.account_status = AccountStatus::Rejected;
                         ws.show_toast(
                             "Session Inklura expirée — reconnectez-vous depuis le menu compte.",
@@ -1566,6 +1572,7 @@ impl Workspace {
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save config after login: {}", e);
         }
+        self.sync_settings_config(cx);
         self.account_status = AccountStatus::Ok;
         self.login_form = None;
         self._login_form_sub = None;
@@ -1616,6 +1623,43 @@ impl Workspace {
         .detach();
     }
 
+    /// Keep `SettingsView`'s config snapshot aligned with `app_config`.
+    /// Settings persists to disk on many small edits (sidebar nav collapse,
+    /// font size, …) and emits `ConfigChanged` — if its copy is stale it
+    /// would resurrect a logged-out session. Call after login/logout/session
+    /// invalidation and whenever the workspace mutates account/cloud_sync.
+    fn sync_settings_config(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.app_config.clone();
+        self.settings.update(cx, |settings, cx| {
+            settings.config = snapshot;
+            cx.notify();
+        });
+    }
+
+    /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
+    fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
+        self.app_config.account = None;
+        self.app_config.cloud_sync.token = String::new();
+        self.app_config.cloud_sync.enabled = false;
+        self.app_config.cloud_sync.active_site_id = None;
+        self.app_config.cloud_sync.active_site_label = None;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save config after session invalidation: {}", e);
+        }
+        self.sync_settings_config(cx);
+        self.account_status = AccountStatus::Unknown;
+        self.account_menu_open = false;
+        self.site_directory = None;
+        self.site_menu_open = false;
+        self._support_poll_task = None;
+        self._issues_poll = None;
+        self.sidebar.update(cx, |s, cx| {
+            s.set_site_filter(None);
+            cx.notify();
+        });
+        self.activate_current_mode(cx);
+    }
+
     /// Sign out: revoke the token server-side (best-effort), then clear local
     /// account state and disable cloud sync.
     fn logout_account(&mut self, cx: &mut Context<Self>) {
@@ -1629,24 +1673,7 @@ impl Workspace {
                 .detach();
         }
 
-        self.app_config.account = None;
-        self.app_config.cloud_sync.token = String::new();
-        self.app_config.cloud_sync.enabled = false;
-        self.app_config.cloud_sync.active_site_id = None;
-        self.app_config.cloud_sync.active_site_label = None;
-        if let Err(e) = self.app_config.save() {
-            tracing::error!("Failed to save config after logout: {}", e);
-        }
-        self.account_status = AccountStatus::Unknown;
-        self.account_menu_open = false;
-        self.site_directory = None;
-        self.site_menu_open = false;
-        // Logged out → classic Dev surface; stop the support poll.
-        self._support_poll_task = None;
-        self.sidebar.update(cx, |s, cx| {
-            s.set_site_filter(None);
-            cx.notify();
-        });
+        self.invalidate_cloud_session(cx);
         self.show_toast("Déconnecté d'Inklura Manage.", ToastLevel::Info, cx);
         cx.notify();
     }
@@ -1775,72 +1802,166 @@ impl Workspace {
     /// manage-area entries, which [`refresh_command_palette`] appends).
     fn base_palette_actions() -> Vec<PaletteAction> {
         let mut actions = vec![
-            PaletteAction::new("New Terminal", Some("Ctrl+T"), Box::new(NewTerminal)),
-            PaletteAction::new("Toggle Sidebar", Some("Ctrl+B"), Box::new(ToggleSidebar)),
-            PaletteAction::new("Open Settings", Some("Ctrl+,"), Box::new(OpenSettings)),
-            PaletteAction::new("Close Tab", Some("Ctrl+W"), Box::new(CloseTab)),
-            PaletteAction::new("Next Tab", Some("Ctrl+Tab"), Box::new(NextTab)),
-            PaletteAction::new("Previous Tab", Some("Ctrl+Shift+Tab"), Box::new(PrevTab)),
-            PaletteAction::new("Quit", Some("Ctrl+Q"), Box::new(Quit)),
             PaletteAction::new(
-                "Browse Script Templates",
+                t!("palette.new_terminal").to_string(),
+                Some("Ctrl+T"),
+                "terminal",
+                Box::new(NewTerminal),
+            ),
+            PaletteAction::new(
+                t!("palette.toggle_sidebar").to_string(),
+                Some("Ctrl+B"),
+                "chevron-left",
+                Box::new(ToggleSidebar),
+            ),
+            PaletteAction::new(
+                t!("palette.open_settings").to_string(),
+                Some("Ctrl+,"),
+                "settings",
+                Box::new(OpenSettings),
+            ),
+            PaletteAction::new(
+                t!("palette.close_tab").to_string(),
+                Some("Ctrl+W"),
+                "x",
+                Box::new(CloseTab),
+            ),
+            PaletteAction::new(
+                t!("palette.next_tab").to_string(),
+                Some("Ctrl+Tab"),
+                "chevron-right",
+                Box::new(NextTab),
+            ),
+            PaletteAction::new(
+                t!("palette.prev_tab").to_string(),
+                Some("Ctrl+Shift+Tab"),
+                "chevron-left",
+                Box::new(PrevTab),
+            ),
+            PaletteAction::new(
+                t!("palette.quit").to_string(),
+                Some("Ctrl+Q"),
+                "x",
+                Box::new(Quit),
+            ),
+            PaletteAction::new(
+                t!("palette.browse_templates").to_string(),
                 None,
+                "scroll-text",
                 Box::new(OpenTemplateBrowser),
             ),
-            PaletteAction::new("New Script", None, Box::new(NewScript)),
-            PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
-            PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
             PaletteAction::new(
-                "Open File Editor",
+                t!("palette.new_script").to_string(),
+                None,
+                "plus",
+                Box::new(NewScript),
+            ),
+            PaletteAction::new(
+                t!("palette.open_server_sync").to_string(),
+                None,
+                "refresh-cw",
+                Box::new(OpenServerSync),
+            ),
+            PaletteAction::new(
+                t!("palette.open_sites").to_string(),
+                None,
+                "globe",
+                Box::new(OpenSites),
+            ),
+            PaletteAction::new(
+                t!("palette.open_file_editor").to_string(),
                 Some("Ctrl+E"),
+                "pencil",
                 Box::new(OpenFileEditorView),
             ),
-            PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
-            PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
             PaletteAction::new(
-                "JeanClaude : ouvrir la console",
+                t!("palette.cloud_sync_now").to_string(),
                 None,
+                "refresh-cw",
+                Box::new(CloudSyncNow),
+            ),
+            PaletteAction::new(
+                t!("palette.switch_site").to_string(),
+                None,
+                "globe",
+                Box::new(SwitchSite),
+            ),
+            PaletteAction::new(
+                t!("palette.jean_open").to_string(),
+                None,
+                "cpu",
                 Box::new(OpenJeanConsole),
             ),
             PaletteAction::new(
-                "JeanClaude : pause / reprendre",
+                t!("palette.jean_pause").to_string(),
                 None,
+                "clock",
                 Box::new(JeanTogglePause),
             ),
-            PaletteAction::new("Fleet : ouvrir la flotte Jean", None, Box::new(OpenFleet)),
             PaletteAction::new(
-                "Fleet : activer / désactiver ce runtime",
+                t!("palette.fleet_open").to_string(),
                 None,
+                "box",
+                Box::new(OpenFleet),
+            ),
+            PaletteAction::new(
+                t!("palette.fleet_runtime").to_string(),
+                None,
+                "cpu",
                 Box::new(ToggleJeanRuntime),
             ),
-            PaletteAction::new("Nouvelle demande", None, Box::new(NewRequest)),
-            PaletteAction::new("Demandes (support)", None, Box::new(OpenSupportRequests)),
-            PaletteAction::new("bext Cloud : ouvrir", None, Box::new(OpenBextCloud)),
             PaletteAction::new(
-                "bext Cloud : se connecter",
+                t!("palette.new_request").to_string(),
                 None,
+                "plus",
+                Box::new(NewRequest),
+            ),
+            PaletteAction::new(
+                t!("palette.support_requests").to_string(),
+                None,
+                "inbox",
+                Box::new(OpenSupportRequests),
+            ),
+            PaletteAction::new(
+                t!("palette.bext_open").to_string(),
+                None,
+                "cloud",
+                Box::new(OpenBextCloud),
+            ),
+            PaletteAction::new(
+                t!("palette.bext_connect").to_string(),
+                None,
+                "key",
                 Box::new(ConnectBextCloud),
             ),
-            PaletteAction::new("bext Cloud : nouveau site", None, Box::new(OpenBextCloud)),
+            PaletteAction::new(
+                t!("palette.bext_new_site").to_string(),
+                None,
+                "cloud",
+                Box::new(OpenBextCloud),
+            ),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
-                &format!("Mode : {}", m.label()),
+                t!("palette.mode", mode = m.label()).to_string(),
                 None,
+                "shield",
                 Box::new(SetAppMode { mode: m }),
             ));
         }
         for pref in ThemePreference::all() {
             actions.push(PaletteAction::new(
-                &format!("Theme: {}", pref.display_name()),
+                t!("palette.theme", name = pref.display_name()).to_string(),
                 None,
+                "settings",
                 Box::new(ApplyAppTheme { pref: pref.clone() }),
             ));
         }
         for theme in TerminalTheme::builtins() {
             actions.push(PaletteAction::new(
-                &format!("Terminal Theme: {}", theme.name),
+                t!("palette.terminal_theme", name = theme.name).to_string(),
                 None,
+                "terminal",
                 Box::new(ApplyTerminalTheme { name: theme.name }),
             ));
         }
@@ -1856,8 +1977,14 @@ impl Workspace {
             let label = site.display_label();
             for area in &dir.areas {
                 actions.push(PaletteAction::new(
-                    &format!("Site actif ({}) : {}", label, area.label),
+                    t!(
+                        "palette.active_site",
+                        site = label,
+                        area = area.label.as_str()
+                    )
+                    .to_string(),
                     None,
+                    "external-link",
                     Box::new(OpenManageArea {
                         path: area.path.clone(),
                     }),
@@ -4318,7 +4445,7 @@ impl Workspace {
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_dim)
-                        .child("Se connecter"),
+                        .child(crate::t!("account.sign_in").to_string()),
                 );
         }
 
@@ -4825,7 +4952,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child("Se connecter")
+                    .child(crate::t!("account.sign_in").to_string())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.show_login_form(cx);
                     })),

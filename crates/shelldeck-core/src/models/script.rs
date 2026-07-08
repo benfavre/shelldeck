@@ -61,20 +61,39 @@ impl ScriptLanguage {
         }
     }
 
-    /// Badge color as (r, g, b) for the UI.
+    /// Brand color (Simple Icons hex) as `(r, g, b)` for badges and icon tint.
     pub fn badge_color(&self) -> (u8, u8, u8) {
         match self {
-            Self::Shell => (74, 158, 64),                    // green
-            Self::Python => (55, 118, 171),                  // blue
-            Self::Node => (104, 159, 56),                    // olive green
-            Self::Bun => (251, 191, 36),                     // amber
-            Self::Php => (119, 97, 179),                     // purple
-            Self::Mysql | Self::Postgresql => (0, 136, 204), // blue
-            Self::Docker => (36, 150, 237),                  // docker blue
-            Self::DockerCompose => (36, 150, 237),
-            Self::Systemd => (200, 60, 60),     // red
-            Self::Nginx => (0, 150, 57),        // nginx green
-            Self::Custom(_) => (128, 128, 128), // gray
+            Self::Shell => (78, 170, 37),       // GNU Bash #4EAA25
+            Self::Python => (55, 118, 171),     // #3776AB
+            Self::Node => (95, 160, 78),        // Node.js #5FA04E
+            Self::Bun => (251, 191, 36),        // #FBBF24 (visible on dark; SI mark is #000)
+            Self::Php => (119, 123, 180),       // #777BB4
+            Self::Mysql => (68, 121, 161),      // #4479A1
+            Self::Postgresql => (65, 105, 225), // #4169E1
+            Self::Docker | Self::DockerCompose => (36, 150, 237), // #2496ED
+            Self::Systemd => (233, 84, 32),     // #E95420 (Tux recolored; no SI slug)
+            Self::Nginx => (0, 150, 57),        // #009639
+            Self::Custom(_) => (128, 128, 128),
+        }
+    }
+
+    /// Simple Icons slug (embedded under `icons/simple/`). Source:
+    /// https://github.com/LitoMore/simple-icons-cdn
+    pub fn simple_icon(&self) -> &'static str {
+        match self {
+            Self::Shell => "gnubash",
+            Self::Python => "python",
+            Self::Node => "nodedotjs",
+            Self::Bun => "bun",
+            Self::Php => "php",
+            Self::Mysql => "mysql",
+            Self::Postgresql => "postgresql",
+            Self::Docker => "docker",
+            Self::DockerCompose => "dockercompose",
+            Self::Systemd => "systemd",
+            Self::Nginx => "nginx",
+            Self::Custom(_) => "linux",
         }
     }
 
@@ -219,6 +238,21 @@ impl ScriptCategory {
             Self::Security => "Security",
             Self::Custom => "Custom",
             Self::Uncategorized => "Uncategorized",
+        }
+    }
+
+    /// Lucide slug for category chips (embedded under `icons/lucide/`).
+    pub fn lucide_icon(&self) -> &'static str {
+        match self {
+            Self::System => "settings",
+            Self::Database => "database",
+            Self::Web => "globe",
+            Self::Runtime => "cpu",
+            Self::Container => "box",
+            Self::Network => "server",
+            Self::Security => "shield",
+            Self::Custom => "pencil",
+            Self::Uncategorized => "circle-help",
         }
     }
 

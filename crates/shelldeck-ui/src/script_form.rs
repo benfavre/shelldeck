@@ -1,4 +1,5 @@
 use crate::scale::px;
+use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
@@ -6,8 +7,9 @@ use gpui::*;
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;
 
-use crate::command_palette::fuzzy_match;
+use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
 use crate::editor_buffer::EditorBuffer;
+use crate::icons::{script_category_chip, script_language_chip};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::theme::ShellDeckColors;
 
@@ -65,12 +67,7 @@ pub struct ScriptForm {
     active_field: Option<FormField>,
     focus_handle: FocusHandle,
     needs_focus: bool,
-    // Dropdown state
-    dropdown_open: bool,
-    dropdown_query_state: Entity<InputState>,
-    dropdown_query: String,
-    dropdown_filtered: Vec<usize>,
-    dropdown_selected: usize,
+    connection_combobox: Entity<Combobox<Uuid>>,
 }
 
 fn new_input_state_sf(cx: &mut Context<ScriptForm>, initial: &str) -> Entity<InputState> {
@@ -85,8 +82,41 @@ fn new_input_state_sf(cx: &mut Context<ScriptForm>, initial: &str) -> Entity<Inp
 }
 
 impl ScriptForm {
+    fn init_connection_combobox(
+        connections: &[(Uuid, String, String)],
+        selected_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Entity<Combobox<Uuid>> {
+        let parent = cx.entity();
+        let placeholder = if connections.is_empty() {
+            "(no connections)"
+        } else {
+            "Select connection..."
+        };
+        let (_state, combobox) = build_connection_combobox(
+            connections,
+            selected_idx,
+            placeholder,
+            move |id, _window, cx| {
+                parent.update(cx, |form, cx| {
+                    if let Some(idx) = connection_idx_for_id(&form.connections, *id) {
+                        form.selected_connection_idx = idx;
+                        if matches!(form.target, ScriptTarget::Remote(_)) {
+                            form.target = ScriptTarget::Remote(*id);
+                        }
+                        form.error = None;
+                        form.error_field = None;
+                    }
+                    cx.notify();
+                });
+            },
+            cx,
+        );
+        combobox
+    }
+
     pub fn new(connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
-        let dropdown_filtered = (0..connections.len()).collect();
+        let connection_combobox = Self::init_connection_combobox(&connections, 0, cx);
         Self {
             editing_id: None,
             connections,
@@ -102,11 +132,7 @@ impl ScriptForm {
             active_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
-            dropdown_open: false,
-            dropdown_query_state: new_input_state_sf(cx, ""),
-            dropdown_query: String::new(),
-            dropdown_filtered,
-            dropdown_selected: 0,
+            connection_combobox,
         }
     }
 
@@ -125,7 +151,7 @@ impl ScriptForm {
             }
             other => (other.clone(), 0),
         };
-        let dropdown_filtered = (0..connections.len()).collect();
+        let connection_combobox = Self::init_connection_combobox(&connections, selected_idx, cx);
         Self {
             editing_id: Some(script.id),
             connections,
@@ -141,11 +167,7 @@ impl ScriptForm {
             active_field: None,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
-            dropdown_open: false,
-            dropdown_query_state: new_input_state_sf(cx, ""),
-            dropdown_query: String::new(),
-            dropdown_filtered,
-            dropdown_selected: 0,
+            connection_combobox,
         }
     }
 
@@ -180,31 +202,6 @@ impl ScriptForm {
             ScriptTarget::Remote(_) => ScriptTarget::AskOnRun,
             ScriptTarget::AskOnRun => ScriptTarget::Local,
         };
-    }
-
-    fn update_dropdown_filter(&mut self) {
-        let query_lower = self.dropdown_query.to_lowercase();
-        if query_lower.is_empty() {
-            self.dropdown_filtered = (0..self.connections.len()).collect();
-        } else {
-            self.dropdown_filtered = self
-                .connections
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, name, host))| {
-                    fuzzy_match(name, &query_lower) || fuzzy_match(host, &query_lower)
-                })
-                .map(|(i, _)| i)
-                .collect();
-        }
-        self.dropdown_selected = 0;
-    }
-
-    fn close_dropdown(&mut self) {
-        self.dropdown_open = false;
-        self.dropdown_query.clear();
-        self.dropdown_filtered = (0..self.connections.len()).collect();
-        self.dropdown_selected = 0;
     }
 
     /// Handle key events when the body editor field is active.
@@ -322,82 +319,20 @@ impl ScriptForm {
     }
 
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-
-        // When dropdown is open, intercept all keys
-        if self.dropdown_open {
-            match key {
-                "escape" => {
-                    self.close_dropdown();
-                    cx.notify();
-                }
-                "up" => {
-                    if !self.dropdown_filtered.is_empty() && self.dropdown_selected > 0 {
-                        self.dropdown_selected -= 1;
-                    }
-                    cx.notify();
-                }
-                "down" => {
-                    if !self.dropdown_filtered.is_empty() {
-                        self.dropdown_selected =
-                            (self.dropdown_selected + 1).min(self.dropdown_filtered.len() - 1);
-                    }
-                    cx.notify();
-                }
-                "enter" => {
-                    if let Some(&conn_idx) = self.dropdown_filtered.get(self.dropdown_selected) {
-                        self.selected_connection_idx = conn_idx;
-                        if matches!(self.target, ScriptTarget::Remote(_)) {
-                            self.target = ScriptTarget::Remote(self.connections[conn_idx].0);
-                        }
-                    }
-                    self.close_dropdown();
-                    cx.notify();
-                }
-                "backspace" => {
-                    self.dropdown_query.pop();
-                    self.update_dropdown_filter();
-                    cx.notify();
-                }
-                _ => {
-                    if let Some(ref kc) = event.keystroke.key_char {
-                        if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                            self.dropdown_query.push_str(kc);
-                            self.update_dropdown_filter();
-                            cx.notify();
-                        }
-                    } else if key.len() == 1
-                        && !event.keystroke.modifiers.control
-                        && !event.keystroke.modifiers.alt
-                    {
-                        self.dropdown_query.push_str(key);
-                        self.update_dropdown_filter();
-                        cx.notify();
-                    }
-                }
-            }
-            return;
-        }
-
         // Delegate to body-specific handler
         if self.active_field == Some(FormField::Body) {
             self.handle_body_key_down(event, cx);
             return;
         }
 
+        let key = event.keystroke.key.as_str();
+
         match key {
             "escape" => {
                 cx.emit(ScriptFormEvent::Cancel);
             }
             "enter" => {
-                if self.active_field == Some(FormField::Connection) {
-                    self.dropdown_open = true;
-                    self.dropdown_query.clear();
-                    self.update_dropdown_filter();
-                    cx.notify();
-                } else {
-                    self.try_save(cx);
-                }
+                self.try_save(cx);
             }
             "tab" => {
                 if let Some(field) = self.active_field {
@@ -418,13 +353,6 @@ impl ScriptForm {
                     self.cycle_target();
                     self.error = None;
                     self.error_field = None;
-                    cx.notify();
-                    return;
-                }
-                if self.active_field == Some(FormField::Connection) {
-                    self.dropdown_open = true;
-                    self.dropdown_query.clear();
-                    self.update_dropdown_filter();
                     cx.notify();
                     return;
                 }
@@ -770,21 +698,27 @@ impl ScriptForm {
                 }));
 
             if selected {
+                // Neutral surface + brand ring — not brand-tinted bg (Bun yellow /
+                // Docker blue on same-hue wash kills contrast). No chip-level
+                // text_color: it cascades onto SVG fills via GPUI.
                 chip = chip
-                    .bg(badge_color.opacity(0.2))
-                    .text_color(badge_color)
+                    .bg(ShellDeckColors::selected_bg())
                     .border_1()
                     .border_color(badge_color);
             } else {
                 chip = chip
                     .bg(ShellDeckColors::bg_primary())
-                    .text_color(ShellDeckColors::text_muted())
                     .border_1()
                     .border_color(ShellDeckColors::border())
                     .hover(|el| el.border_color(ShellDeckColors::text_muted()));
             }
 
-            chips = chips.child(chip.child(lang.label()));
+            let label_color = if selected {
+                ShellDeckColors::text_primary()
+            } else {
+                ShellDeckColors::text_muted()
+            };
+            chips = chips.child(chip.child(script_language_chip(lang.clone(), label_color)));
         }
 
         let mut wrapper_border = ShellDeckColors::border();
@@ -857,7 +791,12 @@ impl ScriptForm {
                     .hover(|el| el.border_color(ShellDeckColors::text_muted()));
             }
 
-            chips = chips.child(chip.child(cat.label()));
+            let icon_color = if selected {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::text_muted()
+            };
+            chips = chips.child(chip.child(script_category_chip(*cat, icon_color)));
         }
 
         let mut wrapper_border = ShellDeckColors::border();
@@ -889,20 +828,10 @@ impl ScriptForm {
             )
     }
 
-    fn render_connection_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_active = self.active_field == Some(FormField::Connection);
-        let conn_name = if self.connections.is_empty() {
-            "(no connections)".to_string()
-        } else {
-            self.connections[self.selected_connection_idx].1.clone()
-        };
+    fn render_connection_picker(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let has_error = self.error_field == Some(FormField::Connection);
 
-        let mut border_color = ShellDeckColors::border();
-        if is_active {
-            border_color = ShellDeckColors::primary();
-        }
-
-        let mut wrapper = div()
+        div()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -915,152 +844,16 @@ impl ScriptForm {
             )
             .child(
                 div()
-                    .id("sf-connection-picker")
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(border_color)
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.active_field = Some(FormField::Connection);
-                        if this.dropdown_open {
-                            this.close_dropdown();
-                        } else {
-                            this.dropdown_open = true;
-                            this.dropdown_query.clear();
-                            this.update_dropdown_filter();
-                        }
-                        this.error = None;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(conn_name),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(if self.dropdown_open { "^" } else { "v" }),
-                    ),
-            );
-
-        // Dropdown list
-        if self.dropdown_open {
-            let search_area = div()
-                .px(px(6.0))
-                .py(px(6.0))
-                .border_b_1()
-                .border_color(ShellDeckColors::border())
-                .child(
-                    Input::new(&self.dropdown_query_state)
-                        .size(InputSize::Sm)
-                        .placeholder("Type to filter...")
-                        .prefix(
-                            svg()
-                                .path("icons/lucide/search.svg")
-                                .size(px(12.0))
-                                .flex_shrink_0()
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                        .on_change({
-                            let entity = cx.entity();
-                            move |value, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.dropdown_query = value.to_string();
-                                    this.update_dropdown_filter();
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                );
-
-            let mut items_list = div()
-                .id("sf-dropdown-list")
-                .flex()
-                .flex_col()
-                .max_h(px(200.0))
-                .overflow_y_scroll();
-
-            if self.dropdown_filtered.is_empty() {
-                items_list = items_list.child(
-                    div()
-                        .px(px(8.0))
-                        .py(px(10.0))
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child("No matching connections"),
-                );
-            } else {
-                for (fi, &conn_idx) in self.dropdown_filtered.iter().enumerate() {
-                    let (_, ref name, ref hostname) = self.connections[conn_idx];
-                    let is_highlighted = fi == self.dropdown_selected;
-
-                    let mut item = div()
-                        .id(ElementId::from(SharedString::from(format!("sf-dd-{}", fi))))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.0))
-                        .px(px(8.0))
-                        .py(px(5.0))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_connection_idx = conn_idx;
-                            if matches!(this.target, ScriptTarget::Remote(_)) {
-                                this.target = ScriptTarget::Remote(this.connections[conn_idx].0);
-                            }
-                            this.close_dropdown();
-                            cx.notify();
-                        }));
-
-                    if is_highlighted {
-                        item = item.bg(ShellDeckColors::primary().opacity(0.15));
-                    } else {
-                        item = item.hover(|el| el.bg(ShellDeckColors::hover_bg()));
-                    }
-
-                    item = item
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(hostname.clone()),
-                        );
-
-                    items_list = items_list.child(item);
-                }
-            }
-
-            wrapper = wrapper.child(
-                div()
-                    .w_full()
-                    .mt(px(2.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .rounded(px(6.0))
+                    .min_w(px(0.0))
                     .overflow_hidden()
-                    .shadow_md()
-                    .child(search_area)
-                    .child(items_list),
-            );
-        }
-
-        wrapper
+                    .when(has_error, |el| {
+                        el.rounded(px(6.0))
+                            .border_1()
+                            .border_color(ShellDeckColors::error())
+                    })
+                    .child(self.connection_combobox.clone()),
+            )
     }
 }
 
@@ -1076,7 +869,6 @@ impl Render for ScriptForm {
             .flex()
             .flex_col()
             .gap(px(12.0))
-            .p(px(20.0))
             // Name
             .child(self.render_text_field(
                 Some(FormField::Name),
@@ -1118,6 +910,8 @@ impl Render for ScriptForm {
 
         div()
             .id("script-form-overlay")
+            // Legacy hand-rolled modal — must cap height + scroll (see .agents/overflow.md).
+            // TODO: migrate to adabraka Dialog (see .agents/ui-components.md).
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
@@ -1137,6 +931,7 @@ impl Render for ScriptForm {
                     .flex()
                     .flex_col()
                     .w(px(500.0))
+                    .max_h(px(580.0))
                     .bg(ShellDeckColors::bg_surface())
                     .rounded(px(12.0))
                     .border_1()
@@ -1147,6 +942,7 @@ impl Render for ScriptForm {
                     .child(
                         div()
                             .flex()
+                            .flex_shrink_0()
                             .items_center()
                             .justify_between()
                             .px(px(20.0))
@@ -1184,12 +980,23 @@ impl Render for ScriptForm {
                                     })),
                             ),
                     )
-                    // Form fields
-                    .child(form_fields)
+                    // Scrollable form body
+                    .child(
+                        div()
+                            .id("script-form-body")
+                            .flex()
+                            .flex_col()
+                            .flex_grow()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .p(px(20.0))
+                            .child(form_fields),
+                    )
                     // Footer
                     .child(
                         div()
                             .flex()
+                            .flex_shrink_0()
                             .items_center()
                             .justify_end()
                             .gap(px(8.0))

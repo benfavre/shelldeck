@@ -700,8 +700,13 @@ pub fn adabraka_theme_from_palette() -> adabraka_ui::prelude::Theme {
     t.popover_foreground = ShellDeckColors::text_primary();
     t.muted = ShellDeckColors::hint_bg();
     t.muted_foreground = ShellDeckColors::text_muted();
-    t.accent = ShellDeckColors::primary();
-    t.accent_foreground = gpui::white();
+    // Subtle list-row highlight — not full primary fill (unreadable with dark text).
+    t.accent = ShellDeckColors::primary().opacity(if ShellDeckColors::is_dark() {
+        0.22
+    } else {
+        0.14
+    });
+    t.accent_foreground = ShellDeckColors::text_primary();
     t.primary = ShellDeckColors::primary();
     t.primary_foreground = gpui::white();
     t.secondary = ShellDeckColors::badge_bg();

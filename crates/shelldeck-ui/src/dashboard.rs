@@ -3,6 +3,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 /// Events emitted by the dashboard.
 #[derive(Debug, Clone)]
@@ -237,13 +238,13 @@ impl Render for DashboardView {
                             .text_size(px(24.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Welcome to ShellDeck"),
+                            .child(t!("dashboard.welcome").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(14.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Your unified terminal & SSH control plane"),
+                            .child(t!("dashboard.subtitle").to_string()),
                     ),
             )
             // Stats row
@@ -253,22 +254,22 @@ impl Render for DashboardView {
                     .flex_wrap()
                     .gap(px(16.0))
                     .child(Self::render_stat_card(
-                        "Active Connections",
+                        &t!("dashboard.stats.connections").to_string(),
                         self.active_connections,
                         ShellDeckColors::success(),
                     ))
                     .child(Self::render_stat_card(
-                        "Terminals",
+                        &t!("dashboard.stats.terminals").to_string(),
                         self.active_terminals,
                         ShellDeckColors::primary(),
                     ))
                     .child(Self::render_stat_card(
-                        "Running Scripts",
+                        &t!("dashboard.stats.scripts").to_string(),
                         self.running_scripts,
                         ShellDeckColors::warning(),
                     ))
                     .child(Self::render_stat_card(
-                        "Port Forwards",
+                        &t!("dashboard.stats.forwards").to_string(),
                         self.active_forwards,
                         ShellDeckColors::primary_hover(),
                     )),
@@ -296,7 +297,7 @@ impl Render for DashboardView {
                             .text_size(px(16.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Quick Connect"),
+                            .child(t!("dashboard.quick_connect").to_string()),
                     )
                     .child(host_buttons),
             );
@@ -317,7 +318,7 @@ impl Render for DashboardView {
                     .p(px(24.0))
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No recent activity. Connect to a host to get started."),
+                    .child(t!("dashboard.no_activity").to_string()),
             );
         } else {
             activity_panel = activity_panel
@@ -334,7 +335,7 @@ impl Render for DashboardView {
                         .text_size(px(16.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child("Recent Activity"),
+                        .child(t!("dashboard.recent_activity").to_string()),
                 )
                 .child(activity_panel),
         );
@@ -361,7 +362,7 @@ impl Render for DashboardView {
                         .text_size(px(16.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child("Keyboard Shortcuts"),
+                        .child(t!("dashboard.shortcuts.title").to_string()),
                 )
                 .child(
                     div()
@@ -385,21 +386,27 @@ impl Render for DashboardView {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_muted())
                                         .mb(px(4.0))
-                                        .child("NAVIGATION"),
+                                        .child(t!("dashboard.shortcuts.navigation").to_string()),
                                 )
                                 .child(Self::render_shortcut_item(
                                     &format!("{}T", cmd),
-                                    "New terminal",
+                                    &t!("dashboard.shortcut.new_terminal").to_string(),
                                 ))
-                                .child(Self::render_shortcut_item("Ctrl+Tab", "Next tab"))
+                                .child(Self::render_shortcut_item(
+                                    "Ctrl+Tab",
+                                    &t!("dashboard.shortcut.next_tab").to_string(),
+                                ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}B", cmd),
-                                    "Toggle sidebar",
+                                    &t!("dashboard.shortcut.toggle_sidebar").to_string(),
                                 ))
-                                .child(Self::render_shortcut_item(&format!("{},", cmd), "Settings"))
+                                .child(Self::render_shortcut_item(
+                                    &format!("{},", cmd),
+                                    &t!("dashboard.shortcut.settings").to_string(),
+                                ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}P", cmd, shift),
-                                    "Command palette",
+                                    &t!("dashboard.shortcut.command_palette").to_string(),
                                 )),
                         )
                         .child(
@@ -420,28 +427,31 @@ impl Render for DashboardView {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_muted())
                                         .mb(px(4.0))
-                                        .child("TERMINAL"),
+                                        .child(t!("dashboard.shortcuts.terminal").to_string()),
                                 )
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}C", ctrl, shift),
-                                    "Copy",
+                                    &t!("dashboard.shortcut.copy").to_string(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}V", ctrl, shift),
-                                    "Paste",
+                                    &t!("dashboard.shortcut.paste").to_string(),
                                 ))
-                                .child(Self::render_shortcut_item(&format!("{}F", cmd), "Search"))
+                                .child(Self::render_shortcut_item(
+                                    &format!("{}F", cmd),
+                                    &t!("dashboard.shortcut.search").to_string(),
+                                ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}L", cmd),
-                                    "Clear terminal",
+                                    &t!("dashboard.shortcut.clear").to_string(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}D", ctrl, shift),
-                                    "Split pane",
+                                    &t!("dashboard.shortcut.split").to_string(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}= / {}-", cmd, cmd),
-                                    "Zoom in / out",
+                                    &t!("dashboard.shortcut.zoom").to_string(),
                                 )),
                         ),
                 ),
