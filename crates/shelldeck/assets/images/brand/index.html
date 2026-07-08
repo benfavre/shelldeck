@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShellDeck — Brand Monolith</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 2rem; font-family: system-ui, sans-serif; background: #111; color: #eee; }
+    h1 { margin-bottom: 0.25rem; }
+    p, li { color: #888; line-height: 1.55; max-width: 720px; }
+    a { color: #2ec4a8; }
+    code { font-size: 0.85em; }
+    section { margin: 2.5rem 0; }
+    .row { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+    .card { background: #141414; border: 1px solid #333; border-radius: 12px; padding: 1rem; width: 200px; }
+    .card svg { width: 100%; height: auto; display: block; }
+    .card figcaption { margin-top: 0.5rem; font-size: 0.75rem; color: #666; }
+    .sizes { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; }
+    .sizes img { background: #1a1a1a; border-radius: 8px; border: 1px solid #333; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>ShellDeck Monolith — assets production</h1>
+  <p>Expression par défaut <code>&gt;_&lt;</code> · cadre coins cassés · viewBox 1024. Regénérer : <code>python3 scripts/export-monolith-brand.py</code></p>
+
+  <section>
+    <h2>In-app (embed GPUI)</h2>
+    <div class="row">
+      <figure class="card">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+          <rect width="1024" height="1024" rx="224" fill="#1a1a1a"/>
+          <path fill="#2ec4a8" d="M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z"/>
+          <path fill="#1a1a1a" d="M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"/>
+          <path fill="#e6e6e6" d="M 280 400 L 392 480 L 280 560 L 320 560 L 432 480 L 320 400 Z"/>
+          <path fill="#e6e6e6" d="M 744 400 L 632 480 L 744 560 L 704 560 L 592 480 L 704 400 Z"/>
+          <rect x="424" y="592" width="176" height="40" rx="6" fill="#e6e6e6"/>
+        </svg>
+        <figcaption><code>shelldeck-icon.svg</code></figcaption>
+      </figure>
+      <figure class="card" style="color:#888">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="currentColor">
+          <path fill-rule="evenodd" d="M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"/>
+          <path d="M 280 400 L 392 480 L 280 560 L 320 560 L 432 480 L 320 400 Z"/>
+          <path d="M 744 400 L 632 480 L 744 560 L 704 560 L 592 480 L 704 400 Z"/>
+          <rect x="424" y="592" width="176" height="40" rx="6"/>
+        </svg>
+        <figcaption><code>shelldeck-mark.svg</code></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Expressions (Dark, logo carré)</h2>
+    <div class="row">
+      <figure class="card">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+          <rect width="1024" height="1024" fill="#1a1a1a"/>
+          <path fill="#2ec4a8" d="M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z"/>
+          <path fill="#1a1a1a" d="M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"/>
+          <path fill="#e6e6e6" d="M 280 400 L 392 480 L 280 560 L 320 560 L 432 480 L 320 400 Z"/>
+          <path fill="#e6e6e6" d="M 744 400 L 632 480 L 744 560 L 704 560 L 592 480 L 704 400 Z"/>
+          <rect x="424" y="592" width="176" height="40" rx="6" fill="#e6e6e6"/>
+        </svg>
+        <figcaption><strong>&gt;_&lt;</strong> default</figcaption>
+      </figure>
+      <figure class="card">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+          <rect width="1024" height="1024" fill="#1a1a1a"/>
+          <path fill="#2ec4a8" d="M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z"/>
+          <path fill="#1a1a1a" d="M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"/>
+          <path fill="#e6e6e6" d="M 320 384 L 480 512 L 320 640 L 384 640 L 544 512 L 384 384 Z"/>
+          <rect x="544" y="608" width="160" height="64" rx="6" fill="#e6e6e6"/>
+        </svg>
+        <figcaption><strong>&gt;_</strong> neutral</figcaption>
+      </figure>
+      <figure class="card">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+          <rect width="1024" height="1024" fill="#1a1a1a"/>
+          <path fill="#2ec4a8" d="M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z"/>
+          <path fill="#1a1a1a" d="M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"/>
+          <path fill="#e6e6e6" d="M 320 384 L 480 512 L 320 640 L 384 640 L 544 512 L 384 384 Z"/>
+          <rect x="544" y="624" width="160" height="20" rx="4" fill="#e6e6e6"/>
+        </svg>
+        <figcaption><strong>&gt; ‾</strong> wink</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Packaging PNG (Dark app icon)</h2>
+    <div class="sizes">
+      <img src="../../../../../packaging/icons/shelldeck-16.png" width="16" height="16" alt="16">
+      <img src="../../../../../packaging/icons/shelldeck-32.png" width="32" height="32" alt="32">
+      <img src="../../../../../packaging/icons/shelldeck-64.png" width="64" height="64" alt="64">
+      <img src="../../../../../packaging/icons/shelldeck-128.png" width="128" height="128" alt="128">
+      <img src="../../../../../packaging/icons/shelldeck-256.png" width="256" height="256" alt="256">
+    </div>
+    <p><code>packaging/icons/shelldeck.ico</code> · <code>packaging/icons/iconset/</code> (→ <code>shelldeck.icns</code> sur macOS)</p>
+  </section>
+
+  <section>
+    <h2>Arborescence</h2>
+    <ul>
+      <li><code>brand/svg/themes/</code> — 13 thèmes × logo + app-icon</li>
+      <li><code>brand/svg/expressions/</code> — 13 thèmes × 3 expressions × logo + app-icon</li>
+      <li><code>brand/png/app-icon/</code> — monolith-16…1024.png</li>
+      <li><code>manifest.json</code> — inventaire machine</li>
+    </ul>
+  </section>
+</body>
+</html>

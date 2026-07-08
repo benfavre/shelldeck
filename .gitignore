@@ -15,3 +15,5 @@ node_modules/
 /.cache/
 # Logo exploration / prototypes — production assets live in assets/images/brand/
 /crates/shelldeck/assets/images/logo-concepts/
+# Obsidian vault metadata — local notes tooling, not part of the repo.
+/.obsidian/
