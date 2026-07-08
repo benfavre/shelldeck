@@ -17,3 +17,5 @@ node_modules/
 /crates/shelldeck/assets/images/logo-concepts/
 # Obsidian vault metadata — local notes tooling, not part of the repo.
 /.obsidian/
+# Claude Code local runtime state (locks, etc.) — not project content.
+/.claude/*.lock
