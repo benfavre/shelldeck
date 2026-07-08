@@ -7,9 +7,10 @@ alwaysApply: false
 # Patches (`patches/`) — rules & sync workflow
 
 > Source canonique : `.agents/patches.md`
+> **Politique vendoring** (dernier recours, demander avant) : `.cursor/rules/vendor-policy.mdc`
 
 This file governs the local forks under `patches/` (`adabraka-gpui`,
-`adabraka-ui`, …). It is the source of truth for both:
+`adabraka-ui`, …) and lightweight diffs under `patches/diffs/`.
 
 - **Conventions**: how our local modifications are marked, tracked, and
   documented so they don't get lost when we lift a fork to a newer

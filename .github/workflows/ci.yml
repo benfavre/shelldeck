@@ -55,6 +55,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-check-
 
+      - name: Apply crate patches
+        run: ./scripts/apply-crate-patches.sh
+
       - name: cargo check
         run: cargo check --workspace
 

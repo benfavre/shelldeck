@@ -1,0 +1,56 @@
+--- src/client.rs
++++ src/client.rs
+@@ -49,6 +49,24 @@
+ #[cfg(feature = "std")]
+ impl std::error::Error for ClientError {}
+ 
++// ShellDeck patch: IBus/XIM sometimes sends raw Latin-1 bytes (e.g. 0xE7 = "ç")
++// as unescaped compound text. Upstream `.expect("Encoding Error")` panicked the
++// whole GPUI app; fall back to Latin-1 instead of crashing.
++fn compound_text_to_utf8_or_latin1(bytes: &[u8]) -> String {
++    match xim_ctext::compound_text_to_utf8(bytes) {
++        Ok(text) => text,
++        Err(err) => {
++            log::warn!(
++                "XIM compound text decode failed ({err}); using Latin-1 fallback"
++            );
++            bytes
++                .iter()
++                .map(|&b| char::from_u32(u32::from(b)).unwrap_or('\u{FFFD}'))
++                .collect()
++        }
++    }
++}
++
+ pub fn handle_request<C: ClientCore>(
+     client: &mut C,
+     handler: &mut impl ClientHandler<C>,
+@@ -140,8 +158,7 @@
+             input_context_id,
+             preedit_string,
+         } => {
+-            let preedit_string =
+-                xim_ctext::compound_text_to_utf8(&preedit_string).expect("Encoding error");
++            let preedit_string = compound_text_to_utf8_or_latin1(&preedit_string);
+             handler.handle_reset_ic(client, input_method_id, input_context_id, &preedit_string);
+             Ok(())
+         }
+@@ -187,7 +204,7 @@
+                     client,
+                     input_method_id,
+                     input_context_id,
+-                    &xim_ctext::compound_text_to_utf8(&commited).expect("Encoding Error"),
++                    &compound_text_to_utf8_or_latin1(&commited),
+                 )?;
+ 
+                 if syncronous {
+@@ -233,8 +250,7 @@
+             status,
+             feedbacks,
+         } => {
+-            let preedit_string =
+-                xim_ctext::compound_text_to_utf8(&preedit_string).expect("Encoding Error");
++            let preedit_string = compound_text_to_utf8_or_latin1(&preedit_string);
+             handler.handle_preedit_draw(
+                 client,
+                 input_method_id,

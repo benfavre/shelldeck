@@ -41,6 +41,9 @@ shelldeck/
 ## Essential Commands
 
 ```bash
+# Apply lightweight crate patches (zed-xim Latin-1 fix, etc.)
+./scripts/apply-crate-patches.sh
+
 # Build (requires nightly + system deps)
 cargo build
 

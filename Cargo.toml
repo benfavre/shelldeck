@@ -62,8 +62,6 @@ sha2 = "0.10"
 criterion = "0.5"
 
 [patch.crates-io]
-# ShellDeck patch: Latin-1 fallback for IBus XIM commits (0xE7 "ç" crash).
-zed-xim = { path = "patches/zed-xim" }
 adabraka-gpui = { path = "patches/adabraka-gpui" }
 # Local fork of adabraka-ui with:
 #   - `InputState` cursor color pulled from `theme.tokens.ring` instead of a

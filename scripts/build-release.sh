@@ -67,6 +67,9 @@ echo "==> Version: $VERSION"
 # ---------------------------------------------------------------------------
 # Build release binary
 # ---------------------------------------------------------------------------
+echo "==> Applying crate patches..."
+bash "$SCRIPT_DIR/apply-crate-patches.sh"
+
 echo "==> Building release binary..."
 cargo build --release -p shelldeck
 

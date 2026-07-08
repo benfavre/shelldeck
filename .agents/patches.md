@@ -1,15 +1,51 @@
 # Patches (`patches/`) — rules & sync workflow
 
 This file governs the local forks under `patches/` (`adabraka-gpui`,
-`adabraka-ui`, …). It is the source of truth for both:
+`adabraka-ui`, …) and **lightweight diffs** under `patches/diffs/`. It is
+the source of truth for both:
 
+- **When to patch at all** (and when to ask the user first).
 - **Conventions**: how our local modifications are marked, tracked, and
   documented so they don't get lost when we lift a fork to a newer
   upstream version.
 - **Workflow**: how the `/sync-patches` slash command lifts a fork to a
   newer upstream release without losing any of our changes.
 
-## Why we vendor
+## When to patch — decision ladder (read this first)
+
+**Vendoring a full crate under `patches/<name>/` is the last resort, not the
+default.** The existence of `patches/adabraka-gpui` does **not** mean every
+upstream bug gets a new vendor.
+
+Before touching any dependency, walk this ladder **top to bottom** and stop
+at the first option that works:
+
+1. **Fix in our code** — workaround, feature flag, env var, disable the bad
+   code path (e.g. `XMODIFIERS=` for a one-off test).
+2. **Fix in an already-vendored fork** — if the bug is in GPUI/UI code we
+   already own under `patches/adabraka-gpui` or `patches/adabraka-ui`.
+3. **Lightweight diff** — `patches/diffs/<crate>-SDPATCH-NNN.patch` +
+   `scripts/apply-crate-patches.sh` (see `patches/diffs/zed-xim.md`).
+   Use when the change is a few dozen lines in a crates.io dep we do **not**
+   otherwise fork.
+4. **Git fork + `[patch.crates-io] { git = … }`** — one commit on GitHub
+   (same pattern as `zed-font-kit`). Good when the diff outgrows a single
+   file but still isn't worth a full vendor.
+5. **Full vendor under `patches/<crate>/`** — only when we must edit many
+   files, sync often, or the fork is long-lived core infra (GPUI, adabraka-ui).
+
+### Non-negotiable: ask the user first
+
+**Never start vendoring (step 5) or adding a new `[patch.crates-io]` entry
+without explicitly warning the user and getting a go-ahead.** Present:
+
+- the problem and why our code can't fix it;
+- which ladder step you propose and why;
+- the lighter alternatives you rejected.
+
+Silent vendoring is a process failure — stop and ask.
+
+## Why we vendor (when we must)
 
 Some upstream bugs / missing features block us today and can't wait for a
 crates.io release. The alternatives (git-dep fork on GitHub, upstream
@@ -192,3 +228,5 @@ If `/sync-patches <crate>` is called on a fork that has no
   that redirects here.
 - `patches/adabraka-gpui/PATCHES.md` — the current GPUI fork inventory.
 - `patches/adabraka-ui/PATCHES.md` — the current UI fork inventory.
+- `patches/diffs/` — lightweight unified diffs + `*.md` inventory (no full vendor).
+- `scripts/apply-crate-patches.sh` — applies `patches/diffs/` into the cargo registry.
