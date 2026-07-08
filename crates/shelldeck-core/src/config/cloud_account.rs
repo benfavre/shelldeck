@@ -178,7 +178,10 @@ fn http_client() -> Result<reqwest::blocking::Client> {
 }
 
 fn auth_url(base_url: &str) -> String {
-    format!("{}/api/manage/shelldeck/auth", base_url.trim_end_matches('/'))
+    format!(
+        "{}/api/manage/shelldeck/auth",
+        base_url.trim_end_matches('/')
+    )
 }
 
 /// Best-effort device name for the auth check-in / connect flow.
@@ -346,9 +349,7 @@ pub fn browser_connect_listen(
     expected_state: &str,
     timeout: Duration,
 ) -> Result<String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(ShellDeckError::Io)?;
+    listener.set_nonblocking(true).map_err(ShellDeckError::Io)?;
     let deadline = Instant::now() + timeout;
 
     loop {
@@ -427,7 +428,12 @@ fn handle_callback(mut stream: TcpStream, expected_state: &str) -> std::io::Resu
     Ok(None)
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, reason: &str, body: &str) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> std::io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status,
@@ -571,7 +577,10 @@ mod tests {
     #[test]
     fn app_mode_default_is_dev() {
         assert_eq!(AppMode::default(), AppMode::Dev);
-        assert_eq!(AppMode::all(), [AppMode::User, AppMode::Support, AppMode::Dev]);
+        assert_eq!(
+            AppMode::all(),
+            [AppMode::User, AppMode::Support, AppMode::Dev]
+        );
         assert_eq!(AppMode::Support.label(), "Support");
     }
 

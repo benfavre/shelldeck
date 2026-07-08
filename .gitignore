@@ -8,3 +8,14 @@
 /.build-tools
 node_modules/
 .wrangler/
+# Local caches — cloned upstream sources we consult but don't ship.
+# `.cache/lucide-upstream/` is a shallow clone of lucide-icons/lucide;
+# see crates/shelldeck/assets/icons/lucide/README.md for how we pick
+# icons out of it.
+/.cache/
+# Logo exploration / prototypes — production assets live in assets/images/brand/
+/crates/shelldeck/assets/images/logo-concepts/
+# Obsidian vault metadata — local notes tooling, not part of the repo.
+/.obsidian/
+# Claude Code local runtime state (locks, etc.) — not project content.
+/.claude/*.lock

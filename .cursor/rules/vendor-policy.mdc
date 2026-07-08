@@ -1,0 +1,15 @@
+---
+description: Vendoring/patches — dernier recours, toujours demander avant
+alwaysApply: true
+---
+
+# Politique patches / vendoring
+
+> Source canonique : `.agents/patches.md` (section « When to patch »)
+
+- **Ne pas vendor** (`patches/<crate>/` entier) par défaut — ce n'est pas le Phare de l'Ouest.
+- **Ordre** : fix app → fork déjà vendored (gpui/ui) → diff léger (`patches/diffs/`) → git fork → vendor complet.
+- **Obligatoire** : avant tout nouveau vendor ou `[patch.crates-io]`, **prévenir l'utilisateur** et obtenir son accord (problème, option proposée, alternatives plus légères).
+- Vendoring silencieux = échec de process — stopper et demander.
+
+Exemple léger : `zed-xim` → `patches/diffs/zed-xim-SDPATCH-001.patch` + `scripts/apply-crate-patches.sh`, pas une crate copiée entière.

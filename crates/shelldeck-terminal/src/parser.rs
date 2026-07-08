@@ -911,8 +911,7 @@ impl vte::Perform for Performer<'_> {
                     if let Some(path) = url.strip_prefix("file://") {
                         // Skip hostname part (up to first / after //)
                         if let Some(slash_pos) = path.find('/') {
-                            self.grid.working_directory =
-                                Some(path[slash_pos..].to_string());
+                            self.grid.working_directory = Some(path[slash_pos..].to_string());
                         }
                     }
                 }
@@ -947,8 +946,7 @@ impl vte::Perform for Performer<'_> {
                     if data != "?" {
                         // Decode base64 data
                         if let Some(decoded) = base64_decode(data) {
-                            self.grid.clipboard_request =
-                                Some((selection.to_string(), decoded));
+                            self.grid.clipboard_request = Some((selection.to_string(), decoded));
                         }
                     }
                 }

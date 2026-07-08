@@ -4,18 +4,22 @@
 //! Text entry mirrors `connection_form.rs`: a focused root captures `on_key_down`
 //! and edits the active field. The password field renders masked.
 
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 pub enum LoginFormEvent {
     /// Submit email + password for password login.
-    SubmitPassword { email: String, password: String },
+    SubmitPassword {
+        email: String,
+        password: String,
+    },
     /// Start the browser OIDC flow. `None` = generic SSO; otherwise
     /// "google"/"github"/"sso".
     StartOidc(Option<String>),
@@ -39,8 +43,8 @@ pub struct LoginForm {
 impl LoginForm {
     pub fn new(server: String, device: String, cx: &mut Context<Self>) -> Self {
         Self {
-            email_state: cx.new(|cx| InputState::new(cx)),
-            password_state: cx.new(|cx| InputState::new(cx)),
+            email_state: cx.new(InputState::new),
+            password_state: cx.new(InputState::new),
             device,
             server,
             busy: false,
@@ -134,7 +138,9 @@ impl LoginForm {
         if busy {
             btn = btn.opacity(0.5);
         } else {
-            btn = btn.cursor_pointer().hover(|s| s.bg(ShellDeckColors::hover_bg()));
+            btn = btn
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
             btn = btn.on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                 cx.emit(LoginFormEvent::StartOidc(provider.clone()));
             }));
@@ -207,7 +213,7 @@ impl Render for LoginForm {
                                         .text_size(px(17.0))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_primary())
-                                        .child("Se connecter à Inklura Manage"),
+                                        .child(t!("login.title").to_string()),
                                 )
                                 .child(
                                     div()
@@ -226,7 +232,12 @@ impl Render for LoginForm {
                         .cursor_pointer()
                         .text_color(ShellDeckColors::text_muted())
                         .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                        .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted()))
+                        .child(
+                            svg()
+                                .path("icons/lucide/x.svg")
+                                .size(px(14.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
                         .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                             cx.emit(LoginFormEvent::Cancel);
                         })),
@@ -234,7 +245,7 @@ impl Render for LoginForm {
         );
 
         // Real `Input` widgets — cursor, selection, undo, Enter submits.
-        let labeled = |label: &'static str, input: Input| {
+        let labeled = |label: String, input: Input| {
             div()
                 .flex()
                 .flex_col()
@@ -256,7 +267,7 @@ impl Render for LoginForm {
         };
         let email_input = Input::new(&self.email_state)
             .size(InputSize::Sm)
-            .placeholder("vous@exemple.com")
+            .placeholder(t!("login.email_placeholder").to_string())
             .disabled(self.busy)
             .on_enter(submit_on_enter.clone());
         let password_input = Input::new(&self.password_state)
@@ -271,8 +282,8 @@ impl Render for LoginForm {
             .flex_col()
             .gap(px(12.0))
             .p(px(20.0))
-            .child(labeled("Email", email_input))
-            .child(labeled("Mot de passe", password_input));
+            .child(labeled(t!("login.email").to_string(), email_input))
+            .child(labeled(t!("login.password").to_string(), password_input));
 
         if let Some(ref err) = self.error {
             body = body.child(
@@ -285,7 +296,11 @@ impl Render for LoginForm {
 
         // Primary "Se connecter" button.
         let can_submit = self.can_submit(cx);
-        let submit_label = if self.busy { "Connexion…" } else { "Se connecter" };
+        let submit_label = if self.busy {
+            t!("login.submitting").to_string()
+        } else {
+            t!("login.submit").to_string()
+        };
         let mut submit_btn = div()
             .id("login-submit")
             .w_full()
@@ -321,15 +336,17 @@ impl Render for LoginForm {
                     div()
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("ou"),
+                        .child(t!("login.or").to_string()),
                 )
                 .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border())),
         );
 
+        let oidc_sso = t!("login.oidc_sso").to_string();
+        let oidc_browser = t!("login.oidc_browser").to_string();
         body = body
             .child(self.oidc_button(
                 "login-oidc-sso",
-                "Continuer avec SSO 1clic.pro",
+                &oidc_sso,
                 Some("images/logo-1clicpro.svg"),
                 Some("sso"),
                 cx,
@@ -356,18 +373,12 @@ impl Render for LoginForm {
             // Provider-less browser sign-in → manage password login page, which
             // round-trips back to authorize. For users with an existing manage
             // session or a password manager in the browser.
-            .child(self.oidc_button(
-                "login-oidc-browser",
-                "Via le navigateur (mot de passe)",
-                None,
-                None,
-                cx,
-            ))
+            .child(self.oidc_button("login-oidc-browser", &oidc_browser, None, None, cx))
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("Appareil : {}", self.device)),
+                    .child(t!("login.device", device = self.device.clone()).to_string()),
             );
 
         card = card.child(body);

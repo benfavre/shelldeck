@@ -6,10 +6,12 @@ use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
-use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::issues::{self, Issue, IssueInstance};
-use shelldeck_core::config::jean_fleet::{self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance};
+use shelldeck_core::config::jean_fleet::{
+    self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance,
+};
 use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
+use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
 use shelldeck_core::config::manage_support;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
@@ -19,13 +21,17 @@ use std::collections::HashMap;
 use std::ops::DerefMut;
 use uuid::Uuid;
 
+use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
     PaletteAction, SetAppMode, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
-use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
+use crate::file_editor::view::{FileEditorEvent, FileEditorView};
+use crate::fleet_view::{FleetView, FleetViewEvent};
+use crate::jean_view::{JeanView, JeanViewEvent};
+use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
 use crate::script_editor::{ScriptEditorView, ScriptEvent};
@@ -35,12 +41,9 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
-use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
-use crate::fleet_view::{FleetView, FleetViewEvent};
-use crate::jean_view::{JeanView, JeanViewEvent};
-use crate::support_view::{SupportView, SupportViewEvent};
+use crate::support_view::{issue_status_badge, priority_badge, SupportView, SupportViewEvent};
+use crate::t;
 use crate::template_browser::TemplateBrowser;
-use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::ShellDeckColors;
 use crate::toast::{ToastContainer, ToastLevel};
@@ -101,28 +104,6 @@ enum RuntimeStep {
     HeartbeatOnly(String, String, String, String),
     /// Heartbeat + claim (+ auto-execute).
     Tick(RuntimeTickCtx),
-}
-
-/// A small colored status pill for a hosted issue (User-mode rows).
-fn user_issue_status_pill(status: &str) -> gpui::Div {
-    let (color, label) = match status {
-        "open" => (ShellDeckColors::primary(), "ouverte"),
-        "triaging" => (ShellDeckColors::warning(), "tri"),
-        "in_progress" => (ShellDeckColors::warning(), "en cours"),
-        "blocked" => (ShellDeckColors::error(), "bloquée"),
-        "done" => (ShellDeckColors::success(), "terminée"),
-        "closed" => (ShellDeckColors::success(), "fermée"),
-        other => (ShellDeckColors::text_muted(), other),
-    };
-    div()
-        .flex_shrink_0()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(6.0))
-        .bg(color.opacity(0.15))
-        .text_size(px(10.0))
-        .text_color(color)
-        .child(label.to_string())
 }
 
 /// The active content view
@@ -310,6 +291,8 @@ pub struct Workspace {
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
     /// tracked by each state entity itself; no separate `issue_field` needed.
+    /// `issue_body_state` runs in multi-line mode (`Input::multi_line(true)`
+    /// via SDPATCH-009) so Détails behaves as a textarea.
     issue_title_state: Entity<InputState>,
     issue_body_state: Entity<InputState>,
     issue_comment_state: Entity<InputState>,
@@ -346,6 +329,8 @@ impl Workspace {
         connections: Vec<Connection>,
         store: ConnectionStore,
     ) -> Self {
+        crate::i18n::apply_ui_language(&config.general.ui_language);
+
         // Restore the persisted active-site filter (if any) so the sidebar
         // opens scoped to the last-selected site.
         let initial_site_filter = config
@@ -383,7 +368,7 @@ impl Workspace {
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
             let mut view = ServerSyncView::new(cx);
-            view.set_connections(connections.clone());
+            view.set_connections(connections.clone(), cx);
             view.set_profiles(store.sync_profiles.clone());
             view
         });
@@ -520,10 +505,12 @@ impl Workspace {
         });
 
         // Subscribe to file editor events
-        let file_editor_sub =
-            cx.subscribe(&file_editor, |_this, _view, _event: &FileEditorEvent, cx| {
+        let file_editor_sub = cx.subscribe(
+            &file_editor,
+            |_this, _view, _event: &FileEditorEvent, cx| {
                 cx.notify();
-            });
+            },
+        );
 
         // Subscribe to dashboard events
         let dashboard_sub = cx.subscribe(
@@ -542,19 +529,19 @@ impl Workspace {
         );
 
         // Subscribe to status bar events (update click)
-        let status_bar_sub = cx.subscribe(
-            &status_bar,
-            |this, _bar, event: &StatusBarEvent, cx| match event {
-                StatusBarEvent::UpdateClicked => {
-                    this.auto_updater.update(cx, |u, cx| u.trigger_update(cx));
-                }
-            },
-        );
+        let status_bar_sub =
+            cx.subscribe(
+                &status_bar,
+                |this, _bar, event: &StatusBarEvent, cx| match event {
+                    StatusBarEvent::UpdateClicked => {
+                        this.auto_updater.update(cx, |u, cx| u.trigger_update(cx));
+                    }
+                },
+            );
 
-        let support_sub =
-            cx.subscribe(&support, |this, _view, event: &SupportViewEvent, cx| {
-                this.handle_support_event(event.clone(), cx);
-            });
+        let support_sub = cx.subscribe(&support, |this, _view, event: &SupportViewEvent, cx| {
+            this.handle_support_event(event.clone(), cx);
+        });
 
         let jean_sub = cx.subscribe(&jean_view, |this, _view, event: &JeanViewEvent, cx| {
             this.handle_jean_event(event.clone(), cx);
@@ -675,9 +662,9 @@ impl Workspace {
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
             user_issue_detail_dismissing: false,
-            issue_title_state: cx.new(|cx| InputState::new(cx)),
-            issue_body_state: cx.new(|cx| InputState::new(cx)),
-            issue_comment_state: cx.new(|cx| InputState::new(cx)),
+            issue_title_state: cx.new(InputState::new),
+            issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            issue_comment_state: cx.new(InputState::new),
             issue_new_priority: "normal".to_string(),
             bext_view,
             _bext_sub: bext_sub,
@@ -993,41 +980,43 @@ impl Workspace {
         match event {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
-                // Keep the in-memory config in sync so runtime behavior
-                // (notifications gate, tmux auto-attach, etc.) reads current values.
-                self.app_config = config.clone();
+                // Merge settings-owned slices only — see `.agents/session-state.md`.
+                self.app_config.general = config.general.clone();
+                self.app_config.terminal = config.terminal.clone();
                 // Apply terminal settings to running view
-                let terminal_theme = TerminalTheme::by_name(&config.terminal.theme);
+                let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_font_size(config.terminal.font_size);
-                    terminal.set_font_family(config.terminal.font_family.clone());
-                    terminal.set_cursor_style(&config.terminal.cursor_style);
-                    terminal.set_cursor_blink(config.terminal.cursor_blink);
-                    terminal.set_scrollback_lines(config.terminal.scrollback_lines);
+                    terminal.set_font_size(self.app_config.terminal.font_size);
+                    terminal.set_font_family(self.app_config.terminal.font_family.clone());
+                    terminal.set_cursor_style(&self.app_config.terminal.cursor_style);
+                    terminal.set_cursor_blink(self.app_config.terminal.cursor_blink);
+                    terminal.set_scrollback_lines(self.app_config.terminal.scrollback_lines);
                     terminal.set_terminal_theme(&terminal_theme);
                     cx.notify();
                 });
                 // Apply sidebar width
-                self.sidebar_width = config.general.sidebar_width;
+                self.sidebar_width = self.app_config.general.sidebar_width;
                 self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(config.general.sidebar_width);
+                    terminal.set_sidebar_width(self.app_config.general.sidebar_width);
                 });
                 // Apply application UI font (cascades to all child views on re-render)
-                self.ui_font_family = config.general.ui_font_family.clone();
-                self.ui_font_size = config.general.ui_font_size;
+                self.ui_font_family = self.app_config.general.ui_font_family.clone();
+                self.ui_font_size = self.app_config.general.ui_font_size;
                 // The file editor's text scales with the app font size too.
-                let ed_size = config.general.ui_font_size;
-                let ed_family = config.general.ui_font_family.clone();
+                let ed_size = self.app_config.general.ui_font_size;
+                let ed_family = self.app_config.general.ui_font_family.clone();
                 self.file_editor.update(cx, |ed, cx| {
                     ed.set_font_size(ed_size);
                     ed.set_font_family(ed_family);
                     cx.notify();
                 });
                 // Apply auto-update preference
-                let auto_update = config.general.auto_update;
+                let auto_update = self.app_config.general.auto_update;
                 self.auto_updater.update(cx, |updater, cx| {
                     updater.set_enabled(auto_update, cx);
                 });
+                crate::i18n::apply_ui_language(&self.app_config.general.ui_language);
+                self.refresh_command_palette(cx);
                 cx.notify();
             }
             SettingsEvent::ThemeChanged(pref) => {
@@ -1293,9 +1282,7 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    shelldeck_core::config::cloud_sync::sync_now(&cfg, version)
-                })
+                .spawn(async move { shelldeck_core::config::cloud_sync::sync_now(&cfg, version) })
                 .await;
 
             let _ = this.update(cx, |ws, cx| match result {
@@ -1356,8 +1343,8 @@ impl Workspace {
             sidebar.set_connections(conns.clone());
             cx.notify();
         });
-        self.server_sync.update(cx, |view, _| {
-            view.set_connections(conns.clone());
+        self.server_sync.update(cx, |view, cx| {
+            view.set_connections(conns.clone(), cx);
         });
         self.sites.update(cx, |view, _| {
             view.set_connections(conns);
@@ -1406,6 +1393,7 @@ impl Workspace {
                         ws.activate_current_mode(cx);
                     }
                     Err(e) if cloud_account::is_auth_rejected(&e) => {
+                        ws.invalidate_cloud_session(cx);
                         ws.account_status = AccountStatus::Rejected;
                         ws.show_toast(
                             "Session Inklura expirée — reconnectez-vous depuis le menu compte.",
@@ -1429,19 +1417,22 @@ impl Workspace {
         let device = cloud_account::device_name();
         let form = cx.new(|form_cx| LoginForm::new(server, device, form_cx));
 
-        let sub = cx.subscribe(&form, |this, _form, event: &LoginFormEvent, cx| match event {
-            LoginFormEvent::SubmitPassword { email, password } => {
-                this.start_password_login(email.clone(), password.clone(), cx);
-            }
-            LoginFormEvent::StartOidc(provider) => {
-                this.start_oidc_login(provider.clone(), cx);
-            }
-            LoginFormEvent::Cancel => {
-                this.login_form = None;
-                this._login_form_sub = None;
-                cx.notify();
-            }
-        });
+        let sub = cx.subscribe(
+            &form,
+            |this, _form, event: &LoginFormEvent, cx| match event {
+                LoginFormEvent::SubmitPassword { email, password } => {
+                    this.start_password_login(email.clone(), password.clone(), cx);
+                }
+                LoginFormEvent::StartOidc(provider) => {
+                    this.start_oidc_login(provider.clone(), cx);
+                }
+                LoginFormEvent::Cancel => {
+                    this.login_form = None;
+                    this._login_form_sub = None;
+                    cx.notify();
+                }
+            },
+        );
 
         self.account_menu_open = false;
         self.login_form = Some(form);
@@ -1462,9 +1453,9 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    cloud_account::login_password(&base, &email, &password, &device)
-                })
+                .spawn(
+                    async move { cloud_account::login_password(&base, &email, &password, &device) },
+                )
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok((token, account)) => ws.apply_login(token, account, cx),
@@ -1514,11 +1505,15 @@ impl Workspace {
         };
         // Random state: two v4 UUIDs → 64 hex chars, matches [A-Za-z0-9_-]{32,64}.
         let state = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        let url = cloud_account::browser_connect_url(&base, port, &state, &device, provider.as_deref());
+        let url =
+            cloud_account::browser_connect_url(&base, port, &state, &device, provider.as_deref());
 
         if let Err(e) = cloud_account::open_in_browser(&url) {
             self.show_toast(
-                format!("Impossible d'ouvrir le navigateur : {}", cloud_account::user_message(&e)),
+                format!(
+                    "Impossible d'ouvrir le navigateur : {}",
+                    cloud_account::user_message(&e)
+                ),
                 ToastLevel::Error,
                 cx,
             );
@@ -1556,7 +1551,10 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match outcome {
                 Ok((token, account)) => ws.apply_login(token, account, cx),
                 Err(e) => ws.show_toast(
-                    format!("Connexion navigateur échouée : {}", cloud_account::user_message(&e)),
+                    format!(
+                        "Connexion navigateur échouée : {}",
+                        cloud_account::user_message(&e)
+                    ),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -1574,6 +1572,7 @@ impl Workspace {
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save config after login: {}", e);
         }
+        self.sync_settings_config(cx);
         self.account_status = AccountStatus::Ok;
         self.login_form = None;
         self._login_form_sub = None;
@@ -1624,6 +1623,43 @@ impl Workspace {
         .detach();
     }
 
+    /// Keep `SettingsView`'s config snapshot aligned with `app_config`.
+    /// Settings persists to disk on many small edits (sidebar nav collapse,
+    /// font size, …) and emits `ConfigChanged` — if its copy is stale it
+    /// would resurrect a logged-out session. Call after login/logout/session
+    /// invalidation and whenever the workspace mutates account/cloud_sync.
+    fn sync_settings_config(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.app_config.clone();
+        self.settings.update(cx, |settings, cx| {
+            settings.config = snapshot;
+            cx.notify();
+        });
+    }
+
+    /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
+    fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
+        self.app_config.account = None;
+        self.app_config.cloud_sync.token = String::new();
+        self.app_config.cloud_sync.enabled = false;
+        self.app_config.cloud_sync.active_site_id = None;
+        self.app_config.cloud_sync.active_site_label = None;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save config after session invalidation: {}", e);
+        }
+        self.sync_settings_config(cx);
+        self.account_status = AccountStatus::Unknown;
+        self.account_menu_open = false;
+        self.site_directory = None;
+        self.site_menu_open = false;
+        self._support_poll_task = None;
+        self._issues_poll = None;
+        self.sidebar.update(cx, |s, cx| {
+            s.set_site_filter(None);
+            cx.notify();
+        });
+        self.activate_current_mode(cx);
+    }
+
     /// Sign out: revoke the token server-side (best-effort), then clear local
     /// account state and disable cloud sync.
     fn logout_account(&mut self, cx: &mut Context<Self>) {
@@ -1637,24 +1673,7 @@ impl Workspace {
                 .detach();
         }
 
-        self.app_config.account = None;
-        self.app_config.cloud_sync.token = String::new();
-        self.app_config.cloud_sync.enabled = false;
-        self.app_config.cloud_sync.active_site_id = None;
-        self.app_config.cloud_sync.active_site_label = None;
-        if let Err(e) = self.app_config.save() {
-            tracing::error!("Failed to save config after logout: {}", e);
-        }
-        self.account_status = AccountStatus::Unknown;
-        self.account_menu_open = false;
-        self.site_directory = None;
-        self.site_menu_open = false;
-        // Logged out → classic Dev surface; stop the support poll.
-        self._support_poll_task = None;
-        self.sidebar.update(cx, |s, cx| {
-            s.set_site_filter(None);
-            cx.notify();
-        });
+        self.invalidate_cloud_session(cx);
         self.show_toast("Déconnecté d'Inklura Manage.", ToastLevel::Info, cx);
         cx.notify();
     }
@@ -1783,52 +1802,166 @@ impl Workspace {
     /// manage-area entries, which [`refresh_command_palette`] appends).
     fn base_palette_actions() -> Vec<PaletteAction> {
         let mut actions = vec![
-            PaletteAction::new("New Terminal", Some("Ctrl+T"), Box::new(NewTerminal)),
-            PaletteAction::new("Toggle Sidebar", Some("Ctrl+B"), Box::new(ToggleSidebar)),
-            PaletteAction::new("Open Settings", Some("Ctrl+,"), Box::new(OpenSettings)),
-            PaletteAction::new("Close Tab", Some("Ctrl+W"), Box::new(CloseTab)),
-            PaletteAction::new("Next Tab", Some("Ctrl+Tab"), Box::new(NextTab)),
-            PaletteAction::new("Previous Tab", Some("Ctrl+Shift+Tab"), Box::new(PrevTab)),
-            PaletteAction::new("Quit", Some("Ctrl+Q"), Box::new(Quit)),
-            PaletteAction::new("Browse Script Templates", None, Box::new(OpenTemplateBrowser)),
-            PaletteAction::new("New Script", None, Box::new(NewScript)),
-            PaletteAction::new("Open Server Sync", None, Box::new(OpenServerSync)),
-            PaletteAction::new("Open Sites", None, Box::new(OpenSites)),
-            PaletteAction::new("Open File Editor", Some("Ctrl+E"), Box::new(OpenFileEditorView)),
-            PaletteAction::new("Cloud Sync Now", None, Box::new(CloudSyncNow)),
-            PaletteAction::new("Switch Active Site", None, Box::new(SwitchSite)),
-            PaletteAction::new("JeanClaude : ouvrir la console", None, Box::new(OpenJeanConsole)),
-            PaletteAction::new("JeanClaude : pause / reprendre", None, Box::new(JeanTogglePause)),
-            PaletteAction::new("Fleet : ouvrir la flotte Jean", None, Box::new(OpenFleet)),
             PaletteAction::new(
-                "Fleet : activer / désactiver ce runtime",
+                t!("palette.new_terminal").to_string(),
+                Some("Ctrl+T"),
+                "terminal",
+                Box::new(NewTerminal),
+            ),
+            PaletteAction::new(
+                t!("palette.toggle_sidebar").to_string(),
+                Some("Ctrl+B"),
+                "chevron-left",
+                Box::new(ToggleSidebar),
+            ),
+            PaletteAction::new(
+                t!("palette.open_settings").to_string(),
+                Some("Ctrl+,"),
+                "settings",
+                Box::new(OpenSettings),
+            ),
+            PaletteAction::new(
+                t!("palette.close_tab").to_string(),
+                Some("Ctrl+W"),
+                "x",
+                Box::new(CloseTab),
+            ),
+            PaletteAction::new(
+                t!("palette.next_tab").to_string(),
+                Some("Ctrl+Tab"),
+                "chevron-right",
+                Box::new(NextTab),
+            ),
+            PaletteAction::new(
+                t!("palette.prev_tab").to_string(),
+                Some("Ctrl+Shift+Tab"),
+                "chevron-left",
+                Box::new(PrevTab),
+            ),
+            PaletteAction::new(
+                t!("palette.quit").to_string(),
+                Some("Ctrl+Q"),
+                "x",
+                Box::new(Quit),
+            ),
+            PaletteAction::new(
+                t!("palette.browse_templates").to_string(),
                 None,
+                "scroll-text",
+                Box::new(OpenTemplateBrowser),
+            ),
+            PaletteAction::new(
+                t!("palette.new_script").to_string(),
+                None,
+                "plus",
+                Box::new(NewScript),
+            ),
+            PaletteAction::new(
+                t!("palette.open_server_sync").to_string(),
+                None,
+                "refresh-cw",
+                Box::new(OpenServerSync),
+            ),
+            PaletteAction::new(
+                t!("palette.open_sites").to_string(),
+                None,
+                "globe",
+                Box::new(OpenSites),
+            ),
+            PaletteAction::new(
+                t!("palette.open_file_editor").to_string(),
+                Some("Ctrl+E"),
+                "pencil",
+                Box::new(OpenFileEditorView),
+            ),
+            PaletteAction::new(
+                t!("palette.cloud_sync_now").to_string(),
+                None,
+                "refresh-cw",
+                Box::new(CloudSyncNow),
+            ),
+            PaletteAction::new(
+                t!("palette.switch_site").to_string(),
+                None,
+                "globe",
+                Box::new(SwitchSite),
+            ),
+            PaletteAction::new(
+                t!("palette.jean_open").to_string(),
+                None,
+                "cpu",
+                Box::new(OpenJeanConsole),
+            ),
+            PaletteAction::new(
+                t!("palette.jean_pause").to_string(),
+                None,
+                "clock",
+                Box::new(JeanTogglePause),
+            ),
+            PaletteAction::new(
+                t!("palette.fleet_open").to_string(),
+                None,
+                "box",
+                Box::new(OpenFleet),
+            ),
+            PaletteAction::new(
+                t!("palette.fleet_runtime").to_string(),
+                None,
+                "cpu",
                 Box::new(ToggleJeanRuntime),
             ),
-            PaletteAction::new("Nouvelle demande", None, Box::new(NewRequest)),
-            PaletteAction::new("Demandes (support)", None, Box::new(OpenSupportRequests)),
-            PaletteAction::new("bext Cloud : ouvrir", None, Box::new(OpenBextCloud)),
-            PaletteAction::new("bext Cloud : se connecter", None, Box::new(ConnectBextCloud)),
-            PaletteAction::new("bext Cloud : nouveau site", None, Box::new(OpenBextCloud)),
+            PaletteAction::new(
+                t!("palette.new_request").to_string(),
+                None,
+                "plus",
+                Box::new(NewRequest),
+            ),
+            PaletteAction::new(
+                t!("palette.support_requests").to_string(),
+                None,
+                "inbox",
+                Box::new(OpenSupportRequests),
+            ),
+            PaletteAction::new(
+                t!("palette.bext_open").to_string(),
+                None,
+                "cloud",
+                Box::new(OpenBextCloud),
+            ),
+            PaletteAction::new(
+                t!("palette.bext_connect").to_string(),
+                None,
+                "key",
+                Box::new(ConnectBextCloud),
+            ),
+            PaletteAction::new(
+                t!("palette.bext_new_site").to_string(),
+                None,
+                "cloud",
+                Box::new(OpenBextCloud),
+            ),
         ];
         for m in AppMode::all() {
             actions.push(PaletteAction::new(
-                &format!("Mode : {}", m.label()),
+                t!("palette.mode", mode = m.label()).to_string(),
                 None,
+                "shield",
                 Box::new(SetAppMode { mode: m }),
             ));
         }
         for pref in ThemePreference::all() {
             actions.push(PaletteAction::new(
-                &format!("Theme: {}", pref.display_name()),
+                t!("palette.theme", name = pref.display_name()).to_string(),
                 None,
+                "settings",
                 Box::new(ApplyAppTheme { pref: pref.clone() }),
             ));
         }
         for theme in TerminalTheme::builtins() {
             actions.push(PaletteAction::new(
-                &format!("Terminal Theme: {}", theme.name),
+                t!("palette.terminal_theme", name = theme.name).to_string(),
                 None,
+                "terminal",
                 Box::new(ApplyTerminalTheme { name: theme.name }),
             ));
         }
@@ -1844,8 +1977,14 @@ impl Workspace {
             let label = site.display_label();
             for area in &dir.areas {
                 actions.push(PaletteAction::new(
-                    &format!("Site actif ({}) : {}", label, area.label),
+                    t!(
+                        "palette.active_site",
+                        site = label,
+                        area = area.label.as_str()
+                    )
+                    .to_string(),
                     None,
+                    "external-link",
                     Box::new(OpenManageArea {
                         path: area.path.clone(),
                     }),
@@ -1923,8 +2062,8 @@ impl Workspace {
     }
 
     fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
-        let want = self.effective_mode() == AppMode::Support
-            && self.app_config.cloud_sync.is_configured();
+        let want =
+            self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured();
         if want {
             if self._support_poll_task.is_none() {
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
@@ -2056,7 +2195,9 @@ impl Workspace {
                 self.support_action(cx, move |b, t| ms::support_assign(&b, &t, &id, &assignee));
             }
             SupportViewEvent::Resolve { id, resolution } => {
-                self.support_action(cx, move |b, t| ms::support_resolve(&b, &t, &id, &resolution));
+                self.support_action(cx, move |b, t| {
+                    ms::support_resolve(&b, &t, &id, &resolution)
+                });
             }
             SupportViewEvent::JeanConfirm(thread) => {
                 self.jean_action(cx, move |c| jeanclaude::confirm(&c, &thread));
@@ -2077,9 +2218,8 @@ impl Workspace {
             SupportViewEvent::IssueAssign { id, assignee } => {
                 self.issue_staff_action(cx, move |b, t| issues::assign(&b, &t, &id, &assignee))
             }
-            SupportViewEvent::IssuePriority { id, priority } => {
-                self.issue_staff_action(cx, move |b, t| issues::set_priority(&b, &t, &id, &priority))
-            }
+            SupportViewEvent::IssuePriority { id, priority } => self
+                .issue_staff_action(cx, move |b, t| issues::set_priority(&b, &t, &id, &priority)),
             SupportViewEvent::IssueDispatch { id, instance_id } => self
                 .issue_staff_action(cx, move |b, t| {
                     issues::dispatch_issue(&b, &t, &id, &instance_id)
@@ -2308,10 +2448,7 @@ impl Workspace {
             return;
         };
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { f(cfg) })
-                .await;
+            let result = cx.background_executor().spawn(async move { f(cfg) }).await;
             let _ = this.update(cx, |ws, cx| {
                 if let Err(e) = result {
                     ws.show_toast(
@@ -2443,7 +2580,10 @@ impl Workspace {
     /// `(base_url, token)` when signed in to Inklura Manage.
     fn fleet_base_token(&self) -> Option<(String, String)> {
         if self.app_config.cloud_sync.is_configured() {
-            Some((self.account_base_url(), self.app_config.cloud_sync.token.clone()))
+            Some((
+                self.account_base_url(),
+                self.app_config.cloud_sync.token.clone(),
+            ))
         } else {
             None
         }
@@ -2759,11 +2899,7 @@ impl Workspace {
         }))
     }
 
-    fn apply_register(
-        &mut self,
-        r: shelldeck_core::Result<JeanInstance>,
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_register(&mut self, r: shelldeck_core::Result<JeanInstance>, cx: &mut Context<Self>) {
         match r {
             Ok(inst) => {
                 self.app_config.jean_runtime.instance_id = Some(inst.id.clone());
@@ -2816,7 +2952,12 @@ impl Workspace {
 
     /// Approve a confirm-mode job: execute it now (running → done/failed).
     fn approve_fleet_job(&mut self, job_id: String, cx: &mut Context<Self>) {
-        let Some(job) = self.runtime_awaiting.iter().find(|j| j.id == job_id).cloned() else {
+        let Some(job) = self
+            .runtime_awaiting
+            .iter()
+            .find(|j| j.id == job_id)
+            .cloned()
+        else {
             return;
         };
         let Some((base, token)) = self.fleet_base_token() else {
@@ -3405,14 +3546,21 @@ impl Workspace {
         let port = match listener.local_addr() {
             Ok(a) => a.port(),
             Err(e) => {
-                self.show_toast(format!("Port local illisible : {}", e), ToastLevel::Error, cx);
+                self.show_toast(
+                    format!("Port local illisible : {}", e),
+                    ToastLevel::Error,
+                    cx,
+                );
                 return;
             }
         };
         let url = bext_cloud::cli_login_url(&base, port);
         if let Err(e) = cloud_account::open_in_browser(&url) {
             self.show_toast(
-                format!("Impossible d'ouvrir le navigateur : {}", cloud_account::user_message(&e)),
+                format!(
+                    "Impossible d'ouvrir le navigateur : {}",
+                    cloud_account::user_message(&e)
+                ),
                 ToastLevel::Error,
                 cx,
             );
@@ -3427,7 +3575,10 @@ impl Workspace {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    bext_cloud::browser_connect_listen(listener, std::time::Duration::from_secs(180))
+                    bext_cloud::browser_connect_listen(
+                        listener,
+                        std::time::Duration::from_secs(180),
+                    )
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| match outcome {
@@ -3446,7 +3597,10 @@ impl Workspace {
                     ws.refresh_bext_cloud(cx);
                 }
                 Err(e) => ws.show_toast(
-                    format!("Connexion cloud échouée : {}", cloud_account::user_message(&e)),
+                    format!(
+                        "Connexion cloud échouée : {}",
+                        cloud_account::user_message(&e)
+                    ),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3480,10 +3634,7 @@ impl Workspace {
             return;
         }
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { f(cfg) })
-                .await;
+            let r = cx.background_executor().spawn(async move { f(cfg) }).await;
             let _ = this.update(cx, |ws, cx| {
                 match r {
                     Ok(_) => ws.show_toast("Action bext effectuée.", ToastLevel::Success, cx),
@@ -3566,7 +3717,11 @@ impl Workspace {
             BextViewEvent::Disconnect => self.disconnect_bext(cx),
             BextViewEvent::RefreshCloud => self.refresh_bext_cloud(cx),
             BextViewEvent::CreateSite { name, title } => {
-                let t = if title.trim().is_empty() { None } else { Some(title) };
+                let t = if title.trim().is_empty() {
+                    None
+                } else {
+                    Some(title)
+                };
                 self.bext_cloud_action(cx, move |cfg| {
                     bext_cloud::create_site(&cfg, &name, t.as_deref()).map(|_| ())
                 });
@@ -3599,7 +3754,11 @@ impl Workspace {
                 slug,
                 title,
             } => {
-                let t = if title.trim().is_empty() { None } else { Some(title) };
+                let t = if title.trim().is_empty() {
+                    None
+                } else {
+                    Some(title)
+                };
                 self.bext_instance_action(base, app_id, cx, move |inst| {
                     bext_instance::create_site(inst, &slug, t.as_deref(), None, None).map(|_| ())
                 });
@@ -3977,7 +4136,10 @@ impl Workspace {
         // Restore the active tab (clamped to the number of tabs actually
         // recreated, since some saved tabs may have been skipped).
         self.terminal.update(cx, |terminal, _| {
-            if let Some(tab) = terminal.tabs.get(state.active_tab.min(terminal.tabs.len() - 1)) {
+            if let Some(tab) = terminal
+                .tabs
+                .get(state.active_tab.min(terminal.tabs.len() - 1))
+            {
                 let id = tab.id;
                 terminal.select_tab(id);
             }
@@ -4109,34 +4271,32 @@ impl Workspace {
         // does not inherit from the parent — so we set it explicitly on the
         // SVG and swap it on group hover to whiten the icon over the red
         // close background.
-        let control_btn = |id: &'static str,
-                           icon_path: &'static str,
-                           area: WindowControlArea,
-                           danger: bool| {
-            let hover_bg = if danger {
-                ShellDeckColors::error()
-            } else {
-                btn_hover_bg
+        let control_btn =
+            |id: &'static str, icon_path: &'static str, area: WindowControlArea, danger: bool| {
+                let hover_bg = if danger {
+                    ShellDeckColors::error()
+                } else {
+                    btn_hover_bg
+                };
+                let group_name = SharedString::from(format!("ctrl-{id}"));
+                div()
+                    .id(id)
+                    .group(group_name.clone())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.0))
+                    .rounded(px(6.0))
+                    .hover(|s| s.bg(hover_bg))
+                    .window_control_area(area)
+                    .child(
+                        svg()
+                            .path(icon_path)
+                            .size(px(12.0))
+                            .text_color(btn_text)
+                            .group_hover(group_name, |s| s.text_color(gpui::white())),
+                    )
             };
-            let group_name = SharedString::from(format!("ctrl-{id}"));
-            div()
-                .id(id)
-                .group(group_name.clone())
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(28.0))
-                .rounded(px(6.0))
-                .hover(|s| s.bg(hover_bg))
-                .window_control_area(area)
-                .child(
-                    svg()
-                        .path(icon_path)
-                        .size(px(12.0))
-                        .text_color(btn_text)
-                        .group_hover(group_name, |s| s.text_color(gpui::white())),
-                )
-        };
 
         let minimize_btn = control_btn(
             "titlebar-minimize",
@@ -4285,17 +4445,18 @@ impl Workspace {
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_dim)
-                        .child("Se connecter"),
+                        .child(crate::t!("account.sign_in").to_string()),
                 );
         }
 
-        account_btn = account_btn.on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-            this.account_menu_open = !this.account_menu_open;
-            if this.account_menu_open {
-                this.theme_menu_open = false;
-            }
-            cx.notify();
-        }));
+        account_btn =
+            account_btn.on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                this.account_menu_open = !this.account_menu_open;
+                if this.account_menu_open {
+                    this.theme_menu_open = false;
+                }
+                cx.notify();
+            }));
         if account_menu_open {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
@@ -4416,12 +4577,13 @@ impl Workspace {
                         }),
                 )
         };
-        let dec_btn = scale_btn("titlebar-scale-down", "images/minus.svg")
-            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+        let dec_btn = scale_btn("titlebar-scale-down", "images/minus.svg").on_click(cx.listener(
+            |this, _event: &ClickEvent, _window, cx| {
                 this.settings
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(-1.0, cx));
                 cx.notify();
-            }));
+            },
+        ));
         let inc_btn = scale_btn("titlebar-scale-up", "images/plus.svg").on_click(cx.listener(
             |this, _event: &ClickEvent, _window, cx| {
                 this.settings
@@ -4446,13 +4608,7 @@ impl Workspace {
             .child(inc_btn);
 
         // Subtle vertical divider between the chrome control clusters.
-        let divider = || {
-            div()
-                .w(px(1.0))
-                .h(px(16.0))
-                .mx(px(4.0))
-                .bg(titlebar_border)
-        };
+        let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
 
         div()
             .flex()
@@ -4503,13 +4659,16 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.45),
-                offset: point(px(0.0), px(4.0)),
-                blur_radius: px(20.0),
-                spread_radius: px(0.0),
-                inset: false,
-            }])
+            .shadow(
+                vec![BoxShadow {
+                    color: hsla(0.0, 0.0, 0.0, 0.45),
+                    offset: point(px(0.0), px(4.0)),
+                    blur_radius: px(20.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }]
+                .into(),
+            )
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -4629,7 +4788,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(12.0))
             .flex()
             .flex_col()
@@ -4793,7 +4952,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child("Se connecter")
+                    .child(crate::t!("account.sign_in").to_string())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.show_login_form(cx);
                     })),
@@ -4817,10 +4976,13 @@ impl Workspace {
 
             panel = panel
                 .child(
-                    secondary_btn("account-oidc-sso", "Continuer avec SSO 1clic.pro".to_string())
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.start_oidc_login(Some("sso".to_string()), cx);
-                        })),
+                    secondary_btn(
+                        "account-oidc-sso",
+                        "Continuer avec SSO 1clic.pro".to_string(),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.start_oidc_login(Some("sso".to_string()), cx);
+                    })),
                 )
                 .child(
                     div()
@@ -4883,69 +5045,63 @@ impl Workspace {
             let b_active = active_id.as_deref() == Some(b.site_id.as_str());
             let a_conn = conn_site_ids.contains(&a.site_id);
             let b_conn = conn_site_ids.contains(&b.site_id);
-            b_active
-                .cmp(&a_active)
-                .then(b_conn.cmp(&a_conn))
-                .then(
-                    a.display_label()
-                        .to_lowercase()
-                        .cmp(&b.display_label().to_lowercase()),
-                )
+            b_active.cmp(&a_active).then(b_conn.cmp(&a_conn)).then(
+                a.display_label()
+                    .to_lowercase()
+                    .cmp(&b.display_label().to_lowercase()),
+            )
         });
         let total = sites.len();
         let hidden = total.saturating_sub(CAP);
 
-        let row = |id: ElementId,
-                   label: String,
-                   active: bool,
-                   badge: Option<String>|
-         -> Stateful<Div> {
-            let mut r = div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(8.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
-            if active {
-                r = r.bg(ShellDeckColors::selected_bg());
-            }
-            r = r.child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(label),
-            );
-            if let Some(b) = badge {
+        let row =
+            |id: ElementId, label: String, active: bool, badge: Option<String>| -> Stateful<Div> {
+                let mut r = div()
+                    .id(id)
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+                if active {
+                    r = r.bg(ShellDeckColors::selected_bg());
+                }
                 r = r.child(
                     div()
-                        .flex_shrink_0()
-                        .px(px(5.0))
-                        .py(px(1.0))
-                        .rounded(px(8.0))
-                        .bg(ShellDeckColors::badge_bg())
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(b),
-                );
-            }
-            if active {
-                r = r.child(
-                    div()
-                        .flex_shrink_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
                         .text_size(px(12.0))
-                        .text_color(ShellDeckColors::primary())
-                        .child("\u{2713}"),
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(label),
                 );
-            }
-            r
-        };
+                if let Some(b) = badge {
+                    r = r.child(
+                        div()
+                            .flex_shrink_0()
+                            .px(px(5.0))
+                            .py(px(1.0))
+                            .rounded(px(8.0))
+                            .bg(ShellDeckColors::badge_bg())
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(b),
+                    );
+                }
+                if active {
+                    r = r.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::primary())
+                            .child("\u{2713}"),
+                    );
+                }
+                r
+            };
 
         let shadow = vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.45),
@@ -4967,7 +5123,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(10.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(6.0))
             .flex()
             .flex_col()
@@ -5132,6 +5288,8 @@ impl Workspace {
             .whitespace_nowrap()
             .child(conn_name);
 
+        #[allow(clippy::type_complexity)]
+        // local closure param; a type alias would need Self, disallowed here
         let item = |id: &'static str,
                     label: &'static str,
                     accent: gpui::Hsla,
@@ -5167,13 +5325,11 @@ impl Workspace {
                 .cursor_pointer()
                 .hover(move |el| el.bg(hover_bg).text_color(hover_text))
                 .child(label)
-                .on_click(cx.listener(
-                    move |this, _event: &ClickEvent, _window, cx| {
-                        cx.stop_propagation();
-                        this.sidebar_kebab_menu = None;
-                        on_click(this, cx);
-                    },
-                ))
+                .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.sidebar_kebab_menu = None;
+                    on_click(this, cx);
+                }))
         };
 
         let panel = div()
@@ -5184,7 +5340,7 @@ impl Workspace {
             .border_1()
             .border_color(ShellDeckColors::border())
             .rounded(px(8.0))
-            .shadow(shadow)
+            .shadow(shadow.into())
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -5194,12 +5350,7 @@ impl Workspace {
                 cx.stop_propagation();
             })
             .child(header)
-            .child(
-                div()
-                    .h(px(1.0))
-                    .my(px(2.0))
-                    .bg(ShellDeckColors::border()),
-            )
+            .child(div().h(px(1.0)).my(px(2.0)).bg(ShellDeckColors::border()))
             .child(item(
                 "ssh",
                 "Connect (SSH)",
@@ -5235,12 +5386,7 @@ impl Workspace {
                     this.manage_bext_for_connection(conn_id, cx);
                 }),
             ))
-            .child(
-                div()
-                    .h(px(1.0))
-                    .my(px(2.0))
-                    .bg(ShellDeckColors::border()),
-            )
+            .child(div().h(px(1.0)).my(px(2.0)).bg(ShellDeckColors::border()))
             .child(item(
                 "del",
                 "Delete",
@@ -5329,7 +5475,14 @@ impl Workspace {
         let payload = self.site_directory.clone().unwrap_or_default();
 
         // Preferred area buttons for each site row (subset of the directory).
-        let preferred = ["dashboard", "cms", "helpdesk", "ecommerce", "settings", "shelldeck"];
+        let preferred = [
+            "dashboard",
+            "cms",
+            "helpdesk",
+            "ecommerce",
+            "settings",
+            "shelldeck",
+        ];
         let area_buttons: Vec<manage_sites::ManageArea> = preferred
             .iter()
             .filter_map(|k| payload.areas.iter().find(|a| a.key == *k).cloned())
@@ -5437,14 +5590,11 @@ impl Workspace {
             let b_active = active_id.as_deref() == Some(b.site_id.as_str());
             let a_conn = conn_site_ids.contains(&a.site_id);
             let b_conn = conn_site_ids.contains(&b.site_id);
-            b_active
-                .cmp(&a_active)
-                .then(b_conn.cmp(&a_conn))
-                .then(
-                    a.display_label()
-                        .to_lowercase()
-                        .cmp(&b.display_label().to_lowercase()),
-                )
+            b_active.cmp(&a_active).then(b_conn.cmp(&a_conn)).then(
+                a.display_label()
+                    .to_lowercase()
+                    .cmp(&b.display_label().to_lowercase()),
+            )
         });
 
         let mut list = div()
@@ -5592,7 +5742,10 @@ impl Workspace {
                     )
                     .child({
                         let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!("uh-act-{}", sid))))
+                            .id(ElementId::from(SharedString::from(format!(
+                                "uh-act-{}",
+                                sid
+                            ))))
                             .px(px(10.0))
                             .py(px(5.0))
                             .rounded(px(6.0))
@@ -5694,14 +5847,12 @@ impl Workspace {
             .child(scrollable_vertical(body))
     }
 
-
     /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
     /// row opens the detail as a right-side sheet; the "+ Nouvelle demande"
     /// button in the header opens the composer as another right-side sheet.
     /// Both live at the workspace root — they slide over the list without
     /// pushing it down (the pre-sheet layout used to append them inline).
     fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
-
         // Issue list.
         let mut list = div().flex().flex_col().gap(px(4.0)).mt(px(8.0));
         if self.issues_list.is_empty() {
@@ -5716,41 +5867,40 @@ impl Workspace {
         for iss in &self.issues_list {
             let id = iss.id.clone();
             let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
-            let prio = match iss.priority.as_str() {
-                "urgent" => ShellDeckColors::error(),
-                "high" => ShellDeckColors::warning(),
-                _ => ShellDeckColors::text_muted(),
-            };
-            let mut row = div()
-                .id(ElementId::from(SharedString::from(format!("uiss-{}", iss.id))))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(7.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(if selected {
-                    ShellDeckColors::primary()
-                } else {
-                    ShellDeckColors::border()
-                })
-                .cursor_pointer()
-                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.select_issue(id.clone(), cx)
-                }))
-                .child(user_issue_status_pill(&iss.status))
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(px(13.0))
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(iss.title.clone()),
-                )
-                .child(div().size(px(7.0)).rounded_full().bg(prio));
+            let mut row =
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "uiss-{}",
+                        iss.id
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(if selected {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::border()
+                    })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.select_issue(id.clone(), cx)
+                    }))
+                    .child(issue_status_badge(&iss.status))
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(iss.title.clone()),
+                    )
+                    .child(priority_badge(&iss.priority));
             if let Some(g) = &iss.github {
                 row = row.child(
                     div()
@@ -5792,7 +5942,7 @@ impl Workspace {
                     .cursor_pointer()
                     .child(
                         svg()
-                            .path("images/plus.svg")
+                            .path("icons/lucide/plus.svg")
                             .size(px(11.0))
                             .text_color(white()),
                     )
@@ -5891,12 +6041,10 @@ impl Workspace {
                                     .justify_center()
                                     .cursor_pointer()
                                     .text_color(ShellDeckColors::text_muted())
-                                    .hover(|el| {
-                                        el.text_color(ShellDeckColors::text_primary())
-                                    })
+                                    .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                                     .child(
                                         svg()
-                                            .path("images/close.svg")
+                                            .path("icons/lucide/x.svg")
                                             .size(px(14.0))
                                             .text_color(ShellDeckColors::text_muted()),
                                     )
@@ -5927,13 +6075,12 @@ impl Workspace {
                             "{id}-slide-{}",
                             if dismissing { "out" } else { "in" }
                         )),
-                        Animation::new(Duration::from_millis(ANIM_MS)).with_easing(
-                            if dismissing {
-                                (|t: f32| t * t * t * t * t) as fn(f32) -> f32 // ease_in_quint
-                            } else {
-                                (|t: f32| 1.0 - (1.0 - t).powi(5)) as fn(f32) -> f32 // ease_out_quint
-                            },
-                        ),
+                        Animation::new(Duration::from_millis(ANIM_MS)).with_easing(if dismissing {
+                            (|t: f32| t * t * t * t * t) as fn(f32) -> f32 // ease_in_quint
+                        } else {
+                            (|t: f32| 1.0 - (1.0 - t).powi(5)) as fn(f32) -> f32
+                            // ease_out_quint
+                        }),
                         move |el, delta| {
                             let d = delta.clamp(0.0, 1.0);
                             let offset = if dismissing {
@@ -5950,29 +6097,32 @@ impl Workspace {
     /// The "Nouvelle demande" composer rendered as a right-side sheet.
     fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let priorities = ["low", "normal", "high", "urgent"];
-        let mut prio_row = div().flex().items_center().gap(px(4.0));
+        let mut prio_row = div().flex().items_center().gap(px(6.0));
         for p in priorities {
             let active = self.issue_new_priority == p;
+            // Colored adabraka Badge picks up the severity mapping; the
+            // wrapper div carries the click-target + a soft ring on the
+            // selected option so the picker still reads as a choice, not a
+            // read-only tag.
             let mut chip = div()
                 .id(ElementId::from(SharedString::from(format!(
                     "iss-np-sheet-{p}"
                 ))))
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded(px(6.0))
-                .text_size(px(11.0))
+                .p(px(2.0))
+                .rounded_full()
                 .cursor_pointer()
-                .child(p.to_string())
+                .child(priority_badge(p))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.issue_new_priority = p.to_string();
                     cx.notify();
                 }));
             if active {
-                chip = chip
-                    .bg(ShellDeckColors::selected_bg())
-                    .text_color(ShellDeckColors::text_primary());
+                chip = chip.border_2().border_color(ShellDeckColors::primary());
             } else {
-                chip = chip.text_color(ShellDeckColors::text_muted());
+                chip = chip
+                    .border_2()
+                    .border_color(gpui::transparent_black())
+                    .opacity(0.55);
             }
             prio_row = prio_row.child(chip);
         }
@@ -5991,7 +6141,9 @@ impl Workspace {
             });
         let body_input = Input::new(&self.issue_body_state)
             .size(InputSize::Sm)
-            .placeholder("Détails (facultatif)");
+            .placeholder("Détails (facultatif)")
+            .multi_line(true)
+            .min_rows(4);
 
         let inner = div()
             .flex()
@@ -6114,7 +6266,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(user_issue_status_pill(&iss.status))
+                    .child(issue_status_badge(&iss.status))
                     .child(
                         div()
                             .flex_1()
@@ -6242,9 +6394,11 @@ impl Workspace {
                 div()
                     .id("jean-ask-input")
                     .track_focus(&self.jean_ask_focus)
-                    .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
-                        this.handle_jean_ask_key(e, cx)
-                    }))
+                    .on_key_down(
+                        cx.listener(|this, e: &KeyDownEvent, _w, cx| {
+                            this.handle_jean_ask_key(e, cx)
+                        }),
+                    )
                     .w_full()
                     .min_h(px(56.0))
                     .px(px(10.0))
@@ -6280,9 +6434,9 @@ impl Workspace {
                             .text_color(white())
                             .cursor_pointer()
                             .child("Envoyer")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_jean_ask(cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| this.submit_jean_ask(cx)),
+                            ),
                     ),
             )
             .child(
@@ -6358,9 +6512,7 @@ impl Render for Workspace {
                     ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
                     ActiveView::Terminal => content = content.child(self.terminal.clone()),
                     ActiveView::Scripts => content = content.child(self.scripts.clone()),
-                    ActiveView::PortForwards => {
-                        content = content.child(self.port_forwards.clone())
-                    }
+                    ActiveView::PortForwards => content = content.child(self.port_forwards.clone()),
                     ActiveView::ServerSync => content = content.child(self.server_sync.clone()),
                     ActiveView::Sites => content = content.child(self.sites.clone()),
                     ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
@@ -6535,13 +6687,16 @@ impl Render for Workspace {
                 .rounded(px(10.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
-                .shadow(vec![BoxShadow {
-                    color: hsla(0.0, 0.0, 0.0, 0.45),
-                    offset: point(px(0.0), px(2.0)),
-                    blur_radius: px(16.0),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }]);
+                .shadow(
+                    vec![BoxShadow {
+                        color: hsla(0.0, 0.0, 0.0, 0.45),
+                        offset: point(px(0.0), px(2.0)),
+                        blur_radius: px(16.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    }]
+                    .into(),
+                );
         }
 
         // Sidebar resize drag

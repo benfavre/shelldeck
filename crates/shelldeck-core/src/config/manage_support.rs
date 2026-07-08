@@ -24,8 +24,50 @@ where
 }
 
 /// Deserialize a timestamp the server sends as *either* an epoch-ms number or
-/// an ISO-8601 string (`lastAt`/`at` vary per channel). Result is epoch ms;
-/// unparseable / null → `0.0`.
+/// an ISO-8601 string (`lastAt`/`at`/`createdAt` vary per channel). Result is
+/// epoch ms; unparseable / null → `0.0`. Values in the seconds range are
+/// scaled to milliseconds.
+fn normalize_epoch_ms(n: f64) -> f64 {
+    if n <= 0.0 || !n.is_finite() {
+        return 0.0;
+    }
+    // Epoch seconds are ~1e9 today; epoch ms are ~1e12.
+    if n < 1_000_000_000_000.0 {
+        n * 1000.0
+    } else {
+        n
+    }
+}
+
+fn parse_timestamp_str(s: &str) -> f64 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0.0;
+    }
+    if let Ok(n) = s.parse::<f64>() {
+        return normalize_epoch_ms(n);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.timestamp_millis() as f64;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3fZ") {
+        return dt.timestamp_millis() as f64;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ") {
+        return dt.timestamp_millis() as f64;
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return naive.and_utc().timestamp_millis() as f64;
+        }
+    }
+    0.0
+}
+
 fn de_flex_millis<'de, D>(d: D) -> std::result::Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -37,16 +79,8 @@ where
         Str(String),
     }
     Ok(match Option::<Flex>::deserialize(d)? {
-        Some(Flex::Num(n)) => n,
-        Some(Flex::Str(s)) => {
-            if let Ok(n) = s.parse::<f64>() {
-                n
-            } else {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .map(|dt| dt.timestamp_millis() as f64)
-                    .unwrap_or(0.0)
-            }
-        }
+        Some(Flex::Num(n)) => normalize_epoch_ms(n),
+        Some(Flex::Str(s)) => parse_timestamp_str(&s),
         None => 0.0,
     })
 }
@@ -82,18 +116,78 @@ pub struct SupportSla {
     pub breached: bool,
 }
 
-/// One message in a ticket thread. `from` is `"contact"` (customer),
-/// `"note"` (internal), or an agent-side value; unknown `from` = agent-side.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+fn coalesce_timestamp(candidates: &[f64]) -> f64 {
+    candidates.iter().copied().find(|t| *t > 0.0).unwrap_or(0.0)
+}
+
+fn de_support_message<'de, D>(deserializer: D) -> std::result::Result<SupportMessage, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize, Default)]
+    #[allow(non_snake_case)] // Manage API wire format uses camelCase keys.
+    struct Raw {
+        #[serde(default, deserialize_with = "de_nullable_string")]
+        from: String,
+        #[serde(default, deserialize_with = "de_nullable_string")]
+        text: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        at: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        lastAt: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        createdAt: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        created_at: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        timestamp: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        updatedAt: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        sentAt: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        date: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        time: f64,
+    }
+    let raw = Raw::deserialize(deserializer)?;
+    let at = coalesce_timestamp(&[
+        raw.at,
+        raw.lastAt,
+        raw.createdAt,
+        raw.created_at,
+        raw.timestamp,
+        raw.updatedAt,
+        raw.sentAt,
+        raw.date,
+        raw.time,
+    ]);
+    Ok(SupportMessage {
+        from: raw.from,
+        text: raw.text,
+        at,
+        name: raw.name,
+    })
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SupportMessage {
-    #[serde(default, deserialize_with = "de_nullable_string")]
     pub from: String,
-    #[serde(default, deserialize_with = "de_nullable_string")]
     pub text: String,
-    #[serde(default, deserialize_with = "de_flex_millis")]
     pub at: f64,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SupportMessage {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        de_support_message(deserializer)
+    }
 }
 
 impl SupportMessage {
@@ -125,7 +219,12 @@ pub struct SupportTicket {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub assignee: String,
     /// Last-activity timestamp in ms (server may send an ISO string).
-    #[serde(default, deserialize_with = "de_flex_millis")]
+    #[serde(
+        default,
+        deserialize_with = "de_flex_millis",
+        alias = "updatedAt",
+        alias = "updated_at"
+    )]
     pub last_at: f64,
     #[serde(default)]
     pub msg_count: u32,
@@ -150,7 +249,7 @@ impl SupportTicket {
     pub fn is_unassigned(&self) -> bool {
         self.assignee.trim().is_empty()
     }
-    /// A one-line channel glyph for the list.
+    /// A one-line channel glyph for the list (legacy emoji — prefer [`Self::channel_lucide`]).
     pub fn channel_glyph(&self) -> &'static str {
         match self.channel.as_str() {
             "livechat" => "\u{1F4AC}", // 💬
@@ -159,6 +258,18 @@ impl SupportTicket {
             "contact" => "\u{270E}", // ✎
             "manage" => "\u{25C6}",  // ◆
             _ => "\u{2022}",         // •
+        }
+    }
+
+    /// Lucide slug for the ticket channel (see `icons/lucide/` inventory).
+    pub fn channel_lucide(&self) -> &'static str {
+        match self.channel.as_str() {
+            "livechat" => "reply",
+            "email" => "mail",
+            "sms" => "send",
+            "contact" | "contactform" => "user",
+            "manage" | "manage_area" => "server",
+            _ => "inbox",
         }
     }
 }
@@ -341,7 +452,12 @@ pub fn support_note(base_url: &str, token: &str, id: &str, text: &str) -> Result
     )
 }
 
-pub fn support_status(base_url: &str, token: &str, id: &str, status: &str) -> Result<SupportTicket> {
+pub fn support_status(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    status: &str,
+) -> Result<SupportTicket> {
     post_action(
         base_url,
         token,
@@ -513,11 +629,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_created_at_alias_and_epoch_seconds() {
+        let ticket = r#"{"ticket":{
+          "id":"t1",
+          "lastAt":1751470000,
+          "messages":[
+            {"from":"contact","text":"hi","createdAt":"2026-06-30T09:39:24.631Z"},
+            {"from":"agent","text":"yo","at":1751461000}
+          ]
+        }}"#;
+        let tr: TicketResponse = serde_json::from_str(ticket).expect("parse aliases");
+        assert!((tr.ticket.last_at - 1751470000000.0).abs() < 1.0);
+        assert!(
+            (tr.ticket.messages[0].at
+                - chrono::DateTime::parse_from_rfc3339("2026-06-30T09:39:24.631Z")
+                    .unwrap()
+                    .timestamp_millis() as f64)
+                .abs()
+                < 1.0
+        );
+        assert!((tr.ticket.messages[1].at - 1751461000000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn parses_message_last_at_alias() {
+        let ticket = r#"{"ticket":{
+          "id":"t1",
+          "messages":[
+            {"from":"contact","text":"hi","lastAt":"2026-06-30T09:39:24.631Z"},
+            {"from":"agent","text":"yo","lastAt":1751461000}
+          ]
+        }}"#;
+        let tr: TicketResponse = serde_json::from_str(ticket).expect("parse message lastAt");
+        assert!(
+            (tr.ticket.messages[0].at
+                - chrono::DateTime::parse_from_rfc3339("2026-06-30T09:39:24.631Z")
+                    .unwrap()
+                    .timestamp_millis() as f64)
+                .abs()
+                < 1.0
+        );
+        assert!((tr.ticket.messages[1].at - 1751461000000.0).abs() < 1.0);
+    }
+
+    #[test]
     fn channel_glyphs_have_a_fallback() {
         let mut t = SupportTicket::default();
         t.channel = "unknown".into();
         assert_eq!(t.channel_glyph(), "\u{2022}");
         t.channel = "livechat".into();
         assert_eq!(t.channel_glyph(), "\u{1F4AC}");
+    }
+
+    #[test]
+    fn channel_lucide_maps_known_channels() {
+        let mut t = SupportTicket::default();
+        t.channel = "email".into();
+        assert_eq!(t.channel_lucide(), "mail");
+        t.channel = "livechat".into();
+        assert_eq!(t.channel_lucide(), "reply");
+        t.channel = "unknown".into();
+        assert_eq!(t.channel_lucide(), "inbox");
     }
 }

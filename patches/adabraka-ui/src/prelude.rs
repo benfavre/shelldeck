@@ -24,6 +24,8 @@ pub use crate::charts::pie_chart::{
     PieChart, PieChartLabelPosition, PieChartSegment, PieChartSize, PieChartVariant,
 };
 pub use crate::components::alert::{alert, Alert, AlertVariant};
+pub use crate::components::animated_collapsible::AnimatedCollapsible;
+pub use crate::components::animated_switch::{AnimatedSwitch, AnimatedSwitchTransition};
 pub use crate::components::audio_player::{
     AudioPlayer, AudioPlayerSize, AudioPlayerState, PlaybackSpeed,
 };
@@ -36,6 +38,7 @@ pub use crate::components::carousel::{
     CarouselSize, CarouselSlide, CarouselState, CarouselTransition,
 };
 pub use crate::components::checkbox::{Checkbox, CheckboxSize};
+pub use crate::components::code_block::CodeBlock;
 pub use crate::components::collapsible::Collapsible;
 pub use crate::components::color_picker::{ColorMode, ColorPicker, ColorPickerState};
 pub use crate::components::combobox::{Combobox, ComboboxEvent, ComboboxState};
@@ -45,12 +48,13 @@ pub use crate::components::countdown::{
 pub use crate::components::date_picker::{DateFormat, DatePicker, DatePickerState};
 pub use crate::components::drag_drop::{DragData, Draggable, DropZone, DropZoneStyle};
 pub use crate::components::dropdown::{Dropdown, DropdownAlign, DropdownItem, DropdownState};
-pub use crate::components::editor::{Editor, EditorState};
+pub use crate::components::editor::{Editor, EditorState, Language as EditorLanguage};
 pub use crate::components::empty_state::{EmptyState, EmptyStateSize};
 pub use crate::components::file_upload::{
     FileTypeFilter, FileUpload, FileUploadError, FileUploadSize, FileUploadState, SelectedFile,
 };
 pub use crate::components::form::{Form, FormState};
+pub use crate::components::glass_morphism::{GlassIntensity, GlassMorphism};
 pub use crate::components::hotkey_input::{HotkeyInput, HotkeyInputState, HotkeyValue};
 pub use crate::components::icon::{icon, icon_button, Icon, IconSize, IconVariant};
 pub use crate::components::icon_button::IconButton;
@@ -127,6 +131,7 @@ pub use crate::components::video_player::{
     init_video_player, VideoPlaybackSpeed, VideoPlaybackState, VideoPlayer, VideoPlayerSize,
     VideoPlayerState,
 };
+pub use crate::components::view_router::{PageTransition, ViewRouter, ViewRouterState};
 pub use crate::display::accordion::{Accordion, AccordionItem};
 pub use crate::display::badge::{Badge, BadgeVariant};
 pub use crate::display::card::Card;
@@ -134,6 +139,9 @@ pub use crate::display::data_grid::{
     CellEditor, CellPosition, DataGrid, DataGridState, GridColumnDef, GridSortDirection,
 };
 pub use crate::display::data_table::{ColumnDef, DataTable, SortDirection};
+pub use crate::display::html::Html;
+pub use crate::display::markdown::Markdown;
+pub use crate::display::rich_text::{RichBlock, RichInline, TableAlignment as RichTableAlignment};
 pub use crate::display::table::{Table, TableColumn, TableRow};
 pub use crate::layout::{
     Align, Cluster, Container, Flow, FlowDirection, Grid, HStack, Justify, MasonryGrid,
@@ -177,5 +185,58 @@ pub use crate::responsive::{
 };
 pub use crate::scroll_physics::ScrollPhysics;
 pub use crate::spring::Spring;
+
+pub use crate::components::animated_counter::{AnimatedCounter, AnimatedCounterState};
+pub use crate::components::animated_presence::{AnimatedPresence, AnimatedPresenceState};
+pub use crate::components::copy_button::{CopyButton, CopyButtonState};
+pub use crate::components::gradient_border::GradientBorder;
+pub use crate::components::kbd::{KBDSize, KBD};
+pub use crate::components::pulse_indicator::PulseIndicator;
+pub use crate::components::shimmer::Shimmer;
+
+pub use crate::components::animated_progress::AnimatedProgress;
+pub use crate::components::animated_text::{AnimatedText, TextAnimation};
+pub use crate::components::dot_pattern::DotPattern;
+pub use crate::components::drawer_navigation::{DrawerNavigation, DrawerSide, DrawerState};
+pub use crate::components::expandable_card::{ExpandableCard, ExpandableCardState};
+pub use crate::components::floating_action_button::{FABSize, FABState, FloatingActionButton};
+pub use crate::components::gradient_text::GradientText;
+pub use crate::components::layout_transition::{LayoutAnimation, LayoutTransition};
+pub use crate::components::marquee::{Marquee, MarqueeDirection};
+pub use crate::components::number_ticker::NumberTicker;
+pub use crate::components::segmented_nav::{SegmentedNav, SegmentedNavSize, SegmentedNavState};
+pub use crate::components::spotlight::{Spotlight, SpotlightState};
+pub use crate::components::text_highlight::TextHighlight;
+pub use crate::components::text_reveal::{RevealMode, TextReveal};
+pub use crate::components::type_writer::{TypeWriter, TypeWriterState};
+
+pub use crate::charts::area_chart::{AreaChart, AreaChartMode, AreaChartSeries, AreaChartSize};
+pub use crate::charts::donut_chart::{DonutChart, DonutChartSize};
+pub use crate::charts::gauge::{Gauge, GaugeSize};
+pub use crate::charts::heatmap::Heatmap;
+pub use crate::charts::radar_chart::{RadarChart, RadarChartSize, RadarDataset};
+
+pub use crate::components::animated_list::{AnimatedList, AnimatedListState};
+pub use crate::components::aurora::Aurora;
+pub use crate::components::canvas_component::CanvasComponent;
+pub use crate::components::confetti::{Confetti, ConfettiState};
+pub use crate::components::crop_area::{CropArea, CropAreaState, DragHandle};
+pub use crate::components::dock::{Dock, DockState};
+pub use crate::components::magnetic_button::{MagneticButton, MagneticButtonState};
+pub use crate::components::meteors::{MeteorState, Meteors};
+pub use crate::components::noise::Noise;
+pub use crate::components::particle_emitter::{
+    ParticleEmitter, ParticleEmitterConfig, ParticleEmitterState,
+};
+pub use crate::components::qr_code::QRCodeComponent;
+pub use crate::components::shared_element_transition::{
+    SharedElementState, SharedElementTransition,
+};
+pub use crate::components::skeleton_loader::{SkeletonLoader, SkeletonLoaderState};
+pub use crate::components::svg_renderer::SVGRenderer;
+pub use crate::components::tilt_card::{TiltCard, TiltCardState};
+pub use crate::components::waveform::Waveform;
+
+pub use crate::charts::treemap::{TreeMap, TreeMapNode};
 
 pub use crate::http::{init_http, init_http_with_user_agent};

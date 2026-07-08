@@ -71,11 +71,7 @@ impl SyntaxHighlighter {
     }
 
     /// Incremental parse after an edit.
-    pub fn parse_incremental(
-        &mut self,
-        rope: &Rope,
-        edits: &[super::buffer::InputEditInfo],
-    ) {
+    pub fn parse_incremental(&mut self, rope: &Rope, edits: &[super::buffer::InputEditInfo]) {
         if let Some(ref mut tree) = self.tree {
             for edit in edits {
                 tree.edit(&InputEdit {
@@ -226,10 +222,7 @@ impl SyntaxHighlighter {
         }
     }
 
-    fn get_highlight_query(
-        lang: EditorLanguage,
-        ts_lang: &tree_sitter::Language,
-    ) -> Option<Query> {
+    fn get_highlight_query(lang: EditorLanguage, ts_lang: &tree_sitter::Language) -> Option<Query> {
         let source = match lang {
             EditorLanguage::Rust => include_str!("queries/rust.scm"),
             EditorLanguage::JavaScript | EditorLanguage::TypeScript => {

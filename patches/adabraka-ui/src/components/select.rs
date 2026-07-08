@@ -334,9 +334,14 @@ impl<T: Clone + 'static> Render for Select<T> {
             )
             .child(
                 div()
+                    // ShellDeck patch: truncate long labels — GPUI flex children ignore
+                    // parent width caps without min_w(0) + overflow_hidden.
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .flex_grow()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .when_some(leading_icon.as_ref(), |div, src| {
                         div.child(
                             Icon::new(src.clone())
@@ -344,11 +349,19 @@ impl<T: Clone + 'static> Render for Select<T> {
                                 .color(theme.tokens.muted_foreground),
                         )
                     })
-                    .child(display_text),
+                    .child(
+                        div()
+                            .flex_grow()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .truncate()
+                            .child(display_text),
+                    ),
             )
             .child(
                 div()
                     .ml(px(8.0))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -412,6 +425,8 @@ impl<T: Clone + 'static> Render for Select<T> {
         div()
             .relative()
             .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .key_context("Select")
             .track_focus(&self.focus_handle)
             .when(open && !self.disabled, |this: Div| {
@@ -571,16 +586,19 @@ impl<T: Clone + 'static> Render for Select<T> {
                                                                             let is_selected = self.selected_index == Some(*index);
                                                                             let is_highlighted = highlighted_idx == Some(*index);
                                                                             let index = *index;
+                                                                            let item_fg = if is_highlighted {
+                                                                                theme.tokens.accent_foreground
+                                                                            } else if is_selected {
+                                                                                theme.tokens.primary
+                                                                            } else {
+                                                                                theme.tokens.popover_foreground
+                                                                            };
 
                                                                             elements.push(
                                                                                 div()
                                                                                     .px(px(12.0))
                                                                                     .py(px(8.0))
-                                                                                    .text_color(if is_selected {
-                                                                                        theme.tokens.primary
-                                                                                    } else {
-                                                                                        theme.tokens.popover_foreground
-                                                                                    })
+                                                                                    .text_color(item_fg)
                                                                                     .bg(if is_highlighted {
                                                                                         theme.tokens.accent
                                                                                     } else {
@@ -601,14 +619,29 @@ impl<T: Clone + 'static> Render for Select<T> {
                                                                                             .flex()
                                                                                             .items_center()
                                                                                             .gap(px(8.0))
+                                                                                            .min_w(px(0.0))
+                                                                                            .overflow_hidden()
                                                                                             .when_some(option.icon.as_ref(), |div, src| {
                                                                                                 div.child(
                                                                                                     Icon::new(src.clone())
                                                                                                         .size(px(14.0))
-                                                                                                        .color(theme.tokens.muted_foreground)
+                                                                                                        .color(if is_highlighted {
+                                                                                                            theme.tokens.accent_foreground
+                                                                                                        } else if is_selected {
+                                                                                                            theme.tokens.primary
+                                                                                                        } else {
+                                                                                                            theme.tokens.muted_foreground
+                                                                                                        })
                                                                                                 )
                                                                                             })
-                                                                                            .child(option.label.clone())
+                                                                                            .child(
+                                                                                                div()
+                                                                                                    .flex_grow()
+                                                                                                    .min_w(px(0.0))
+                                                                                                    .overflow_hidden()
+                                                                                                    .truncate()
+                                                                                                    .child(option.label.clone()),
+                                                                                            )
                                                                                     )
                                                                                     .into_any_element()
                                                                             );

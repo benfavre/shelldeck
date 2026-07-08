@@ -1,4 +1,11 @@
-# ShellDeck - CLAUDE.md
+# ShellDeck - AGENTS.md
+
+> This is the canonical agent instruction file for ShellDeck. `CLAUDE.md` at the
+> repo root is a thin pointer that imports this file, so Claude Code, Cursor,
+> Codex, and any other AGENTS.md-aware tool all read the same source of truth.
+>
+> Modular topic-specific rules live in [`.agents/`](.agents/) — see the imports
+> section at the bottom of this file.
 
 ## Project Overview
 
@@ -34,6 +41,9 @@ shelldeck/
 ## Essential Commands
 
 ```bash
+# Apply lightweight crate patches (zed-xim Latin-1 fix, etc.)
+./scripts/apply-crate-patches.sh
+
 # Build (requires nightly + system deps)
 cargo build
 
@@ -117,7 +127,7 @@ if condition {
 
 ### Account login
 
-`shelldeck-core::config::cloud_account` signs in to Inklura Manage and mints an account-bound sync token. `login_password()` (`POST …/auth {action:"login"}`), `whoami()` (`GET …/auth?action=whoami`, Bearer), and `logout()` (`{action:"logout"}`, best-effort revoke) mirror the sync module's reqwest-blocking + 4s/10s style. The browser/OIDC device flow is std-only: `browser_connect_url()` builds `…/manage/shelldeck/connect?port&state&device[&provider]`, `open_in_browser()` shells out to `xdg-open`/`open`/`start`, and `browser_connect_listen()` runs a loopback `TcpListener` that verifies the `state` echo and returns the redirected token (ignores favicon / mismatches, 180s timeout). `provider=sso|google|github|linkedin` → CM on-host OIDC; **omitting `provider` → the Manage password login page** (round-trips back via `?next=`), surfaced as the modal's "Via le navigateur (mot de passe)" button (`StartOidc(None)`). The signed-in identity persists in `AppConfig.account: Option<AccountInfo>` (`[account]`, `skip_serializing_if` so it's absent when logged out). UI: a titlebar account chip (`Workspace::render_account_menu`, mirrors the theme dropdown) with a status dot; the `LoginForm` modal (`login_form.rs`, mirrors `connection_form`) captures email/password + OIDC buttons; `Workspace::{show_login_form,start_password_login,start_oidc_login,apply_login,logout_account,check_account_on_startup}` drive the flows (all network on `background_executor`). On login, `apply_login` enables cloud_sync + saves the token, then syncs and toasts the profile count.
+`shelldeck-core::config::cloud_account` signs in to Inklura Manage and mints an account-bound sync token. `login_password()` (`POST …/auth {action:"login"}`), `whoami()` (`GET …/auth?action=whoami`, Bearer), and `logout()` (`{action:"logout"}`, best-effort revoke) mirror the sync module's reqwest-blocking + 4s/10s style. The browser/OIDC device flow is std-only: `browser_connect_url()` builds `…/manage/shelldeck/connect?port&state&device[&provider]`, `open_in_browser()` shells out to `xdg-open`/`open`/`start`, and `browser_connect_listen()` runs a loopback `TcpListener` that verifies the `state` echo and returns the redirected token (ignores favicon / mismatches, 180s timeout). `provider=sso|google|github|linkedin` → CM on-host OIDC; **omitting `provider` → the Manage password login page** (round-trips back via `?next=`), surfaced as the modal's "Via le navigateur (mot de passe)" button (`StartOidc(None)`). The signed-in identity persists in `AppConfig.account: Option<AccountInfo>` (`[account]`, `skip_serializing_if` so it's absent when logged out). UI: a titlebar account chip (`Workspace::render_account_menu`, mirrors the theme dropdown) with a status dot; the `LoginForm` modal (`login_form.rs`, mirrors `connection_form`) captures email/password + OIDC buttons; `Workspace::{show_login_form,start_password_login,start_oidc_login,apply_login,logout_account,check_account_on_startup}` drive the flows (all network on `background_executor`). On login, `apply_login` enables cloud_sync + saves the token, then syncs and toasts the profile count. **Config sync:** `Workspace::app_config` is authoritative for session fields; refresh `SettingsView`'s snapshot via `sync_settings_config` after login/logout/401 — never `app_config = config.clone()` from `ConfigChanged` ([`.agents/session-state.md`](.agents/session-state.md)).
 
 ### Site switcher
 
@@ -158,3 +168,30 @@ Core clients (committed by the lead, `3d961cf`): `shelldeck-core::config::bext_c
 - Terminal grid operations must be fast - they're on the rendering hot path
 - Use `parking_lot::Mutex` for thread-safe grid access, not `std::sync::Mutex`
 - Terminal repaint is event-driven (PTY reader → channel → refresh task), not polled — don't reintroduce a fixed-interval poll. The main grid paint loop must keep using `shape_line`; the `paint_glyph`/`GlyphCache` fast path silently fails to render (breaks bold/colored glyphs).
+
+## Modular rules (`.agents/`)
+
+Topic-scoped instructions live under [`.agents/`](.agents/). Each `.md` file there
+covers one focused area (a subsystem, a workflow, a class of bugs). Add a new
+file for each new topic — keep them small and self-contained.
+
+Claude Code auto-imports these via the `@`-directives below. Other AGENTS.md
+readers (Cursor, Codex, …) that don't support imports will see the list as
+prose — they can still open the referenced files manually or via their own
+rules loader.
+
+@.agents/cross-platform.md
+@.agents/ui-components.md
+@.agents/theming.md
+@.agents/icons.md
+@.agents/overflow.md
+@.agents/session-state.md
+@.agents/patches.md
+@.agents/testing.md
+@.agents/i18n.md
+
+<!-- Add one @-import per rule file above this comment. Example:
+@.agents/gpui-patterns.md
+@.agents/ssh-safety.md
+-->
+

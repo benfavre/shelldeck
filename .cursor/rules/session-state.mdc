@@ -1,0 +1,28 @@
+---
+description: Session Inklura, AppConfig — pas de snapshot Settings stale qui ressuscite le login
+globs: crates/shelldeck-ui/src/workspace/**,crates/shelldeck-ui/src/settings.rs,crates/shelldeck-core/src/config/app_config.rs,crates/shelldeck-core/src/config/cloud_account.rs
+alwaysApply: false
+---
+
+# Session & config sync
+
+> Source canonique : `.agents/session-state.md`
+
+## TL;DR
+
+- **`Workspace::app_config` is authoritative** for `account` + `cloud_sync`.
+- **`SettingsView.config` is a snapshot** — refreshed via `sync_settings_config(cx)`.
+- **`ConfigChanged` merges `general` + `terminal` only** — never `app_config = config.clone()`.
+- **Logout / 401** → `invalidate_cloud_session(cx)` then sync settings.
+
+## Incident à ne pas reproduire
+
+Logout OK → user clicks **Hide nav** → settings persisted **stale** config →
+Support + expired token came back. The chevron did not touch auth; stale
+`ConfigChanged` did.
+
+## PR checklist
+
+- Session mutation → `sync_settings_config`
+- No full `AppConfig` replace from Settings events
+- Test: logout → Hide nav → stay Dev, no 401 toasts

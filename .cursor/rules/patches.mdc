@@ -1,0 +1,203 @@
+---
+description: Forks vendored patches/ — marqueurs ShellDeck patch, PATCHES.md, sync-patches
+globs: patches/**
+alwaysApply: false
+---
+
+# Patches (`patches/`) — rules & sync workflow
+
+> Source canonique : `.agents/patches.md`
+> **Politique vendoring** (dernier recours, demander avant) : `.cursor/rules/vendor-policy.mdc`
+
+This file governs the local forks under `patches/` (`adabraka-gpui`,
+`adabraka-ui`, …) and lightweight diffs under `patches/diffs/`.
+
+- **Conventions**: how our local modifications are marked, tracked, and
+  documented so they don't get lost when we lift a fork to a newer
+  upstream version.
+- **Workflow**: how the `/sync-patches` slash command lifts a fork to a
+  newer upstream release without losing any of our changes.
+
+## Why we vendor
+
+Some upstream bugs / missing features block us today and can't wait for a
+crates.io release. The alternatives (git-dep fork on GitHub, upstream
+PRs, cargo-patch, live workarounds) were considered — the current call is
+a local vendor because `patches/adabraka-gpui` was already following
+that pattern at repo genesis. If a fork's diff grows past ~50 hunks or
+we need to sync more than every few weeks, revisit that call — a
+GitHub-fork + `[patch.crates-io] { git = "…", rev = "…" }` is usually
+lighter long-term.
+
+## Marker convention
+
+Every local change inside `patches/<crate>/src/` must be introduced by a
+comment that starts with `// ShellDeck patch:` (or `/// ShellDeck patch:`
+for doc comments). The marker must sit **immediately before** the code
+it justifies — no orphan markers, no batched multi-file markers.
+
+Example:
+
+```rust
+// ShellDeck patch: the upstream `set_value` was a no-op when the
+// selection was empty; select the whole content first so replace
+// actually overwrites.
+self.selected_range = 0..self.content.len();
+self.replace_text_in_range(None, &filtered_value, window, cx);
+```
+
+Two hard rules on markers:
+
+1. **No marker, no replay.** The `/sync-patches` audit greps for these
+   markers and matches them against the `Markers` list of every
+   `PATCHES.md` entry. A marker in code with no entry — or an entry
+   with no marker in code — halts the sync.
+2. **One block, one marker; one SDPATCH may span several markers.** A
+   single edit gets one marker (not one per line), but a single logical
+   fix that legitimately spans multiple non-adjacent locations (e.g. a
+   struct field + the two call sites that consume it) gets one marker
+   per site and lists them all in the SDPATCH entry. Do not consolidate
+   these into a single misleading marker.
+
+## `PATCHES.md` inventory (one per fork)
+
+Every vendored fork has a `patches/<crate>/PATCHES.md` at its root. It
+is the machine-readable ledger of what we changed and why. Schema:
+
+```markdown
+# Patches — <crate>
+
+**Vendored from**: `<crate>` v<X.Y.Z>
+**Upstream**: https://github.com/<owner>/<repo>
+**Last synced**: <YYYY-MM-DD>
+
+## Patches
+
+### SDPATCH-001 — <short title>
+
+- **Files / symbols**:
+  - `src/path/to/file.rs` — `Type::method`
+  - `src/other/file.rs` — `mod::function` *(only when the fix legitimately
+    spans multiple locations)*
+- **Markers** (one line per marker in code — the audit matches by count):
+  - `src/path/to/file.rs:123` — `// ShellDeck patch: <first line>`
+  - `src/other/file.rs:45` — `// ShellDeck patch: <first line>`
+- **Why**: <one paragraph, focus on the *why* not the *what* — the code
+  already shows the what>
+- **Upstream status**: <open PR link / issue link / "not filed yet">
+
+### SDPATCH-002 — …
+
+## Sync log
+
+- **YYYY-MM-DD** — from vX.Y.Z to vA.B.C. SDPATCH-003 needed adaptation
+  (upstream renamed `foo` to `bar`). All others replayed clean.
+```
+
+Rules:
+
+- **IDs are sticky.** Once a patch has `SDPATCH-007`, it keeps that ID
+  even after we drop or rewrite it. Reusing IDs corrupts the sync log.
+- **When upstream ships the fix** (e.g. our `set_value("")` PR gets
+  merged), the entry stays in `PATCHES.md` under a `## Retired
+  patches` section with the sync date it was removed — future me
+  wants to know why the diff shrank.
+
+## `/sync-patches` — the workflow
+
+Input parsing (see `.claude/commands/sync-patches.md` for the entry
+point):
+
+- No args → list the forks that have a `PATCHES.md`, print the pinned
+  version of each, and ask what to sync.
+- `all` → run the workflow sequentially across every fork; stop on
+  first red patch.
+- `<crate>` → sync that crate to the latest release available (crates.io
+  or the GitHub repo, whichever ships a newer tag).
+- `<crate> <version>` → sync that crate to that exact tag.
+
+The workflow is single-fork, run one at a time (even under `all`):
+
+1. **Pre-flight**. Working tree clean, or the user explicitly opts in to
+   dirty. `patches/<crate>/PATCHES.md` exists. Marker count in code
+   matches inventory count. Cargo lockfile is committed.
+2. **Snapshot**. `git switch -c sync-patches/<crate>-<from>-to-<to>`.
+   Do **not** delete this branch at the end.
+3. **Fetch upstream**. Prefer the GitHub tag tarball (crates.io strips
+   assets we may rely on):
+   `curl -sSL https://github.com/<owner>/<repo>/archive/refs/tags/v<ver>.tar.gz`
+   into `/tmp/sync-<crate>-<ver>/`.
+4. **Vanilla reference**. Also fetch the currently-pinned version into
+   `/tmp/sync-<crate>-vanilla/`. This is the "before our patches"
+   baseline needed to compute our diff precisely.
+5. **Overlay**. Copy the new upstream tree over `patches/<crate>/`,
+   preserving `PATCHES.md`, top-level metadata files we intentionally
+   edit (e.g. `Cargo.toml` if we tweak features), and any files listed
+   under `## Preserved files` in `PATCHES.md`.
+6. **Replay patches**. Walk `PATCHES.md` in ascending SDPATCH-NNN
+   order. For each entry, apply the patch — via `git apply`, `patch
+   -p1`, or a direct edit if the fix is small. **One SDPATCH = one
+   commit.** Never batch.
+7. **Marker audit**. `grep -rn "ShellDeck patch:" patches/<crate>/src/`
+   total count must equal the sum of the `Markers` lists across every
+   `PATCHES.md` entry (not the entry count — an SDPATCH may declare
+   several markers). Every line listed in `PATCHES.md` must resolve to
+   a matching marker in code; every marker in code must map to an
+   entry. Missing markers are always a bug in the replay — restore,
+   don't silently drop.
+8. **Compile check**.
+   `PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig cargo check`.
+   Fix mechanical breakage (renames, moved modules, changed
+   signatures) inline. If a fix needs design judgement, **stop** and
+   report.
+9. **Regression sweep**. `cargo test --workspace`. Any newly-red test
+   is a report item, not silent triage.
+10. **Update inventory**. Bump `Vendored from` + `Last synced` in
+    `PATCHES.md`. Add a `## Sync log` line noting which patches
+    replayed clean, which needed adaptation, and which upstream now
+    ships natively (candidates for retirement).
+11. **Report**. In the final message to the user:
+    - New version pinned.
+    - Per-patch status: green / yellow (adapted, with the exact edit)
+      / red (couldn't replay, with the reason).
+    - Upstream additions that supersede one of our patches — flag as
+      candidates for retirement.
+    - The safety branch name so they can inspect / roll back.
+
+## Non-negotiables
+
+- **Never** merge a sync that has unresolved red patches. Hand the
+  report back to the user.
+- **Never** touch `patches/adabraka-gpui/src/elements/div.rs` unless the
+  user explicitly names it. That file hosts the smooth-scroll animation
+  WIP owned by Benjamin Favre and it is *not* part of the replayable
+  patch set (no marker convention applies).
+- **Never** creatively refactor upstream code to make our patches fit.
+  If cargo check still fails after two mechanical fix rounds, stop and
+  produce a report.
+- **Never** delete the safety branch created in step 2. The user needs
+  it if the report surfaces something they want to unwind.
+
+## Bootstrap mode
+
+If `/sync-patches <crate>` is called on a fork that has no
+`PATCHES.md`:
+
+1. Download the vanilla source of the currently-pinned version to
+   `/tmp/sync-<crate>-vanilla/`.
+2. `diff -ru` against `patches/<crate>/` — every non-metadata hunk is a
+   candidate patch.
+3. Draft a `PATCHES.md` with one `SDPATCH-NNN` per logical hunk. For
+   each, propose a title, the touched file/symbol, the marker line
+   (verbatim if it exists, otherwise flag as *unmarked* — the user must
+   add the marker before the first real sync).
+4. **Ask the user to review before writing anything to disk.**
+   Bootstrap is a mapping exercise — silent inventories are worse than
+   no inventory.
+
+## Related files
+
+- `.claude/commands/sync-patches.md` — the slash-command entry point
+  that redirects here.
+- `patches/adabraka-gpui/PATCHES.md` — the current GPUI fork inventory.
+- `patches/adabraka-ui/PATCHES.md` — the current UI fork inventory.

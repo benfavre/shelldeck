@@ -1,0 +1,42 @@
+{
+  "name": "ShellDeck Monolith",
+  "version": 1,
+  "expression_default": ">_<",
+  "expressions": [
+    "default",
+    "neutral",
+    "wink"
+  ],
+  "themes": [
+    "dark",
+    "light",
+    "system",
+    "dracula",
+    "nord",
+    "tokyo-night",
+    "gruvbox-dark",
+    "solarized-dark",
+    "solarized-light",
+    "catppuccin-mocha",
+    "one-dark",
+    "monokai",
+    "rose-pine"
+  ],
+  "paths": {
+    "brand_root": "crates/shelldeck/assets/images/brand",
+    "in_app": {
+      "icon_png": "crates/shelldeck/assets/images/shelldeck-icon.png",
+      "icon_svg": "crates/shelldeck/assets/images/shelldeck-icon.svg",
+      "mark": "crates/shelldeck/assets/images/shelldeck-mark.svg",
+      "expressions": "crates/shelldeck/assets/images/brand/svg/expressions/dark-{expression}-logo.svg"
+    },
+    "themes": "crates/shelldeck/assets/images/brand/svg/themes/{theme}-logo.svg",
+    "packaging": {
+      "png": "packaging/icons/shelldeck-{size}.png",
+      "ico": "packaging/icons/shelldeck.ico",
+      "iconset": "packaging/icons/iconset/",
+      "icns": "packaging/icons/shelldeck.icns (macOS: iconutil -c icns iconset -o shelldeck.icns)"
+    }
+  },
+  "regenerate": "python3 scripts/export-monolith-brand.py"
+}

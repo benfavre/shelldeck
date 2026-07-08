@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bounds_tree::BoundsTree, point, AtlasTextureId, AtlasTile, Background, Bounds, ContentMask,
-    Corners, Edges, Hsla, Pixels, Point, Radians, ScaledPixels, Size,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
+    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
@@ -65,7 +65,7 @@ impl Scene {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
-        let mut primitive = primitive.into();
+        let primitive = primitive.into();
         let clipped_bounds = primitive
             .bounds()
             .intersect(&primitive.content_mask().bounds);
@@ -79,45 +79,80 @@ impl Scene {
             .last()
             .copied()
             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
-        match &mut primitive {
-            Primitive::Shadow(shadow) => {
+        let (kind, index) = match primitive {
+            Primitive::Shadow(mut shadow) => {
                 shadow.order = order;
-                self.shadows.push(shadow.clone());
+                let idx = self.shadows.len();
+                self.shadows.push(shadow);
+                (PrimitiveKind::Shadow, idx)
             }
-            Primitive::Quad(quad) => {
+            Primitive::Quad(mut quad) => {
                 quad.order = order;
-                self.quads.push(quad.clone());
+                let idx = self.quads.len();
+                self.quads.push(quad);
+                (PrimitiveKind::Quad, idx)
             }
-            Primitive::Path(path) => {
+            Primitive::Path(mut path) => {
                 path.order = order;
                 path.id = PathId(self.paths.len());
-                self.paths.push(path.clone());
+                let idx = self.paths.len();
+                self.paths.push(path);
+                (PrimitiveKind::Path, idx)
             }
-            Primitive::Underline(underline) => {
+            Primitive::Underline(mut underline) => {
                 underline.order = order;
-                self.underlines.push(underline.clone());
+                let idx = self.underlines.len();
+                self.underlines.push(underline);
+                (PrimitiveKind::Underline, idx)
             }
-            Primitive::MonochromeSprite(sprite) => {
+            Primitive::MonochromeSprite(mut sprite) => {
                 sprite.order = order;
-                self.monochrome_sprites.push(sprite.clone());
+                let idx = self.monochrome_sprites.len();
+                self.monochrome_sprites.push(sprite);
+                (PrimitiveKind::MonochromeSprite, idx)
             }
-            Primitive::PolychromeSprite(sprite) => {
+            Primitive::PolychromeSprite(mut sprite) => {
                 sprite.order = order;
-                self.polychrome_sprites.push(sprite.clone());
+                let idx = self.polychrome_sprites.len();
+                self.polychrome_sprites.push(sprite);
+                (PrimitiveKind::PolychromeSprite, idx)
             }
-            Primitive::Surface(surface) => {
+            Primitive::Surface(mut surface) => {
                 surface.order = order;
-                self.surfaces.push(surface.clone());
+                let idx = self.surfaces.len();
+                self.surfaces.push(surface);
+                (PrimitiveKind::Surface, idx)
             }
-        }
+        };
         self.paint_operations
-            .push(PaintOperation::Primitive(primitive));
+            .push(PaintOperation::Primitive(kind, index));
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                PaintOperation::Primitive(kind, index) => {
+                    let primitive = match kind {
+                        PrimitiveKind::Shadow => {
+                            Primitive::Shadow(prev_scene.shadows[*index].clone())
+                        }
+                        PrimitiveKind::Quad => Primitive::Quad(prev_scene.quads[*index].clone()),
+                        PrimitiveKind::Path => Primitive::Path(prev_scene.paths[*index].clone()),
+                        PrimitiveKind::Underline => {
+                            Primitive::Underline(prev_scene.underlines[*index].clone())
+                        }
+                        PrimitiveKind::MonochromeSprite => Primitive::MonochromeSprite(
+                            prev_scene.monochrome_sprites[*index].clone(),
+                        ),
+                        PrimitiveKind::PolychromeSprite => Primitive::PolychromeSprite(
+                            prev_scene.polychrome_sprites[*index].clone(),
+                        ),
+                        PrimitiveKind::Surface => {
+                            Primitive::Surface(prev_scene.surfaces[*index].clone())
+                        }
+                    };
+                    self.insert_primitive(primitive);
+                }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
@@ -125,15 +160,37 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
-        self.shadows.sort_by_key(|shadow| shadow.order);
-        self.quads.sort_by_key(|quad| quad.order);
-        self.paths.sort_by_key(|path| path.order);
-        self.underlines.sort_by_key(|underline| underline.order);
-        self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.surfaces.sort_by_key(|surface| surface.order);
+        // Primitives are typically inserted in draw order during painting.
+        // Skip the O(n log n) sort when data is already sorted (common case).
+        if !self.shadows.is_sorted_by_key(|s| s.order) {
+            self.shadows.sort_unstable_by_key(|s| s.order);
+        }
+        if !self.quads.is_sorted_by_key(|q| q.order) {
+            self.quads.sort_unstable_by_key(|q| q.order);
+        }
+        if !self.paths.is_sorted_by_key(|p| p.order) {
+            self.paths.sort_unstable_by_key(|p| p.order);
+        }
+        if !self.underlines.is_sorted_by_key(|u| u.order) {
+            self.underlines.sort_unstable_by_key(|u| u.order);
+        }
+        if !self
+            .monochrome_sprites
+            .is_sorted_by_key(|s| (s.order, s.tile.tile_id))
+        {
+            self.monochrome_sprites
+                .sort_unstable_by_key(|s| (s.order, s.tile.tile_id));
+        }
+        if !self
+            .polychrome_sprites
+            .is_sorted_by_key(|s| (s.order, s.tile.tile_id))
+        {
+            self.polychrome_sprites
+                .sort_unstable_by_key(|s| (s.order, s.tile.tile_id));
+        }
+        if !self.surfaces.is_sorted_by_key(|s| s.order) {
+            self.surfaces.sort_unstable_by_key(|s| s.order);
+        }
     }
 
     #[cfg_attr(
@@ -190,7 +247,7 @@ pub(crate) enum PrimitiveKind {
 }
 
 pub(crate) enum PaintOperation {
-    Primitive(Primitive),
+    Primitive(PrimitiveKind, usize),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
 }
@@ -460,7 +517,23 @@ pub(crate) struct Quad {
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
     pub continuous_corners: u32,
-    /// Padding to match WGSL struct alignment (vec2<f32> in Bounds gives align 8)
+    /// ShellDeck patch: interior padding — WGSL's `TransformationMatrix`
+    /// contains `mat2x2<f32>` (align 8), so the shader inserts an implicit
+    /// 4-byte pad here to align `transform` to 8 before it starts. Rust's
+    /// `[[f32; 2]; 2]` is align 4, so `#[repr(C)]` doesn't emit that pad on
+    /// its own — every field after `continuous_corners` would land at a
+    /// 4-byte offset from what the shader reads. That misalignment reads
+    /// `background` / `border_color` from the wrong bytes and turns every
+    /// solid fill translucent. Explicit pad fixes it. See SDPATCH-104.
+    pub _pad_transform: u32,
+    pub transform: TransformationMatrix,
+    pub blend_mode: u32,
+    /// ShellDeck patch: trailing pad — with `_pad_transform` above the tail
+    /// ends at 252 bytes; WGSL rounds `array<Quad>` element stride up to
+    /// 256 (Bounds forces struct-level align 8). Explicit trailing pad
+    /// keeps Rust `sizeof(Quad)` at 256 so storage buffer indexing lines
+    /// up. See SDPATCH-104. Paired with the `Shadow::_pad` sibling and
+    /// the two initialisers in `window.rs`.
     pub _pad: u32,
 }
 
@@ -498,7 +571,9 @@ pub(crate) struct Shadow {
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
     pub inset: u32,
-    /// Padding to match WGSL struct alignment (vec2<f32> in Bounds gives align 8)
+    /// ShellDeck patch: WGSL alignment fix — same reasoning as `Quad::_pad`
+    /// above; keeps `array<Shadow>` element stride consistent with the Rust
+    /// struct size. See SDPATCH-104.
     pub _pad: u32,
 }
 
@@ -506,6 +581,25 @@ impl From<Shadow> for Primitive {
     fn from(shadow: Shadow) -> Self {
         Primitive::Shadow(shadow)
     }
+}
+
+/// The blend mode to apply when rendering a quad.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[repr(C)]
+pub enum BlendMode {
+    /// Standard alpha blending (source over destination).
+    #[default]
+    Normal = 0,
+    /// Darkens by multiplying source color with itself.
+    Multiply = 1,
+    /// Lightens by applying the screen formula to the source color.
+    Screen = 2,
+    /// Combines multiply and screen based on source luminance.
+    Overlay = 3,
+    /// A softer version of overlay that produces gentler contrast.
+    SoftLight = 4,
+    /// Subtracts the darker color from the lighter color.
+    Difference = 5,
 }
 
 /// The style of a border.

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     path::{Path, PathBuf},
     process::Command,
@@ -23,10 +24,13 @@ use util::ResultExt as _;
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId,
-    ForegroundExecutor, Keymap, LinuxDispatcher, Menu, MenuItem, OwnedMenu, PathPromptOptions,
-    Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper,
-    PlatformTextSystem, PlatformWindow, Point, Result, Task, WindowAppearance, WindowParams, px,
+    Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, ClipboardItem,
+    CursorStyle, DialogOptions, DisplayId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
+    LinuxDispatcher, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
+    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, PowerSaveBlockerKind,
+    Result, SharedString, SystemPowerEvent, Task, TrayIconEvent, TrayMenuItem, WindowAppearance,
+    WindowParams, px,
 };
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -74,6 +78,28 @@ pub trait LinuxClient {
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
     fn run(&self);
 
+    fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
+        None
+    }
+
+    fn set_tray_icon(&self, _icon: Option<&[u8]>) {}
+    fn set_tray_menu(&self, _menu: Vec<TrayMenuItem>) {}
+    fn set_tray_tooltip(&self, _tooltip: &str) {}
+    fn register_global_hotkey(&self, _id: u32, _keystroke: &Keystroke) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Global hotkeys not supported on this platform"
+        ))
+    }
+    fn unregister_global_hotkey(&self, _id: u32) {}
+
+    fn system_idle_time(&self) -> Option<Duration> {
+        None
+    }
+
+    fn request_user_attention(&self, _level: AttentionType, _handle: Option<AnyWindowHandle>) {}
+
+    fn cancel_user_attention(&self, _handle: Option<AnyWindowHandle>) {}
+
     #[cfg(any(feature = "wayland", feature = "x11"))]
     fn window_identifier(
         &self,
@@ -91,6 +117,18 @@ pub(crate) struct PlatformHandlers {
     pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
     pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     pub(crate) keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    pub(crate) tray_icon_event: Option<Box<dyn FnMut(TrayIconEvent)>>,
+    pub(crate) tray_menu_action: Option<Box<dyn FnMut(SharedString)>>,
+    pub(crate) global_hotkey: Option<Box<dyn FnMut(u32)>>,
+    pub(crate) system_power: Option<Box<dyn FnMut(SystemPowerEvent)>>,
+    pub(crate) network_status_change: Option<Box<dyn FnMut(NetworkStatus)>>,
+    pub(crate) media_key: Option<Box<dyn FnMut(MediaKeyEvent)>>,
+    pub(crate) context_menu: Option<Box<dyn FnMut(SharedString)>>,
+}
+
+pub(crate) enum PowerSaveHandle {
+    ScreenSaverCookie(u32),
+    ChildProcess(std::process::Child),
 }
 
 pub(crate) struct LinuxCommon {
@@ -102,6 +140,11 @@ pub(crate) struct LinuxCommon {
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) signal: LoopSignal,
     pub(crate) menus: Vec<OwnedMenu>,
+    pub(crate) keep_alive_without_windows: bool,
+    pub(crate) power_save_blockers: HashMap<u32, PowerSaveHandle>,
+    pub(crate) next_blocker_id: u32,
+    pub(crate) last_network_status: NetworkStatus,
+    pub(crate) attention_window: Option<AnyWindowHandle>,
 }
 
 impl LinuxCommon {
@@ -128,9 +171,22 @@ impl LinuxCommon {
             callbacks,
             signal,
             menus: Vec::new(),
+            keep_alive_without_windows: false,
+            power_save_blockers: HashMap::new(),
+            next_blocker_id: 0,
+            last_network_status: NetworkStatus::Online,
+            attention_window: None,
         };
 
         (common, main_receiver)
+    }
+}
+
+impl Drop for LinuxCommon {
+    fn drop(&mut self) {
+        for (_, handle) in self.power_save_blockers.drain() {
+            crate::platform::linux::power::release_blocker(handle);
+        }
     }
 }
 
@@ -613,6 +669,184 @@ impl<P: LinuxClient + 'static> Platform for P {
     }
 
     fn add_recent_document(&self, _path: &Path) {}
+
+    fn set_keep_alive_without_windows(&self, keep_alive: bool) {
+        self.with_common(|common| common.keep_alive_without_windows = keep_alive);
+    }
+
+    fn set_tray_icon(&self, icon: Option<&[u8]>) {
+        LinuxClient::set_tray_icon(self, icon);
+    }
+
+    fn set_tray_menu(&self, menu: Vec<TrayMenuItem>) {
+        LinuxClient::set_tray_menu(self, menu);
+    }
+
+    fn set_tray_tooltip(&self, tooltip: &str) {
+        LinuxClient::set_tray_tooltip(self, tooltip);
+    }
+
+    fn on_tray_icon_event(&self, callback: Box<dyn FnMut(TrayIconEvent)>) {
+        self.with_common(|common| common.callbacks.tray_icon_event = Some(callback));
+    }
+
+    fn on_tray_menu_action(&self, callback: Box<dyn FnMut(SharedString)>) {
+        self.with_common(|common| common.callbacks.tray_menu_action = Some(callback));
+    }
+
+    fn register_global_hotkey(&self, id: u32, keystroke: &Keystroke) -> Result<()> {
+        LinuxClient::register_global_hotkey(self, id, keystroke)
+    }
+
+    fn unregister_global_hotkey(&self, id: u32) {
+        LinuxClient::unregister_global_hotkey(self, id);
+    }
+
+    fn on_global_hotkey(&self, callback: Box<dyn FnMut(u32)>) {
+        self.with_common(|common| common.callbacks.global_hotkey = Some(callback));
+    }
+
+    fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
+        LinuxClient::focused_window_info(self)
+    }
+
+    fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {
+        crate::platform::linux::auto_launch::set_auto_launch(app_id, enabled)
+    }
+
+    fn is_auto_launch_enabled(&self, app_id: &str) -> bool {
+        crate::platform::linux::auto_launch::is_auto_launch_enabled(app_id)
+    }
+
+    fn show_notification(&self, title: &str, body: &str) -> Result<()> {
+        crate::platform::linux::notifications::show_notification(title, body)
+    }
+
+    fn os_info(&self) -> OsInfo {
+        crate::platform::linux::os_info::get_os_info()
+    }
+
+    fn network_status(&self) -> NetworkStatus {
+        network_status_from_sysfs()
+    }
+
+    fn on_network_status_change(&self, callback: Box<dyn FnMut(NetworkStatus)>) {
+        self.with_common(|common| common.callbacks.network_status_change = Some(callback));
+        log::warn!("Network change monitoring requires D-Bus integration — not yet implemented on Linux");
+    }
+
+    fn start_power_save_blocker(&self, kind: PowerSaveBlockerKind) -> Option<u32> {
+        self.with_common(|common| {
+            let handle = match kind {
+                PowerSaveBlockerKind::PreventDisplaySleep => {
+                    crate::platform::linux::power::inhibit_screensaver(
+                        "gpui",
+                        "Power save blocker",
+                    )?
+                }
+                PowerSaveBlockerKind::PreventAppSuspension => {
+                    crate::platform::linux::power::inhibit_suspend(
+                        "gpui",
+                        "Power save blocker",
+                    )?
+                }
+            };
+            let id = common.next_blocker_id;
+            common.next_blocker_id += 1;
+            common.power_save_blockers.insert(id, handle);
+            Some(id)
+        })
+    }
+
+    fn stop_power_save_blocker(&self, id: u32) {
+        self.with_common(|common| {
+            if let Some(handle) = common.power_save_blockers.remove(&id) {
+                crate::platform::linux::power::release_blocker(handle);
+            }
+        });
+    }
+
+    fn system_idle_time(&self) -> Option<Duration> {
+        LinuxClient::system_idle_time(self)
+    }
+
+    fn on_system_power_event(&self, callback: Box<dyn FnMut(SystemPowerEvent)>) {
+        self.with_common(|common| common.callbacks.system_power = Some(callback));
+        log::warn!("System power events require D-Bus logind integration — not yet implemented on Linux");
+    }
+
+    fn on_media_key_event(&self, callback: Box<dyn FnMut(MediaKeyEvent)>) {
+        self.with_common(|common| common.callbacks.media_key = Some(callback));
+    }
+
+    fn request_user_attention(&self, level: AttentionType) {
+        let handle = self.active_window();
+        self.with_common(|common| common.attention_window = handle);
+        LinuxClient::request_user_attention(self, level, handle);
+    }
+
+    fn cancel_user_attention(&self) {
+        let handle = self.with_common(|common| common.attention_window.take());
+        LinuxClient::cancel_user_attention(self, handle);
+    }
+
+    fn show_context_menu(
+        &self,
+        _position: Point<Pixels>,
+        _items: Vec<TrayMenuItem>,
+        _callback: Box<dyn FnMut(SharedString)>,
+    ) {
+        log::warn!("Context menus not yet implemented on Linux");
+    }
+
+    fn show_dialog(&self, options: DialogOptions) -> oneshot::Receiver<usize> {
+        let (tx, rx) = oneshot::channel();
+        self.background_executor()
+            .spawn(async move {
+                let result = crate::platform::linux::dialog::show_dialog(&options);
+                let _ = tx.send(result);
+            })
+            .detach();
+        rx
+    }
+
+    fn biometric_status(&self) -> BiometricStatus {
+        BiometricStatus::Unavailable
+    }
+
+    fn authenticate_biometric(&self, _reason: &str, callback: Box<dyn FnOnce(bool) + Send>) {
+        callback(false);
+    }
+}
+
+fn network_status_from_sysfs() -> NetworkStatus {
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == "lo" {
+                continue;
+            }
+            if let Ok(state) = std::fs::read_to_string(entry.path().join("operstate")) {
+                if state.trim() == "up" {
+                    return NetworkStatus::Online;
+                }
+            }
+        }
+    }
+    NetworkStatus::Offline
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn keysym_to_media_key(keysym: xkbcommon::xkb::Keysym) -> Option<MediaKeyEvent> {
+    use xkbcommon::xkb::Keysym;
+    match keysym {
+        Keysym::XF86_AudioPlay => Some(MediaKeyEvent::PlayPause),
+        Keysym::XF86_AudioPause => Some(MediaKeyEvent::Pause),
+        Keysym::XF86_AudioStop => Some(MediaKeyEvent::Stop),
+        Keysym::XF86_AudioNext => Some(MediaKeyEvent::NextTrack),
+        Keysym::XF86_AudioPrev => Some(MediaKeyEvent::PreviousTrack),
+        _ => None,
+    }
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]

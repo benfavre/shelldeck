@@ -1,9 +1,10 @@
+use crate::scale::px;
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
-use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
+use crate::t;
+use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::theme::{palette_for, ShellDeckColors};
@@ -77,6 +78,16 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Select interface language, persist, and emit `ConfigChanged` so the
+    /// workspace applies `rust_i18n::set_locale` and repaints.
+    pub fn select_ui_language(&mut self, lang: UiLanguage, cx: &mut Context<Self>) {
+        if self.config.general.ui_language == lang {
+            return;
+        }
+        self.config.general.ui_language = lang;
+        self.save_config(cx);
+    }
+
     /// The currently selected application theme.
     pub fn app_theme(&self) -> ThemePreference {
         self.config.theme.clone()
@@ -111,6 +122,8 @@ impl SettingsView {
     }
 
     fn save_config(&mut self, cx: &mut Context<Self>) {
+        // Emits the full snapshot — workspace must merge slices only and keep
+        // this copy fresh after login/logout (see `.agents/session-state.md`).
         if let Err(e) = self.config.save() {
             tracing::error!("Failed to save config: {}", e);
         }
@@ -173,6 +186,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
+                    .flex_shrink_0()
                     .child(
                         div()
                             .text_size(px(13.0))
@@ -187,7 +201,15 @@ impl SettingsView {
                             .child(description.to_string()),
                     ),
             )
-            .child(control)
+            .child(
+                div()
+                    .flex_grow()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .flex()
+                    .justify_end()
+                    .child(control),
+            )
     }
 
     fn render_toggle(enabled: bool) -> impl IntoElement {
@@ -224,13 +246,56 @@ impl SettingsView {
     }
 
     fn render_general_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_lang = self.config.general.ui_language.clone();
+        let mut lang_row = div().flex().gap(px(6.0)).flex_wrap();
+        for lang in UiLanguage::all() {
+            let lang = lang.clone();
+            let is_active = current_lang == lang;
+            let label = match lang {
+                UiLanguage::System => t!("settings.language.system").to_string(),
+                UiLanguage::Fr => t!("settings.language.fr").to_string(),
+                UiLanguage::En => t!("settings.language.en").to_string(),
+            };
+            let mut btn = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "ui-lang-{lang:?}"
+                ))))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .text_size(px(12.0))
+                .border_1()
+                .border_color(ShellDeckColors::border());
+            if is_active {
+                btn = btn
+                    .bg(ShellDeckColors::primary().opacity(0.15))
+                    .text_color(ShellDeckColors::primary())
+                    .font_weight(FontWeight::MEDIUM);
+            } else {
+                btn = btn
+                    .text_color(ShellDeckColors::text_muted())
+                    .hover(|el| el.bg(ShellDeckColors::hover_bg()));
+            }
+            lang_row = lang_row.child(btn.child(label).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.select_ui_language(lang.clone(), cx);
+                },
+            )));
+        }
+
         div()
             .flex()
             .flex_col()
             .gap(px(4.0))
             .child(Self::render_setting_row(
-                "Auto-connect on startup",
-                "Reconnect to previously active sessions when app starts",
+                t!("settings.language.label").as_ref(),
+                t!("settings.language.description").as_ref(),
+                lang_row,
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.general.auto_connect.label").as_ref(),
+                t!("settings.general.auto_connect.description").as_ref(),
                 div()
                     .id("toggle-auto-connect")
                     .child(Self::render_toggle(
@@ -244,8 +309,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                "Show notifications",
-                "Display toast notifications for connection events",
+                t!("settings.general.notifications.label").as_ref(),
+                t!("settings.general.notifications.description").as_ref(),
                 div()
                     .id("toggle-notifications")
                     .child(Self::render_toggle(self.config.general.show_notifications))
@@ -257,8 +322,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                "Confirm before close",
-                "Ask for confirmation when closing with active sessions",
+                t!("settings.general.confirm_close.label").as_ref(),
+                t!("settings.general.confirm_close.description").as_ref(),
                 div()
                     .id("toggle-confirm-close")
                     .child(Self::render_toggle(
@@ -272,8 +337,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                "Auto-attach tmux",
-                "Automatically attach to tmux sessions on remote hosts",
+                t!("settings.general.tmux.label").as_ref(),
+                t!("settings.general.tmux.description").as_ref(),
                 div()
                     .id("toggle-tmux")
                     .child(Self::render_toggle(self.config.general.auto_attach_tmux))
@@ -285,8 +350,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                "Auto-update",
-                "Automatically check for and install new versions",
+                t!("settings.general.auto_update.label").as_ref(),
+                t!("settings.general.auto_update.description").as_ref(),
                 div()
                     .id("toggle-auto-update")
                     .child(Self::render_toggle(self.config.general.auto_update))
@@ -303,7 +368,7 @@ impl SettingsView {
     /// hint of its tail (e.g. `sd_…9f2a`), or a placeholder when unset.
     fn mask_token(token: &str) -> String {
         if token.is_empty() {
-            return "Not configured".to_string();
+            return t!("settings.cloud_sync.not_configured").to_string();
         }
         let last4: String = {
             let chars: Vec<char> = token.chars().collect();
@@ -318,7 +383,11 @@ impl SettingsView {
     /// `shelldeck.toml`; this surface is intentionally view-only.
     fn render_cloud_sync_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let cfg = &self.config.cloud_sync;
-        let status_text = if cfg.enabled { "Enabled" } else { "Disabled" };
+        let status_text = if cfg.enabled {
+            t!("settings.cloud_sync.enabled").to_string()
+        } else {
+            t!("settings.cloud_sync.disabled").to_string()
+        };
         let token_display = Self::mask_token(&cfg.token);
 
         let value_text = |s: String| {
@@ -332,31 +401,33 @@ impl SettingsView {
         let account_text = match &self.config.account {
             Some(a) if !a.email.is_empty() => format!("{} ({})", a.display_name(), a.email),
             Some(a) => a.display_name(),
-            None => "Not signed in".to_string(),
+            None => t!("settings.cloud_sync.not_signed_in").to_string(),
         };
 
         div()
             .flex()
             .flex_col()
-            .child(Self::render_about_section("CLOUD SYNC"))
+            .child(Self::render_about_section(
+                t!("settings.cloud_sync.section").as_ref(),
+            ))
             .child(Self::render_setting_row(
-                "Account",
-                "Signed-in Inklura Manage account (sign in from the titlebar)",
+                t!("settings.cloud_sync.account.label").as_ref(),
+                t!("settings.cloud_sync.account.description").as_ref(),
                 value_text(account_text),
             ))
             .child(Self::render_setting_row(
-                "Status",
-                "Sync SSH connection profiles from Inklura Manage",
-                value_text(status_text.to_string()),
+                t!("settings.cloud_sync.status.label").as_ref(),
+                t!("settings.cloud_sync.status.description").as_ref(),
+                value_text(status_text),
             ))
             .child(Self::render_setting_row(
-                "Server",
-                "Management portal base URL",
+                t!("settings.cloud_sync.server.label").as_ref(),
+                t!("settings.cloud_sync.server.description").as_ref(),
                 value_text(cfg.base_url.clone()),
             ))
             .child(Self::render_setting_row(
-                "Token",
-                "Bearer token (masked for safety)",
+                t!("settings.cloud_sync.token.label").as_ref(),
+                t!("settings.cloud_sync.token.description").as_ref(),
                 value_text(token_display),
             ))
             .child(
@@ -385,7 +456,7 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child("Sync now")
+                    .child(t!("settings.cloud_sync.sync_now").to_string())
                     .on_click(cx.listener(|_this, _, _window, cx| {
                         cx.dispatch_action(&CloudSyncNow);
                     })),
@@ -398,8 +469,8 @@ impl SettingsView {
             .flex_col()
             .gap(px(4.0))
             .child(Self::render_setting_row(
-                "Font Size",
-                "Terminal font size in pixels",
+                t!("settings.terminal.font_size.label").as_ref(),
+                t!("settings.terminal.font_size.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -411,7 +482,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/minus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.font_size =
                                     (this.config.terminal.font_size - 1.0).max(8.0);
@@ -432,7 +503,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/plus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.font_size =
                                     (this.config.terminal.font_size + 1.0).min(32.0);
@@ -442,8 +513,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                "Font Family",
-                "Monospace font for terminal rendering",
+                t!("settings.terminal.font_family.label").as_ref(),
+                t!("settings.terminal.font_family.description").as_ref(),
                 {
                     let fonts = [
                         "JetBrains Mono",
@@ -454,7 +525,12 @@ impl SettingsView {
                         "Consolas",
                     ];
                     let current = self.config.terminal.font_family.clone();
-                    let mut row = div().flex().items_center().gap(px(4.0));
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(4.0))
+                        .flex_wrap();
                     for font_name in &fonts {
                         let f = font_name.to_string();
                         let is_active = current == f;
@@ -489,8 +565,8 @@ impl SettingsView {
                 },
             ))
             .child(Self::render_setting_row(
-                "Scrollback Lines",
-                "Maximum number of lines kept in scrollback buffer",
+                t!("settings.terminal.scrollback.label").as_ref(),
+                t!("settings.terminal.scrollback.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -502,7 +578,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/minus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.scrollback_lines = this
                                     .config
@@ -527,7 +603,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/plus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.terminal.scrollback_lines =
                                     (this.config.terminal.scrollback_lines + 1000).min(100_000);
@@ -537,12 +613,17 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                "Cursor Style",
-                "Terminal cursor shape (block, underline, bar)",
+                t!("settings.terminal.cursor_style.label").as_ref(),
+                t!("settings.terminal.cursor_style.description").as_ref(),
                 {
                     let styles = ["block", "underline", "bar"];
                     let current = self.config.terminal.cursor_style.clone();
-                    let mut row = div().flex().items_center().gap(px(4.0));
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(4.0))
+                        .flex_wrap();
                     for style in &styles {
                         let s = style.to_string();
                         let is_active = current == s;
@@ -577,8 +658,8 @@ impl SettingsView {
                 },
             ))
             .child(Self::render_setting_row(
-                "Cursor Blink",
-                "Enable cursor blinking in terminal",
+                t!("settings.terminal.cursor_blink.label").as_ref(),
+                t!("settings.terminal.cursor_blink.description").as_ref(),
                 div()
                     .id("toggle-cursor-blink")
                     .child(Self::render_toggle(self.config.terminal.cursor_blink))
@@ -763,12 +844,7 @@ impl SettingsView {
                 .flex()
                 .flex_col()
                 .justify_between()
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(fg)
-                        .child("Aa Bb 123"),
-                );
+                .child(div().text_size(px(10.0)).text_color(fg).child("Aa Bb 123"));
             let mut dots = div().flex().gap(px(3.0));
             for s in swatches {
                 dots = dots.child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(s));
@@ -776,7 +852,10 @@ impl SettingsView {
             preview = preview.child(dots);
 
             let mut card = div()
-                .id(ElementId::from(SharedString::from(format!("theme-{}", name))))
+                .id(ElementId::from(SharedString::from(format!(
+                    "theme-{}",
+                    name
+                ))))
                 .w(px(124.0))
                 .h(px(82.0))
                 .rounded(px(6.0))
@@ -848,13 +927,13 @@ impl SettingsView {
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("App Theme"),
+                            .child(t!("settings.appearance.app_theme.title").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Colors for the whole interface — sidebar, panels, and chrome."),
+                            .child(t!("settings.appearance.app_theme.description").to_string()),
                     )
                     .child(app_theme_cards),
             )
@@ -869,13 +948,13 @@ impl SettingsView {
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Terminal Themes"),
+                            .child(t!("settings.appearance.terminal_themes.title").to_string()),
                     )
                     .child(theme_cards),
             )
             .child(Self::render_setting_row(
-                "Sidebar Width",
-                "Width of the sidebar panel in pixels",
+                t!("settings.appearance.sidebar_width.label").as_ref(),
+                t!("settings.appearance.sidebar_width.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -887,7 +966,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/minus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.sidebar_width =
                                     (this.config.general.sidebar_width - 20.0).max(140.0);
@@ -908,7 +987,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/plus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.sidebar_width =
                                     (this.config.general.sidebar_width + 20.0).min(400.0);
@@ -918,8 +997,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                "App Font Size",
-                "Scales the entire UI proportionally (terminal has its own font size)",
+                t!("settings.appearance.ui_font_size.label").as_ref(),
+                t!("settings.appearance.ui_font_size.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -931,7 +1010,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/minus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.ui_font_size =
                                     (this.config.general.ui_font_size - 1.0).max(10.0);
@@ -952,7 +1031,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .cursor_pointer()
                             .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("images/plus.svg").size(px(12.0)))
+                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.general.ui_font_size =
                                     (this.config.general.ui_font_size + 1.0).min(22.0);
@@ -962,8 +1041,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                "App Font Family",
-                "Font for the application UI (sidebar, dashboard, forms)",
+                t!("settings.appearance.ui_font.label").as_ref(),
+                t!("settings.appearance.ui_font.description").as_ref(),
                 {
                     let fonts = [
                         "System Default",
@@ -975,12 +1054,20 @@ impl SettingsView {
                         "JetBrains Mono",
                     ];
                     let current = self.config.general.ui_font_family.clone();
-                    let mut row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(4.0))
+                        .flex_wrap();
                     for font_name in &fonts {
                         let f = font_name.to_string();
                         let is_active = current == f;
                         let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!("ui-font-{}", f))))
+                            .id(ElementId::from(SharedString::from(format!(
+                                "ui-font-{}",
+                                f
+                            ))))
                             .px(px(8.0))
                             .py(px(4.0))
                             .rounded(px(4.0))
@@ -1043,22 +1130,52 @@ impl SettingsView {
 
     fn render_about() -> impl IntoElement {
         let tech_stack = [
-            ("UI Framework", "GPUI (GPU-accelerated)"),
-            ("Components", "adabraka-ui"),
-            ("Terminal", "portable-pty + vte"),
-            ("SSH", "russh (async, tokio)"),
-            ("Language", "Rust (nightly)"),
+            (
+                t!("settings.about.tech.ui").to_string(),
+                t!("settings.about.tech.ui_value").to_string(),
+            ),
+            (
+                t!("settings.about.tech.components").to_string(),
+                t!("settings.about.tech.components_value").to_string(),
+            ),
+            (
+                t!("settings.about.tech.terminal").to_string(),
+                t!("settings.about.tech.terminal_value").to_string(),
+            ),
+            (
+                t!("settings.about.tech.ssh").to_string(),
+                t!("settings.about.tech.ssh_value").to_string(),
+            ),
+            (
+                t!("settings.about.tech.language").to_string(),
+                t!("settings.about.tech.language_value").to_string(),
+            ),
         ];
 
         let shortcuts = [
-            ("New Terminal", "Ctrl+T"),
-            ("Close Tab", "Ctrl+W"),
-            ("Toggle Sidebar", "Ctrl+B"),
-            ("Command Palette", "Ctrl+Shift+P"),
-            ("Settings", "Ctrl+,"),
-            ("Search", "Ctrl+F"),
-            ("Zoom In/Out", "Ctrl++ / Ctrl+-"),
-            ("Quit", "Ctrl+Q"),
+            (
+                t!("settings.about.shortcut.new_terminal").to_string(),
+                "Ctrl+T",
+            ),
+            (
+                t!("settings.about.shortcut.close_tab").to_string(),
+                "Ctrl+W",
+            ),
+            (
+                t!("settings.about.shortcut.toggle_sidebar").to_string(),
+                "Ctrl+B",
+            ),
+            (
+                t!("settings.about.shortcut.command_palette").to_string(),
+                "Ctrl+Shift+P",
+            ),
+            (t!("settings.about.shortcut.settings").to_string(), "Ctrl+,"),
+            (t!("settings.about.shortcut.search").to_string(), "Ctrl+F"),
+            (
+                t!("settings.about.shortcut.zoom").to_string(),
+                "Ctrl++ / Ctrl+-",
+            ),
+            (t!("settings.about.shortcut.quit").to_string(), "Ctrl+Q"),
         ];
 
         let mut root = div()
@@ -1077,7 +1194,7 @@ impl SettingsView {
                 div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("GPU-accelerated Terminal & SSH Companion"),
+                    .child(t!("settings.about.tagline").to_string()),
             )
             .child(
                 div()
@@ -1117,13 +1234,17 @@ impl SettingsView {
             .flex_col();
 
         // Tech stack section
-        card = card.child(Self::render_about_section("TECH STACK"));
+        card = card.child(Self::render_about_section(
+            t!("settings.about.tech_stack").as_ref(),
+        ));
         for (label, value) in &tech_stack {
             card = card.child(Self::render_about_row(label, value));
         }
 
         // Keyboard shortcuts section
-        card = card.child(Self::render_about_section("KEYBOARD SHORTCUTS"));
+        card = card.child(Self::render_about_section(
+            t!("settings.about.shortcuts").as_ref(),
+        ));
         for (label, key) in &shortcuts {
             card = card.child(
                 div()
@@ -1151,40 +1272,50 @@ impl SettingsView {
         }
 
         // Links section
-        card = card.child(Self::render_about_section("LINKS"));
+        card = card.child(Self::render_about_section(
+            t!("settings.about.links").as_ref(),
+        ));
         card = card
             .child(Self::render_about_row(
-                "GitHub",
+                t!("settings.about.link.github").as_ref(),
                 "github.com/benfavre/shelldeck",
             ))
             .child(Self::render_about_row(
-                "Website",
+                t!("settings.about.link.website").as_ref(),
                 "shelldeck.1clic.pro",
             ));
 
         root = root.child(card);
 
-        // Footer: "Made with" + Webdesign29 logo, tinted with the current
-        // muted-text color so it inverts cleanly between light and dark themes.
-        // The logo's viewBox is 380×135 → keep that ratio (~2.815).
+        // Footer: "Made by" + Webdesign29 logo — row height locked so text
+        // and SVG share the same vertical center (logo viewBox has top padding).
+        const LOGO_H: f32 = 22.0;
         root = root.child(
             div()
                 .mt(px(16.0))
                 .flex()
                 .items_center()
-                .gap(px(6.0))
+                .justify_center()
+                .gap(px(8.0))
                 .text_color(ShellDeckColors::text_muted())
                 .child(
                     div()
+                        .flex()
+                        .items_center()
+                        .h(px(LOGO_H))
                         .text_size(px(11.0))
-                        .child("Made with"),
+                        .line_height(px(LOGO_H))
+                        .child(t!("settings.about.made_by").to_string()),
                 )
                 .child(
-                    svg()
-                        .path("images/wd29-logo.svg")
-                        .w(px(72.0))
-                        .h(px(26.0))
-                        .text_color(ShellDeckColors::text_muted()),
+                    div().flex().items_center().h(px(LOGO_H)).child(
+                        svg()
+                            .path("images/wd29-logo.svg")
+                            .w(px(62.0))
+                            .h(px(LOGO_H))
+                            .flex_shrink_0()
+                            .text_color(ShellDeckColors::text_muted()),
+                    ),
                 ),
         );
 
@@ -1207,7 +1338,7 @@ impl Render for SettingsView {
                     .text_size(px(18.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child("Settings"),
+                    .child(t!("settings.title").to_string()),
             );
 
         if self.unsaved_changes {
@@ -1222,7 +1353,7 @@ impl Render for SettingsView {
                     .text_size(px(13.0))
                     .cursor_pointer()
                     .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.8)))
-                    .child("Save")
+                    .child(t!("settings.save").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.save_config(cx);
                     })),
@@ -1278,14 +1409,26 @@ impl Render for SettingsView {
                             .p(px(12.0))
                             .border_r_1()
                             .border_color(ShellDeckColors::border())
-                            .child(self.render_tab_button(SettingsTab::General, "General", cx))
-                            .child(self.render_tab_button(SettingsTab::Terminal, "Terminal", cx))
                             .child(self.render_tab_button(
-                                SettingsTab::Appearance,
-                                "Appearance",
+                                SettingsTab::General,
+                                t!("settings.tab.general").as_ref(),
                                 cx,
                             ))
-                            .child(self.render_tab_button(SettingsTab::About, "About", cx)),
+                            .child(self.render_tab_button(
+                                SettingsTab::Terminal,
+                                t!("settings.tab.terminal").as_ref(),
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
+                                SettingsTab::Appearance,
+                                t!("settings.tab.appearance").as_ref(),
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
+                                SettingsTab::About,
+                                t!("settings.tab.about").as_ref(),
+                                cx,
+                            )),
                     )
                     // Tab content — scrolls independently
                     .child(scrollable_vertical(tab_content)),

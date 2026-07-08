@@ -436,7 +436,7 @@ impl RenderOnce for Countdown {
 
         let mut elements: Vec<AnyElement> = Vec::new();
 
-        if self.format.show_days && (units.days > 0 || self.format.show_days) {
+        if self.format.show_days {
             elements.push(
                 self.render_unit(units.days, "days", &theme)
                     .into_any_element(),

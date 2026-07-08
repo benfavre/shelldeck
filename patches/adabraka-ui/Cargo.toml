@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.70"
 name = "adabraka-ui"
-version = "0.3.0"
+version = "0.3.9"
 authors = ["Adabraka Team"]
 build = false
 exclude = [
@@ -44,10 +44,46 @@ categories = [
 license = "MIT"
 repository = "https://github.com/augani/adabraka-ui"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+
 [features]
 audio = ["rodio"]
 default = ["http"]
+editor-languages = [
+    "tree-sitter-rust",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-python",
+    "tree-sitter-json",
+    "tree-sitter-toml-ng",
+    "tree-sitter-md",
+    "tree-sitter-go",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-java",
+    "tree-sitter-ruby",
+    "tree-sitter-bash",
+    "tree-sitter-css",
+    "tree-sitter-html",
+    "tree-sitter-yaml",
+    "tree-sitter-lua",
+    "tree-sitter-zig",
+    "tree-sitter-scala",
+    "tree-sitter-php",
+    "tree-sitter-ocaml",
+    "tree-sitter-sequel",
+]
+html-render = [
+    "html5ever",
+    "markup5ever_rcdom",
+]
 http = ["isahc"]
+markdown = ["pulldown-cmark"]
 
 [lib]
 name = "adabraka_ui"
@@ -170,6 +206,10 @@ name = "complex_layout_demo"
 path = "examples/complex_layout_demo.rs"
 
 [[example]]
+name = "components_showcase"
+path = "examples/components_showcase.rs"
+
+[[example]]
 name = "confirm_dialog_styled_demo"
 path = "examples/confirm_dialog_styled_demo.rs"
 
@@ -254,12 +294,21 @@ name = "gpui-scroll"
 path = "examples/gpui-scroll.rs"
 
 [[example]]
+name = "gpui_extensions_showcase"
+path = "examples/gpui_extensions_showcase.rs"
+
+[[example]]
 name = "hotkey_input_demo"
 path = "examples/hotkey_input_demo.rs"
 
 [[example]]
 name = "hover_card_styled_demo"
 path = "examples/hover_card_styled_demo.rs"
+
+[[example]]
+name = "html_demo"
+path = "examples/html_demo.rs"
+required-features = ["html-render"]
 
 [[example]]
 name = "icon_button_styled_demo"
@@ -332,6 +381,11 @@ path = "examples/layout_demo.rs"
 [[example]]
 name = "line_chart_demo"
 path = "examples/line_chart_demo.rs"
+
+[[example]]
+name = "markdown_demo"
+path = "examples/markdown_demo.rs"
+required-features = ["markdown"]
 
 [[example]]
 name = "masonry_grid_demo"
@@ -620,15 +674,31 @@ version = "1.0"
 version = "0.3"
 
 [dependencies.gpui]
-version = "0.3"
+version = "0.5"
 package = "adabraka-gpui"
+
+[dependencies.html5ever]
+version = "0.36"
+optional = true
 
 [dependencies.isahc]
 version = "1.7"
 optional = true
 
+[dependencies.markup5ever_rcdom]
+version = "0.36"
+optional = true
+
 [dependencies.once_cell]
 version = "1.19"
+
+[dependencies.pulldown-cmark]
+version = "0.12"
+optional = true
+default-features = false
+
+[dependencies.qrcode]
+version = "0.14"
 
 [dependencies.regex]
 version = "1.10"
@@ -636,6 +706,9 @@ version = "1.10"
 [dependencies.rodio]
 version = "0.19"
 optional = true
+
+[dependencies.ropey]
+version = "1.6"
 
 [dependencies.smallvec]
 version = "1.13.2"
@@ -646,8 +719,93 @@ version = "2.0.2"
 [dependencies.tree-sitter]
 version = "0.25.10"
 
+[dependencies.tree-sitter-bash]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-c]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-cpp]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-css]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-go]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-html]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-java]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-javascript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-json]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-lua]
+version = "0.4"
+optional = true
+
+[dependencies.tree-sitter-md]
+version = "0.5"
+optional = true
+
+[dependencies.tree-sitter-ocaml]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-php]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-python]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-ruby]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-rust]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-scala]
+version = "0.24"
+optional = true
+
 [dependencies.tree-sitter-sequel]
-version = "0.3.11"
+version = "0.3"
+optional = true
+
+[dependencies.tree-sitter-toml-ng]
+version = "0.6"
+optional = true
+
+[dependencies.tree-sitter-typescript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-yaml]
+version = "0.7"
+optional = true
+
+[dependencies.tree-sitter-zig]
+version = "1.1"
+optional = true
 
 [dependencies.unicode-segmentation]
 version = "1.12"

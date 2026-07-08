@@ -582,6 +582,7 @@ impl MacWindow {
             display_id,
             window_min_size,
             tabbing_identifier,
+            mouse_passthrough,
         }: WindowParams,
         executor: ForegroundExecutor,
         renderer_context: renderer::Context,
@@ -619,7 +620,7 @@ impl MacWindow {
 
             let native_window: id = match kind {
                 WindowKind::Normal | WindowKind::Floating => msg_send![WINDOW_CLASS, alloc],
-                WindowKind::PopUp => {
+                WindowKind::PopUp | WindowKind::Overlay => {
                     style_mask |= NSWindowStyleMaskNonactivatingPanel;
                     msg_send![PANEL_CLASS, alloc]
                 }
@@ -812,6 +813,29 @@ impl MacWindow {
                         NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
                     );
                 }
+                WindowKind::Overlay => {
+                    let tracking_area: id = msg_send![class!(NSTrackingArea), alloc];
+                    let _: () = msg_send![
+                        tracking_area,
+                        initWithRect: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))
+                        options: NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                        owner: native_view
+                        userInfo: nil
+                    ];
+                    let _: () =
+                        msg_send![native_view, addTrackingArea: tracking_area.autorelease()];
+
+                    let _: () = msg_send![native_window, setLevel: 25_isize];
+                    let _: () = msg_send![
+                        native_window,
+                        setAnimationBehavior: NSWindowAnimationBehaviorUtilityWindow
+                    ];
+                    native_window.setCollectionBehavior_(
+                        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces |
+                        NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary |
+                        NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+                    );
+                }
             }
 
             let app = NSApplication::sharedApplication(nil);
@@ -844,6 +868,10 @@ impl MacWindow {
                         }
                     }
                 }
+            }
+
+            if mouse_passthrough {
+                let _: () = msg_send![native_window, setIgnoresMouseEvents: YES];
             }
 
             if focus && show {
@@ -1498,6 +1526,29 @@ impl PlatformWindow for MacWindow {
             .detach()
     }
 
+    fn show(&self) {
+        unsafe {
+            let _: () = msg_send![self.0.lock().native_window, makeKeyAndOrderFront: nil];
+        }
+    }
+
+    fn hide(&self) {
+        unsafe {
+            let _: () = msg_send![self.0.lock().native_window, orderOut: nil];
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        unsafe { msg_send![self.0.lock().native_window, isVisible] }
+    }
+
+    fn set_mouse_passthrough(&self, passthrough: bool) {
+        unsafe {
+            let _: () =
+                msg_send![self.0.lock().native_window, setIgnoresMouseEvents: passthrough as BOOL];
+        }
+    }
+
     fn titlebar_double_click(&self) {
         let this = self.0.lock();
         let window = this.native_window;
@@ -1542,6 +1593,56 @@ impl PlatformWindow for MacWindow {
                 }
             })
             .detach();
+    }
+
+    fn set_progress_bar(&self, state: crate::ProgressBarState) {
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            let dock_tile: id = msg_send![app, dockTile];
+            if dock_tile == nil {
+                return;
+            }
+
+            match state {
+                crate::ProgressBarState::None => {
+                    let _: () = msg_send![dock_tile, setContentView: nil];
+                    let _: () = msg_send![dock_tile, setBadgeLabel: nil];
+                    let _: () = msg_send![dock_tile, display];
+                }
+                crate::ProgressBarState::Indeterminate => {
+                    let indicator: id = msg_send![class!(NSProgressIndicator), alloc];
+                    let frame = NSRect {
+                        origin: NSPoint::new(0.0, 0.0),
+                        size: NSSize::new(140.0, 140.0),
+                    };
+                    let indicator: id = msg_send![indicator, initWithFrame: frame];
+                    let _: () = msg_send![indicator, setStyle: 0i64]; // NSProgressIndicatorBarStyle
+                    let _: () = msg_send![indicator, setIndeterminate: YES];
+                    let _: () = msg_send![indicator, startAnimation: nil];
+                    let _: () = msg_send![dock_tile, setContentView: indicator];
+                    let _: () = msg_send![indicator, release];
+                    let _: () = msg_send![dock_tile, display];
+                }
+                crate::ProgressBarState::Normal(pct)
+                | crate::ProgressBarState::Error(pct)
+                | crate::ProgressBarState::Paused(pct) => {
+                    let indicator: id = msg_send![class!(NSProgressIndicator), alloc];
+                    let frame = NSRect {
+                        origin: NSPoint::new(0.0, 0.0),
+                        size: NSSize::new(140.0, 140.0),
+                    };
+                    let indicator: id = msg_send![indicator, initWithFrame: frame];
+                    let _: () = msg_send![indicator, setStyle: 0i64]; // NSProgressIndicatorBarStyle
+                    let _: () = msg_send![indicator, setIndeterminate: NO];
+                    let _: () = msg_send![indicator, setMinValue: 0.0f64];
+                    let _: () = msg_send![indicator, setMaxValue: 100.0f64];
+                    let _: () = msg_send![indicator, setDoubleValue: pct * 100.0];
+                    let _: () = msg_send![dock_tile, setContentView: indicator];
+                    let _: () = msg_send![indicator, release];
+                    let _: () = msg_send![dock_tile, display];
+                }
+            }
+        }
     }
 }
 

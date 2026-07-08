@@ -128,6 +128,11 @@ pub struct Input {
 
     // Style refinement for Styled trait
     style: StyleRefinement,
+    // ShellDeck patch: SDPATCH-009 — multi_line mirrors the same-named flag
+    // on `InputState`, and `min_rows` sizes the visible height of the
+    // textarea (defaults to 3 rows so opting into `multi_line` is enough).
+    multi_line: bool,
+    min_rows: usize,
 }
 
 impl Input {
@@ -170,7 +175,28 @@ impl Input {
 
             // Style refinement
             style: StyleRefinement::default(),
+
+            // ShellDeck patch: SDPATCH-009 — default single-line; opt in with
+            // `.multi_line(true)`, tune the visible height via `.min_rows(n)`.
+            multi_line: false,
+            min_rows: 3,
         }
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — turn this Input into a multi-line
+    /// textarea. Enter inserts a newline, paste keeps embedded newlines, the
+    /// visible height stretches to `min_rows` lines (see `min_rows`), and the
+    /// underlying `InputState` is flipped into multi-line mode at render.
+    pub fn multi_line(mut self, enabled: bool) -> Self {
+        self.multi_line = enabled;
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — visible height of the textarea, in
+    /// line-heights. Ignored when `multi_line` is false.
+    pub fn min_rows(mut self, rows: usize) -> Self {
+        self.min_rows = rows.max(1);
+        self
     }
 
     /// Set the initial value (will be set when rendering)
@@ -472,6 +498,12 @@ impl RenderOnce for Input {
         self.state.update(cx, |state, cx| {
             state.disabled = self.disabled;
             state.placeholder = self.placeholder.clone();
+            // ShellDeck patch: SDPATCH-009 — propagate the wrapper's flag to
+            // the state, so `.multi_line(true)` on either side is enough to
+            // switch behaviors. Setting it on the state directly still works.
+            if self.multi_line {
+                state.multi_line = true;
+            }
 
             // If password flag is enabled, ensure password input type is set.
             // Do not force `masked` here so user interactions can toggle it.
@@ -553,63 +585,26 @@ impl RenderOnce for Input {
             }
         });
 
-        let on_change_callback = self.on_change.clone();
-        let on_enter_callback = self.on_enter.clone();
-        let on_focus_callback = self.on_focus.clone();
-        let on_blur_callback = self.on_blur.clone();
-        let on_validate_callback = self.on_validate.clone();
-
-        if on_change_callback.is_some()
-            || on_enter_callback.is_some()
-            || on_focus_callback.is_some()
-            || on_blur_callback.is_some()
-            || on_validate_callback.is_some()
+        // ShellDeck patch: SDPATCH-011 — replace the leaking `cx.subscribe`
+        // (which added a fresh listener on every render pass and caused N
+        // duplicate `on_enter` fires after N frames — visible bug: sending
+        // one Support reply produced ~400 duplicated sends) with direct
+        // callback slots on `InputState`. Each render `state.update`s the
+        // slot in place (replace, not append); the InputState action
+        // handlers invoke the slot directly, exactly once per event.
         {
-            let state_entity = self.state.clone();
-            let state_for_callback = state_entity.clone();
-            cx.subscribe(
-                &state_entity,
-                move |_emitter: Entity<InputState>, event: &InputEvent, cx: &mut App| {
-                    match event {
-                        InputEvent::Change => {
-                            if let Some(callback) = on_change_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Enter => {
-                            if let Some(callback) = on_enter_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Focus => {
-                            if let Some(callback) = on_focus_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Blur => {
-                            if let Some(callback) = on_blur_callback.as_ref() {
-                                let value = state_for_callback.read(cx).content.clone();
-                                callback(value, cx);
-                            }
-                        }
-                        InputEvent::Validate(result) => {
-                            if let Some(callback) = on_validate_callback.as_ref() {
-                                callback(result.clone(), cx);
-                            }
-                        }
-                        InputEvent::Tab => {
-                            // Focus navigation handled in InputState action handlers
-                        }
-                        InputEvent::ShiftTab => {
-                            // Focus navigation handled in InputState action handlers
-                        }
-                    }
-                },
-            )
-            .detach();
+            let on_change_callback = self.on_change.clone();
+            let on_enter_callback = self.on_enter.clone();
+            let on_focus_callback = self.on_focus.clone();
+            let on_blur_callback = self.on_blur.clone();
+            let on_validate_callback = self.on_validate.clone();
+            self.state.update(cx, |state, _cx| {
+                state.on_change_cb = on_change_callback;
+                state.on_enter_cb = on_enter_callback;
+                state.on_focus_cb = on_focus_callback;
+                state.on_blur_cb = on_blur_callback;
+                state.on_validate_cb = on_validate_callback;
+            });
         }
 
         let (bg_color, border_color, text_color) = if self.disabled {
@@ -734,8 +729,24 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::delete_word))
                     })
                     .child(
+                        // ShellDeck patch: SDPATCH-009 — in multi_line mode
+                        // the input grows vertically instead of being pinned
+                        // to `height`. `min_h` reserves space for `min_rows`
+                        // lines (font_size * 1.4 line-height + vertical
+                        // padding matching the single-line box). Content
+                        // aligns to the top so extra rows sit below.
                         HStack::new()
-                            .h(height)
+                            .when(!self.multi_line, |h| h.h(height))
+                            .when(self.multi_line, |h| {
+                                let fs_px: f32 = font_size.into();
+                                let box_h_px: f32 = height.into();
+                                let line_h = fs_px * 1.4;
+                                let padding_y = (box_h_px - line_h).max(8.0);
+                                h.min_h(gpui::px(
+                                    line_h * self.min_rows as f32 + padding_y,
+                                ))
+                                .py(gpui::px(padding_y / 2.0))
+                            })
                             .w_full()
                             .px(padding_x)
                             .gap(gap)
@@ -743,11 +754,13 @@ impl RenderOnce for Input {
                             .border_1()
                             .border_color(border_color)
                             .rounded(theme.tokens.radius_md)
-                            .items_center()
+                            .when(!self.multi_line, |h| h.items_center())
+                            .when(self.multi_line, |h| h.items_start())
                             .text_size(font_size)
                             .font_family(theme.tokens.font_mono.clone())
                             .text_color(text_color)
-                            .shadow(vec![shadow_xs])
+                            .shadow(smallvec::smallvec![shadow_xs])
+                            .when(!self.disabled, |h| h.cursor(gpui::CursorStyle::IBeam))
                             .when(!self.disabled, |h| {
                                 h.hover(move |style| {
                                     style.border_color(if self.error {
@@ -760,13 +773,14 @@ impl RenderOnce for Input {
                             .when(is_focused && !self.disabled, |h| {
                                 if self.error {
                                     h.border_color(destructive_color)
-                                        .shadow(vec![error_ring_focused])
+                                        .shadow(smallvec::smallvec![error_ring_focused])
                                 } else {
-                                    h.border_color(ring_color).shadow(vec![focus_ring])
+                                    h.border_color(ring_color)
+                                        .shadow(smallvec::smallvec![focus_ring])
                                 }
                             })
                             .when(self.error && !is_focused, |h| {
-                                h.shadow(vec![error_ring_unfocused])
+                                h.shadow(smallvec::smallvec![error_ring_unfocused])
                             })
                             .children(self.prefix)
                             .child(div().flex_1().overflow_hidden().child(self.state.clone()))

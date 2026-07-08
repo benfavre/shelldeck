@@ -45,16 +45,15 @@ impl FileEditorView {
         }
 
         // ---- Search/Replace mode: capture keystrokes ----
-        if (self.search_visible || self.replace_visible)
-            && self.handle_search_key(event, ctrl, cx) {
-                return;
-            }
+        if (self.search_visible || self.replace_visible) && self.handle_search_key(event, ctrl, cx)
+        {
+            return;
+        }
 
         // ---- Go-to-line mode ----
-        if self.goto_line_visible
-            && self.handle_goto_line_key(event, ctrl, cx) {
-                return;
-            }
+        if self.goto_line_visible && self.handle_goto_line_key(event, ctrl, cx) {
+            return;
+        }
 
         // ---- Find-in-files mode ----
         if self.fif_visible && self.handle_fif_key(event, ctrl, cx) {
@@ -753,12 +752,7 @@ impl FileEditorView {
     }
 
     /// Find-in-files overlay key handling. Returns true if the key was consumed.
-    fn handle_fif_key(
-        &mut self,
-        event: &KeyDownEvent,
-        ctrl: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn handle_fif_key(&mut self, event: &KeyDownEvent, ctrl: bool, cx: &mut Context<Self>) -> bool {
         let ks = &event.keystroke;
         match ks.key.as_str() {
             "escape" => {

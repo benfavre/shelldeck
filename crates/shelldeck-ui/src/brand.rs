@@ -3,33 +3,25 @@ use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::*;
 
-/// The ShellDeck brand badge — a rounded square in the theme's primary color
-/// with a bold white `>_` prompt glyph. Single source of truth: use this in
-/// the titlebar, sidebar, About screen, and anywhere else the mark appears.
-///
-/// `size` drives every proportion (rounding, glyph size, shadow), so the mark
-/// stays visually coherent across scales.
+/// Monolith logo — square PNG (`shelldeck-icon.png`, logo variant, not dock rounding).
+/// GPUI `svg()` is monochrome-only; multi-color marks use a raster asset.
 pub fn brand_badge(size: f32) -> impl IntoElement {
-    let mut inner = div()
-        .text_size(px(size * 0.5))
-        .font_weight(FontWeight::BOLD)
-        .text_color(gpui::white())
-        .child(">_");
+    div().flex_shrink_0().w(px(size)).h(px(size)).child(
+        img("images/shelldeck-icon.png")
+            .w_full()
+            .h_full()
+            .object_fit(ObjectFit::Contain),
+    )
+}
 
-    // Small badges (< 22px) don't have room for the shadow to read cleanly.
-    let mut badge = div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(size))
-        .h(px(size))
-        .rounded(px(size * 0.25))
-        .bg(ShellDeckColors::primary());
-    if size >= 24.0 {
-        badge = badge.shadow_sm();
-        inner = inner.line_height(px(size * 0.6));
-    }
-    badge.child(inner)
+/// Monochrome Monolith mark (`shelldeck-mark.svg`) — muted contexts, `currentColor`.
+pub fn brand_mark(width: f32, height: f32) -> impl IntoElement {
+    svg()
+        .path("images/shelldeck-mark.svg")
+        .w(px(width))
+        .h(px(height))
+        .flex_shrink_0()
+        .text_color(ShellDeckColors::text_muted())
 }
 
 /// The ShellDeck wordmark — "Shell" in the primary text color, "Deck" in the

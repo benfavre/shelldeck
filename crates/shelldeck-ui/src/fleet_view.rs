@@ -6,9 +6,9 @@
 //! jobs awaiting confirmation (Exécuter / Rejeter), the instances list, and the
 //! recent-jobs feed. The view is a pure renderer; the workspace does all I/O.
 
+use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 
 use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
 
@@ -108,16 +108,11 @@ impl FleetView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(
-                                div()
-                                    .size(px(8.0))
-                                    .rounded_full()
-                                    .bg(if enabled {
-                                        ShellDeckColors::success()
-                                    } else {
-                                        ShellDeckColors::text_muted()
-                                    }),
-                            )
+                            .child(div().size(px(8.0)).rounded_full().bg(if enabled {
+                                ShellDeckColors::success()
+                            } else {
+                                ShellDeckColors::text_muted()
+                            }))
                             .child(
                                 div()
                                     .text_size(px(12.0))
@@ -423,9 +418,9 @@ impl Render for FleetView {
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
                     .child("↻ Actualiser")
-                    .on_click(cx.listener(|_t, _: &ClickEvent, _, cx| {
-                        cx.emit(FleetViewEvent::Refresh)
-                    })),
+                    .on_click(
+                        cx.listener(|_t, _: &ClickEvent, _, cx| cx.emit(FleetViewEvent::Refresh)),
+                    ),
             );
 
         let mut instances = div().flex().flex_col().px(px(8.0));
@@ -501,21 +496,5 @@ impl Render for FleetView {
 }
 
 fn rel_time(at_ms: f64) -> String {
-    if at_ms <= 0.0 {
-        return String::new();
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(at_ms);
-    let secs = ((now - at_ms) / 1000.0).max(0.0);
-    if secs < 60.0 {
-        "à l'instant".to_string()
-    } else if secs < 3600.0 {
-        format!("il y a {} min", (secs / 60.0) as i64)
-    } else if secs < 86400.0 {
-        format!("il y a {} h", (secs / 3600.0) as i64)
-    } else {
-        format!("il y a {} j", (secs / 86400.0) as i64)
-    }
+    crate::i18n::rel_time(at_ms)
 }

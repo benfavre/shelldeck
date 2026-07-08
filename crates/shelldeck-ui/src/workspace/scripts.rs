@@ -590,8 +590,8 @@ impl Workspace {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        let _ = stream_tx
-                            .send(format!("Error: failed to create async runtime: {}", e));
+                        let _ =
+                            stream_tx.send(format!("Error: failed to create async runtime: {}", e));
                         let _ = done_tx.send(None);
                         return;
                     }

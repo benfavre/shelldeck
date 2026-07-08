@@ -1,10 +1,12 @@
+use crate::scale::px;
+use adabraka_ui::components::select::{Select, SelectOption};
 use gpui::prelude::*;
 use gpui::*;
-use crate::scale::px;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::server_sync::*;
 use uuid::Uuid;
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 // Theme helpers — map semantic names to existing ShellDeckColors methods.
@@ -13,6 +15,10 @@ fn bg_secondary() -> gpui::Hsla {
 }
 fn bg_tertiary() -> gpui::Hsla {
     ShellDeckColors::bg_sidebar()
+}
+
+fn local_machine_label() -> String {
+    t!("sync.local_machine").to_string()
 }
 
 /// Which side of the split view.
@@ -105,8 +111,8 @@ pub struct ServerSyncView {
     pub wizard_options: SyncOptions,
     pub active_operation: Option<SyncOperation>,
     pub log_lines: Vec<String>,
-    source_picker_open: bool,
-    dest_picker_open: bool,
+    source_select: Entity<Select<Uuid>>,
+    dest_select: Entity<Select<Uuid>>,
     pub log_panel_height: f32,
     pub log_panel_resizing: bool,
     focus_handle: FocusHandle,
@@ -118,6 +124,11 @@ impl EventEmitter<ServerSyncEvent> for ServerSyncView {}
 
 impl ServerSyncView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let parent = cx.entity();
+        let source_select =
+            Self::build_connection_select(PanelSide::Source, &[], None, parent.clone(), cx);
+        let dest_select =
+            Self::build_connection_select(PanelSide::Destination, &[], None, parent, cx);
         Self {
             source_panel: ServerPanelState::new(),
             dest_panel: ServerPanelState::new(),
@@ -130,8 +141,8 @@ impl ServerSyncView {
             wizard_options: SyncOptions::default(),
             active_operation: None,
             log_lines: Vec::new(),
-            source_picker_open: false,
-            dest_picker_open: false,
+            source_select,
+            dest_select,
             log_panel_height: 200.0,
             log_panel_resizing: false,
             focus_handle: cx.focus_handle(),
@@ -157,21 +168,22 @@ impl ServerSyncView {
         self.dest_panel.discovery_resizing = false;
     }
 
-    pub fn set_connections(&mut self, connections: Vec<Connection>) {
+    pub fn set_connections(&mut self, connections: Vec<Connection>, cx: &mut Context<Self>) {
         self.connections = connections;
+        self.refresh_connection_selects(cx);
     }
 
     pub fn set_profiles(&mut self, profiles: Vec<SyncProfile>) {
         self.profiles = profiles;
     }
 
-    pub fn load_profile(&mut self, profile_id: Uuid) {
+    pub fn load_profile(&mut self, profile_id: Uuid, cx: &mut Context<Self>) {
         self.selected_profile = Some(profile_id);
         if let Some(profile) = self.profiles.iter().find(|p| p.id == profile_id) {
             // Set source connection
             if profile.source_connection_id == LOCAL_MACHINE_ID {
                 self.source_panel.connection_id = Some(LOCAL_MACHINE_ID);
-                self.source_panel.connection_name = "Local Machine".to_string();
+                self.source_panel.connection_name = local_machine_label();
                 self.source_panel.is_local = true;
             } else if let Some(src_conn) = self
                 .connections
@@ -185,7 +197,7 @@ impl ServerSyncView {
             // Set dest connection
             if profile.dest_connection_id == LOCAL_MACHINE_ID {
                 self.dest_panel.connection_id = Some(LOCAL_MACHINE_ID);
-                self.dest_panel.connection_name = "Local Machine".to_string();
+                self.dest_panel.connection_name = local_machine_label();
                 self.dest_panel.is_local = true;
             } else if let Some(dest_conn) = self
                 .connections
@@ -200,6 +212,7 @@ impl ServerSyncView {
             self.wizard_items = profile.items.clone();
             self.wizard_options = profile.options.clone();
         }
+        self.refresh_connection_selects(cx);
     }
 
     pub fn set_file_entries(&mut self, panel: PanelSide, path: String, entries: Vec<FileEntry>) {
@@ -270,18 +283,29 @@ impl ServerSyncView {
             .bg(bg_secondary());
 
         // Left side: title + profile selector
-        let mut left = div().flex().items_center().gap(px(12.0));
+        let mut left = div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .flex_grow()
+            .min_w(px(0.0))
+            .overflow_hidden();
         left = left.child(
             div()
                 .text_size(px(16.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_primary())
-                .child("Server Sync"),
+                .child(t!("sync.title").to_string()),
         );
 
         // Profile dropdown
         if !self.profiles.is_empty() {
-            let mut profile_section = div().flex().items_center().gap(px(4.0));
+            let mut profile_section = div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .min_w(px(0.0))
+                .overflow_hidden();
             for profile in &self.profiles {
                 let pid = profile.id;
                 let pname = profile.name.clone();
@@ -292,12 +316,15 @@ impl ServerSyncView {
                             "profile-{}",
                             pid
                         ))))
+                        .max_w(px(180.0))
                         .px(px(8.0))
                         .py(px(4.0))
                         .rounded(px(6.0))
                         .border_1()
                         .text_size(px(11.0))
                         .cursor_pointer()
+                        .overflow_hidden()
+                        .truncate()
                         .when(is_active, |el| {
                             el.border_color(ShellDeckColors::primary())
                                 .bg(ShellDeckColors::primary().opacity(0.1))
@@ -310,7 +337,7 @@ impl ServerSyncView {
                                 .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.load_profile(pid);
+                            this.load_profile(pid, cx);
                             cx.notify();
                         }))
                         .child(pname),
@@ -322,7 +349,7 @@ impl ServerSyncView {
         toolbar = toolbar.child(left);
 
         // Right side: buttons
-        let mut right = div().flex().items_center().gap(px(8.0));
+        let mut right = div().flex().items_center().gap(px(8.0)).flex_shrink_0();
 
         // Save Profile button
         if both_connected {
@@ -362,7 +389,7 @@ impl ServerSyncView {
                         }
                         cx.notify();
                     }))
-                    .child("Save Profile"),
+                    .child(t!("sync.save_profile").to_string()),
             );
         }
 
@@ -383,7 +410,7 @@ impl ServerSyncView {
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(ServerSyncEvent::DeleteProfile(profile_id));
                     }))
-                    .child("Delete"),
+                    .child(t!("sync.delete").to_string()),
             );
         }
 
@@ -413,7 +440,7 @@ impl ServerSyncView {
                     el.bg(bg_tertiary())
                         .text_color(ShellDeckColors::text_muted())
                 })
-                .child("Start Sync"),
+                .child(t!("sync.start").to_string()),
         );
 
         toolbar = toolbar.child(right);
@@ -421,272 +448,104 @@ impl ServerSyncView {
     }
 
     // -----------------------------------------------------------------------
-    // Connection picker
+    // Connection picker (adabraka-ui Select — see .agents/ui-components.md)
     // -----------------------------------------------------------------------
+    fn connection_select_options(connections: &[Connection]) -> Vec<SelectOption<Uuid>> {
+        let mut options = vec![SelectOption::new(LOCAL_MACHINE_ID, local_machine_label())
+            .with_group(t!("sync.group.local").to_string())
+            .with_icon("icons/lucide/user.svg")];
+        for conn in connections {
+            let label = format!("{} — {}", conn.display_name(), conn.hostname);
+            options.push(
+                SelectOption::new(conn.id, label)
+                    .with_group(t!("sync.group.connections").to_string())
+                    .with_icon("icons/lucide/server.svg"),
+            );
+        }
+        options
+    }
+
+    fn build_connection_select(
+        side: PanelSide,
+        connections: &[Connection],
+        selected_id: Option<Uuid>,
+        parent: Entity<ServerSyncView>,
+        cx: &mut Context<ServerSyncView>,
+    ) -> Entity<Select<Uuid>> {
+        let options = Self::connection_select_options(connections);
+        let selected_index = selected_id.and_then(|id| options.iter().position(|o| o.value == id));
+        let placeholder = match side {
+            PanelSide::Source => t!("sync.placeholder.source").to_string(),
+            PanelSide::Destination => t!("sync.placeholder.destination").to_string(),
+        };
+        cx.new(|select_cx| {
+            Select::new(select_cx)
+                .options(options)
+                .selected_index(selected_index)
+                .placeholder(placeholder)
+                .searchable(true)
+                .on_change({
+                    move |conn_id, _window, cx| {
+                        parent.update(cx, |view, cx| {
+                            view.on_connection_picked(side, *conn_id, cx);
+                        });
+                    }
+                })
+        })
+    }
+
+    fn refresh_connection_selects(&mut self, cx: &mut Context<Self>) {
+        let parent = cx.entity();
+        let src_id = self.source_panel.connection_id;
+        let dest_id = self.dest_panel.connection_id;
+        let conns = self.connections.clone();
+        self.source_select =
+            Self::build_connection_select(PanelSide::Source, &conns, src_id, parent.clone(), cx);
+        self.dest_select =
+            Self::build_connection_select(PanelSide::Destination, &conns, dest_id, parent, cx);
+    }
+
+    fn on_connection_picked(&mut self, side: PanelSide, conn_id: Uuid, cx: &mut Context<Self>) {
+        let is_local = conn_id == LOCAL_MACHINE_ID;
+        let (name, path) = if is_local {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            (local_machine_label(), home)
+        } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+            (conn.display_name().to_string(), "/".to_string())
+        } else {
+            return;
+        };
+
+        let state = match side {
+            PanelSide::Source => &mut self.source_panel,
+            PanelSide::Destination => &mut self.dest_panel,
+        };
+        state.connection_id = Some(conn_id);
+        state.connection_name = name;
+        state.is_local = is_local;
+        state.current_path = path.clone();
+        state.file_entries.clear();
+        state.discovered_sites.clear();
+        state.discovered_databases.clear();
+        state.files_loading = true;
+
+        cx.emit(ServerSyncEvent::ListFiles {
+            connection_id: conn_id,
+            path,
+            panel: side,
+        });
+        cx.notify();
+    }
+
     fn render_connection_picker(
         &self,
         side: PanelSide,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let state = self.panel_state(side);
-        let label = if state.connection_name.is_empty() {
-            match side {
-                PanelSide::Source => "Select Source...",
-                PanelSide::Destination => "Select Destination...",
-            }
-        } else {
-            &state.connection_name
-        };
-        let is_local = state.is_local;
-
-        let picker_open = match side {
-            PanelSide::Source => self.source_picker_open,
-            PanelSide::Destination => self.dest_picker_open,
-        };
-
-        let mut picker = div().flex().flex_col().w_full().relative();
-
-        // Picker button
-        picker = picker.child(
-            div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "conn-picker-{:?}",
-                    side
-                ))))
-                .flex()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .px(px(10.0))
-                .py(px(8.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_primary())
-                .cursor_pointer()
-                .hover(|el| el.border_color(ShellDeckColors::primary()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    match side {
-                        PanelSide::Source => this.source_picker_open = !this.source_picker_open,
-                        PanelSide::Destination => this.dest_picker_open = !this.dest_picker_open,
-                    }
-                    cx.notify();
-                }))
-                .when(state.connection_id.is_some(), |el| {
-                    let indicator_color = if is_local {
-                        ShellDeckColors::success()
-                    } else {
-                        ShellDeckColors::primary()
-                    };
-                    el.child(
-                        div()
-                            .w(px(8.0))
-                            .h(px(8.0))
-                            .rounded_full()
-                            .bg(indicator_color),
-                    )
-                })
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(if state.connection_id.is_some() {
-                            ShellDeckColors::text_primary()
-                        } else {
-                            ShellDeckColors::text_muted()
-                        })
-                        .child(label.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(if picker_open { "▲" } else { "▼" }),
-                ),
-        );
-
-        // Dropdown list
-        if picker_open {
-            let mut dropdown = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "conn-dropdown-{:?}",
-                    side
-                ))))
-                .absolute()
-                .top(px(40.0))
-                .left_0()
-                .w_full()
-                .max_h(px(200.0))
-                .overflow_y_scroll()
-                .bg(bg_secondary())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(6.0))
-                .shadow_md();
-
-            // Local Machine option (always first)
-            let is_local_selected = state.is_local;
-            dropdown = dropdown.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "conn-opt-local-{:?}",
-                        side
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .cursor_pointer()
-                    .border_b_1()
-                    .border_color(ShellDeckColors::border())
-                    .when(is_local_selected, |el| {
-                        el.bg(ShellDeckColors::primary().opacity(0.08))
-                    })
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-                        let state = match side {
-                            PanelSide::Source => &mut this.source_panel,
-                            PanelSide::Destination => &mut this.dest_panel,
-                        };
-                        state.connection_id = Some(LOCAL_MACHINE_ID);
-                        state.connection_name = "Local Machine".to_string();
-                        state.is_local = true;
-                        state.current_path = home.clone();
-                        state.file_entries.clear();
-                        state.discovered_sites.clear();
-                        state.discovered_databases.clear();
-                        state.files_loading = true;
-
-                        match side {
-                            PanelSide::Source => this.source_picker_open = false,
-                            PanelSide::Destination => this.dest_picker_open = false,
-                        }
-
-                        cx.emit(ServerSyncEvent::ListFiles {
-                            connection_id: LOCAL_MACHINE_ID,
-                            path: home,
-                            panel: side,
-                        });
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded(px(4.0))
-                            .bg(ShellDeckColors::success().opacity(0.15))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::success())
-                            .child("~"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Local Machine"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child("This computer"),
-                            ),
-                    ),
-            );
-
-            // Remote connections
-            for conn in &self.connections {
-                let conn_id = conn.id;
-                let conn_name = conn.display_name().to_string();
-                let hostname = conn.hostname.clone();
-                let display = conn_name.clone();
-                dropdown = dropdown.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "conn-opt-{}-{:?}",
-                            conn_id, side
-                        ))))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .w_full()
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .cursor_pointer()
-                        .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let state = match side {
-                                PanelSide::Source => &mut this.source_panel,
-                                PanelSide::Destination => &mut this.dest_panel,
-                            };
-                            state.connection_id = Some(conn_id);
-                            state.connection_name = display.clone();
-                            state.is_local = false;
-                            state.current_path = "/".to_string();
-                            state.file_entries.clear();
-                            state.discovered_sites.clear();
-                            state.discovered_databases.clear();
-                            state.files_loading = true;
-
-                            match side {
-                                PanelSide::Source => this.source_picker_open = false,
-                                PanelSide::Destination => this.dest_picker_open = false,
-                            }
-
-                            cx.emit(ServerSyncEvent::ListFiles {
-                                connection_id: conn_id,
-                                path: "/".to_string(),
-                                panel: side,
-                            });
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded(px(4.0))
-                                .bg(ShellDeckColors::primary().opacity(0.15))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(12.0))
-                                .text_color(ShellDeckColors::primary())
-                                .child("@"),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(ShellDeckColors::text_primary())
-                                        .child(conn_name),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(ShellDeckColors::text_muted())
-                                        .child(hostname),
-                                ),
-                        ),
-                );
-            }
-
-            picker = picker.child(dropdown);
+        match side {
+            PanelSide::Source => self.source_select.clone(),
+            PanelSide::Destination => self.dest_select.clone(),
         }
-
-        picker
     }
 
     // -----------------------------------------------------------------------
@@ -700,8 +559,9 @@ impl ServerSyncView {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .px(px(8.0))
-            .py(px(4.0))
+            .px(px(10.0))
+            .pt(px(4.0))
+            .pb(px(6.0))
             .overflow_hidden()
             .w_full();
 
@@ -810,7 +670,7 @@ impl ServerSyncView {
                     .py(px(20.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Loading..."),
+                    .child(t!("sync.loading").to_string()),
             );
             return list;
         }
@@ -837,13 +697,13 @@ impl ServerSyncView {
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Select a connection above"),
+                            .child(t!("sync.select_connection").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted().opacity(0.6))
-                            .child("Choose Local Machine or a remote server"),
+                            .child(t!("sync.choose_side").to_string()),
                     ),
             );
             return list;
@@ -858,7 +718,7 @@ impl ServerSyncView {
                     .py(px(20.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Empty directory"),
+                    .child(t!("sync.empty_dir").to_string()),
             );
             return list;
         }
@@ -876,10 +736,25 @@ impl ServerSyncView {
                 .text_size(px(10.0))
                 .text_color(ShellDeckColors::text_muted())
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(div().flex_grow().child("Name"))
-                .child(div().w(px(80.0)).flex_shrink_0().child("Size"))
-                .child(div().w(px(90.0)).flex_shrink_0().child("Permissions"))
-                .child(div().w(px(130.0)).flex_shrink_0().child("Modified")),
+                .child(div().flex_grow().child(t!("sync.col.name").to_string()))
+                .child(
+                    div()
+                        .w(px(80.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.size").to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.permissions").to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(130.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.modified").to_string()),
+                ),
         );
 
         // Parent directory ".." entry
@@ -1090,7 +965,7 @@ impl ServerSyncView {
                         .text_size(px(11.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_muted())
-                        .child("SERVICES"),
+                        .child(t!("sync.services").to_string()),
                 )
                 .child(
                     div()
@@ -1121,9 +996,9 @@ impl ServerSyncView {
                             }
                         }))
                         .child(if state.discovery_loading {
-                            "Discovering..."
+                            t!("sync.discovering").to_string()
                         } else {
-                            "Discover"
+                            t!("sync.discover").to_string()
                         }),
                 ),
         );
@@ -1148,10 +1023,14 @@ impl ServerSyncView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Nginx Sites"),
+                    .child(t!("sync.nginx_sites").to_string()),
             );
             for site in &state.discovered_sites {
-                let ssl_badge = if site.ssl { " [SSL]" } else { "" };
+                let ssl_badge = if site.ssl {
+                    t!("sync.ssl_badge").to_string()
+                } else {
+                    String::new()
+                };
                 let port_str = format!(":{}", site.listen_port);
                 content = content.child(
                     div()
@@ -1197,14 +1076,14 @@ impl ServerSyncView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Databases"),
+                    .child(t!("sync.databases").to_string()),
             );
             for db in &state.discovered_databases {
                 let engine_label = db.engine.label();
                 let size = db.size_display();
                 let tables = db
                     .table_count
-                    .map(|c| format!("{} tables", c))
+                    .map(|c| t!("sync.tables_count", count = c).to_string())
                     .unwrap_or_default();
                 content = content.child(
                     div()
@@ -1250,7 +1129,7 @@ impl ServerSyncView {
                     .py(px(16.0))
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Click Discover to scan services"),
+                    .child(t!("sync.discover_hint").to_string()),
             );
         }
 
@@ -1263,18 +1142,25 @@ impl ServerSyncView {
     // -----------------------------------------------------------------------
     fn render_server_panel(&self, side: PanelSide, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, accent_color) = match side {
-            PanelSide::Source => ("SOURCE", ShellDeckColors::success()),
-            PanelSide::Destination => ("DESTINATION", ShellDeckColors::primary()),
+            PanelSide::Source => (
+                t!("sync.panel.source").to_string(),
+                ShellDeckColors::success(),
+            ),
+            PanelSide::Destination => (
+                t!("sync.panel.destination").to_string(),
+                ShellDeckColors::primary(),
+            ),
         };
 
         let state = self.panel_state(side);
         let status_text = if state.is_local {
-            "Local Machine"
+            local_machine_label()
         } else if state.connection_name.is_empty() {
-            "Not connected"
+            t!("sync.not_connected").to_string()
         } else {
-            &state.connection_name
+            state.connection_name.clone()
         };
+        let status_line = t!("sync.panel_status", name = status_text.as_str()).to_string();
 
         let mut panel = div()
             .flex()
@@ -1290,37 +1176,50 @@ impl ServerSyncView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .px(px(10.0))
                     .py(px(6.0))
                     .border_b_1()
                     .border_color(accent_color.opacity(0.3))
-                    .bg(accent_color.opacity(0.05))
+                    .bg(accent_color.opacity(0.12))
                     .child(
                         div()
                             .w(px(3.0))
                             .h(px(14.0))
                             .rounded(px(2.0))
-                            .bg(accent_color),
+                            .bg(accent_color)
+                            .flex_shrink_0(),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(accent_color)
+                            .flex_shrink_0()
                             .child(label),
                     )
                     .child(
                         div()
+                            .flex_grow()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(format!("— {}", status_text)),
+                            .truncate()
+                            .child(status_line),
                     ),
             )
-            // Connection picker
+            // Connection picker — top padding separates it from the header band.
             .child(
                 div()
-                    .px(px(8.0))
-                    .pb(px(4.0))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .px(px(10.0))
+                    .pt(px(10.0))
+                    .pb(px(6.0))
                     .child(self.render_connection_picker(side, cx)),
             );
 
@@ -1409,7 +1308,7 @@ impl ServerSyncView {
                 .text_size(px(10.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_muted())
-                .child("SYNC LOG"),
+                .child(t!("sync.log_title").to_string()),
         );
 
         if has_operation {
@@ -1442,7 +1341,7 @@ impl ServerSyncView {
                 .on_click(cx.listener(move |_this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(log_text.clone()));
                 }))
-                .child("Copy"),
+                .child(t!("sync.copy").to_string()),
         );
 
         // Clear button
@@ -1460,7 +1359,7 @@ impl ServerSyncView {
                     this.log_lines.clear();
                     cx.notify();
                 }))
-                .child("Clear"),
+                .child(t!("sync.clear").to_string()),
         );
 
         header = header.child(log_actions);
@@ -1497,7 +1396,13 @@ impl ServerSyncView {
                                         div()
                                             .text_size(px(10.0))
                                             .text_color(ShellDeckColors::text_primary())
-                                            .child(format!("{:.0}%", pct)),
+                                            .child(
+                                                t!(
+                                                    "sync.progress.percent",
+                                                    pct = format!("{:.0}", pct).as_str()
+                                                )
+                                                .to_string(),
+                                            ),
                                     ),
                             )
                             .child(
@@ -1554,10 +1459,10 @@ impl ServerSyncView {
         }
 
         let step_title = match self.wizard_step {
-            WizardStep::SelectItems => "Select Items to Sync",
-            WizardStep::ConfigureOptions => "Configure Options",
-            WizardStep::ReviewConfirm => "Review & Confirm",
-            WizardStep::Executing => "Syncing...",
+            WizardStep::SelectItems => t!("sync.wizard.step.select_items").to_string(),
+            WizardStep::ConfigureOptions => t!("sync.wizard.step.configure").to_string(),
+            WizardStep::ReviewConfirm => t!("sync.wizard.step.review").to_string(),
+            WizardStep::Executing => t!("sync.wizard.step.executing").to_string(),
         };
 
         // Backdrop
@@ -1621,7 +1526,12 @@ impl ServerSyncView {
     }
 
     fn render_wizard_step_indicator(&self) -> impl IntoElement {
-        let steps = ["Items", "Options", "Review", "Execute"];
+        let steps = [
+            t!("sync.wizard.indicator.items").to_string(),
+            t!("sync.wizard.indicator.options").to_string(),
+            t!("sync.wizard.indicator.review").to_string(),
+            t!("sync.wizard.indicator.execute").to_string(),
+        ];
         let current = match self.wizard_step {
             WizardStep::SelectItems => 0,
             WizardStep::ConfigureOptions => 1,
@@ -1651,7 +1561,7 @@ impl ServerSyncView {
                         el.bg(bg_tertiary())
                             .text_color(ShellDeckColors::text_muted())
                     })
-                    .child(step_name.to_string()),
+                    .child(step_name.clone()),
             );
         }
         indicator
@@ -1696,7 +1606,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Nginx Sites (Source)"),
+                    .child(t!("sync.nginx_source").to_string()),
             );
             for (i, site) in self.source_panel.discovered_sites.iter().enumerate() {
                 let site_name = site.server_name.clone();
@@ -1781,7 +1691,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Databases (Source)"),
+                    .child(t!("sync.databases_source").to_string()),
             );
             for (i, db) in self.source_panel.discovered_databases.iter().enumerate() {
                 let db_name = db.name.clone();
@@ -1903,7 +1813,7 @@ impl ServerSyncView {
                     div()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("+ Add Directory (current paths)"),
+                        .child(t!("sync.add_directory").to_string()),
                 ),
         );
 
@@ -1915,7 +1825,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(format!("{} items selected", self.wizard_items.len())),
+                    .child(t!("sync.items_selected", count = self.wizard_items.len()).to_string()),
             );
         }
 
@@ -1930,7 +1840,7 @@ impl ServerSyncView {
             .flex_col()
             .gap(px(12.0))
             .child(self.render_option_toggle(
-                "Compress transfers",
+                t!("sync.option.compress").to_string(),
                 opts.compress,
                 cx,
                 |this, val| {
@@ -1938,7 +1848,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Dry run (preview only)",
+                t!("sync.option.dry_run").to_string(),
                 opts.dry_run,
                 cx,
                 |this, val| {
@@ -1946,7 +1856,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Delete extra files on destination",
+                t!("sync.option.delete_extra").to_string(),
                 opts.delete_extra,
                 cx,
                 |this, val| {
@@ -1954,7 +1864,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Skip existing files",
+                t!("sync.option.skip_existing").to_string(),
                 opts.skip_existing,
                 cx,
                 |this, val| {
@@ -1971,7 +1881,7 @@ impl ServerSyncView {
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Bandwidth limit (KB/s)"),
+                            .child(t!("sync.bandwidth_limit").to_string()),
                     )
                     .child(
                         div()
@@ -1979,8 +1889,8 @@ impl ServerSyncView {
                             .text_color(ShellDeckColors::text_muted())
                             .child(
                                 opts.bandwidth_limit
-                                    .map(|bw| format!("{} KB/s", bw))
-                                    .unwrap_or_else(|| "Unlimited".to_string()),
+                                    .map(|bw| t!("sync.bandwidth_value", kb = bw).to_string())
+                                    .unwrap_or_else(|| t!("sync.bandwidth_unlimited").to_string()),
                             ),
                     ),
             )
@@ -1988,12 +1898,12 @@ impl ServerSyncView {
 
     fn render_option_toggle(
         &self,
-        label: &str,
+        label: String,
         value: bool,
         cx: &mut Context<Self>,
         setter: fn(&mut Self, bool),
     ) -> impl IntoElement {
-        let label_str = label.to_string();
+        let label_str = label;
         div()
             .id(ElementId::from(SharedString::from(format!(
                 "opt-{}",
@@ -2041,27 +1951,30 @@ impl ServerSyncView {
                 .text_size(px(13.0))
                 .text_color(ShellDeckColors::text_primary())
                 .font_weight(FontWeight::MEDIUM)
-                .child(format!(
-                    "Sync {} items from {} to {}",
-                    self.wizard_items.len(),
-                    self.source_panel.connection_name,
-                    self.dest_panel.connection_name,
-                )),
+                .child(
+                    t!(
+                        "sync.review.summary",
+                        count = self.wizard_items.len(),
+                        source = self.source_panel.connection_name.as_str(),
+                        dest = self.dest_panel.connection_name.as_str(),
+                    )
+                    .to_string(),
+                ),
         );
 
         // Options summary
         let mut opts_summary = Vec::new();
         if self.wizard_options.compress {
-            opts_summary.push("compress");
+            opts_summary.push(t!("sync.review.option.compress").to_string());
         }
         if self.wizard_options.dry_run {
-            opts_summary.push("dry run");
+            opts_summary.push(t!("sync.review.option.dry_run").to_string());
         }
         if self.wizard_options.delete_extra {
-            opts_summary.push("delete extra");
+            opts_summary.push(t!("sync.review.option.delete_extra").to_string());
         }
         if self.wizard_options.skip_existing {
-            opts_summary.push("skip existing");
+            opts_summary.push(t!("sync.review.option.skip_existing").to_string());
         }
 
         if !opts_summary.is_empty() {
@@ -2069,7 +1982,13 @@ impl ServerSyncView {
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("Options: {}", opts_summary.join(", "))),
+                    .child(
+                        t!(
+                            "sync.review.options",
+                            options = opts_summary.join(", ").as_str()
+                        )
+                        .to_string(),
+                    ),
             );
         }
 
@@ -2120,7 +2039,13 @@ impl ServerSyncView {
                             div()
                                 .text_size(px(13.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(format!("Overall: {:.0}%", pct)),
+                                .child(
+                                    t!(
+                                        "sync.progress.overall",
+                                        pct = format!("{:.0}", pct).as_str()
+                                    )
+                                    .to_string(),
+                                ),
                         )
                         .child(
                             div()
@@ -2163,7 +2088,13 @@ impl ServerSyncView {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(format!("{:.0}%", item_pct)),
+                                .child(
+                                    t!(
+                                        "sync.progress.percent",
+                                        pct = format!("{:.0}", item_pct).as_str()
+                                    )
+                                    .to_string(),
+                                ),
                         )
                         .when_some(prog.current_file.clone(), |el, file| {
                             el.child(
@@ -2180,7 +2111,7 @@ impl ServerSyncView {
                 div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Preparing sync..."),
+                    .child(t!("sync.preparing").to_string()),
             );
         }
 
@@ -2239,7 +2170,7 @@ impl ServerSyncView {
                         this.wizard_active = false;
                         cx.notify();
                     }))
-                    .child("Cancel"),
+                    .child(t!("sync.cancel").to_string()),
             );
         }
 
@@ -2266,7 +2197,7 @@ impl ServerSyncView {
                         };
                         cx.notify();
                     }))
-                    .child("Back"),
+                    .child(t!("sync.back").to_string()),
             );
         }
 
@@ -2299,7 +2230,7 @@ impl ServerSyncView {
                             el.bg(bg_tertiary())
                                 .text_color(ShellDeckColors::text_muted())
                         })
-                        .child("Next"),
+                        .child(t!("sync.next").to_string()),
                 );
             }
             WizardStep::ConfigureOptions => {
@@ -2319,7 +2250,7 @@ impl ServerSyncView {
                             this.wizard_step = WizardStep::ReviewConfirm;
                             cx.notify();
                         }))
-                        .child("Next"),
+                        .child(t!("sync.next").to_string()),
                 );
             }
             WizardStep::ReviewConfirm => {
@@ -2361,7 +2292,7 @@ impl ServerSyncView {
                             }
                             cx.notify();
                         }))
-                        .child("Start Sync"),
+                        .child(t!("sync.start").to_string()),
                 );
             }
             WizardStep::Executing => {
@@ -2383,7 +2314,7 @@ impl ServerSyncView {
                             }
                             cx.notify();
                         }))
-                        .child("Cancel Sync"),
+                        .child(t!("sync.cancel_sync").to_string()),
                 );
             }
         }
@@ -2402,17 +2333,12 @@ impl Render for ServerSyncView {
             .bg(ShellDeckColors::bg_primary())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key.as_str() == "escape" {
-                    if this.wizard_active && this.wizard_step != WizardStep::Executing {
-                        this.wizard_active = false;
-                        cx.notify();
-                    } else if this.source_picker_open {
-                        this.source_picker_open = false;
-                        cx.notify();
-                    } else if this.dest_picker_open {
-                        this.dest_picker_open = false;
-                        cx.notify();
-                    }
+                if event.keystroke.key.as_str() == "escape"
+                    && this.wizard_active
+                    && this.wizard_step != WizardStep::Executing
+                {
+                    this.wizard_active = false;
+                    cx.notify();
                 }
             }));
 

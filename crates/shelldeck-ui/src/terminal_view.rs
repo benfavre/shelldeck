@@ -847,11 +847,7 @@ impl TabLayout {
     }
 
     /// Compute the absolute rect of every leaf and every divider for `area`.
-    fn compute(
-        &self,
-        area: PaneRect,
-        divider: f32,
-    ) -> (Vec<(PaneId, PaneRect)>, Vec<DividerRect>) {
+    fn compute(&self, area: PaneRect, divider: f32) -> (Vec<(PaneId, PaneRect)>, Vec<DividerRect>) {
         fn walk(
             node: &PaneNode,
             rect: PaneRect,
@@ -871,10 +867,7 @@ impl TabLayout {
                     SplitDirection::Horizontal => {
                         let aw = ((rect.w - divider) * *ratio).max(0.0);
                         let bw = (rect.w - divider - aw).max(0.0);
-                        let a_rect = PaneRect {
-                            w: aw,
-                            ..rect
-                        };
+                        let a_rect = PaneRect { w: aw, ..rect };
                         let div_rect = PaneRect {
                             x: rect.x + aw,
                             w: divider,
@@ -900,10 +893,7 @@ impl TabLayout {
                     SplitDirection::Vertical => {
                         let ah = ((rect.h - divider) * *ratio).max(0.0);
                         let bh = (rect.h - divider - ah).max(0.0);
-                        let a_rect = PaneRect {
-                            h: ah,
-                            ..rect
-                        };
+                        let a_rect = PaneRect { h: ah, ..rect };
                         let div_rect = PaneRect {
                             y: rect.y + ah,
                             h: divider,
@@ -932,7 +922,14 @@ impl TabLayout {
         let mut leaves = Vec::new();
         let mut dividers = Vec::new();
         let mut path = Vec::new();
-        walk(&self.tree, area, divider, &mut path, &mut leaves, &mut dividers);
+        walk(
+            &self.tree,
+            area,
+            divider,
+            &mut path,
+            &mut leaves,
+            &mut dividers,
+        );
         (leaves, dividers)
     }
 }
@@ -1335,7 +1332,10 @@ impl TerminalView {
             // Restore the new active tab's layout if it had one stored.
             if was_active && !self.pane.sessions.is_empty() {
                 if let Some(tab) = self.tabs.get(self.pane.active_index) {
-                    self.layout = self.stored_layouts.remove(&tab.id).unwrap_or_else(TabLayout::single);
+                    self.layout = self
+                        .stored_layouts
+                        .remove(&tab.id)
+                        .unwrap_or_else(TabLayout::single);
                 }
             }
 
@@ -1430,7 +1430,10 @@ impl TerminalView {
         }
 
         // Restore the new tab's layout (or a fresh single pane), focusing primary.
-        self.layout = self.stored_layouts.remove(&id).unwrap_or_else(TabLayout::single);
+        self.layout = self
+            .stored_layouts
+            .remove(&id)
+            .unwrap_or_else(TabLayout::single);
         self.layout.focused = PaneId::Primary;
 
         // Reset secondary dimensions so resize_if_needed picks up the new layout.
@@ -1832,82 +1835,86 @@ impl TerminalView {
         let Some(mut rx) = self.output_rx.take() else {
             return;
         };
-        self._refresh_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                // Block until a reader thread signals new output, or wake every
-                // 250 ms as a safety net. Idle terminals cost ~4 cheap wake-ups
-                // a second instead of polling at 60-120 Hz.
-                let _ = rx
-                    .recv()
-                    .with_timeout(
-                        std::time::Duration::from_millis(250),
-                        cx.background_executor(),
-                    )
-                    .await;
-                // Coalesce a burst of output into a single repaint: a screen
-                // update (e.g. htop) arrives as several PTY chunks over a few
-                // milliseconds, so wait one frame and drain them all, repainting
-                // once instead of once per chunk. Caps the repaint rate at ~60 Hz
-                // under continuous output while staying fully responsive.
-                while rx.try_recv().is_ok() {}
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
-                    .await;
-                while rx.try_recv().is_ok() {}
+        self._refresh_task = Some(cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                loop {
+                    // Block until a reader thread signals new output, or wake every
+                    // 250 ms as a safety net. Idle terminals cost ~4 cheap wake-ups
+                    // a second instead of polling at 60-120 Hz.
+                    let _ = rx
+                        .recv()
+                        .with_timeout(
+                            std::time::Duration::from_millis(250),
+                            cx.background_executor(),
+                        )
+                        .await;
+                    // Coalesce a burst of output into a single repaint: a screen
+                    // update (e.g. htop) arrives as several PTY chunks over a few
+                    // milliseconds, so wait one frame and drain them all, repainting
+                    // once instead of once per chunk. Caps the repaint rate at ~60 Hz
+                    // under continuous output while staying fully responsive.
+                    while rx.try_recv().is_ok() {}
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(16))
+                        .await;
+                    while rx.try_recv().is_ok() {}
 
-                let result = this.update(cx, |this, cx| {
-                    let mut any_dirty = false;
-                    let mut any_sync = false;
-                    for s in this.pane.sessions.iter() {
-                        let g = s.grid.lock();
-                        if g.dirty {
-                            any_dirty = true;
+                    let result = this.update(cx, |this, cx| {
+                        let mut any_dirty = false;
+                        let mut any_sync = false;
+                        for s in this.pane.sessions.iter() {
+                            let g = s.grid.lock();
+                            if g.dirty {
+                                any_dirty = true;
+                            }
+                            if g.synchronized_output() {
+                                any_sync = true;
+                            }
                         }
-                        if g.synchronized_output() {
-                            any_sync = true;
+                        // Extra (split) panes of the active tab.
+                        for session in this.layout.extra.values() {
+                            let g = session.grid.lock();
+                            if g.dirty {
+                                any_dirty = true;
+                            }
+                            if g.synchronized_output() {
+                                any_sync = true;
+                            }
                         }
+                        // Clear dirty flags on stored (background) tabs' split
+                        // sessions so they don't accumulate stale state, without
+                        // triggering a repaint for background tabs.
+                        for layout in this.stored_layouts.values() {
+                            for session in layout.extra.values() {
+                                session.grid.lock().dirty = false;
+                            }
+                        }
+                        // Handle OSC 52 clipboard requests from any visible session.
+                        for session in this.pane.sessions.iter() {
+                            if let Some((_sel, text)) = session.grid.lock().clipboard_request.take()
+                            {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                        }
+                        for session in this.layout.extra.values() {
+                            if let Some((_sel, text)) = session.grid.lock().clipboard_request.take()
+                            {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                        }
+                        // Suppress repaint while synchronized output is active
+                        // (batching updates to prevent flicker). When the app turns
+                        // sync off, dirty is set and any_sync cleared.
+                        if any_dirty && !any_sync {
+                            cx.notify();
+                        }
+                    });
+                    if result.is_err() {
+                        break;
                     }
-                    // Extra (split) panes of the active tab.
-                    for session in this.layout.extra.values() {
-                        let g = session.grid.lock();
-                        if g.dirty {
-                            any_dirty = true;
-                        }
-                        if g.synchronized_output() {
-                            any_sync = true;
-                        }
-                    }
-                    // Clear dirty flags on stored (background) tabs' split
-                    // sessions so they don't accumulate stale state, without
-                    // triggering a repaint for background tabs.
-                    for layout in this.stored_layouts.values() {
-                        for session in layout.extra.values() {
-                            session.grid.lock().dirty = false;
-                        }
-                    }
-                    // Handle OSC 52 clipboard requests from any visible session.
-                    for session in this.pane.sessions.iter() {
-                        if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        }
-                    }
-                    for session in this.layout.extra.values() {
-                        if let Some((_sel, text)) = session.grid.lock().clipboard_request.take() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        }
-                    }
-                    // Suppress repaint while synchronized output is active
-                    // (batching updates to prevent flicker). When the app turns
-                    // sync off, dirty is set and any_sync cleared.
-                    if any_dirty && !any_sync {
-                        cx.notify();
-                    }
-                });
-                if result.is_err() {
-                    break;
                 }
-            }
-        }));
+            },
+        ));
     }
 
     /// Ensure the glyph cache is populated for the current font + zoom level.
@@ -2090,7 +2097,12 @@ impl TerminalView {
                     el.bg(ShellDeckColors::badge_bg())
                         .text_color(ShellDeckColors::error())
                 })
-                .child(svg().path("images/close.svg").size(s(10.0)).text_color(ShellDeckColors::text_muted()))
+                .child(
+                    svg()
+                        .path("icons/lucide/x.svg")
+                        .size(s(10.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                )
                 .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                     this.close_tab(tab_id);
                     cx.emit(TerminalEvent::TabClosed(tab_id));
@@ -2132,7 +2144,12 @@ impl TerminalView {
                     el.bg(ShellDeckColors::hover_bg())
                         .text_color(ShellDeckColors::text_primary())
                 })
-                .child(svg().path("images/plus.svg").size(s(14.0)).text_color(ShellDeckColors::text_muted()))
+                .child(
+                    svg()
+                        .path("icons/lucide/plus.svg")
+                        .size(s(14.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                )
                 .on_click(cx.listener(|this, _event: &ClickEvent, window, cx| {
                     this.spawn_local_terminal(cx);
                     this.focus_handle.focus(window);
@@ -2164,28 +2181,38 @@ impl TerminalView {
             .is_some_and(|s| s.grid.lock().selected_text().is_some());
 
         let toolbar_btn = |id: &str, label: &str, hint: &str| {
-            div()
+            let mut btn = div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
                 .flex()
                 .items_center()
-                .gap(px(4.0))
+                .gap(px(6.0))
                 .px(px(8.0))
                 .py(px(3.0))
                 .rounded(px(4.0))
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
                 .cursor_pointer()
-                .hover(|el| {
-                    el.bg(ShellDeckColors::hover_bg())
-                        .text_color(ShellDeckColors::text_primary())
-                })
-                .child(label.to_string())
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()))
                 .child(
                     div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(label.to_string()),
+                );
+            if !hint.is_empty() {
+                btn = btn.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(4.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
+                        .bg(ShellDeckColors::hint_bg())
                         .text_size(px(9.0))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(ShellDeckColors::text_muted())
                         .child(hint.to_string()),
-                )
+                );
+            }
+            btn
         };
 
         let toolbar_icon = |id: &str, label: &str| {
@@ -2274,9 +2301,7 @@ impl TerminalView {
             .child({
                 let mut btn = toolbar_btn("tb-copy", "Copy", &format!("{}{}C", ctrl, shift));
                 if !has_selection {
-                    btn = btn
-                        .text_color(ShellDeckColors::text_muted())
-                        .cursor_default();
+                    btn = btn.opacity(0.45).cursor_default();
                 } else {
                     btn = btn.on_click(cx.listener(|this, _, _, cx| {
                         this.copy_selection(cx);
@@ -2516,7 +2541,7 @@ impl TerminalView {
                                         .child(
                                             svg()
                                                 .path(if is_pinned {
-                                                    "images/pin.svg"
+                                                    "icons/lucide/pin.svg"
                                                 } else {
                                                     "images/pin-outline.svg"
                                                 })
@@ -3771,6 +3796,8 @@ impl TerminalView {
                         border_color: transparent_black(),
                         border_style: BorderStyle::default(),
                         continuous_corners: false,
+                        transform: TransformationMatrix::unit(),
+                        blend_mode: BlendMode::default(),
                     });
                 }
             },
@@ -4008,7 +4035,12 @@ impl TerminalView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|el| el.text_color(ShellDeckColors::error()))
-                    .child(svg().path("images/close.svg").size(px(12.0)).text_color(ShellDeckColors::text_muted()))
+                    .child(
+                        svg()
+                            .path("icons/lucide/x.svg")
+                            .size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_search();
                         cx.notify();
@@ -4235,35 +4267,31 @@ impl TerminalView {
             .on_mouse_down(MouseButton::Right, |_, _, _| {});
 
         menu = menu
-            .child(
-                item("tab-ctx-new", "New Terminal").on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.tab_context_menu = None;
-                        this.spawn_local_terminal(cx);
-                        this.focus_handle.focus(window);
-                        cx.emit(TerminalEvent::NewTabRequested);
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                item("tab-ctx-duplicate", "Duplicate").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.tab_context_menu = None;
-                        this.duplicate_tab(tab_id, cx);
-                        cx.notify();
-                    },
-                )),
-            )
+            .child(item("tab-ctx-new", "New Terminal").on_click(cx.listener(
+                |this, _, window, cx| {
+                    this.tab_context_menu = None;
+                    this.spawn_local_terminal(cx);
+                    this.focus_handle.focus(window);
+                    cx.emit(TerminalEvent::NewTabRequested);
+                    cx.notify();
+                },
+            )))
+            .child(item("tab-ctx-duplicate", "Duplicate").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.tab_context_menu = None;
+                    this.duplicate_tab(tab_id, cx);
+                    cx.notify();
+                },
+            )))
             .child(separator())
-            .child(
-                item("tab-ctx-close", "Close Tab").on_click(cx.listener(move |this, _, _, cx| {
+            .child(item("tab-ctx-close", "Close Tab").on_click(cx.listener(
+                move |this, _, _, cx| {
                     this.tab_context_menu = None;
                     this.close_tab(tab_id);
                     cx.emit(TerminalEvent::TabClosed(tab_id));
                     cx.notify();
-                })),
-            );
+                },
+            )));
 
         if has_left {
             menu = menu.child(
@@ -4933,9 +4961,12 @@ impl Render for TerminalView {
                         wrapper = wrapper.child(self.render_context_menu(&state, cx));
                     }
                 } else {
-                    wrapper = wrapper.child(
-                        self.render_split_passive_grid(id, grid_arc, cache.clone(), cx),
-                    );
+                    wrapper = wrapper.child(self.render_split_passive_grid(
+                        id,
+                        grid_arc,
+                        cache.clone(),
+                        cx,
+                    ));
                 }
 
                 pane_layer = pane_layer.child(wrapper);

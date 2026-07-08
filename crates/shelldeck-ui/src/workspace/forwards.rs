@@ -13,7 +13,11 @@ use crate::toast::ToastLevel;
 use super::{ActiveTunnel, Workspace};
 
 impl Workspace {
-    pub(super) fn handle_forward_event(&mut self, event: &PortForwardEvent, cx: &mut Context<Self>) {
+    pub(super) fn handle_forward_event(
+        &mut self,
+        event: &PortForwardEvent,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             PortForwardEvent::StartForward(id) => {
                 let forward_id = *id;
@@ -185,11 +189,7 @@ impl Workspace {
                                 }
                                 ForwardDirection::Dynamic => {
                                     tunnel_manager
-                                        .start_socks_forward(
-                                            shared_handle,
-                                            local_host,
-                                            local_port,
-                                        )
+                                        .start_socks_forward(shared_handle, local_host, local_port)
                                         .await
                                 }
                             };

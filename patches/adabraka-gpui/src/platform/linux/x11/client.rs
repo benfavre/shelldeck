@@ -216,6 +216,8 @@ pub struct X11ClientState {
     pub(crate) clipboard: Clipboard,
     pub(crate) clipboard_item: Option<ClipboardItem>,
     pub(crate) xdnd_state: Xdnd,
+    pub(crate) tray: crate::platform::linux::tray::LinuxTray,
+    pub(crate) global_hotkey: crate::platform::linux::global_hotkey::x11::X11GlobalHotkey,
 }
 
 #[derive(Clone)]
@@ -247,7 +249,7 @@ impl X11ClientStatePtr {
         }
         state.cursor_styles.remove(&x_window);
 
-        if state.windows.is_empty() {
+        if state.windows.is_empty() && !state.common.keep_alive_without_windows {
             state.common.signal.stop();
         }
     }
@@ -514,6 +516,8 @@ impl X11Client {
             clipboard,
             clipboard_item: None,
             xdnd_state: Xdnd::default(),
+            tray: crate::platform::linux::tray::LinuxTray::new(),
+            global_hotkey: crate::platform::linux::global_hotkey::x11::X11GlobalHotkey::new(),
         }))))
     }
 
@@ -998,6 +1002,15 @@ impl X11Client {
                     let keysym = state.xkb.key_get_one_sym(code);
 
                     if keysym.is_modifier_key() {
+                        return Some(());
+                    }
+
+                    if let Some(media_event) =
+                        crate::platform::linux::keysym_to_media_key(keysym)
+                    {
+                        if let Some(cb) = state.common.callbacks.media_key.as_mut() {
+                            cb(media_event);
+                        }
                         return Some(());
                     }
 
@@ -1667,6 +1680,143 @@ impl LinuxClient for X11Client {
             .map(|window| window.window.x_window as u64)
             .map(|x_window| std::future::ready(Some(WindowIdentifier::from_xid(x_window))))
             .unwrap_or(std::future::ready(None))
+    }
+
+    fn focused_window_info(&self) -> Option<crate::FocusedWindowInfo> {
+        let state = self.0.borrow();
+        let root = state.xcb_connection.setup().roots[state.x_root_index].root;
+
+        let active_window_reply = state
+            .xcb_connection
+            .get_property(
+                false,
+                root,
+                state.atoms._NET_ACTIVE_WINDOW,
+                xproto::AtomEnum::WINDOW,
+                0,
+                1,
+            )
+            .ok()?
+            .reply()
+            .ok()?;
+
+        let active_xid = active_window_reply
+            .value
+            .chunks_exact(4)
+            .next()
+            .and_then(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))?;
+
+        if active_xid == 0 {
+            return None;
+        }
+
+        let title = state
+            .xcb_connection
+            .get_property(
+                false,
+                active_xid,
+                state.atoms._NET_WM_NAME,
+                state.atoms.UTF8_STRING,
+                0,
+                u32::MAX,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| String::from_utf8(reply.value).ok())
+            .unwrap_or_default();
+
+        let pid = state
+            .xcb_connection
+            .get_property(
+                false,
+                active_xid,
+                state.atoms._NET_WM_PID,
+                xproto::AtomEnum::CARDINAL,
+                0,
+                1,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| {
+                reply
+                    .value
+                    .chunks_exact(4)
+                    .next()
+                    .and_then(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+            });
+
+        let app_name = pid
+            .and_then(|pid| {
+                std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            })
+            .unwrap_or_default();
+
+        Some(crate::FocusedWindowInfo {
+            app_name,
+            window_title: title,
+            bundle_id: None,
+            pid,
+        })
+    }
+
+    fn set_tray_icon(&self, icon: Option<&[u8]>) {
+        self.0.borrow_mut().tray.set_icon(icon);
+    }
+
+    fn set_tray_menu(&self, menu: Vec<crate::TrayMenuItem>) {
+        self.0.borrow_mut().tray.set_menu(menu);
+    }
+
+    fn set_tray_tooltip(&self, tooltip: &str) {
+        self.0.borrow_mut().tray.set_tooltip(tooltip);
+    }
+
+    fn register_global_hotkey(&self, id: u32, keystroke: &Keystroke) -> crate::Result<()> {
+        let mut state = self.0.borrow_mut();
+        let xcb = state.xcb_connection.clone();
+        let root = xcb.setup().roots[state.x_root_index].root;
+        state.global_hotkey.register(id, keystroke, &xcb, root)
+    }
+
+    fn unregister_global_hotkey(&self, id: u32) {
+        let mut state = self.0.borrow_mut();
+        let xcb = state.xcb_connection.clone();
+        let root = xcb.setup().roots[state.x_root_index].root;
+        state.global_hotkey.unregister(id, &xcb, root);
+    }
+
+    fn system_idle_time(&self) -> Option<Duration> {
+        let state = self.0.borrow();
+        let screen = &state.xcb_connection.setup().roots[state.x_root_index];
+        let reply = x11rb::protocol::screensaver::query_info(&*state.xcb_connection, screen.root)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some(Duration::from_millis(reply.ms_since_user_input as u64))
+    }
+
+    fn request_user_attention(
+        &self,
+        _level: crate::AttentionType,
+        handle: Option<AnyWindowHandle>,
+    ) {
+        let state = self.0.borrow();
+        let Some(x_window) = find_x_window_for_handle(&state, handle) else {
+            return;
+        };
+        let root = state.xcb_connection.setup().roots[state.x_root_index].root;
+        send_net_wm_state_attention(&state.xcb_connection, &state.atoms, x_window, root, true);
+    }
+
+    fn cancel_user_attention(&self, handle: Option<AnyWindowHandle>) {
+        let state = self.0.borrow();
+        let Some(x_window) = find_x_window_for_handle(&state, handle) else {
+            return;
+        };
+        let root = state.xcb_connection.setup().roots[state.x_root_index].root;
+        send_net_wm_state_attention(&state.xcb_connection, &state.atoms, x_window, root, false);
     }
 }
 
@@ -2488,4 +2638,49 @@ fn get_dpi_factor((width_px, height_px): (u32, u32), (width_mm, height_mm): (u64
 #[inline]
 fn valid_scale_factor(scale_factor: f32) -> bool {
     scale_factor.is_sign_positive() && scale_factor.is_normal()
+}
+
+fn find_x_window_for_handle(
+    state: &X11ClientState,
+    handle: Option<AnyWindowHandle>,
+) -> Option<xproto::Window> {
+    if let Some(handle) = handle {
+        for (&x_window, window_ref) in &state.windows {
+            if window_ref.handle() == handle {
+                return Some(x_window);
+            }
+        }
+        None
+    } else {
+        state.keyboard_focused_window
+    }
+}
+
+fn send_net_wm_state_attention(
+    xcb: &XCBConnection,
+    atoms: &XcbAtoms,
+    x_window: xproto::Window,
+    root: xproto::Window,
+    add: bool,
+) {
+    let action: u32 = if add { 1 } else { 0 };
+    let event = ClientMessageEvent::new(
+        32,
+        x_window,
+        atoms._NET_WM_STATE,
+        ClientMessageData::from([
+            action,
+            atoms._NET_WM_STATE_DEMANDS_ATTENTION,
+            0,
+            1,
+            0,
+        ]),
+    );
+    let _ = xcb.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    );
+    let _ = xcb.flush();
 }

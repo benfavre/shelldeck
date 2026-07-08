@@ -22,8 +22,6 @@ static EMAIL_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("Invalid email regex pattern")
 });
 
-/// Monotonic baseline for the caret-blink cycle. Every focused `Input` on
-/// screen samples `.elapsed()` and blinks in phase.
 static INPUT_BLINK_EPOCH: Lazy<Instant> = Lazy::new(Instant::now);
 
 actions!(
@@ -33,6 +31,16 @@ actions!(
         Delete,
         Left,
         Right,
+        // ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and
+        // Ctrl+Backspace/Delete on Linux/Windows; ⌥←/→ + ⌥Backspace/Delete
+        // on macOS). Impl lives in the six methods below; keybindings are
+        // registered in `input.rs::init` (SDPATCH-007).
+        LeftWord,
+        RightWord,
+        SelectLeftWord,
+        SelectRightWord,
+        BackspaceWord,
+        DeleteWord,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -45,14 +53,6 @@ actions!(
         Tab,
         ShiftTab,
         Escape,
-        // ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and
-        // Ctrl+Backspace on Linux/Windows, Alt+←/→/Backspace on macOS).
-        LeftWord,
-        RightWord,
-        SelectLeftWord,
-        SelectRightWord,
-        BackspaceWord,
-        DeleteWord,
     ]
 );
 
@@ -190,9 +190,50 @@ pub struct InputState {
     pub shake_triggered: bool,
     pub(crate) shake_count: u32,
     cursor_position_override: Option<usize>,
+    // ShellDeck patch: SDPATCH-011 — direct callback slots for the Input
+    // wrapper. Upstream `Input::render` calls `cx.subscribe(...).detach()`
+    // on every render pass, which piles up N listeners after N frames and
+    // fires the `on_enter` handler N times on a single Enter press
+    // (verified: sending one message resulted in ~400 duplicate sends).
+    // We swap the pub/sub for a plain `Rc<Fn>` slot on the state — each
+    // render `state.update`s the slot in place (replace, not append) and
+    // the action handlers below invoke the slot directly.
+    pub(crate) on_change_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_enter_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_focus_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_blur_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
+    pub(crate) on_validate_cb:
+        Option<std::rc::Rc<dyn Fn(Result<(), ValidationError>, &mut App)>>,
+    // ShellDeck patch: SDPATCH-009 — when true, the input behaves as a
+    // multi-line textarea. Enter inserts `\n` into the content and paste
+    // keeps embedded newlines. Rendering is delegated to SDPATCH-010, which
+    // shape_texts the whole content with `wrap_width = bounds.width` so soft
+    // wraps happen automatically inside each `\n`-segment.
+    pub multi_line: bool,
+    // ShellDeck patch: SDPATCH-010 — one `WrappedLine` per `\n`-segment,
+    // snapshotted at paint time. Each WrappedLine internally tracks soft-wrap
+    // boundaries, so `wrapped_line_count` (the sum of visual sub-lines) can
+    // be fed back into `request_layout` on the next frame to reserve enough
+    // height for wrapped content. `line_height` is stashed so click mapping
+    // can convert a click Y to a visual-line index without a window handle.
+    pub(crate) wrapped_layouts: Vec<gpui::WrappedLine>,
+    pub(crate) wrapped_line_count: usize,
+    pub(crate) line_height: Pixels,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
+
+/// ShellDeck patch: SDPATCH-012 — parent callbacks must not run synchronously
+/// inside `InputState` mutation handlers. They often `entity.update` + re-render,
+/// which reads/updates the same `InputState` while it is still leased
+/// ("cannot read InputState while it is already being updated").
+fn defer_input_callback(
+    cb: std::rc::Rc<dyn Fn(SharedString, &mut App)>,
+    value: SharedString,
+    cx: &mut Context<InputState>,
+) {
+    cx.defer(move |app| cb(value, app));
+}
 
 impl InputState {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -228,7 +269,29 @@ impl InputState {
             shake_triggered: false,
             shake_count: 0,
             cursor_position_override: None,
+            // ShellDeck patch: SDPATCH-011 — initialise the direct callback
+            // slots that replace the leaking `cx.subscribe`. See the field
+            // group's comment on the struct definition.
+            on_change_cb: None,
+            on_enter_cb: None,
+            on_focus_cb: None,
+            on_blur_cb: None,
+            on_validate_cb: None,
+            // ShellDeck patch: SDPATCH-009 — flag. SDPATCH-010 — layouts +
+            // wrapped-visual-line count fed back into request_layout. See the
+            // struct-level comments for the shape of each field.
+            multi_line: false,
+            wrapped_layouts: Vec::new(),
+            wrapped_line_count: 0,
+            line_height: px(0.0),
         }
+    }
+
+    /// ShellDeck patch: SDPATCH-009 — enable multi-line textarea mode. See
+    /// the struct-level comment on `multi_line` for the full contract.
+    pub fn multi_line(mut self, enabled: bool) -> Self {
+        self.multi_line = enabled;
+        self
     }
 
     /// Set the input type
@@ -341,6 +404,14 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Change);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly
+        // once per change, replacing the leaking `cx.subscribe` in the Input
+        // wrapper.
+        if let Some(cb) = self.on_change_cb.clone() {
+            let value = self.content.clone();
+            // ShellDeck patch: SDPATCH-012 — defer; see helper above.
+            defer_input_callback(cb, value, cx);
+        }
     }
 
     /// Validate the current input value
@@ -837,7 +908,15 @@ impl InputState {
 
     pub fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let filtered_text = self.filter_input(&text.replace("\n", " "));
+            // ShellDeck patch: SDPATCH-009 — keep embedded newlines when in
+            // multi_line mode so pasting a multi-line snippet lays out
+            // correctly. Single-line inputs preserve upstream behavior.
+            let normalized = if self.multi_line {
+                text
+            } else {
+                text.replace("\n", " ")
+            };
+            let filtered_text = self.filter_input(&normalized);
             self.replace_text_in_range(None, &filtered_text, window, cx);
         }
     }
@@ -859,13 +938,35 @@ impl InputState {
         }
     }
 
-    pub fn enter(&mut self, _: &Enter, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(InputEvent::Enter);
+    pub fn enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        // ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a
+        // newline into the content instead of emitting the Enter event.
+        // Parents that want a submit binding in multi_line mode should wire
+        // a dedicated button or a Cmd/Ctrl+Enter shortcut.
+        if self.multi_line {
+            self.replace_text_in_range(None, "\n", window, cx);
+        } else {
+            cx.emit(InputEvent::Enter);
+            // ShellDeck patch: SDPATCH-011 — invoke the direct callback
+            // slot instead of relying on the leaking `cx.subscribe` in the
+            // Input wrapper.
+            if let Some(cb) = self.on_enter_cb.clone() {
+                let value = self.content.clone();
+                // ShellDeck patch: SDPATCH-012 — defer; see helper above.
+                defer_input_callback(cb, value, cx);
+            }
+        }
     }
 
     pub fn escape(&mut self, _: &Escape, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected_range = self.content.len()..self.content.len();
         cx.emit(InputEvent::Blur);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot fires here so
+        // the wrapper's `.on_blur(...)` runs exactly once per Escape.
+        if let Some(cb) = self.on_blur_cb.clone() {
+            let value = self.content.clone();
+            defer_input_callback(cb, value, cx);
+        }
         cx.notify();
     }
 
@@ -879,6 +980,11 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Focus);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot.
+        if let Some(cb) = self.on_focus_cb.clone() {
+            let value = self.content.clone();
+            defer_input_callback(cb, value, cx);
+        }
         cx.notify();
     }
 
@@ -896,6 +1002,11 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Blur);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot.
+        if let Some(cb) = self.on_blur_cb.clone() {
+            let value = self.content.clone();
+            defer_input_callback(cb, value, cx);
+        }
         cx.notify();
     }
 
@@ -917,8 +1028,7 @@ impl InputState {
             return 0;
         }
 
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
+        let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
         if position.y < bounds.top() {
@@ -928,6 +1038,40 @@ impl InputState {
             return self.content.len();
         }
 
+        // ShellDeck patch: SDPATCH-010 — multi_line click mapping. Walk the
+        // per-`\n`-segment `WrappedLine`s; each contains its own soft-wrap
+        // count so its visual height is `(wrap_boundaries.len() + 1) *
+        // line_height`. The first line whose accumulated bottom is past the
+        // click Y owns the click; ask its `WrappedLineLayout` for the byte
+        // offset via `closest_index_for_position` and add the running byte
+        // total (including `\n` separators) to get the absolute cursor byte.
+        if self.multi_line && !self.wrapped_layouts.is_empty() && self.line_height > px(0.0) {
+            let lh = self.line_height;
+            let mut y_top = bounds.top();
+            let mut byte_offset = 0usize;
+            for line in &self.wrapped_layouts {
+                let visual = (line.wrap_boundaries().len() + 1) as f32;
+                let y_bottom = y_top + lh * visual;
+                if position.y < y_bottom {
+                    let local = point(
+                        position.x - bounds.left(),
+                        position.y - y_top,
+                    );
+                    let within = match line.closest_index_for_position(local, lh) {
+                        Ok(i) => i,
+                        Err(i) => i,
+                    };
+                    return byte_offset + within.min(line.len());
+                }
+                y_top = y_bottom;
+                byte_offset += line.len() + 1;
+            }
+            return self.content.len();
+        }
+
+        let Some(line) = self.last_layout.as_ref() else {
+            return 0;
+        };
         let display_index = line.closest_index_for_x(position.x - bounds.left());
 
         if self.masked {
@@ -1209,11 +1353,16 @@ struct InputTextElement {
 
 struct PrepaintState {
     line: Option<gpui::ShapedLine>,
+    // ShellDeck patch: SDPATCH-010 — populated in multi_line mode with one
+    // `WrappedLine` per `\n`-separated segment; each carries its own soft-
+    // wrap boundaries computed by gpui's `shape_text` for `bounds.width`.
+    // Empty in single-line mode.
+    wrapped_lines: Vec<gpui::WrappedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
     /// ShellDeck patch: horizontal scroll offset applied to the shaped line
     /// and cursor at paint time so the caret stays visible when the content
-    /// is wider than the input.
+    /// is wider than the input. See SDPATCH-004.
     scroll_offset: Pixels,
 }
 
@@ -1246,7 +1395,20 @@ impl gpui::Element for InputTextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        // ShellDeck patch: SDPATCH-010 — reserve enough vertical space in
+        // multi_line mode for the shaped visual-line count (hard newlines +
+        // soft wraps). We don't have the final bounds width here, so we
+        // fall back to the count computed at the last paint (updated on
+        // every prepaint), and floor at the hard-newline count so the very
+        // first paint has at least one row per `\n`-segment.
+        let input = self.input.read(cx);
+        let n_lines = if input.multi_line {
+            let hard = input.content.split('\n').count().max(1);
+            hard.max(input.wrapped_line_count).max(1)
+        } else {
+            1
+        };
+        style.size.height = (window.line_height() * n_lines as f32).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1260,6 +1422,117 @@ impl gpui::Element for InputTextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
+        // ShellDeck patch: SDPATCH-010 — multi_line prepaint path. gpui's
+        // `shape_text(content, fs, runs, Some(bounds.width), None)` returns
+        // one `WrappedLine` per `\n`-segment, each carrying its own
+        // soft-wrap boundaries. We walk them to find the caret's segment,
+        // ask `position_for_index` for the caret's (x, y) inside that
+        // segment, then add the cumulative vertical offset from prior
+        // segments to get the absolute caret point. Selection is rendered
+        // only when both ends land on the same visual sub-line — cross-
+        // sub-line selection support is a follow-up.
+        if input.multi_line && !input.masked {
+            let style = window.text_style();
+            let theme = use_theme();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let line_h = window.line_height();
+            let theme_ring = theme.tokens.ring;
+            let mut selection_color = theme_ring;
+            selection_color.a = 0.25;
+
+            let placeholder_mode = input.content.is_empty();
+            let display: SharedString = if placeholder_mode {
+                input.placeholder.clone()
+            } else {
+                input.content.clone()
+            };
+            let text_color = if placeholder_mode {
+                theme.tokens.muted_foreground
+            } else {
+                style.color
+            };
+            let selected_range = input.selected_range.clone();
+            let cursor_byte = input.cursor_offset();
+
+            let run = TextRun {
+                len: display.len(),
+                font: style.font(),
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let wrap_width = if bounds.size.width > px(0.0) {
+                Some(bounds.size.width)
+            } else {
+                None
+            };
+            let wrapped: Vec<gpui::WrappedLine> = window
+                .text_system()
+                .shape_text(display.clone(), font_size, &[run], wrap_width, None)
+                .map(|sv| sv.into_iter().collect())
+                .unwrap_or_default();
+
+            let mut y_top = bounds.top();
+            let mut byte_offset = 0usize;
+            let mut cursor_point: Option<Point<Pixels>> = None;
+            let mut selection_quad: Option<PaintQuad> = None;
+            for line in wrapped.iter() {
+                let line_start = byte_offset;
+                let line_end = line_start + line.len();
+                let visual = (line.wrap_boundaries().len() + 1) as f32;
+                let line_height_total = line_h * visual;
+                if !placeholder_mode
+                    && cursor_byte >= line_start
+                    && cursor_byte <= line_end
+                {
+                    if let Some(pos) =
+                        line.position_for_index(cursor_byte - line_start, line_h)
+                    {
+                        cursor_point = Some(point(
+                            bounds.left() + pos.x,
+                            y_top + pos.y,
+                        ));
+                    }
+                }
+                if !placeholder_mode
+                    && !selected_range.is_empty()
+                    && selected_range.start >= line_start
+                    && selected_range.end <= line_end
+                {
+                    if let (Some(sp), Some(ep)) = (
+                        line.position_for_index(selected_range.start - line_start, line_h),
+                        line.position_for_index(selected_range.end - line_start, line_h),
+                    ) {
+                        if sp.y == ep.y {
+                            selection_quad = Some(fill(
+                                Bounds::from_corners(
+                                    point(bounds.left() + sp.x, y_top + sp.y),
+                                    point(bounds.left() + ep.x, y_top + sp.y + line_h),
+                                ),
+                                selection_color,
+                            ));
+                        }
+                    }
+                }
+                y_top = y_top + line_height_total;
+                byte_offset = line_end + 1;
+            }
+
+            let cursor_quad = cursor_point.map(|p| {
+                fill(
+                    Bounds::new(p, size(px(2.0), line_h)),
+                    theme_ring,
+                )
+            });
+            return PrepaintState {
+                line: None,
+                wrapped_lines: wrapped,
+                cursor: if placeholder_mode { None } else { cursor_quad },
+                selection: selection_quad,
+                scroll_offset: px(0.0),
+            };
+        }
         let (content, selected_range, cursor) = if input.masked {
             let char_count = input.content.chars().count();
             let masked_text = "•".repeat(char_count).into();
@@ -1394,6 +1667,7 @@ impl gpui::Element for InputTextElement {
         };
         PrepaintState {
             line: Some(line),
+            wrapped_lines: Vec::new(),
             cursor,
             selection,
             scroll_offset,
@@ -1421,12 +1695,64 @@ impl gpui::Element for InputTextElement {
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection)
         }
+
+        // ShellDeck patch: SDPATCH-010 — multi_line paint path. Each
+        // `WrappedLine` is painted at its own cumulative Y (accounting for
+        // its own soft-wrap count so hard-newline segments that overflow the
+        // width still get their real vertical footprint). After paint we
+        // stash the layouts + the visual-line count on the state so
+        // (a) click mapping can turn (x, y) into a byte offset, and
+        // (b) the next `request_layout` reserves enough height for the
+        // wrapped content — `cx.notify()` triggers that re-layout when the
+        // count changed. `last_layout` stays None (single-line paths don't
+        // fit the wrapped model — IME / bounds_for_range simply degrade).
+        if !prepaint.wrapped_lines.is_empty() {
+            let line_h = window.line_height();
+            let wrapped = std::mem::take(&mut prepaint.wrapped_lines);
+            let mut y = bounds.origin.y;
+            let mut visual_total = 0usize;
+            for line in wrapped.iter() {
+                let _ = line.paint(
+                    point(bounds.origin.x, y),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                let visual = line.wrap_boundaries().len() + 1;
+                y = y + line_h * visual as f32;
+                visual_total += visual;
+            }
+            if focus_handle.is_focused(window) {
+                if let Some(cursor) = prepaint.cursor.take() {
+                    let elapsed = INPUT_BLINK_EPOCH.elapsed().as_millis() as u64;
+                    if elapsed % 1000 < 500 {
+                        window.paint_quad(cursor);
+                    }
+                    window.request_animation_frame();
+                }
+            }
+            let prev_count = self.input.read(cx).wrapped_line_count;
+            self.input.update(cx, |input, cx| {
+                input.last_layout = None;
+                input.wrapped_layouts = wrapped;
+                input.wrapped_line_count = visual_total;
+                input.line_height = line_h;
+                input.last_bounds = Some(bounds);
+                if prev_count != visual_total {
+                    cx.notify();
+                }
+            });
+            return;
+        }
+
         let Some(line) = prepaint.line.take() else {
             return;
         };
         // ShellDeck patch: shift the whole line by the horizontal scroll
-        // offset computed in prepaint so long content keeps the caret in
-        // view.
+        // offset computed at prepaint so the caret stays visible when the
+        // content overflows the input width.
         let line_origin = point(bounds.origin.x + prepaint.scroll_offset, bounds.origin.y);
         if line
             .paint(line_origin, window.line_height(), window, cx)
@@ -1452,6 +1778,9 @@ impl gpui::Element for InputTextElement {
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
+            input.wrapped_layouts.clear();
+            input.wrapped_line_count = 0;
+            input.line_height = window.line_height();
             input.last_bounds = Some(bounds);
         });
     }

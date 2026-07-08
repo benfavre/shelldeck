@@ -2,20 +2,22 @@
 use crate::Inspector;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
-    Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
+    AsyncWindowContext, AvailableSpace, Background, BlendMode, BorderStyle, Bounds, BoxShadow,
+    Capslock, Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
     FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
     KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, PromptButton, PromptLevel, Quad,
+    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, ProgressBarState, PromptButton,
+    PromptLevel, Quad,
     Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
     TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
+    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowState,
+    WindowTextSystem,
     point, prelude::*, px, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
@@ -657,7 +659,7 @@ pub(crate) struct DeferredDraw {
     priority: usize,
     parent_node: DispatchNodeId,
     element_id_stack: SmallVec<[ElementId; 32]>,
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: SmallVec<[TextStyleRefinement; 4]>,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
     prepaint_range: Range<PrepaintStateIndex>,
@@ -834,13 +836,13 @@ pub struct Window {
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
-    pub(crate) text_style_stack: Vec<TextStyleRefinement>,
-    pub(crate) rendered_entity_stack: Vec<EntityId>,
-    pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+    pub(crate) text_style_stack: SmallVec<[TextStyleRefinement; 4]>,
+    pub(crate) rendered_entity_stack: SmallVec<[EntityId; 16]>,
+    pub(crate) element_offset_stack: SmallVec<[Point<Pixels>; 16]>,
     pub(crate) element_opacity: f32,
-    pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
+    pub(crate) content_mask_stack: SmallVec<[ContentMask<Pixels>; 16]>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
-    pub(crate) image_cache_stack: Vec<AnyImageCache>,
+    pub(crate) image_cache_stack: SmallVec<[AnyImageCache; 4]>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
@@ -948,6 +950,7 @@ impl Window {
             window_decorations,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
+            mouse_passthrough,
         } = options;
 
         let bounds = window_bounds
@@ -968,6 +971,7 @@ impl Window {
                 window_min_size,
                 #[cfg(target_os = "macos")]
                 tabbing_identifier,
+                mouse_passthrough,
             },
         )?;
 
@@ -1218,10 +1222,10 @@ impl Window {
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
             element_id_stack: SmallVec::default(),
-            text_style_stack: Vec::new(),
-            rendered_entity_stack: Vec::new(),
-            element_offset_stack: Vec::new(),
-            content_mask_stack: Vec::new(),
+            text_style_stack: SmallVec::new(),
+            rendered_entity_stack: SmallVec::new(),
+            element_offset_stack: SmallVec::new(),
+            content_mask_stack: SmallVec::new(),
             element_opacity: 1.0,
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -1255,7 +1259,7 @@ impl Window {
             pending_input_observers: SubscriberSet::new(),
             prompt: None,
             client_inset: None,
-            image_cache_stack: Vec::new(),
+            image_cache_stack: SmallVec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
@@ -1316,6 +1320,7 @@ impl Window {
             }
         }
     }
+
 
     /// Registers a callback to be invoked when the window appearance changes.
     pub fn observe_window_appearance(
@@ -2834,6 +2839,8 @@ impl Window {
                 corner_radii: corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
                 inset: if shadow.inset { 1 } else { 0 },
+                // ShellDeck patch: initialise the WGSL alignment padding
+                // (SDPATCH-104, `Shadow::_pad` in scene.rs).
                 _pad: 0,
             });
         }
@@ -2864,6 +2871,14 @@ impl Window {
             border_widths: quad.border_widths.scale(scale_factor),
             border_style: quad.border_style,
             continuous_corners: if quad.continuous_corners { 1 } else { 0 },
+            // ShellDeck patch: initialise the interior WGSL alignment
+            // padding before `transform` (SDPATCH-104, `Quad::_pad_transform`
+            // in scene.rs).
+            _pad_transform: 0,
+            transform: quad.transform,
+            blend_mode: quad.blend_mode as u32,
+            // ShellDeck patch: initialise the trailing WGSL alignment
+            // padding (SDPATCH-104, `Quad::_pad` in scene.rs).
             _pad: 0,
         });
     }
@@ -4132,9 +4147,58 @@ impl Window {
         self.platform_window.minimize();
     }
 
+    /// Show the current window at the platform level.
+    pub fn show_window(&self) {
+        self.platform_window.show();
+    }
+
+    /// Hide the current window at the platform level.
+    pub fn hide_window(&self) {
+        self.platform_window.hide();
+    }
+
+    /// Returns whether the current window is visible at the platform level.
+    pub fn is_window_visible(&self) -> bool {
+        self.platform_window.is_visible()
+    }
+
+    /// Set whether mouse events should pass through the current window.
+    pub fn set_mouse_passthrough(&self, passthrough: bool) {
+        self.platform_window.set_mouse_passthrough(passthrough);
+    }
+
     /// Toggle full screen status on the current window at the platform level.
     pub fn toggle_fullscreen(&self) {
         self.platform_window.toggle_fullscreen();
+    }
+
+    /// Set the progress bar state for this window's taskbar/dock representation.
+    pub fn set_progress_bar(&self, state: ProgressBarState) {
+        self.platform_window.set_progress_bar(state);
+    }
+
+    /// Capture the current window state for save/restore.
+    pub fn window_state(&self) -> WindowState {
+        let bounds = self.platform_window.window_bounds();
+        let display_id = self.platform_window.display().map(|d| d.id());
+        let fullscreen = self.platform_window.is_fullscreen();
+        WindowState {
+            bounds,
+            display_id,
+            fullscreen,
+        }
+    }
+
+    /// Restore a previously captured window state.
+    ///
+    /// This restores the fullscreen state. Window bounds are set at creation
+    /// time via `WindowOptions`/`WindowParams`, so this primarily handles
+    /// toggling fullscreen to match the saved state.
+    pub fn restore_window_state(&self, state: &WindowState) {
+        let is_fullscreen = self.platform_window.is_fullscreen();
+        if state.fullscreen != is_fullscreen {
+            self.platform_window.toggle_fullscreen();
+        }
     }
 
     /// Updates the IME panel position suggestions for languages like japanese, chinese.
@@ -5038,6 +5102,10 @@ pub struct PaintQuad {
     pub border_style: BorderStyle,
     /// Whether to use continuous (squircle) corner rounding.
     pub continuous_corners: bool,
+    /// The 2D affine transform applied to this quad.
+    pub transform: TransformationMatrix,
+    /// The blend mode to apply when rendering this quad.
+    pub blend_mode: BlendMode,
 }
 
 impl PaintQuad {
@@ -5091,6 +5159,8 @@ pub fn quad(
         border_color: border_color.into(),
         border_style,
         continuous_corners: false,
+        transform: TransformationMatrix::unit(),
+        blend_mode: BlendMode::Normal,
     }
 }
 
@@ -5104,6 +5174,8 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
         border_color: transparent_black(),
         border_style: BorderStyle::default(),
         continuous_corners: false,
+        transform: TransformationMatrix::unit(),
+        blend_mode: BlendMode::Normal,
     }
 }
 
@@ -5121,5 +5193,7 @@ pub fn outline(
         border_color: border_color.into(),
         border_style,
         continuous_corners: false,
+        transform: TransformationMatrix::unit(),
+        blend_mode: BlendMode::Normal,
     }
 }

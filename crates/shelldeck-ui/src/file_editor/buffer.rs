@@ -25,14 +25,8 @@ impl Selection {
 /// A single edit operation for undo/redo.
 #[derive(Debug, Clone)]
 enum EditOp {
-    Insert {
-        pos: usize,
-        text: String,
-    },
-    Delete {
-        pos: usize,
-        text: String,
-    },
+    Insert { pos: usize, text: String },
+    Delete { pos: usize, text: String },
 }
 
 /// A transaction groups multiple edit operations that should be undone/redone together.
@@ -59,7 +53,7 @@ pub struct InputEditInfo {
 
 pub struct RopeBuffer {
     rope: Rope,
-    cursor: usize,              // char offset
+    cursor: usize, // char offset
     /// Additional cursors for multi-cursor editing (char offsets). Empty in the
     /// normal single-cursor case, in which all editing behaves exactly as before.
     extra_cursors: Vec<usize>,
@@ -696,10 +690,17 @@ impl RopeBuffer {
         // Auto-indent: copy leading whitespace from current line
         let (line, _) = self.cursor_line_col();
         let line_text = self.line_text(line);
-        let indent: String = line_text.chars().take_while(|c| c.is_whitespace()).collect();
+        let indent: String = line_text
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect();
 
         // Smart bracket indent: check if char before cursor is an opening bracket
-        let char_before = if self.cursor > 0 { self.char_at(self.cursor - 1) } else { None };
+        let char_before = if self.cursor > 0 {
+            self.char_at(self.cursor - 1)
+        } else {
+            None
+        };
         let char_after = self.char_at(self.cursor);
         let extra_indent = matches!(char_before, Some('{') | Some('[') | Some('('));
         let between_brackets = extra_indent
@@ -743,10 +744,7 @@ impl RopeBuffer {
         self.record_input_edit_insert(pos, &spaces);
         self.cursor = pos + self.tab_size;
 
-        self.record_op(EditOp::Insert {
-            pos,
-            text: spaces,
-        });
+        self.record_op(EditOp::Insert { pos, text: spaces });
         self.desired_col = None;
     }
 
@@ -813,7 +811,7 @@ impl RopeBuffer {
         let mut pos = start;
 
         // Skip whitespace backwards
-        while pos > 0 && self.char_at(pos - 1).map_or(false, |c| c.is_whitespace()) {
+        while pos > 0 && self.char_at(pos - 1).is_some_and(|c| c.is_whitespace()) {
             pos -= 1;
         }
 
@@ -825,7 +823,7 @@ impl RopeBuffer {
                 while pos > 0
                     && self
                         .char_at(pos - 1)
-                        .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
                 {
                     pos -= 1;
                 }
@@ -867,23 +865,23 @@ impl RopeBuffer {
             while pos < len
                 && self
                     .char_at(pos)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
             {
                 pos += 1;
             }
             // Skip trailing whitespace
-            while pos < len && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+            while pos < len && self.char_at(pos).is_some_and(|c| c.is_whitespace()) {
                 pos += 1;
             }
         } else if ch.is_whitespace() {
             // On whitespace: skip whitespace, then next word
-            while pos < len && self.char_at(pos).map_or(false, |c| c.is_whitespace()) {
+            while pos < len && self.char_at(pos).is_some_and(|c| c.is_whitespace()) {
                 pos += 1;
             }
             while pos < len
                 && self
                     .char_at(pos)
-                    .map_or(false, |c| c.is_alphanumeric() || c == '_')
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
             {
                 pos += 1;
             }
@@ -895,7 +893,10 @@ impl RopeBuffer {
         let deleted: String = self.rope.slice(start..pos).to_string();
         self.record_input_edit_delete(start, pos);
         self.rope.remove(start..pos);
-        self.record_op(EditOp::Delete { pos: start, text: deleted });
+        self.record_op(EditOp::Delete {
+            pos: start,
+            text: deleted,
+        });
         self.desired_col = None;
     }
 
@@ -1100,7 +1101,11 @@ impl RopeBuffer {
             pos -= 1;
         }
         // Skip word chars
-        while pos > 0 && self.char_at(pos - 1).is_some_and(|c| c.is_alphanumeric() || c == '_') {
+        while pos > 0
+            && self
+                .char_at(pos - 1)
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
             pos -= 1;
         }
         self.cursor = pos;
@@ -1116,7 +1121,11 @@ impl RopeBuffer {
         }
         let mut pos = self.cursor;
         // Skip word chars
-        while pos < len && self.char_at(pos).is_some_and(|c| c.is_alphanumeric() || c == '_') {
+        while pos < len
+            && self
+                .char_at(pos)
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
             pos += 1;
         }
         // Skip whitespace
@@ -1246,7 +1255,7 @@ impl RopeBuffer {
     /// Get the word under the cursor (for word highlighting).
     /// Returns None if cursor is not on a word character or selection is active.
     pub fn word_at_cursor(&self) -> Option<String> {
-        if self.selection.as_ref().map_or(false, |s| !s.is_empty()) {
+        if self.selection.as_ref().is_some_and(|s| !s.is_empty()) {
             return None;
         }
         let len = self.rope.len_chars();
@@ -1259,11 +1268,19 @@ impl RopeBuffer {
             return None;
         }
         let mut start = pos;
-        while start > 0 && self.char_at(start - 1).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+        while start > 0
+            && self
+                .char_at(start - 1)
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
             start -= 1;
         }
         let mut end = pos + 1;
-        while end < len && self.char_at(end).map_or(false, |c| c.is_alphanumeric() || c == '_') {
+        while end < len
+            && self
+                .char_at(end)
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
             end += 1;
         }
         let word: String = self.rope.slice(start..end).to_string();
@@ -1355,14 +1372,13 @@ impl RopeBuffer {
         // If typing an opening char, insert both and position cursor between
         if let Some(closer) = Self::closing_pair(ch) {
             // For quotes, don't auto-pair if char before cursor is alphanumeric
-            if matches!(ch, '"' | '\'' | '`')
-                && self.cursor > 0 {
-                    if let Some(prev) = self.char_at(self.cursor - 1) {
-                        if prev.is_alphanumeric() || prev == '_' {
-                            return false;
-                        }
+            if matches!(ch, '"' | '\'' | '`') && self.cursor > 0 {
+                if let Some(prev) = self.char_at(self.cursor - 1) {
+                    if prev.is_alphanumeric() || prev == '_' {
+                        return false;
                     }
                 }
+            }
 
             self.start_or_extend_transaction(false);
             self.delete_selection();
@@ -1373,10 +1389,7 @@ impl RopeBuffer {
             self.record_input_edit_insert(pos, &pair);
             self.cursor = pos + 1; // Between the pair
 
-            self.record_op(EditOp::Insert {
-                pos,
-                text: pair,
-            });
+            self.record_op(EditOp::Insert { pos, text: pair });
             self.desired_col = None;
             return true;
         }
@@ -1707,7 +1720,11 @@ impl RopeBuffer {
                 let text = self.line_text(line);
                 let indent_len = text.chars().take_while(|c| c.is_whitespace()).count();
                 let prefix_start = line_start + indent_len;
-                let trimmed = &text[text.chars().take(indent_len).map(|c| c.len_utf8()).sum::<usize>()..];
+                let trimmed = &text[text
+                    .chars()
+                    .take(indent_len)
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>()..];
                 if trimmed.starts_with(prefix) {
                     let del_end = prefix_start + prefix.len();
                     let deleted: String = self.rope.slice(prefix_start..del_end).to_string();

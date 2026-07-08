@@ -26,8 +26,8 @@ impl Workspace {
             sidebar.set_connections(conns.clone());
             cx.notify();
         });
-        self.server_sync.update(cx, |view, _| {
-            view.set_connections(conns.clone());
+        self.server_sync.update(cx, |view, cx| {
+            view.set_connections(conns.clone(), cx);
         });
         self.sites.update(cx, |view, _| {
             view.set_connections(conns);

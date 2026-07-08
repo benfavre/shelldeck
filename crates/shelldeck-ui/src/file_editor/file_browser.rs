@@ -93,11 +93,7 @@ impl FileBrowserPanel {
         if let Ok(read_dir) = std::fs::read_dir(dir) {
             for entry in read_dir.flatten() {
                 let path = entry.path();
-                let name = entry
-                    .file_name()
-                    .to_str()
-                    .unwrap_or("?")
-                    .to_string();
+                let name = entry.file_name().to_str().unwrap_or("?").to_string();
 
                 // Skip hidden files/dirs
                 if name.starts_with('.') {

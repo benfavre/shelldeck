@@ -15,7 +15,7 @@ pub mod themes;
 pub mod watcher;
 pub mod workspace_state;
 
-pub use app_config::AppConfig;
+pub use app_config::{AppConfig, UiLanguage};
 pub use bext_cloud::BextCloudConfig;
 pub use cloud_account::{AccountInfo, AppMode};
 pub use cloud_sync::CloudSyncConfig;

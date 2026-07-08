@@ -1,0 +1,33 @@
+---
+description: Débordement texte GPUI — min_w(0), max_w, wrap, toasts, modals
+globs: crates/shelldeck-ui/**
+alwaysApply: false
+---
+
+# Overflow & text containment
+
+> Source canonique : `.agents/overflow.md`
+
+GPUI does **not** wrap or clip text by default. `max_w` on a flex row is not enough.
+
+## Must-do
+
+- `min_w(px(0.0))` on flex-grow text columns inside capped parents
+- `overflow_hidden()` on toast/bubble shells
+- Multi-line body: split on `\n`, each line in `div().max_w(...)` (see `SupportView::render_message`)
+- Single-line labels: `truncate()` or `line_clamp(1)`
+
+## Centered modals
+
+**Prefer adabraka `Dialog`** (see `.agents/ui-components.md`).
+
+Legacy overlay **must** have:
+- `max_h(px(...))` or `relative(0.85)` on the card
+- scroll body: `flex_grow` + `min_h(0)` + `overflow_y_scroll`
+- `flex_shrink_0` header + footer
+
+Never stack chip rows + editor in an unbounded `flex_col` centered with `items_center`.
+
+## Before shipping dynamic text
+
+Ask: *longest realistic string?* (API error, path, UUID). Contain in the same PR.

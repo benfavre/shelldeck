@@ -37,7 +37,7 @@ use std::{
     mem,
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use util::ResultExt;
 
@@ -81,6 +81,15 @@ impl<T: 'static> DragMoveEvent<T> {
     pub fn dragged_item(&self) -> &dyn Any {
         self.dragged_item.as_ref()
     }
+}
+
+/// An event that fires when an element's bounds change size.
+#[derive(Clone, Debug)]
+pub struct ResizeEvent {
+    /// The new size of the element.
+    pub size: Size<Pixels>,
+    /// The new bounds of the element.
+    pub bounds: Bounds<Pixels>,
 }
 
 impl Interactivity {
@@ -530,6 +539,17 @@ impl Interactivity {
             "calling on_hover more than once on the same element is not supported"
         );
         self.hover_listener = Some(Box::new(listener));
+    }
+
+    /// Bind the given callback to be called when this element's bounds change size.
+    /// The imperative API equivalent of [`StatefulInteractiveElement::on_resize`]
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    pub fn on_resize(&mut self, listener: impl Fn(&ResizeEvent, &mut Window, &mut App) + 'static)
+    where
+        Self: Sized,
+    {
+        self.resize_listeners.push(Box::new(listener));
     }
 
     /// Use the given callback to construct a new tooltip view when the mouse hovers over this element.
@@ -1178,6 +1198,18 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self.interactivity().hoverable_tooltip(build_tooltip);
         self
     }
+
+    /// Bind the given callback to be called when this element's bounds change size.
+    /// The fluent API equivalent to [`Interactivity::on_resize`]
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    fn on_resize(mut self, listener: impl Fn(&ResizeEvent, &mut Window, &mut App) + 'static) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().on_resize(listener);
+        self
+    }
 }
 
 pub(crate) type MouseDownListener =
@@ -1216,6 +1248,8 @@ pub(crate) type ModifiersChangedListener =
 
 pub(crate) type ActionListener =
     Box<dyn Fn(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+
+pub(crate) type ResizeListener = Box<dyn Fn(&ResizeEvent, &mut Window, &mut App) + 'static>;
 
 /// Construct a new [`Div`] element
 #[track_caller]
@@ -1461,6 +1495,44 @@ impl IntoElement for Div {
     }
 }
 
+/// Ongoing smooth-scroll animation for a scrollable interactive element.
+///
+/// Each wheel notch would otherwise teleport `scroll_offset` by ~48 px (X11
+/// emits `Lines(3)`), which reads as jerky. Instead, the wheel handler updates
+/// the animation target and `clamp_scroll_position` interpolates from
+/// `start` toward `target` on each frame using ease-out cubic — repainting on
+/// every animation frame until it converges.
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollAnimation {
+    pub(crate) start: Point<Pixels>,
+    pub(crate) target: Point<Pixels>,
+    pub(crate) start_time: Instant,
+    pub(crate) duration: Duration,
+}
+
+impl ScrollAnimation {
+    /// Default smoothing window per wheel notch.
+    pub(crate) const DEFAULT_DURATION: Duration = Duration::from_millis(160);
+
+    fn ease_out_cubic(t: f32) -> f32 {
+        let inv = 1.0 - t.clamp(0.0, 1.0);
+        1.0 - inv * inv * inv
+    }
+
+    /// Sample the animation at `now`. Returns `(current_offset, still_animating)`.
+    pub(crate) fn sample(&self, now: Instant) -> (Point<Pixels>, bool) {
+        let elapsed = now.saturating_duration_since(self.start_time);
+        if elapsed >= self.duration {
+            return (self.target, false);
+        }
+        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        let e = Self::ease_out_cubic(t);
+        let x = self.start.x + (self.target.x - self.start.x) * e;
+        let y = self.start.y + (self.target.y - self.start.y) * e;
+        (point(x, y), true)
+    }
+}
+
 /// The interactivity struct. Powers all of the general-purpose
 /// interactivity in the `Div` element.
 #[derive(Default)]
@@ -1480,6 +1552,9 @@ pub struct Interactivity {
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    /// Live smooth-scroll animation state for wheel input. Shared with the
+    /// element-state so it persists across frames while the animation runs.
+    pub(crate) scroll_animation: Option<Rc<RefCell<Option<ScrollAnimation>>>>,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied
     /// by focus, active, etc.
@@ -1508,6 +1583,7 @@ pub struct Interactivity {
     pub(crate) click_listeners: Vec<ClickListener>,
     pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
+    pub(crate) resize_listeners: Vec<ResizeListener>,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) window_control: Option<WindowControlArea>,
     pub(crate) hitbox_behavior: HitboxBehavior,
@@ -1597,6 +1673,19 @@ impl Interactivity {
                         element_state
                             .scroll_offset
                             .get_or_insert_with(Rc::default)
+                            .clone(),
+                    );
+                }
+
+                // Share the smooth-scroll animation cell with the element-state
+                // so wheel-driven animations survive across frames.
+                if self.scroll_offset.is_some()
+                    && let Some(element_state) = element_state.as_mut()
+                {
+                    self.scroll_animation = Some(
+                        element_state
+                            .scroll_animation
+                            .get_or_insert_with(|| Rc::new(RefCell::new(None)))
                             .clone(),
                     );
                 }
@@ -1713,6 +1802,22 @@ impl Interactivity {
         }
 
         if let Some(scroll_offset) = self.scroll_offset.as_ref() {
+            // Advance the smooth-scroll animation before we clamp: sample it,
+            // write the interpolated offset into the shared cell, and request
+            // another frame if we haven't converged yet.
+            if let Some(anim_cell) = self.scroll_animation.as_ref() {
+                let mut anim_slot = anim_cell.borrow_mut();
+                if let Some(anim) = *anim_slot {
+                    let (sampled, still_animating) = anim.sample(Instant::now());
+                    *scroll_offset.borrow_mut() = sampled;
+                    if !still_animating {
+                        *anim_slot = None;
+                    } else {
+                        window.request_animation_frame();
+                    }
+                }
+            }
+
             let mut scroll_to_bottom = false;
             let mut tracked_scroll_handle = self
                 .tracked_scroll_handle
@@ -1794,6 +1899,26 @@ impl Interactivity {
                 }
 
                 self.paint_hover_group_handler(window, cx);
+
+                if !self.resize_listeners.is_empty() {
+                    if let Some(element_state) = element_state.as_mut() {
+                        let size_changed = element_state
+                            .prev_bounds
+                            .map(|prev| prev.size != bounds.size)
+                            .unwrap_or(true);
+
+                        if size_changed {
+                            element_state.prev_bounds = Some(bounds);
+                            let resize_event = ResizeEvent {
+                                size: bounds.size,
+                                bounds,
+                            };
+                            for listener in &self.resize_listeners {
+                                listener(&resize_event, window, cx);
+                            }
+                        }
+                    }
+                }
 
                 if style.visibility == Visibility::Hidden {
                     return ((), element_state);
@@ -1888,12 +2013,12 @@ impl Interactivity {
     ) {
         use crate::{BorderStyle, TextAlign};
 
-        if global_id.is_some()
-            && (style.debug || style.debug_below || cx.has_global::<crate::DebugBelow>())
-            && hitbox.is_hovered(window)
-        {
+        if let Some(global_id) = global_id.as_ref().filter(|_| {
+            (style.debug || style.debug_below || cx.has_global::<crate::DebugBelow>())
+                && hitbox.is_hovered(window)
+        }) {
             const FONT_SIZE: crate::Pixels = crate::Pixels(10.);
-            let element_id = format!("{:?}", global_id.unwrap());
+            let element_id = format!("{:?}", global_id);
             let str_len = element_id.len();
 
             let render_debug_text = |window: &mut Window| {
@@ -2397,6 +2522,7 @@ impl Interactivity {
         _cx: &mut App,
     ) {
         if let Some(scroll_offset) = self.scroll_offset.clone() {
+            let scroll_animation = self.scroll_animation.clone();
             let overflow = style.overflow;
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
@@ -2405,8 +2531,7 @@ impl Interactivity {
             let current_view = window.current_view();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                    let mut scroll_offset = scroll_offset.borrow_mut();
-                    let old_scroll_offset = *scroll_offset;
+                    let visible_offset = *scroll_offset.borrow();
                     let delta = event.delta.pixel_delta(line_height);
 
                     let mut delta_x = Pixels::ZERO;
@@ -2432,10 +2557,44 @@ impl Interactivity {
                             delta_x = Pixels::ZERO;
                         }
                     }
-                    scroll_offset.y += delta_y;
-                    scroll_offset.x += delta_x;
-                    if *scroll_offset != old_scroll_offset {
+                    if delta_x.is_zero() && delta_y.is_zero() {
+                        return;
+                    }
+
+                    if let Some(anim_cell) = scroll_animation.as_ref() {
+                        // Accumulate onto any in-flight animation's target so
+                        // repeated wheel notches feel continuous instead of
+                        // resetting each time. The start is always where the
+                        // content is currently painted so momentum is preserved.
+                        let mut anim_slot = anim_cell.borrow_mut();
+                        let existing_target =
+                            anim_slot.map(|a| a.target).unwrap_or(visible_offset);
+                        let new_target = Point::new(
+                            existing_target.x + delta_x,
+                            existing_target.y + delta_y,
+                        );
+                        *anim_slot = Some(ScrollAnimation {
+                            start: visible_offset,
+                            target: new_target,
+                            start_time: Instant::now(),
+                            duration: ScrollAnimation::DEFAULT_DURATION,
+                        });
+                        drop(anim_slot);
+                        // Trigger a repaint. `clamp_scroll_position` will sample
+                        // the animation on paint and re-request frames until it
+                        // converges.
                         cx.notify(current_view);
+                    } else {
+                        // No element-state to animate through (rare — e.g. no
+                        // GlobalElementId). Fall back to the instantaneous
+                        // behavior.
+                        let mut scroll_offset = scroll_offset.borrow_mut();
+                        let old_scroll_offset = *scroll_offset;
+                        scroll_offset.y += delta_y;
+                        scroll_offset.x += delta_x;
+                        if *scroll_offset != old_scroll_offset {
+                            cx.notify(current_view);
+                        }
                     }
                 }
             });
@@ -2560,7 +2719,9 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_animation: Option<Rc<RefCell<Option<ScrollAnimation>>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
+    pub(crate) prev_bounds: Option<Bounds<Pixels>>,
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.

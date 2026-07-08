@@ -135,30 +135,29 @@ impl Render for StatusBar {
                             ),
                     )
                     .child({
-                        let (text, color, is_update) =
-                            if let Some(ref update) = self.update_status {
-                                (update.clone(), ShellDeckColors::primary(), true)
-                            } else if let Some(ref notif) = self.notification {
-                                (notif.clone(), ShellDeckColors::text_muted(), false)
-                            } else {
-                                (
-                                    format!("ShellDeck v{}", shelldeck_core::VERSION),
-                                    ShellDeckColors::text_muted(),
-                                    false,
-                                )
-                            };
+                        let (text, color, is_update) = if let Some(ref update) = self.update_status
+                        {
+                            (update.clone(), ShellDeckColors::primary(), true)
+                        } else if let Some(ref notif) = self.notification {
+                            (notif.clone(), ShellDeckColors::text_muted(), false)
+                        } else {
+                            (
+                                format!("ShellDeck v{}", shelldeck_core::VERSION),
+                                ShellDeckColors::text_muted(),
+                                false,
+                            )
+                        };
                         let el = div()
                             .id("update-status")
                             .text_size(px(11.0))
                             .text_color(color)
                             .child(text);
                         if is_update {
-                            el.cursor_pointer()
-                                .on_click(cx.listener(
-                                    |_this, _event: &ClickEvent, _window, cx| {
-                                        cx.emit(StatusBarEvent::UpdateClicked);
-                                    },
-                                ))
+                            el.cursor_pointer().on_click(cx.listener(
+                                |_this, _event: &ClickEvent, _window, cx| {
+                                    cx.emit(StatusBarEvent::UpdateClicked);
+                                },
+                            ))
                         } else {
                             el
                         }

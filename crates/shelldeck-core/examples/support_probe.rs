@@ -40,15 +40,29 @@ fn main() {
         list.me.staff,
     );
     for t in list.tickets.iter().take(3) {
+        let when = if t.last_at > 0.0 {
+            format!("lastAt={}", t.last_at as i64)
+        } else {
+            "lastAt=0".into()
+        };
         println!(
-            "  - [{}] {} | {} | {} | prio {} | {} | {}",
+            "  - [{}] {} | {} | {} | prio {} | {} | {} | {}",
             t.channel,
             &t.id,
-            if t.subject.is_empty() { "(sans objet)" } else { &t.subject },
+            if t.subject.is_empty() {
+                "(sans objet)"
+            } else {
+                &t.subject
+            },
             t.status,
             t.priority,
             t.contact.display(),
-            if t.is_unassigned() { "unassigned".into() } else { t.assignee.clone() },
+            if t.is_unassigned() {
+                "unassigned".into()
+            } else {
+                t.assignee.clone()
+            },
+            when,
         );
     }
 
@@ -65,7 +79,12 @@ fn main() {
                         "agent"
                     };
                     let text: String = m.text.chars().take(48).collect();
-                    println!("    {} | {}", kind, text);
+                    let when = if m.at > 0.0 {
+                        format!("at={}", m.at as i64)
+                    } else {
+                        "at=0".into()
+                    };
+                    println!("    {} | {} | {}", kind, when, text);
                 }
             }
             Err(e) => {

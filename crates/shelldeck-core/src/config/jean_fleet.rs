@@ -235,7 +235,10 @@ fn http_client() -> Result<reqwest::blocking::Client> {
 }
 
 fn fleet_url(base_url: &str) -> String {
-    format!("{}/api/manage/shelldeck/fleet", base_url.trim_end_matches('/'))
+    format!(
+        "{}/api/manage/shelldeck/fleet",
+        base_url.trim_end_matches('/')
+    )
 }
 
 fn check_status(status: u16) -> Result<()> {
@@ -264,7 +267,11 @@ pub fn get_fleet(base_url: &str, token: &str) -> Result<FleetSnapshot> {
         .map_err(|e| ShellDeckError::Serialization(format!("invalid fleet payload: {}", e)))
 }
 
-fn post_json(base_url: &str, token: &str, body: serde_json::Value) -> Result<reqwest::blocking::Response> {
+fn post_json(
+    base_url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> Result<reqwest::blocking::Response> {
     let client = http_client()?;
     let resp = client
         .post(fleet_url(base_url))
@@ -284,7 +291,9 @@ fn instance_from(resp: reqwest::blocking::Response) -> Result<JeanInstance> {
         Ok(parsed.instance)
     } else {
         Err(ShellDeckError::Connection(
-            parsed.error.unwrap_or_else(|| "fleet action refused".to_string()),
+            parsed
+                .error
+                .unwrap_or_else(|| "fleet action refused".to_string()),
         ))
     }
 }
@@ -297,7 +306,9 @@ fn job_from(resp: reqwest::blocking::Response) -> Result<Option<JeanJob>> {
         Ok(parsed.job)
     } else {
         Err(ShellDeckError::Connection(
-            parsed.error.unwrap_or_else(|| "fleet action refused".to_string()),
+            parsed
+                .error
+                .unwrap_or_else(|| "fleet action refused".to_string()),
         ))
     }
 }
@@ -528,7 +539,10 @@ fn parse_stream_json(stdout: &str, killed: bool) -> JobOutcome {
                     .unwrap_or("")
                     .to_string();
                 let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                last_result = Some(JobOutcome { result: text, is_error });
+                last_result = Some(JobOutcome {
+                    result: text,
+                    is_error,
+                });
             }
         }
     }
@@ -599,7 +613,14 @@ pub fn runtime_tick(
     };
 
     if autonomy == "auto" {
-        let _ = heartbeat(base_url, token, instance_id, "busy", Some("exécution"), Some(version));
+        let _ = heartbeat(
+            base_url,
+            token,
+            instance_id,
+            "busy",
+            Some("exécution"),
+            Some(version),
+        );
         let r = execute_job(base_url, token, &job, workdir, model, exec, timeout);
         let _ = heartbeat(base_url, token, instance_id, "online", None, Some(version));
         r?;
@@ -779,11 +800,22 @@ mod tests {
         let m = start_mock(true);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let exec = FakeExecutor {
-            outcome: JobOutcome { result: "fait".into(), is_error: false },
+            outcome: JobOutcome {
+                result: "fait".into(),
+                is_error: false,
+            },
             seen: seen.clone(),
         };
         let r = runtime_tick(
-            &m.url, TOKEN, "i1", "/x", "", "auto", "0.3.1", &exec, Duration::from_secs(5),
+            &m.url,
+            TOKEN,
+            "i1",
+            "/x",
+            "",
+            "auto",
+            "0.3.1",
+            &exec,
+            Duration::from_secs(5),
         )
         .expect("tick");
         assert!(r.awaiting_confirm.is_none());
@@ -800,11 +832,22 @@ mod tests {
         let m = start_mock(true);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let exec = FakeExecutor {
-            outcome: JobOutcome { result: "x".into(), is_error: false },
+            outcome: JobOutcome {
+                result: "x".into(),
+                is_error: false,
+            },
             seen: seen.clone(),
         };
         let r = runtime_tick(
-            &m.url, TOKEN, "i1", "/x", "", "confirm", "0.3.1", &exec, Duration::from_secs(5),
+            &m.url,
+            TOKEN,
+            "i1",
+            "/x",
+            "",
+            "confirm",
+            "0.3.1",
+            &exec,
+            Duration::from_secs(5),
         )
         .expect("tick");
         let job = r.awaiting_confirm.expect("job awaiting confirm");

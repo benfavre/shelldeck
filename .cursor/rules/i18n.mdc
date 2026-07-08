@@ -1,0 +1,23 @@
+---
+description: i18n rust-i18n — français par défaut, t! dans les vues UI
+globs: crates/shelldeck-ui/**,crates/shelldeck-core/locales/**
+alwaysApply: false
+---
+
+# Internationalisation
+
+> Source canonique : `.agents/i18n.md`
+
+## Must-do
+
+- Textes UI → **`crate::t!(…)`** + entrées dans
+  `crates/shelldeck-core/locales/{fr,en}.toml`.
+- **Langue par défaut = français** (`default-locale` / fallback `fr`).
+- Nouvelle clé : d'abord **`fr.toml`**, puis **`en.toml`**.
+- Temps relatifs → **`crate::i18n::rel_time`**, pas de chaîne en dur.
+- Changement langue → `shelldeck_ui::i18n::apply_ui_language` + repaint.
+
+## Ne pas
+
+- Ajouter de literals FR/EN dans les vues sans clé i18n.
+- Supposer l'anglais comme fallback — c'est **`fr`**.
