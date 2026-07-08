@@ -9,6 +9,7 @@ use shelldeck_core::models::connection::Connection;
 use uuid::Uuid;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -27,6 +28,31 @@ enum FormField {
     Hostname,
     Port,
     User,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ValidationError {
+    HostnameRequired,
+    UserRequired,
+    PortInvalid,
+    PortRange,
+}
+
+fn connection_form_error(err: ValidationError) -> String {
+    match err {
+        ValidationError::HostnameRequired => t!("connection_form.error.hostname").to_string(),
+        ValidationError::UserRequired => t!("connection_form.error.user").to_string(),
+        ValidationError::PortInvalid => t!("connection_form.error.port_invalid").to_string(),
+        ValidationError::PortRange => t!("connection_form.error.port_range").to_string(),
+    }
+}
+
+fn connection_form_error_field(err: ValidationError) -> FormField {
+    match err {
+        ValidationError::HostnameRequired => FormField::Hostname,
+        ValidationError::UserRequired => FormField::User,
+        ValidationError::PortInvalid | ValidationError::PortRange => FormField::Port,
+    }
 }
 
 pub struct ConnectionForm {
@@ -142,21 +168,15 @@ impl ConnectionForm {
             Ok(conn) => {
                 cx.emit(ConnectionFormEvent::Save(conn));
             }
-            Err(msg) => {
-                if msg.contains("Hostname") {
-                    self.error_field = Some(FormField::Hostname);
-                } else if msg.contains("Username") {
-                    self.error_field = Some(FormField::User);
-                } else if msg.contains("Port") {
-                    self.error_field = Some(FormField::Port);
-                }
-                self.error = Some(msg);
+            Err(err) => {
+                self.error_field = Some(connection_form_error_field(err));
+                self.error = Some(connection_form_error(err));
                 cx.notify();
             }
         }
     }
 
-    fn validate(&self, cx: &Context<Self>) -> Result<Connection, String> {
+    fn validate(&self, cx: &Context<Self>) -> Result<Connection, ValidationError> {
         let hostname = Self::field_value(&self.hostname_state, cx);
         let user = Self::field_value(&self.user_state, cx);
         let port_str = Self::field_value(&self.port_state, cx);
@@ -166,16 +186,16 @@ impl ConnectionForm {
         let group = Self::field_value(&self.group_state, cx);
 
         if hostname.is_empty() {
-            return Err("Hostname is required".to_string());
+            return Err(ValidationError::HostnameRequired);
         }
         if user.is_empty() {
-            return Err("Username is required".to_string());
+            return Err(ValidationError::UserRequired);
         }
         let port: u16 = port_str
             .parse()
-            .map_err(|_| "Port must be a valid number (1-65535)".to_string())?;
+            .map_err(|_| ValidationError::PortInvalid)?;
         if port == 0 {
-            return Err("Port must be between 1 and 65535".to_string());
+            return Err(ValidationError::PortRange);
         }
 
         let alias = if alias.is_empty() {
@@ -227,7 +247,7 @@ impl ConnectionForm {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select SSH key".into()),
+            prompt: Some(t!("connection_form.browse_prompt").to_string().into()),
             starting_directory,
         });
         let state = self.identity_file_state.clone();
@@ -268,7 +288,7 @@ impl ConnectionForm {
             .text_color(ShellDeckColors::text_primary())
             .cursor_pointer()
             .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            .child("Browse…")
+            .child(t!("connection_form.browse").to_string())
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.pick_identity_file(window, cx);
             }));
@@ -282,7 +302,7 @@ impl ConnectionForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Identity File"),
+                    .child(t!("connection_form.field.identity").to_string()),
             )
             .child(
                 div()
@@ -300,13 +320,13 @@ impl ConnectionForm {
         &self,
         field: Option<FormField>,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> Input {
         let has_error = field.is_some() && field == self.error_field;
         Input::new(state)
             .size(InputSize::Sm)
-            .placeholder(placeholder)
+            .placeholder(placeholder.into())
             .error(has_error)
             .on_enter({
                 let entity = cx.entity();
@@ -331,15 +351,15 @@ impl ConnectionForm {
     fn render_field(
         &self,
         field: Option<FormField>,
-        label: &'static str,
+        label: impl Into<SharedString>,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let has_error = field.is_some() && field == self.error_field;
         let input = Input::new(state)
             .size(InputSize::Sm)
-            .placeholder(placeholder)
+            .placeholder(placeholder.into())
             .error(has_error)
             .on_enter({
                 let entity = cx.entity();
@@ -370,7 +390,7 @@ impl ConnectionForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label),
+                    .child(label.into()),
             )
             .child(input)
     }
@@ -383,9 +403,9 @@ impl Render for ConnectionForm {
             self.focus_handle.focus(window);
         }
         let title = if self.editing_id.is_some() {
-            "Edit Connection"
+            t!("connection_form.title.edit").to_string()
         } else {
-            "New Connection"
+            t!("connection_form.title.new").to_string()
         };
 
         // "Forward Agent" — real adabraka `Toggle` (built-in animated switch,
@@ -419,25 +439,25 @@ impl Render for ConnectionForm {
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_field(
                         None,
-                        "Alias",
+                        t!("connection_form.field.alias").to_string(),
                         &self.alias_state,
-                        "my-server",
+                        t!("connection_form.field.alias_placeholder").to_string(),
                         cx,
                     )))
                     .child(div().w(px(140.0)).child(self.render_field(
                         None,
-                        "Group",
+                        t!("connection_form.field.group").to_string(),
                         &self.group_state,
-                        "Production",
+                        t!("connection_form.field.group_placeholder").to_string(),
                         cx,
                     ))),
             )
             // Hostname
             .child(self.render_field(
                 Some(FormField::Hostname),
-                "Hostname",
+                t!("connection_form.field.hostname").to_string(),
                 &self.hostname_state,
-                "192.168.1.100 or example.com",
+                t!("connection_form.field.hostname_placeholder").to_string(),
                 cx,
             ))
             // Row: User + Port
@@ -447,14 +467,14 @@ impl Render for ConnectionForm {
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_field(
                         Some(FormField::User),
-                        "User",
+                        t!("connection_form.field.user").to_string(),
                         &self.user_state,
-                        "deploy",
+                        t!("connection_form.field.user_placeholder").to_string(),
                         cx,
                     )))
                     .child(div().w(px(100.0)).child(self.render_field(
                         Some(FormField::Port),
-                        "Port",
+                        t!("connection_form.field.port").to_string(),
                         &self.port_state,
                         "22",
                         cx,
@@ -465,9 +485,9 @@ impl Render for ConnectionForm {
             // ProxyJump
             .child(self.render_field(
                 None,
-                "ProxyJump",
+                t!("connection_form.field.proxy_jump").to_string(),
                 &self.proxy_jump_state,
-                "bastion-host",
+                t!("connection_form.field.proxy_placeholder").to_string(),
                 cx,
             ))
             // Forward Agent toggle
@@ -481,7 +501,7 @@ impl Render for ConnectionForm {
                             .text_size(px(12.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Forward Agent"),
+                            .child(t!("connection_form.forward_agent").to_string()),
                     )
                     .child(toggle),
             );
@@ -596,7 +616,7 @@ impl Render for ConnectionForm {
                                         cx.emit(ConnectionFormEvent::Cancel);
                                     }))
                                     .child(
-                                        Button::new("cancel", "Cancel")
+                                        Button::new("cancel", t!("scripts.cancel").to_string())
                                             .variant(ButtonVariant::Ghost),
                                     ),
                             )
@@ -608,7 +628,7 @@ impl Render for ConnectionForm {
                                         this.try_save(cx);
                                     }))
                                     .child(
-                                        Button::new("save", "Save Connection")
+                                        Button::new("save", t!("connection_form.save").to_string())
                                             .variant(ButtonVariant::Default),
                                     );
                                 if valid {

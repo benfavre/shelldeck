@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 #[derive(Debug, Clone)]
 pub enum PortForwardFormEvent {
@@ -25,6 +26,39 @@ enum FormField {
     Connection,
     LocalPort,
     RemotePort,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ValidationError {
+    NoConnections,
+    LocalPortInvalid,
+    LocalPortRange,
+    RemotePortInvalid,
+    RemotePortRange,
+}
+
+fn forward_form_error(err: ValidationError) -> String {
+    match err {
+        ValidationError::NoConnections => t!("forward_form.error.no_connections").to_string(),
+        ValidationError::LocalPortInvalid => {
+            t!("forward_form.error.local_port_invalid").to_string()
+        }
+        ValidationError::LocalPortRange => t!("forward_form.error.local_port_range").to_string(),
+        ValidationError::RemotePortInvalid => {
+            t!("forward_form.error.remote_port_invalid").to_string()
+        }
+        ValidationError::RemotePortRange => t!("forward_form.error.remote_port_range").to_string(),
+    }
+}
+
+fn forward_form_error_field(err: ValidationError) -> FormField {
+    match err {
+        ValidationError::NoConnections => FormField::Connection,
+        ValidationError::LocalPortInvalid | ValidationError::LocalPortRange => FormField::LocalPort,
+        ValidationError::RemotePortInvalid | ValidationError::RemotePortRange => {
+            FormField::RemotePort
+        }
+    }
 }
 
 pub struct PortForwardForm {
@@ -65,14 +99,14 @@ impl PortForwardForm {
     ) -> Entity<Combobox<Uuid>> {
         let parent = cx.entity();
         let placeholder = if connections.is_empty() {
-            "(no connections)"
+            t!("forward_form.connection.none").to_string()
         } else {
-            "Select connection..."
+            t!("forward_form.connection.select").to_string()
         };
         let (_state, combobox) = build_connection_combobox(
             connections,
             selected_idx,
-            placeholder,
+            &placeholder,
             move |id, _window, cx| {
                 parent.update(cx, |form, cx| {
                     if let Some(idx) = connection_idx_for_id(&form.connections, *id) {
@@ -171,23 +205,17 @@ impl PortForwardForm {
             Ok(forward) => {
                 cx.emit(PortForwardFormEvent::Save(forward));
             }
-            Err(msg) => {
-                if msg.contains("No connections") {
-                    self.error_field = Some(FormField::Connection);
-                } else if msg.contains("Local port") {
-                    self.error_field = Some(FormField::LocalPort);
-                } else if msg.contains("Remote port") {
-                    self.error_field = Some(FormField::RemotePort);
-                }
-                self.error = Some(msg);
+            Err(err) => {
+                self.error_field = Some(forward_form_error_field(err));
+                self.error = Some(forward_form_error(err));
                 cx.notify();
             }
         }
     }
 
-    fn validate(&self, cx: &Context<Self>) -> Result<PortForward, String> {
+    fn validate(&self, cx: &Context<Self>) -> Result<PortForward, ValidationError> {
         if self.connections.is_empty() {
-            return Err("No connections available".to_string());
+            return Err(ValidationError::NoConnections);
         }
         let (connection_id, _, _) = &self.connections[self.selected_connection_idx];
         let label = Self::field_value(&self.label_state, cx);
@@ -198,15 +226,15 @@ impl PortForwardForm {
 
         let local_port: u16 = local_port_str
             .parse()
-            .map_err(|_| "Local port must be a number (1-65535)".to_string())?;
+            .map_err(|_| ValidationError::LocalPortInvalid)?;
         if local_port == 0 {
-            return Err("Local port must be between 1 and 65535".to_string());
+            return Err(ValidationError::LocalPortRange);
         }
         let remote_port: u16 = remote_port_str
             .parse()
-            .map_err(|_| "Remote port must be a number (1-65535)".to_string())?;
+            .map_err(|_| ValidationError::RemotePortInvalid)?;
         if remote_port == 0 {
-            return Err("Remote port must be between 1 and 65535".to_string());
+            return Err(ValidationError::RemotePortRange);
         }
 
         let mut forward = match self.direction {
@@ -237,12 +265,13 @@ impl PortForwardForm {
     fn render_text_field(
         &self,
         field: Option<FormField>,
-        label: &'static str,
+        label: impl Into<SharedString>,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let has_error = field.is_some() && field == self.error_field;
+        let placeholder = placeholder.into();
         let input = Input::new(state)
             .size(InputSize::Sm)
             .placeholder(placeholder)
@@ -275,16 +304,25 @@ impl PortForwardForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label),
+                    .child(label.into()),
             )
             .child(input)
     }
 
     fn render_direction_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let options = [
-            (ForwardDirection::LocalToRemote, "L -> R"),
-            (ForwardDirection::RemoteToLocal, "R -> L"),
-            (ForwardDirection::Dynamic, "SOCKS"),
+            (
+                ForwardDirection::LocalToRemote,
+                t!("forward_form.direction.ltr").to_string(),
+            ),
+            (
+                ForwardDirection::RemoteToLocal,
+                t!("forward_form.direction.rtl").to_string(),
+            ),
+            (
+                ForwardDirection::Dynamic,
+                t!("forward_form.direction.socks").to_string(),
+            ),
         ];
 
         let mut chips = div().flex().gap(px(6.0));
@@ -322,7 +360,7 @@ impl PortForwardForm {
                     .hover(|el| el.border_color(ShellDeckColors::text_muted()));
             }
 
-            chips = chips.child(chip.child(label));
+            chips = chips.child(chip.child(label.clone()));
         }
 
         div()
@@ -334,7 +372,7 @@ impl PortForwardForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Direction"),
+                    .child(t!("forward_form.field.direction").to_string()),
             )
             .child(
                 div()
@@ -361,7 +399,7 @@ impl PortForwardForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Connection"),
+                    .child(t!("forward_form.field.connection").to_string()),
             )
             .child(
                 div()
@@ -393,9 +431,9 @@ impl Render for PortForwardForm {
             .child(self.render_connection_picker(cx))
             .child(self.render_text_field(
                 None,
-                "Label (optional)",
+                t!("forward_form.field.label").to_string(),
                 &self.label_state,
-                "My Web Server",
+                t!("forward_form.field.label_placeholder").to_string(),
                 cx,
             ))
             .child(self.render_direction_chips(cx))
@@ -405,14 +443,14 @@ impl Render for PortForwardForm {
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_text_field(
                         None,
-                        "Local Host",
+                        t!("forward_form.field.local_host").to_string(),
                         &self.local_host_state,
                         "127.0.0.1",
                         cx,
                     )))
                     .child(div().w(px(120.0)).child(self.render_text_field(
                         Some(FormField::LocalPort),
-                        "Local Port",
+                        t!("forward_form.field.local_port").to_string(),
                         &self.local_port_state,
                         "8080",
                         cx,
@@ -424,14 +462,14 @@ impl Render for PortForwardForm {
                     .gap(px(12.0))
                     .child(div().flex_grow().child(self.render_text_field(
                         None,
-                        "Remote Host",
+                        t!("forward_form.field.remote_host").to_string(),
                         &self.remote_host_state,
                         "127.0.0.1",
                         cx,
                     )))
                     .child(div().w(px(120.0)).child(self.render_text_field(
                         Some(FormField::RemotePort),
-                        "Remote Port",
+                        t!("forward_form.field.remote_port").to_string(),
                         &self.remote_port_state,
                         "80",
                         cx,
@@ -491,9 +529,9 @@ impl Render for PortForwardForm {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
                                     .child(if self.editing_id.is_some() {
-                                        "Edit Port Forward"
+                                        t!("forward_form.title.edit").to_string()
                                     } else {
-                                        "New Port Forward"
+                                        t!("forward_form.title.new").to_string()
                                     }),
                             )
                             .child(
@@ -536,16 +574,19 @@ impl Render for PortForwardForm {
                                         cx.emit(PortForwardFormEvent::Cancel);
                                     }))
                                     .child(
-                                        adabraka_ui::prelude::Button::new("cancel", "Cancel")
+                                        adabraka_ui::prelude::Button::new(
+                                            "cancel",
+                                            t!("scripts.cancel").to_string(),
+                                        )
                                             .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
                                     ),
                             )
                             .child({
                                 let valid = self.is_valid(cx);
                                 let btn_label = if self.editing_id.is_some() {
-                                    "Save Forward"
+                                    t!("forward_form.save.edit").to_string()
                                 } else {
-                                    "Create Forward"
+                                    t!("forward_form.save.create").to_string()
                                 };
                                 let mut save_btn = div()
                                     .id("pf-save-btn")

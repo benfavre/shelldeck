@@ -12,6 +12,20 @@ use crate::editor_buffer::EditorBuffer;
 use crate::icons::{script_category_chip, script_language_chip};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::theme::ShellDeckColors;
+use crate::t;
+
+#[derive(Debug, Clone, Copy)]
+enum ValidationError {
+    NameRequired,
+    NoConnections,
+}
+
+fn script_form_error(err: ValidationError) -> String {
+    match err {
+        ValidationError::NameRequired => t!("script_form.error.name_required").to_string(),
+        ValidationError::NoConnections => t!("script_form.error.no_connections").to_string(),
+    }
+}
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -89,14 +103,14 @@ impl ScriptForm {
     ) -> Entity<Combobox<Uuid>> {
         let parent = cx.entity();
         let placeholder = if connections.is_empty() {
-            "(no connections)"
+            t!("script_form.connection.none").to_string()
         } else {
-            "Select connection..."
+            t!("script_form.connection.select").to_string()
         };
         let (_state, combobox) = build_connection_combobox(
             connections,
             selected_idx,
-            placeholder,
+            &placeholder,
             move |id, _window, cx| {
                 parent.update(cx, |form, cx| {
                     if let Some(idx) = connection_idx_for_id(&form.connections, *id) {
@@ -393,30 +407,27 @@ impl ScriptForm {
             Ok(script) => {
                 cx.emit(ScriptFormEvent::Save(script));
             }
-            Err(msg) => {
-                if msg.contains("name") {
-                    self.error_field = Some(FormField::Name);
-                } else if msg.contains("body") {
-                    self.error_field = Some(FormField::Body);
-                } else if msg.contains("connections") {
-                    self.error_field = Some(FormField::Connection);
-                }
-                self.error = Some(msg);
+            Err(err) => {
+                self.error_field = Some(match err {
+                    ValidationError::NameRequired => FormField::Name,
+                    ValidationError::NoConnections => FormField::Connection,
+                });
+                self.error = Some(script_form_error(err));
                 cx.notify();
             }
         }
     }
 
-    fn validate(&self, cx: &Context<Self>) -> Result<Script, String> {
+    fn validate(&self, cx: &Context<Self>) -> Result<Script, ValidationError> {
         let name = Self::field_value(&self.name_state, cx);
         let description = Self::field_value(&self.description_state, cx);
         if name.is_empty() {
-            return Err("Script name is required".to_string());
+            return Err(ValidationError::NameRequired);
         }
         let target = match &self.target {
             ScriptTarget::Remote(_) => {
                 if self.connections.is_empty() {
-                    return Err("No connections available for remote target".to_string());
+                    return Err(ValidationError::NoConnections);
                 }
                 ScriptTarget::Remote(self.connections[self.selected_connection_idx].0)
             }
@@ -444,12 +455,13 @@ impl ScriptForm {
     fn render_text_field(
         &self,
         field: Option<FormField>,
-        label: &'static str,
+        label: impl Into<SharedString>,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let has_error = field.is_some() && field == self.error_field;
+        let placeholder = placeholder.into();
         let input = Input::new(state)
             .size(InputSize::Sm)
             .placeholder(placeholder)
@@ -482,7 +494,7 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label),
+                    .child(label.into()),
             )
             .child(input)
     }
@@ -527,7 +539,7 @@ impl ScriptForm {
                     .py(px(6.0))
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("echo 'hello world'"),
+                    .child(t!("script_form.body.placeholder").to_string()),
             );
             if is_active {
                 input_box = input_box.child(
@@ -563,13 +575,13 @@ impl ScriptForm {
                             .text_size(px(12.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Script Body"),
+                            .child(t!("script_form.field.body").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Tab inserts spaces · Shift+Tab next field"),
+                            .child(t!("script_form.body.hint").to_string()),
                     ),
             )
             .child(input_box)
@@ -577,10 +589,19 @@ impl ScriptForm {
 
     fn render_target_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.active_field == Some(FormField::Target);
-        let options: Vec<(ScriptTarget, &str)> = vec![
-            (ScriptTarget::Local, "Local"),
-            (ScriptTarget::Remote(Uuid::nil()), "Remote"),
-            (ScriptTarget::AskOnRun, "Ask on Run"),
+        let options: Vec<(ScriptTarget, String)> = vec![
+            (
+                ScriptTarget::Local,
+                t!("scripts.target.local").to_string(),
+            ),
+            (
+                ScriptTarget::Remote(Uuid::nil()),
+                t!("scripts.target.remote").to_string(),
+            ),
+            (
+                ScriptTarget::AskOnRun,
+                t!("script_form.target.ask_on_run").to_string(),
+            ),
         ];
 
         let mut chips = div().flex().gap(px(6.0));
@@ -636,7 +657,7 @@ impl ScriptForm {
                     .hover(|el| el.border_color(ShellDeckColors::text_muted()));
             }
 
-            chips = chips.child(chip.child(label));
+            chips = chips.child(chip.child(label.clone()));
         }
 
         let mut wrapper_border = ShellDeckColors::border();
@@ -653,7 +674,7 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Target"),
+                    .child(t!("script_form.field.target").to_string()),
             )
             .child(
                 div()
@@ -735,7 +756,7 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Language"),
+                    .child(t!("script_form.field.language").to_string()),
             )
             .child(
                 div()
@@ -813,7 +834,7 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Category"),
+                    .child(t!("script_form.field.category").to_string()),
             )
             .child(
                 div()
@@ -840,7 +861,7 @@ impl ScriptForm {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Connection (for Remote)"),
+                    .child(t!("script_form.field.connection").to_string()),
             )
             .child(
                 div()
@@ -872,16 +893,16 @@ impl Render for ScriptForm {
             // Name
             .child(self.render_text_field(
                 Some(FormField::Name),
-                "Script Name",
+                t!("script_form.field.name").to_string(),
                 &self.name_state,
-                "My Script",
+                t!("script_form.field.name_placeholder").to_string(),
                 cx,
             ))
             .child(self.render_text_field(
                 None,
-                "Description (optional)",
+                t!("script_form.field.description").to_string(),
                 &self.description_state,
-                "What does this script do?",
+                t!("script_form.field.description_placeholder").to_string(),
                 cx,
             ))
             // Language chips
@@ -955,9 +976,9 @@ impl Render for ScriptForm {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
                                     .child(if self.editing_id.is_some() {
-                                        "Edit Script"
+                                        t!("script_form.title.edit").to_string()
                                     } else {
-                                        "New Script"
+                                        t!("script_form.title.new").to_string()
                                     }),
                             )
                             .child(
@@ -1011,16 +1032,19 @@ impl Render for ScriptForm {
                                         cx.emit(ScriptFormEvent::Cancel);
                                     }))
                                     .child(
-                                        adabraka_ui::prelude::Button::new("cancel", "Cancel")
+                                        adabraka_ui::prelude::Button::new(
+                                            "cancel",
+                                            t!("scripts.cancel").to_string(),
+                                        )
                                             .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
                                     ),
                             )
                             .child({
                                 let valid = self.is_valid(cx);
                                 let btn_label = if self.editing_id.is_some() {
-                                    "Save Script"
+                                    t!("script_form.save.edit").to_string()
                                 } else {
-                                    "Create Script"
+                                    t!("script_form.save.create").to_string()
                                 };
                                 let mut save_btn = div()
                                     .id("sf-save-btn")
