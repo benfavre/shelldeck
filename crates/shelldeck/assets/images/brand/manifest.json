@@ -25,12 +25,12 @@
   "paths": {
     "brand_root": "crates/shelldeck/assets/images/brand",
     "in_app": {
-      "icon": "crates/shelldeck/assets/images/shelldeck-icon.svg",
+      "icon_png": "crates/shelldeck/assets/images/shelldeck-icon.png",
+      "icon_svg": "crates/shelldeck/assets/images/shelldeck-icon.svg",
       "mark": "crates/shelldeck/assets/images/shelldeck-mark.svg",
-      "monolith": "crates/shelldeck/assets/images/shelldeck-monolith.svg",
-      "monolith_neutral": "crates/shelldeck/assets/images/shelldeck-monolith-neutral.svg",
-      "monolith_wink": "crates/shelldeck/assets/images/shelldeck-monolith-wink.svg"
+      "expressions": "crates/shelldeck/assets/images/brand/svg/expressions/dark-{expression}-logo.svg"
     },
+    "themes": "crates/shelldeck/assets/images/brand/svg/themes/{theme}-logo.svg",
     "packaging": {
       "png": "packaging/icons/shelldeck-{size}.png",
       "ico": "packaging/icons/shelldeck.ico",

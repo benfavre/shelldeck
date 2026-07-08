@@ -143,19 +143,20 @@ impl AssetSource for Assets {
         let path = path.strip_prefix('/').unwrap_or(path);
         let bytes: &'static [u8] = match path {
             "images/wd29-logo.svg" => include_bytes!("../assets/images/wd29-logo.svg"),
-            // Monolith app icon (Dark, coins arrondis, expression >_<).
+            // Monolith app icon (Dark, coins arrondis) — SVG for reference, PNG for UI paint.
             "images/shelldeck-icon.svg" => include_bytes!("../assets/images/shelldeck-icon.svg"),
+            "images/shelldeck-icon.png" => include_bytes!("../assets/images/shelldeck-icon.png"),
             // Monochrome mark — cadre evenodd + visage, `currentColor`.
             "images/shelldeck-mark.svg" => include_bytes!("../assets/images/shelldeck-mark.svg"),
-            // Hi-res Monolith source for future expression swaps (neutral, wink, …).
-            "images/shelldeck-monolith.svg" => {
-                include_bytes!("../assets/images/shelldeck-monolith.svg")
+            // Monolith expression sources (brand kit — future animation swaps).
+            "images/brand/svg/expressions/dark-default-logo.svg" => {
+                include_bytes!("../assets/images/brand/svg/expressions/dark-default-logo.svg")
             }
-            "images/shelldeck-monolith-neutral.svg" => {
-                include_bytes!("../assets/images/shelldeck-monolith-neutral.svg")
+            "images/brand/svg/expressions/dark-neutral-logo.svg" => {
+                include_bytes!("../assets/images/brand/svg/expressions/dark-neutral-logo.svg")
             }
-            "images/shelldeck-monolith-wink.svg" => {
-                include_bytes!("../assets/images/shelldeck-monolith-wink.svg")
+            "images/brand/svg/expressions/dark-wink-logo.svg" => {
+                include_bytes!("../assets/images/brand/svg/expressions/dark-wink-logo.svg")
             }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
@@ -197,7 +198,11 @@ impl AssetSource for Assets {
         let mut paths = vec![
             SharedString::from("images/wd29-logo.svg"),
             SharedString::from("images/shelldeck-icon.svg"),
+            SharedString::from("images/shelldeck-icon.png"),
             SharedString::from("images/shelldeck-mark.svg"),
+            SharedString::from("images/brand/svg/expressions/dark-default-logo.svg"),
+            SharedString::from("images/brand/svg/expressions/dark-neutral-logo.svg"),
+            SharedString::from("images/brand/svg/expressions/dark-wink-logo.svg"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),

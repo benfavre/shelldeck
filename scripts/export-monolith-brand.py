@@ -19,18 +19,24 @@ BRAND = ROOT / "crates/shelldeck/assets/images/brand"
 IMAGES = ROOT / "crates/shelldeck/assets/images"
 PACK = ROOT / "packaging/icons"
 
-FRAME_OUTER = "M 230 93 L 794 93 L 870 163 L 870 797 L 794 867 L 230 867 L 154 797 L 154 163 Z"
-FRAME_INNER = "M 266 157 L 758 157 L 795 193 L 795 767 L 758 795 L 266 795 L 230 767 L 230 193 Z"
+# Original enlarged Monolith geometry, square-centered without thinning:
+# legacy bbox 716×774 → uniform horizontal scale to 774×774 + vertical center (+32px).
+FRAME_OUTER = (
+    "M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"
+)
+FRAME_INNER = (
+    "M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"
+)
 
-FACE_DEFAULT = """  <path fill="{face}" d="M 280 400 L 392 480 L 280 560 L 320 560 L 432 480 L 320 400 Z"/>
-  <path fill="{face}" d="M 744 400 L 632 480 L 744 560 L 704 560 L 592 480 L 704 400 Z"/>
-  <rect x="424" y="592" width="176" height="40" rx="6" fill="{face}"/>"""
+FACE_DEFAULT = """  <path fill="{face}" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
+  <path fill="{face}" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
+  <rect x="417" y="624" width="190" height="40" rx="6" fill="{face}"/>"""
 
-FACE_NEUTRAL = """  <path fill="{face}" d="M 320 384 L 480 512 L 320 640 L 384 640 L 544 512 L 384 384 Z"/>
-  <rect x="544" y="608" width="160" height="64" rx="6" fill="{face}"/>"""
+FACE_NEUTRAL = """  <path fill="{face}" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+  <rect x="547" y="640" width="173" height="64" rx="6" fill="{face}"/>"""
 
-FACE_WINK = """  <path fill="{face}" d="M 320 384 L 480 512 L 320 640 L 384 640 L 544 512 L 384 384 Z"/>
-  <rect x="544" y="624" width="160" height="20" rx="4" fill="{face}"/>"""
+FACE_WINK = """  <path fill="{face}" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+  <rect x="547" y="656" width="173" height="20" rx="4" fill="{face}"/>"""
 
 EXPRESSIONS = {
     "default": FACE_DEFAULT,
@@ -115,22 +121,45 @@ def main() -> None:
 
     for slug, canvas, primary, inner, face, _label in all_themes:
         if slug == "system":
-            shutil.copy(themes_dir / "dark-logo.svg", themes_dir / "system-logo.svg")
-            shutil.copy(themes_dir / "dark-app-icon.svg", themes_dir / "system-app-icon.svg")
             continue
         for variant, rounded in (("logo", False), ("app-icon", True)):
             suffix = "app-icon" if variant == "app-icon" else "logo"
             body = svg_body(canvas, primary, inner, FACE_DEFAULT, face, rounded)
             write_svg(themes_dir / f"{slug}-{suffix}.svg", body)
-        for expr_name, face_tpl in EXPRESSIONS.items():
-            for variant, rounded in (("logo", False), ("app-icon", True)):
-                suffix = "app-icon" if variant == "app-icon" else "logo"
+
+    shutil.copy(themes_dir / "dark-logo.svg", themes_dir / "system-logo.svg")
+    shutil.copy(themes_dir / "dark-app-icon.svg", themes_dir / "system-app-icon.svg")
+
+    for expr_name, face_tpl in EXPRESSIONS.items():
+        if expr_name == "default":
+            for slug, *_ in all_themes:
+                if slug == "system":
+                    continue
+                shutil.copy(
+                    themes_dir / f"{slug}-logo.svg",
+                    expr_dir / f"{slug}-default-logo.svg",
+                )
+                shutil.copy(
+                    themes_dir / f"{slug}-app-icon.svg",
+                    expr_dir / f"{slug}-default-app-icon.svg",
+                )
+            shutil.copy(expr_dir / "dark-default-logo.svg", expr_dir / "system-default-logo.svg")
+            shutil.copy(
+                expr_dir / "dark-default-app-icon.svg",
+                expr_dir / "system-default-app-icon.svg",
+            )
+            continue
+        for variant, rounded in (("logo", False), ("app-icon", True)):
+            suffix = "app-icon" if variant == "app-icon" else "logo"
+            for slug, canvas, primary, inner, face, _label in all_themes:
+                if slug == "system":
+                    continue
                 body = svg_body(canvas, primary, inner, face_tpl, face, rounded)
                 write_svg(expr_dir / f"{slug}-{expr_name}-{suffix}.svg", body)
-
-    # Canonical copies (Dark)
-    shutil.copy(themes_dir / "dark-logo.svg", BRAND / "monolith-logo.svg")
-    shutil.copy(themes_dir / "dark-app-icon.svg", BRAND / "monolith-app-icon.svg")
+            shutil.copy(
+                expr_dir / f"dark-{expr_name}-{suffix}.svg",
+                expr_dir / f"system-{expr_name}-{suffix}.svg",
+            )
 
     app_icon_svg = themes_dir / "dark-app-icon.svg"
     app_png_dir = BRAND / "png/app-icon"
@@ -154,8 +183,9 @@ def main() -> None:
         for name in targets:
             shutil.copy(png_by_size[size], iconset / name)
 
-    # In-app embeds
-    icon_body = svg_body("#1a1a1a", "#2ec4a8", "#1a1a1a", FACE_DEFAULT, "#e6e6e6", True)
+    # In-app embeds — square logo (no dock rounding) for titlebar/sidebar UI.
+    logo_svg = themes_dir / "dark-logo.svg"
+    icon_body = svg_body("#1a1a1a", "#2ec4a8", "#1a1a1a", FACE_DEFAULT, "#e6e6e6", False)
     write_svg(
         IMAGES / "shelldeck-icon.svg",
         icon_body.replace('width="1024" height="1024"', 'width="1024" height="1024"', 1),
@@ -183,16 +213,14 @@ def main() -> None:
         '<!-- Monolith mark — monochrome, currentColor -->\n'
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="currentColor">\n'
         f'  <path fill-rule="evenodd" d="{FRAME_OUTER} {FRAME_INNER}"/>\n'
-        '  <path d="M 280 400 L 392 480 L 280 560 L 320 560 L 432 480 L 320 400 Z"/>\n'
-        '  <path d="M 744 400 L 632 480 L 744 560 L 704 560 L 592 480 L 704 400 Z"/>\n'
-        '  <rect x="424" y="592" width="176" height="40" rx="6"/>\n'
+        '  <path d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>\n'
+        '  <path d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>\n'
+        '  <rect x="417" y="624" width="190" height="40" rx="6"/>\n'
         "</svg>\n",
         encoding="utf-8",
     )
 
-    shutil.copy(expr_dir / "dark-default-logo.svg", IMAGES / "shelldeck-monolith.svg")
-    shutil.copy(expr_dir / "dark-neutral-logo.svg", IMAGES / "shelldeck-monolith-neutral.svg")
-    shutil.copy(expr_dir / "dark-wink-logo.svg", IMAGES / "shelldeck-monolith-wink.svg")
+    rasterize(cmd, logo_svg, IMAGES / "shelldeck-icon.png", 128)
 
     manifest = {
         "name": "ShellDeck Monolith",
@@ -203,12 +231,12 @@ def main() -> None:
         "paths": {
             "brand_root": "crates/shelldeck/assets/images/brand",
             "in_app": {
-                "icon": "crates/shelldeck/assets/images/shelldeck-icon.svg",
+                "icon_png": "crates/shelldeck/assets/images/shelldeck-icon.png",
+                "icon_svg": "crates/shelldeck/assets/images/shelldeck-icon.svg",
                 "mark": "crates/shelldeck/assets/images/shelldeck-mark.svg",
-                "monolith": "crates/shelldeck/assets/images/shelldeck-monolith.svg",
-                "monolith_neutral": "crates/shelldeck/assets/images/shelldeck-monolith-neutral.svg",
-                "monolith_wink": "crates/shelldeck/assets/images/shelldeck-monolith-wink.svg",
+                "expressions": "crates/shelldeck/assets/images/brand/svg/expressions/dark-{expression}-logo.svg",
             },
+            "themes": "crates/shelldeck/assets/images/brand/svg/themes/{theme}-logo.svg",
             "packaging": {
                 "png": "packaging/icons/shelldeck-{size}.png",
                 "ico": "packaging/icons/shelldeck.ico",
