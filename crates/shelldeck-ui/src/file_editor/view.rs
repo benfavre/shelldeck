@@ -1104,7 +1104,7 @@ impl FileEditorView {
                     .hover(|s| s.text_color(ShellDeckColors::text_primary()))
                     .child(
                         svg()
-                            .path("images/close.svg")
+                            .path("icons/lucide/x.svg")
                             .size(px(10.0))
                             .text_color(ShellDeckColors::text_muted()),
                     )

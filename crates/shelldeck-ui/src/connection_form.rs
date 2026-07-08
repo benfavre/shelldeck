@@ -567,7 +567,7 @@ impl Render for ConnectionForm {
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                                     .child(
                                         svg()
-                                            .path("images/close.svg")
+                                            .path("icons/lucide/x.svg")
                                             .size(px(14.0))
                                             .text_color(ShellDeckColors::text_muted()),
                                     )

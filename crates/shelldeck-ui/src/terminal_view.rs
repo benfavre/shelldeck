@@ -2099,7 +2099,7 @@ impl TerminalView {
                 })
                 .child(
                     svg()
-                        .path("images/close.svg")
+                        .path("icons/lucide/x.svg")
                         .size(s(10.0))
                         .text_color(ShellDeckColors::text_muted()),
                 )
@@ -2146,7 +2146,7 @@ impl TerminalView {
                 })
                 .child(
                     svg()
-                        .path("images/plus.svg")
+                        .path("icons/lucide/plus.svg")
                         .size(s(14.0))
                         .text_color(ShellDeckColors::text_muted()),
                 )
@@ -2533,7 +2533,7 @@ impl TerminalView {
                                         .child(
                                             svg()
                                                 .path(if is_pinned {
-                                                    "images/pin.svg"
+                                                    "icons/lucide/pin.svg"
                                                 } else {
                                                     "images/pin-outline.svg"
                                                 })
@@ -4029,7 +4029,7 @@ impl TerminalView {
                     .hover(|el| el.text_color(ShellDeckColors::error()))
                     .child(
                         svg()
-                            .path("images/close.svg")
+                            .path("icons/lucide/x.svg")
                             .size(px(12.0))
                             .text_color(ShellDeckColors::text_muted()),
                     )

@@ -261,7 +261,7 @@ impl Render for VariablePrompt {
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(VariablePromptEvent::Cancel);
                                     }))
-                                    .child(svg().path("images/close.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
+                                    .child(svg().path("icons/lucide/x.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
                             ),
                     )
                     // Body with fields

@@ -429,7 +429,7 @@ impl ScriptEditorView {
                                 }))
                                 .child(
                                     svg()
-                                        .path("images/plus.svg")
+                                        .path("icons/lucide/plus.svg")
                                         .size(px(14.0))
                                         .text_color(ShellDeckColors::text_muted()),
                                 ),
@@ -696,7 +696,7 @@ impl ScriptEditorView {
                         .child(
                             svg()
                                 .path(if is_pinned {
-                                    "images/pin.svg"
+                                    "icons/lucide/pin.svg"
                                 } else {
                                     "images/pin-outline.svg"
                                 })
@@ -732,7 +732,7 @@ impl ScriptEditorView {
                         }))
                         .child(
                             svg()
-                                .path("images/kebab.svg")
+                                .path("icons/lucide/ellipsis-vertical.svg")
                                 .size(px(14.0))
                                 .text_color(ShellDeckColors::text_muted()),
                         ),

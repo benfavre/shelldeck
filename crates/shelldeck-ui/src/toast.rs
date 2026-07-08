@@ -190,7 +190,7 @@ impl ToastContainer {
                     .text_color(hsla(0.0, 0.0, 1.0, 0.5))
                     .child(
                         svg()
-                            .path("images/close.svg")
+                            .path("icons/lucide/x.svg")
                             .size(px(12.0))
                             .text_color(ShellDeckColors::text_muted()),
                     ),

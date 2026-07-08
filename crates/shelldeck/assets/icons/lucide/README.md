@@ -65,16 +65,16 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 |---------------------|------------------------|---------------|
 | `search.svg`        | `search`               | **migrated**  |
 | `kebab.svg`         | `ellipsis-vertical`    | **migrated**  |
-| `close.svg`         | `x`                    | **migrated**  |
-| `plus.svg`          | `plus`                 | **migrated**  |
-| `minus.svg`         | `minus`                | **migrated**  |
-| `chevron-down.svg`  | `chevron-down`         | **migrated**  |
+| `close.svg`         | `x`                    | **migrated** (except titlebar → keep `images/close.svg`) |
+| `plus.svg`          | `plus`                 | **migrated** (except titlebar ± scale → keep `images/`) |
+| `minus.svg`         | `minus`                | **migrated** (except titlebar ± scale → keep `images/`) |
+| `chevron-down.svg`  | `chevron-down`         | **migrated** (except titlebar site chip → keep `images/`) |
 | `refresh.svg`       | `refresh-cw`           | **migrated**  |
 | `pin.svg`           | `pin`                  | **migrated**  |
 | `pin-outline.svg`   | —                      | keep legacy   |
 | `external-link.svg` | `external-link`        | reserved      |
-| `minimize.svg`      | `minimize-2`           | **migrated**  |
-| `maximize.svg`      | `maximize-2`           | **migrated**  |
+| `minimize.svg`      | `minimize-2`           | **titlebar only** — keep `images/` |
+| `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
 ## Inventory (52 icons)

@@ -480,7 +480,7 @@ impl PortForwardForm {
                         .placeholder("Type to filter...")
                         .prefix(
                             svg()
-                                .path("images/search.svg")
+                                .path("icons/lucide/search.svg")
                                 .size(px(12.0))
                                 .flex_shrink_0()
                                 .text_color(ShellDeckColors::text_muted()),
@@ -710,7 +710,7 @@ impl Render for PortForwardForm {
                                     .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                                     .child(
                                         svg()
-                                            .path("images/close.svg")
+                                            .path("icons/lucide/x.svg")
                                             .size(px(14.0))
                                             .text_color(ShellDeckColors::text_muted()),
                                     )

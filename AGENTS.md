@@ -179,6 +179,7 @@ rules loader.
 
 @.agents/cross-platform.md
 @.agents/ui-components.md
+@.agents/icons.md
 @.agents/patches.md
 
 <!-- Add one @-import per rule file above this comment. Example:
