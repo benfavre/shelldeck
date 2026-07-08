@@ -54,16 +54,21 @@ pub fn rel_time(at_ms: f64) -> String {
 mod tests {
     use super::*;
 
+    /// Single test — `rust_i18n::set_locale` is process-global; parallel tests race.
     #[test]
-    fn default_locale_is_french() {
+    fn locale_fr_and_en() {
         apply_ui_language(&UiLanguage::Fr);
         assert_eq!(resolve_locale(&UiLanguage::Fr), "fr");
         assert_eq!(crate::t!("login.submit").as_ref(), "Se connecter");
+
+        apply_ui_language(&UiLanguage::En);
+        assert_eq!(resolve_locale(&UiLanguage::En), "en");
+        assert_eq!(crate::t!("login.submit").as_ref(), "Sign in");
     }
 
     #[test]
-    fn english_locale() {
-        apply_ui_language(&UiLanguage::En);
-        assert_eq!(crate::t!("login.submit").as_ref(), "Sign in");
+    fn resolve_locale_system_is_fr_or_en() {
+        let loc = resolve_locale(&UiLanguage::System);
+        assert!(loc == "fr" || loc == "en");
     }
 }
