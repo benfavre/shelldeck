@@ -7,6 +7,7 @@ use shelldeck_core::models::server_sync::*;
 use uuid::Uuid;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 // Theme helpers — map semantic names to existing ShellDeckColors methods.
 fn bg_secondary() -> gpui::Hsla {
@@ -14,6 +15,10 @@ fn bg_secondary() -> gpui::Hsla {
 }
 fn bg_tertiary() -> gpui::Hsla {
     ShellDeckColors::bg_sidebar()
+}
+
+fn local_machine_label() -> String {
+    t!("sync.local_machine").to_string()
 }
 
 /// Which side of the split view.
@@ -178,7 +183,7 @@ impl ServerSyncView {
             // Set source connection
             if profile.source_connection_id == LOCAL_MACHINE_ID {
                 self.source_panel.connection_id = Some(LOCAL_MACHINE_ID);
-                self.source_panel.connection_name = "Local Machine".to_string();
+                self.source_panel.connection_name = local_machine_label();
                 self.source_panel.is_local = true;
             } else if let Some(src_conn) = self
                 .connections
@@ -192,7 +197,7 @@ impl ServerSyncView {
             // Set dest connection
             if profile.dest_connection_id == LOCAL_MACHINE_ID {
                 self.dest_panel.connection_id = Some(LOCAL_MACHINE_ID);
-                self.dest_panel.connection_name = "Local Machine".to_string();
+                self.dest_panel.connection_name = local_machine_label();
                 self.dest_panel.is_local = true;
             } else if let Some(dest_conn) = self
                 .connections
@@ -290,7 +295,7 @@ impl ServerSyncView {
                 .text_size(px(16.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_primary())
-                .child("Server Sync"),
+                .child(t!("sync.title").to_string()),
         );
 
         // Profile dropdown
@@ -388,7 +393,7 @@ impl ServerSyncView {
                         }
                         cx.notify();
                     }))
-                    .child("Save Profile"),
+                    .child(t!("sync.save_profile").to_string()),
             );
         }
 
@@ -409,7 +414,7 @@ impl ServerSyncView {
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         cx.emit(ServerSyncEvent::DeleteProfile(profile_id));
                     }))
-                    .child("Delete"),
+                    .child(t!("sync.delete").to_string()),
             );
         }
 
@@ -439,7 +444,7 @@ impl ServerSyncView {
                     el.bg(bg_tertiary())
                         .text_color(ShellDeckColors::text_muted())
                 })
-                .child("Start Sync"),
+                .child(t!("sync.start").to_string()),
         );
 
         toolbar = toolbar.child(right);
@@ -450,14 +455,14 @@ impl ServerSyncView {
     // Connection picker (adabraka-ui Select — see .agents/ui-components.md)
     // -----------------------------------------------------------------------
     fn connection_select_options(connections: &[Connection]) -> Vec<SelectOption<Uuid>> {
-        let mut options = vec![SelectOption::new(LOCAL_MACHINE_ID, "Local Machine")
-            .with_group("Local")
+        let mut options = vec![SelectOption::new(LOCAL_MACHINE_ID, local_machine_label())
+            .with_group(t!("sync.group.local").to_string())
             .with_icon("icons/lucide/user.svg")];
         for conn in connections {
             let label = format!("{} — {}", conn.display_name(), conn.hostname);
             options.push(
                 SelectOption::new(conn.id, label)
-                    .with_group("Connections")
+                    .with_group(t!("sync.group.connections").to_string())
                     .with_icon("icons/lucide/server.svg"),
             );
         }
@@ -474,8 +479,8 @@ impl ServerSyncView {
         let options = Self::connection_select_options(connections);
         let selected_index = selected_id.and_then(|id| options.iter().position(|o| o.value == id));
         let placeholder = match side {
-            PanelSide::Source => "Select Source...",
-            PanelSide::Destination => "Select Destination...",
+            PanelSide::Source => t!("sync.placeholder.source").to_string(),
+            PanelSide::Destination => t!("sync.placeholder.destination").to_string(),
         };
         cx.new(|select_cx| {
             Select::new(select_cx)
@@ -518,7 +523,7 @@ impl ServerSyncView {
         let is_local = conn_id == LOCAL_MACHINE_ID;
         let (name, path) = if is_local {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            ("Local Machine".to_string(), home)
+            (local_machine_label(), home)
         } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
             (conn.display_name().to_string(), "/".to_string())
         } else {
@@ -679,7 +684,7 @@ impl ServerSyncView {
                     .py(px(20.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Loading..."),
+                    .child(t!("sync.loading").to_string()),
             );
             return list;
         }
@@ -706,13 +711,13 @@ impl ServerSyncView {
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Select a connection above"),
+                            .child(t!("sync.select_connection").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted().opacity(0.6))
-                            .child("Choose Local Machine or a remote server"),
+                            .child(t!("sync.choose_side").to_string()),
                     ),
             );
             return list;
@@ -727,7 +732,7 @@ impl ServerSyncView {
                     .py(px(20.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Empty directory"),
+                    .child(t!("sync.empty_dir").to_string()),
             );
             return list;
         }
@@ -745,10 +750,10 @@ impl ServerSyncView {
                 .text_size(px(10.0))
                 .text_color(ShellDeckColors::text_muted())
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(div().flex_grow().child("Name"))
-                .child(div().w(px(80.0)).flex_shrink_0().child("Size"))
-                .child(div().w(px(90.0)).flex_shrink_0().child("Permissions"))
-                .child(div().w(px(130.0)).flex_shrink_0().child("Modified")),
+                .child(div().flex_grow().child(t!("sync.col.name").to_string()))
+                .child(div().w(px(80.0)).flex_shrink_0().child(t!("sync.col.size").to_string()))
+                .child(div().w(px(90.0)).flex_shrink_0().child(t!("sync.col.permissions").to_string()))
+                .child(div().w(px(130.0)).flex_shrink_0().child(t!("sync.col.modified").to_string())),
         );
 
         // Parent directory ".." entry
@@ -959,7 +964,7 @@ impl ServerSyncView {
                         .text_size(px(11.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_muted())
-                        .child("SERVICES"),
+                        .child(t!("sync.services").to_string()),
                 )
                 .child(
                     div()
@@ -990,9 +995,9 @@ impl ServerSyncView {
                             }
                         }))
                         .child(if state.discovery_loading {
-                            "Discovering..."
+                            t!("sync.discovering").to_string()
                         } else {
-                            "Discover"
+                            t!("sync.discover").to_string()
                         }),
                 ),
         );
@@ -1017,10 +1022,14 @@ impl ServerSyncView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Nginx Sites"),
+                    .child(t!("sync.nginx_sites").to_string()),
             );
             for site in &state.discovered_sites {
-                let ssl_badge = if site.ssl { " [SSL]" } else { "" };
+                let ssl_badge = if site.ssl {
+                    t!("sync.ssl_badge").to_string()
+                } else {
+                    String::new()
+                };
                 let port_str = format!(":{}", site.listen_port);
                 content = content.child(
                     div()
@@ -1066,14 +1075,14 @@ impl ServerSyncView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Databases"),
+                    .child(t!("sync.databases").to_string()),
             );
             for db in &state.discovered_databases {
                 let engine_label = db.engine.label();
                 let size = db.size_display();
                 let tables = db
                     .table_count
-                    .map(|c| format!("{} tables", c))
+                    .map(|c| t!("sync.tables_count", count = c).to_string())
                     .unwrap_or_default();
                 content = content.child(
                     div()
@@ -1119,7 +1128,7 @@ impl ServerSyncView {
                     .py(px(16.0))
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Click Discover to scan services"),
+                    .child(t!("sync.discover_hint").to_string()),
             );
         }
 
@@ -1132,18 +1141,22 @@ impl ServerSyncView {
     // -----------------------------------------------------------------------
     fn render_server_panel(&self, side: PanelSide, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, accent_color) = match side {
-            PanelSide::Source => ("SOURCE", ShellDeckColors::success()),
-            PanelSide::Destination => ("DESTINATION", ShellDeckColors::primary()),
+            PanelSide::Source => (t!("sync.panel.source").to_string(), ShellDeckColors::success()),
+            PanelSide::Destination => (
+                t!("sync.panel.destination").to_string(),
+                ShellDeckColors::primary(),
+            ),
         };
 
         let state = self.panel_state(side);
         let status_text = if state.is_local {
-            "Local Machine"
+            local_machine_label()
         } else if state.connection_name.is_empty() {
-            "Not connected"
+            t!("sync.not_connected").to_string()
         } else {
-            &state.connection_name
+            state.connection_name.clone()
         };
+        let status_line = t!("sync.panel_status", name = status_text.as_str()).to_string();
 
         let mut panel = div()
             .flex()
@@ -1191,7 +1204,7 @@ impl ServerSyncView {
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
                             .truncate()
-                            .child(format!("— {}", status_text)),
+                            .child(status_line),
                     ),
             )
             // Connection picker — top padding separates it from the header band.
@@ -1291,7 +1304,7 @@ impl ServerSyncView {
                 .text_size(px(10.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_muted())
-                .child("SYNC LOG"),
+                .child(t!("sync.log_title").to_string()),
         );
 
         if has_operation {
@@ -1324,7 +1337,7 @@ impl ServerSyncView {
                 .on_click(cx.listener(move |_this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(log_text.clone()));
                 }))
-                .child("Copy"),
+                .child(t!("sync.copy").to_string()),
         );
 
         // Clear button
@@ -1342,7 +1355,7 @@ impl ServerSyncView {
                     this.log_lines.clear();
                     cx.notify();
                 }))
-                .child("Clear"),
+                .child(t!("sync.clear").to_string()),
         );
 
         header = header.child(log_actions);
@@ -1379,7 +1392,13 @@ impl ServerSyncView {
                                         div()
                                             .text_size(px(10.0))
                                             .text_color(ShellDeckColors::text_primary())
-                                            .child(format!("{:.0}%", pct)),
+                                            .child(
+                                                t!(
+                                                    "sync.progress.percent",
+                                                    pct = format!("{:.0}", pct).as_str()
+                                                )
+                                                .to_string(),
+                                            ),
                                     ),
                             )
                             .child(
@@ -1436,10 +1455,10 @@ impl ServerSyncView {
         }
 
         let step_title = match self.wizard_step {
-            WizardStep::SelectItems => "Select Items to Sync",
-            WizardStep::ConfigureOptions => "Configure Options",
-            WizardStep::ReviewConfirm => "Review & Confirm",
-            WizardStep::Executing => "Syncing...",
+            WizardStep::SelectItems => t!("sync.wizard.step.select_items").to_string(),
+            WizardStep::ConfigureOptions => t!("sync.wizard.step.configure").to_string(),
+            WizardStep::ReviewConfirm => t!("sync.wizard.step.review").to_string(),
+            WizardStep::Executing => t!("sync.wizard.step.executing").to_string(),
         };
 
         // Backdrop
@@ -1503,7 +1522,12 @@ impl ServerSyncView {
     }
 
     fn render_wizard_step_indicator(&self) -> impl IntoElement {
-        let steps = ["Items", "Options", "Review", "Execute"];
+        let steps = [
+            t!("sync.wizard.indicator.items").to_string(),
+            t!("sync.wizard.indicator.options").to_string(),
+            t!("sync.wizard.indicator.review").to_string(),
+            t!("sync.wizard.indicator.execute").to_string(),
+        ];
         let current = match self.wizard_step {
             WizardStep::SelectItems => 0,
             WizardStep::ConfigureOptions => 1,
@@ -1533,7 +1557,7 @@ impl ServerSyncView {
                         el.bg(bg_tertiary())
                             .text_color(ShellDeckColors::text_muted())
                     })
-                    .child(step_name.to_string()),
+                    .child(step_name.clone()),
             );
         }
         indicator
@@ -1578,7 +1602,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Nginx Sites (Source)"),
+                    .child(t!("sync.nginx_source").to_string()),
             );
             for (i, site) in self.source_panel.discovered_sites.iter().enumerate() {
                 let site_name = site.server_name.clone();
@@ -1663,7 +1687,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Databases (Source)"),
+                    .child(t!("sync.databases_source").to_string()),
             );
             for (i, db) in self.source_panel.discovered_databases.iter().enumerate() {
                 let db_name = db.name.clone();
@@ -1785,7 +1809,7 @@ impl ServerSyncView {
                     div()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("+ Add Directory (current paths)"),
+                        .child(t!("sync.add_directory").to_string()),
                 ),
         );
 
@@ -1797,7 +1821,9 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(format!("{} items selected", self.wizard_items.len())),
+                    .child(
+                        t!("sync.items_selected", count = self.wizard_items.len()).to_string(),
+                    ),
             );
         }
 
@@ -1812,7 +1838,7 @@ impl ServerSyncView {
             .flex_col()
             .gap(px(12.0))
             .child(self.render_option_toggle(
-                "Compress transfers",
+                t!("sync.option.compress").to_string(),
                 opts.compress,
                 cx,
                 |this, val| {
@@ -1820,7 +1846,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Dry run (preview only)",
+                t!("sync.option.dry_run").to_string(),
                 opts.dry_run,
                 cx,
                 |this, val| {
@@ -1828,7 +1854,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Delete extra files on destination",
+                t!("sync.option.delete_extra").to_string(),
                 opts.delete_extra,
                 cx,
                 |this, val| {
@@ -1836,7 +1862,7 @@ impl ServerSyncView {
                 },
             ))
             .child(self.render_option_toggle(
-                "Skip existing files",
+                t!("sync.option.skip_existing").to_string(),
                 opts.skip_existing,
                 cx,
                 |this, val| {
@@ -1853,7 +1879,7 @@ impl ServerSyncView {
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Bandwidth limit (KB/s)"),
+                            .child(t!("sync.bandwidth_limit").to_string()),
                     )
                     .child(
                         div()
@@ -1861,8 +1887,8 @@ impl ServerSyncView {
                             .text_color(ShellDeckColors::text_muted())
                             .child(
                                 opts.bandwidth_limit
-                                    .map(|bw| format!("{} KB/s", bw))
-                                    .unwrap_or_else(|| "Unlimited".to_string()),
+                                    .map(|bw| t!("sync.bandwidth_value", kb = bw).to_string())
+                                    .unwrap_or_else(|| t!("sync.bandwidth_unlimited").to_string()),
                             ),
                     ),
             )
@@ -1870,12 +1896,12 @@ impl ServerSyncView {
 
     fn render_option_toggle(
         &self,
-        label: &str,
+        label: String,
         value: bool,
         cx: &mut Context<Self>,
         setter: fn(&mut Self, bool),
     ) -> impl IntoElement {
-        let label_str = label.to_string();
+        let label_str = label;
         div()
             .id(ElementId::from(SharedString::from(format!(
                 "opt-{}",
@@ -1923,27 +1949,30 @@ impl ServerSyncView {
                 .text_size(px(13.0))
                 .text_color(ShellDeckColors::text_primary())
                 .font_weight(FontWeight::MEDIUM)
-                .child(format!(
-                    "Sync {} items from {} to {}",
-                    self.wizard_items.len(),
-                    self.source_panel.connection_name,
-                    self.dest_panel.connection_name,
-                )),
+                .child(
+                    t!(
+                        "sync.review.summary",
+                        count = self.wizard_items.len(),
+                        source = self.source_panel.connection_name.as_str(),
+                        dest = self.dest_panel.connection_name.as_str(),
+                    )
+                    .to_string(),
+                ),
         );
 
         // Options summary
         let mut opts_summary = Vec::new();
         if self.wizard_options.compress {
-            opts_summary.push("compress");
+            opts_summary.push(t!("sync.review.option.compress").to_string());
         }
         if self.wizard_options.dry_run {
-            opts_summary.push("dry run");
+            opts_summary.push(t!("sync.review.option.dry_run").to_string());
         }
         if self.wizard_options.delete_extra {
-            opts_summary.push("delete extra");
+            opts_summary.push(t!("sync.review.option.delete_extra").to_string());
         }
         if self.wizard_options.skip_existing {
-            opts_summary.push("skip existing");
+            opts_summary.push(t!("sync.review.option.skip_existing").to_string());
         }
 
         if !opts_summary.is_empty() {
@@ -1951,7 +1980,13 @@ impl ServerSyncView {
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("Options: {}", opts_summary.join(", "))),
+                    .child(
+                        t!(
+                            "sync.review.options",
+                            options = opts_summary.join(", ").as_str()
+                        )
+                        .to_string(),
+                    ),
             );
         }
 
@@ -2002,7 +2037,13 @@ impl ServerSyncView {
                             div()
                                 .text_size(px(13.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(format!("Overall: {:.0}%", pct)),
+                                .child(
+                                    t!(
+                                        "sync.progress.overall",
+                                        pct = format!("{:.0}", pct).as_str()
+                                    )
+                                    .to_string(),
+                                ),
                         )
                         .child(
                             div()
@@ -2045,7 +2086,13 @@ impl ServerSyncView {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(format!("{:.0}%", item_pct)),
+                                .child(
+                                    t!(
+                                        "sync.progress.percent",
+                                        pct = format!("{:.0}", item_pct).as_str()
+                                    )
+                                    .to_string(),
+                                ),
                         )
                         .when_some(prog.current_file.clone(), |el, file| {
                             el.child(
@@ -2062,7 +2109,7 @@ impl ServerSyncView {
                 div()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Preparing sync..."),
+                    .child(t!("sync.preparing").to_string()),
             );
         }
 
@@ -2121,7 +2168,7 @@ impl ServerSyncView {
                         this.wizard_active = false;
                         cx.notify();
                     }))
-                    .child("Cancel"),
+                    .child(t!("sync.cancel").to_string()),
             );
         }
 
@@ -2148,7 +2195,7 @@ impl ServerSyncView {
                         };
                         cx.notify();
                     }))
-                    .child("Back"),
+                    .child(t!("sync.back").to_string()),
             );
         }
 
@@ -2181,7 +2228,7 @@ impl ServerSyncView {
                             el.bg(bg_tertiary())
                                 .text_color(ShellDeckColors::text_muted())
                         })
-                        .child("Next"),
+                        .child(t!("sync.next").to_string()),
                 );
             }
             WizardStep::ConfigureOptions => {
@@ -2201,7 +2248,7 @@ impl ServerSyncView {
                             this.wizard_step = WizardStep::ReviewConfirm;
                             cx.notify();
                         }))
-                        .child("Next"),
+                        .child(t!("sync.next").to_string()),
                 );
             }
             WizardStep::ReviewConfirm => {
@@ -2243,7 +2290,7 @@ impl ServerSyncView {
                             }
                             cx.notify();
                         }))
-                        .child("Start Sync"),
+                        .child(t!("sync.start").to_string()),
                 );
             }
             WizardStep::Executing => {
@@ -2265,7 +2312,7 @@ impl ServerSyncView {
                             }
                             cx.notify();
                         }))
-                        .child("Cancel Sync"),
+                        .child(t!("sync.cancel_sync").to_string()),
                 );
             }
         }

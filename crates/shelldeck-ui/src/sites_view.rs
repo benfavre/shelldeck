@@ -13,6 +13,7 @@ use uuid::Uuid;
 const PAGE_SIZE: usize = 50;
 
 use crate::theme::ShellDeckColors;
+use crate::t;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -53,12 +54,12 @@ pub enum SiteTypeFilter {
 }
 
 impl SiteTypeFilter {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            SiteTypeFilter::All => "All",
-            SiteTypeFilter::Nginx => "Nginx",
-            SiteTypeFilter::Mysql => "MySQL",
-            SiteTypeFilter::Postgresql => "PostgreSQL",
+            SiteTypeFilter::All => t!("sites.filter.all").to_string(),
+            SiteTypeFilter::Nginx => "Nginx".to_string(),
+            SiteTypeFilter::Mysql => "MySQL".to_string(),
+            SiteTypeFilter::Postgresql => "PostgreSQL".to_string(),
         }
     }
 
@@ -84,13 +85,13 @@ pub enum SiteSortBy {
 }
 
 impl SiteSortBy {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            SiteSortBy::Name => "Name",
-            SiteSortBy::Server => "Server",
-            SiteSortBy::Type => "Type",
-            SiteSortBy::DiscoveredAt => "Date",
-            SiteSortBy::Status => "Status",
+            SiteSortBy::Name => t!("sites.sort.name").to_string(),
+            SiteSortBy::Server => t!("sites.sort.server").to_string(),
+            SiteSortBy::Type => t!("sites.sort.type").to_string(),
+            SiteSortBy::DiscoveredAt => t!("sites.sort.date").to_string(),
+            SiteSortBy::Status => t!("sites.sort.status").to_string(),
         }
     }
 }
@@ -432,13 +433,13 @@ impl SitesView {
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!("on {} servers", count)),
+                    .child(t!("sites.group_servers", count = count).to_string()),
             )
     }
 
     // -- Render helpers ------------------------------------------------------
 
-    fn render_stat_card(label: &str, value: String, accent: Hsla) -> Div {
+    fn render_stat_card(label: impl AsRef<str>, value: String, accent: Hsla) -> Div {
         div()
             .flex()
             .flex_col()
@@ -455,7 +456,7 @@ impl SitesView {
                     .text_size(px(10.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child(label.to_string()),
+                    .child(label.as_ref().to_string()),
             )
             .child(
                 div()
@@ -474,22 +475,22 @@ impl SitesView {
             .w_full()
             .flex_shrink_0()
             .child(Self::render_stat_card(
-                "SITES",
+                t!("sites.stats.sites").to_string(),
                 self.total_sites().to_string(),
                 ShellDeckColors::primary(),
             ))
             .child(Self::render_stat_card(
-                "DATABASES",
+                t!("sites.stats.databases").to_string(),
                 self.total_databases().to_string(),
                 ShellDeckColors::success(),
             ))
             .child(Self::render_stat_card(
-                "SERVERS",
+                t!("sites.stats.servers").to_string(),
                 self.servers_scanned().to_string(),
                 ShellDeckColors::warning(),
             ))
             .child(Self::render_stat_card(
-                "SSL SITES",
+                t!("sites.stats.ssl").to_string(),
                 self.ssl_sites_count().to_string(),
                 ShellDeckColors::status_connected(),
             ))
@@ -525,7 +526,7 @@ impl SitesView {
                 this.collapsed_groups.clear();
                 cx.notify();
             }))
-            .child(label.to_string())
+            .child(label)
     }
 
     fn render_sort_option(&self, sort: SiteSortBy, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -586,7 +587,7 @@ impl SitesView {
         let search_input = div().min_w(px(220.0)).child(
             Input::new(&self.search_state)
                 .size(InputSize::Sm)
-                .placeholder("Filter sites...")
+                .placeholder(t!("sites.search_placeholder").to_string())
                 .clearable(true)
                 .prefix(
                     svg()
@@ -625,7 +626,7 @@ impl SitesView {
                 div()
                     .text_size(px(10.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Sort:"),
+                    .child(t!("sites.sort.label").to_string()),
             )
             .child(self.render_sort_option(SiteSortBy::Name, cx))
             .child(self.render_sort_option(SiteSortBy::Server, cx))
@@ -661,7 +662,7 @@ impl SitesView {
                             this.view_mode = SitesViewMode::Table;
                             cx.notify();
                         }))
-                        .child("Table"),
+                        .child(t!("sites.view.table").to_string()),
                 )
                 .child(
                     div()
@@ -683,7 +684,7 @@ impl SitesView {
                             this.view_mode = SitesViewMode::Cards;
                             cx.notify();
                         }))
-                        .child("Cards"),
+                        .child(t!("sites.view.cards").to_string()),
                 ),
         );
 
@@ -703,14 +704,14 @@ impl SitesView {
             .text_size(px(10.0))
             .font_weight(FontWeight::BOLD)
             .text_color(ShellDeckColors::text_muted())
-            .child(div().w(px(60.0)).flex_shrink_0().child("Type"))
-            .child(div().flex_1().min_w(px(100.0)).child("Name"))
-            .child(div().w(px(140.0)).flex_shrink_0().child("Server"))
-            .child(div().w(px(60.0)).flex_shrink_0().child("Port"))
-            .child(div().w(px(40.0)).flex_shrink_0().child("SSL"))
-            .child(div().flex_1().min_w(px(100.0)).child("Root / Size"))
-            .child(div().w(px(120.0)).flex_shrink_0().child("Tags"))
-            .child(div().w(px(80.0)).flex_shrink_0().child("Actions"))
+            .child(div().w(px(60.0)).flex_shrink_0().child(t!("sites.col.type").to_string()))
+            .child(div().flex_1().min_w(px(100.0)).child(t!("sites.col.name").to_string()))
+            .child(div().w(px(140.0)).flex_shrink_0().child(t!("sites.col.server").to_string()))
+            .child(div().w(px(60.0)).flex_shrink_0().child(t!("sites.col.port").to_string()))
+            .child(div().w(px(40.0)).flex_shrink_0().child(t!("sites.col.ssl").to_string()))
+            .child(div().flex_1().min_w(px(100.0)).child(t!("sites.col.root_size").to_string()))
+            .child(div().w(px(120.0)).flex_shrink_0().child(t!("sites.col.tags").to_string()))
+            .child(div().w(px(80.0)).flex_shrink_0().child(t!("sites.col.actions").to_string()))
     }
 
     fn render_table_row(&self, site: &ManagedSite, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -1023,7 +1024,7 @@ impl SitesView {
                     .bg(ShellDeckColors::success().opacity(0.15))
                     .text_size(px(9.0))
                     .text_color(ShellDeckColors::success())
-                    .child("SSL"),
+                    .child(t!("sites.col.ssl").to_string()),
             );
         }
         // Tags
@@ -1179,7 +1180,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label("Server"))
+                .child(Self::detail_label(&t!("sites.detail.server").to_string()))
                 .child(Self::detail_value(&site.connection_name)),
         );
 
@@ -1191,7 +1192,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label("Config Path"))
+                        .child(Self::detail_label(&t!("sites.detail.config_path").to_string()))
                         .child(Self::detail_value(&s.config_path)),
                 );
                 content = content.child(
@@ -1199,7 +1200,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label("Root"))
+                        .child(Self::detail_label(&t!("sites.detail.root").to_string()))
                         .child(Self::detail_value(&s.root)),
                 );
                 content = content.child(
@@ -1212,7 +1213,7 @@ impl SitesView {
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.0))
-                                .child(Self::detail_label("Port"))
+                                .child(Self::detail_label(&t!("sites.detail.port").to_string()))
                                 .child(Self::detail_value(&s.listen_port.to_string())),
                         )
                         .child(
@@ -1220,8 +1221,12 @@ impl SitesView {
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.0))
-                                .child(Self::detail_label("SSL"))
-                                .child(Self::detail_value(if s.ssl { "Yes" } else { "No" })),
+                                .child(Self::detail_label(&t!("sites.col.ssl").to_string()))
+                                .child(Self::detail_value(if s.ssl {
+                                    t!("sites.yes").to_string()
+                                } else {
+                                    t!("sites.no").to_string()
+                                })),
                         ),
                 );
                 if let Some(ref url) = site.url() {
@@ -1230,7 +1235,7 @@ impl SitesView {
                             .flex()
                             .flex_col()
                             .gap(px(4.0))
-                            .child(Self::detail_label("URL"))
+                            .child(Self::detail_label(&t!("sites.detail.url").to_string()))
                             .child(
                                 div()
                                     .text_size(px(11.0))
@@ -1246,7 +1251,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label("Engine"))
+                        .child(Self::detail_label(&t!("sites.detail.engine").to_string()))
                         .child(Self::detail_value(d.engine.label())),
                 );
                 content = content.child(
@@ -1254,7 +1259,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label("Size"))
+                        .child(Self::detail_label(&t!("sites.detail.size").to_string()))
                         .child(Self::detail_value(&d.size_display())),
                 );
                 if let Some(tc) = d.table_count {
@@ -1263,7 +1268,7 @@ impl SitesView {
                             .flex()
                             .flex_col()
                             .gap(px(4.0))
-                            .child(Self::detail_label("Tables"))
+                            .child(Self::detail_label(&t!("sites.detail.tables").to_string()))
                             .child(Self::detail_value(&tc.to_string())),
                     );
                 }
@@ -1276,12 +1281,12 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label("Tags"))
+                .child(Self::detail_label(&t!("sites.detail.tags").to_string()))
                 .child(if site.tags.is_empty() {
                     div()
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("No tags")
+                        .child(t!("sites.no_tags").to_string())
                 } else {
                     let mut tag_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
                     for tag in &site.tags {
@@ -1307,7 +1312,7 @@ impl SitesView {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(Self::detail_label("Notes"))
+                    .child(Self::detail_label(&t!("sites.detail.notes").to_string()))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -1329,7 +1334,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label("Status"))
+                .child(Self::detail_label(&t!("sites.detail.status").to_string()))
                 .child(
                     div()
                         .flex()
@@ -1338,7 +1343,9 @@ impl SitesView {
                         .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
                         .child(div().text_size(px(11.0)).text_color(status_color).child(
                             match &site.status {
-                                SiteStatus::Error(msg) => format!("Error: {}", msg),
+                                SiteStatus::Error(msg) => {
+                                    t!("sites.detail.error", msg = msg.as_str()).to_string()
+                                }
                                 other => other.label().to_string(),
                             },
                         )),
@@ -1351,7 +1358,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label("Discovered"))
+                .child(Self::detail_label(&t!("sites.detail.discovered").to_string()))
                 .child(Self::detail_value(
                     &site.discovered_at.format("%Y-%m-%d %H:%M").to_string(),
                 )),
@@ -1373,7 +1380,7 @@ impl SitesView {
         if let Some(url) = url_for_open {
             actions = actions.child(Self::detail_action_button(
                 "detail-open-browser",
-                "Open in Browser",
+                t!("sites.action.open_browser").to_string(),
                 ShellDeckColors::primary(),
                 cx.listener(move |_this, _, _, cx| {
                     cx.emit(SitesEvent::OpenInBrowser(url.clone()));
@@ -1383,7 +1390,7 @@ impl SitesView {
 
         actions = actions.child(Self::detail_action_button(
             "detail-ssh",
-            "SSH to Server",
+            t!("sites.action.ssh").to_string(),
             ShellDeckColors::success(),
             cx.listener(move |_this, _, _, cx| {
                 cx.emit(SitesEvent::SshToServer(conn_id));
@@ -1393,7 +1400,7 @@ impl SitesView {
         let check_id = site.id;
         actions = actions.child(Self::detail_action_button(
             "detail-check-status",
-            "Check Status",
+            t!("sites.action.check_status").to_string(),
             ShellDeckColors::status_connected(),
             cx.listener(move |_this, _, _, cx| {
                 cx.emit(SitesEvent::CheckSiteStatus(check_id));
@@ -1403,9 +1410,9 @@ impl SitesView {
         actions = actions.child(Self::detail_action_button(
             "detail-fav",
             if site.favorite {
-                "Remove Favorite"
+                t!("sites.action.remove_favorite").to_string()
             } else {
-                "Add Favorite"
+                t!("sites.action.add_favorite").to_string()
             },
             ShellDeckColors::warning(),
             cx.listener(move |_this, _, _, cx| {
@@ -1416,7 +1423,7 @@ impl SitesView {
         let sync_id = site.id;
         actions = actions.child(Self::detail_action_button(
             "detail-add-sync",
-            "Add to Sync",
+            t!("sites.action.add_sync").to_string(),
             ShellDeckColors::primary(),
             cx.listener(move |_this, _, _, cx| {
                 cx.emit(SitesEvent::AddToSync(sync_id));
@@ -1425,7 +1432,7 @@ impl SitesView {
 
         actions = actions.child(Self::detail_action_button(
             "detail-remove",
-            "Remove Site",
+            t!("sites.action.remove").to_string(),
             ShellDeckColors::error(),
             cx.listener(move |_this, _, _, cx| {
                 cx.emit(SitesEvent::RemoveSite(remove_id));
@@ -1437,24 +1444,24 @@ impl SitesView {
         panel
     }
 
-    fn detail_label(text: &str) -> Div {
+    fn detail_label(text: impl AsRef<str>) -> Div {
         div()
             .text_size(px(10.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(ShellDeckColors::text_muted())
-            .child(text.to_uppercase())
+            .child(text.as_ref().to_uppercase())
     }
 
-    fn detail_value(text: &str) -> Div {
+    fn detail_value(text: impl AsRef<str>) -> Div {
         div()
             .text_size(px(11.0))
             .text_color(ShellDeckColors::text_primary())
-            .child(text.to_string())
+            .child(text.as_ref().to_string())
     }
 
     fn detail_action_button(
         id: &str,
-        label: &str,
+        label: impl Into<SharedString>,
         color: Hsla,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Stateful<Div> {
@@ -1473,7 +1480,7 @@ impl SitesView {
             .bg(color.opacity(0.1))
             .hover(|el| el.bg(color.opacity(0.2)))
             .on_click(handler)
-            .child(label.to_string())
+            .child(label.into())
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> Div {
@@ -1502,13 +1509,13 @@ impl SitesView {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child("No sites discovered"),
+                    .child(t!("sites.empty.title").to_string()),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Scan your servers to discover sites and databases"),
+                    .child(t!("sites.empty.hint").to_string()),
             )
             .child(
                 div()
@@ -1526,7 +1533,7 @@ impl SitesView {
                     .on_click(cx.listener(|_this, _, _, cx| {
                         cx.emit(SitesEvent::ScanAllServers);
                     }))
-                    .child("Scan All Servers"),
+                    .child(t!("sites.scan_all").to_string()),
             )
     }
 
@@ -1604,7 +1611,7 @@ impl SitesView {
                     .text_color(ShellDeckColors::text_primary())
                     .cursor_pointer()
                     .hover(move |el| el.bg(accent.opacity(0.12)).text_color(accent))
-                    .child("Open in browser")
+                    .child(t!("sites.action.open_browser").to_string())
                     .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
                         cx.stop_propagation();
                         this.kebab_menu = None;
@@ -1630,7 +1637,7 @@ impl SitesView {
                 .text_color(ShellDeckColors::text_primary())
                 .cursor_pointer()
                 .hover(move |el| el.bg(ssh_accent.opacity(0.12)).text_color(ssh_accent))
-                .child("SSH to server")
+                .child(t!("sites.action.ssh").to_string())
                 .on_click(cx.listener(move |this, _e: &ClickEvent, _window, cx| {
                     cx.stop_propagation();
                     this.kebab_menu = None;
@@ -1641,9 +1648,9 @@ impl SitesView {
         // "Toggle favorite"
         let fav_accent = ShellDeckColors::warning();
         let fav_label = if favorite {
-            "Remove from favorites"
+            t!("sites.action.remove_favorite").to_string()
         } else {
-            "Add to favorites"
+            t!("sites.action.add_favorite").to_string()
         };
         panel = panel.child(
             div()
@@ -1721,7 +1728,7 @@ impl Render for SitesView {
                         .text_size(px(18.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child("Sites"),
+                        .child(t!("sites.title").to_string()),
                 )
                 .when(self.scans_pending > 0, |el| {
                     el.child(
@@ -1740,10 +1747,7 @@ impl Render for SitesView {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(format!(
-                                        "Scanning ({} remaining)...",
-                                        self.scans_pending
-                                    )),
+                                    .child(t!("sites.scanning", count = self.scans_pending).to_string()),
                             ),
                     )
                 }),
@@ -1772,7 +1776,7 @@ impl Render for SitesView {
                     cx.emit(SitesEvent::ScanAllServers);
                 }));
         }
-        scan_btn = scan_btn.child("Scan All Servers");
+        scan_btn = scan_btn.child(t!("sites.scan_all").to_string());
 
         let clear_btn = div()
             .id("clear-all-sites-btn")
@@ -1788,7 +1792,7 @@ impl Render for SitesView {
             .on_click(cx.listener(|_this, _, _, cx| {
                 cx.emit(SitesEvent::ClearAllSites);
             }))
-            .child("Clear All");
+            .child(t!("sites.clear_all").to_string());
 
         header = header.child(
             div()
@@ -1828,9 +1832,14 @@ impl Render for SitesView {
         let filtered_count = filtered.len();
         let total_count = self.sites.len();
         let count_text = if filtered_count == total_count {
-            format!("{} sites", total_count)
+            t!("sites.count_all", count = total_count).to_string()
         } else {
-            format!("{} of {} sites", filtered_count, total_count)
+            t!(
+                "sites.count_filtered",
+                filtered = filtered_count,
+                total = total_count
+            )
+            .to_string()
         };
         page = page.child(
             div().px(px(24.0)).pb(px(4.0)).flex_shrink_0().child(
@@ -1861,7 +1870,7 @@ impl Render for SitesView {
                     .flex_grow()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No sites match current filters"),
+                    .child(t!("sites.empty.filtered").to_string()),
             );
         } else {
             match self.view_mode {
@@ -2003,7 +2012,7 @@ impl Render for SitesView {
                                         div()
                                             .text_size(px(11.0))
                                             .text_color(ShellDeckColors::text_muted())
-                                            .child(format!("{} servers", group_count)),
+                                            .child(t!("sites.servers_count", count = group_count).to_string()),
                                     ),
                             );
                             for j in 0..group_count {
@@ -2061,7 +2070,7 @@ impl Render for SitesView {
                                             this.visible_card_count += PAGE_SIZE;
                                             cx.notify();
                                         }))
-                                        .child("Show More"),
+                                        .child(t!("sites.show_more").to_string()),
                                 )
                                 .child(
                                     div()
@@ -2084,7 +2093,7 @@ impl Render for SitesView {
                                             this.visible_card_count = usize::MAX;
                                             cx.notify();
                                         }))
-                                        .child("Show All"),
+                                        .child(t!("sites.show_all").to_string()),
                                 ),
                         );
                     }
