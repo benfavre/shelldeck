@@ -651,11 +651,7 @@ impl Render for SidebarView {
             .gap(px(2.0))
             .px(px(4.0))
             .py(px(8.0))
-            .child(self.render_nav_item(
-                SidebarSection::Connections,
-                Some(connected_count),
-                cx,
-            ))
+            .child(self.render_nav_item(SidebarSection::Connections, Some(connected_count), cx))
             .child(self.render_nav_item(
                 SidebarSection::Terminals,
                 if self.terminal_tab_count > 0 {
@@ -671,11 +667,7 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::Sites, None, cx))
             .child(self.render_nav_item(SidebarSection::FileEditor, None, cx));
         if self.jean_available {
-            nav = nav.child(self.render_nav_item(
-                SidebarSection::JeanConsole,
-                None,
-                cx,
-            ));
+            nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, None, cx));
         }
         if self.fleet_available {
             nav = nav.child(self.render_nav_item(SidebarSection::Fleet, None, cx));
@@ -688,7 +680,7 @@ impl Render for SidebarView {
             .flex()
             .flex_col()
             .id("sidebar-host-list")
-            .child(Self::render_section_header(&t!("sidebar.hosts").to_string()))
+            .child(Self::render_section_header(t!("sidebar.hosts").as_ref()))
             .child(self.render_search_bar(cx));
 
         // Ungrouped connections (with highlights)
@@ -735,11 +727,8 @@ impl Render for SidebarView {
                 cx.emit(SidebarEvent::AddConnection);
             }))
             .child(
-                Button::new(
-                    "add-connection",
-                    t!("sidebar.add_connection").to_string(),
-                )
-                .variant(ButtonVariant::Ghost),
+                Button::new("add-connection", t!("sidebar.add_connection").to_string())
+                    .variant(ButtonVariant::Ghost),
             );
 
         // Invisible resize hit-area overlapping the right border.

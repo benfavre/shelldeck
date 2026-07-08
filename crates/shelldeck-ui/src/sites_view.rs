@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 const PAGE_SIZE: usize = 50;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -475,22 +475,22 @@ impl SitesView {
             .w_full()
             .flex_shrink_0()
             .child(Self::render_stat_card(
-                t!("sites.stats.sites").to_string(),
+                &t!("sites.stats.sites"),
                 self.total_sites().to_string(),
                 ShellDeckColors::primary(),
             ))
             .child(Self::render_stat_card(
-                t!("sites.stats.databases").to_string(),
+                &t!("sites.stats.databases"),
                 self.total_databases().to_string(),
                 ShellDeckColors::success(),
             ))
             .child(Self::render_stat_card(
-                t!("sites.stats.servers").to_string(),
+                &t!("sites.stats.servers"),
                 self.servers_scanned().to_string(),
                 ShellDeckColors::warning(),
             ))
             .child(Self::render_stat_card(
-                t!("sites.stats.ssl").to_string(),
+                &t!("sites.stats.ssl"),
                 self.ssl_sites_count().to_string(),
                 ShellDeckColors::status_connected(),
             ))
@@ -704,14 +704,54 @@ impl SitesView {
             .text_size(px(10.0))
             .font_weight(FontWeight::BOLD)
             .text_color(ShellDeckColors::text_muted())
-            .child(div().w(px(60.0)).flex_shrink_0().child(t!("sites.col.type").to_string()))
-            .child(div().flex_1().min_w(px(100.0)).child(t!("sites.col.name").to_string()))
-            .child(div().w(px(140.0)).flex_shrink_0().child(t!("sites.col.server").to_string()))
-            .child(div().w(px(60.0)).flex_shrink_0().child(t!("sites.col.port").to_string()))
-            .child(div().w(px(40.0)).flex_shrink_0().child(t!("sites.col.ssl").to_string()))
-            .child(div().flex_1().min_w(px(100.0)).child(t!("sites.col.root_size").to_string()))
-            .child(div().w(px(120.0)).flex_shrink_0().child(t!("sites.col.tags").to_string()))
-            .child(div().w(px(80.0)).flex_shrink_0().child(t!("sites.col.actions").to_string()))
+            .child(
+                div()
+                    .w(px(60.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.type").to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(100.0))
+                    .child(t!("sites.col.name").to_string()),
+            )
+            .child(
+                div()
+                    .w(px(140.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.server").to_string()),
+            )
+            .child(
+                div()
+                    .w(px(60.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.port").to_string()),
+            )
+            .child(
+                div()
+                    .w(px(40.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.ssl").to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(100.0))
+                    .child(t!("sites.col.root_size").to_string()),
+            )
+            .child(
+                div()
+                    .w(px(120.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.tags").to_string()),
+            )
+            .child(
+                div()
+                    .w(px(80.0))
+                    .flex_shrink_0()
+                    .child(t!("sites.col.actions").to_string()),
+            )
     }
 
     fn render_table_row(&self, site: &ManagedSite, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -1180,7 +1220,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label(&t!("sites.detail.server").to_string()))
+                .child(Self::detail_label(&t!("sites.detail.server")))
                 .child(Self::detail_value(&site.connection_name)),
         );
 
@@ -1192,7 +1232,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label(&t!("sites.detail.config_path").to_string()))
+                        .child(Self::detail_label(&t!("sites.detail.config_path")))
                         .child(Self::detail_value(&s.config_path)),
                 );
                 content = content.child(
@@ -1200,7 +1240,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label(&t!("sites.detail.root").to_string()))
+                        .child(Self::detail_label(&t!("sites.detail.root")))
                         .child(Self::detail_value(&s.root)),
                 );
                 content = content.child(
@@ -1213,15 +1253,15 @@ impl SitesView {
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.0))
-                                .child(Self::detail_label(&t!("sites.detail.port").to_string()))
-                                .child(Self::detail_value(&s.listen_port.to_string())),
+                                .child(Self::detail_label(&t!("sites.detail.port")))
+                                .child(Self::detail_value(s.listen_port.to_string())),
                         )
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.0))
-                                .child(Self::detail_label(&t!("sites.col.ssl").to_string()))
+                                .child(Self::detail_label(&t!("sites.col.ssl")))
                                 .child(Self::detail_value(if s.ssl {
                                     t!("sites.yes").to_string()
                                 } else {
@@ -1235,7 +1275,7 @@ impl SitesView {
                             .flex()
                             .flex_col()
                             .gap(px(4.0))
-                            .child(Self::detail_label(&t!("sites.detail.url").to_string()))
+                            .child(Self::detail_label(&t!("sites.detail.url")))
                             .child(
                                 div()
                                     .text_size(px(11.0))
@@ -1251,7 +1291,7 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label(&t!("sites.detail.engine").to_string()))
+                        .child(Self::detail_label(&t!("sites.detail.engine")))
                         .child(Self::detail_value(d.engine.label())),
                 );
                 content = content.child(
@@ -1259,8 +1299,8 @@ impl SitesView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(Self::detail_label(&t!("sites.detail.size").to_string()))
-                        .child(Self::detail_value(&d.size_display())),
+                        .child(Self::detail_label(&t!("sites.detail.size")))
+                        .child(Self::detail_value(d.size_display())),
                 );
                 if let Some(tc) = d.table_count {
                     content = content.child(
@@ -1268,8 +1308,8 @@ impl SitesView {
                             .flex()
                             .flex_col()
                             .gap(px(4.0))
-                            .child(Self::detail_label(&t!("sites.detail.tables").to_string()))
-                            .child(Self::detail_value(&tc.to_string())),
+                            .child(Self::detail_label(&t!("sites.detail.tables")))
+                            .child(Self::detail_value(tc.to_string())),
                     );
                 }
             }
@@ -1281,7 +1321,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label(&t!("sites.detail.tags").to_string()))
+                .child(Self::detail_label(&t!("sites.detail.tags")))
                 .child(if site.tags.is_empty() {
                     div()
                         .text_size(px(11.0))
@@ -1312,7 +1352,7 @@ impl SitesView {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(Self::detail_label(&t!("sites.detail.notes").to_string()))
+                    .child(Self::detail_label(&t!("sites.detail.notes")))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -1334,7 +1374,7 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label(&t!("sites.detail.status").to_string()))
+                .child(Self::detail_label(&t!("sites.detail.status")))
                 .child(
                     div()
                         .flex()
@@ -1358,9 +1398,9 @@ impl SitesView {
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(Self::detail_label(&t!("sites.detail.discovered").to_string()))
+                .child(Self::detail_label(&t!("sites.detail.discovered")))
                 .child(Self::detail_value(
-                    &site.discovered_at.format("%Y-%m-%d %H:%M").to_string(),
+                    site.discovered_at.format("%Y-%m-%d %H:%M").to_string(),
                 )),
         );
 
@@ -1747,7 +1787,10 @@ impl Render for SitesView {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(t!("sites.scanning", count = self.scans_pending).to_string()),
+                                    .child(
+                                        t!("sites.scanning", count = self.scans_pending)
+                                            .to_string(),
+                                    ),
                             ),
                     )
                 }),
@@ -2012,7 +2055,10 @@ impl Render for SitesView {
                                         div()
                                             .text_size(px(11.0))
                                             .text_color(ShellDeckColors::text_muted())
-                                            .child(t!("sites.servers_count", count = group_count).to_string()),
+                                            .child(
+                                                t!("sites.servers_count", count = group_count)
+                                                    .to_string(),
+                                            ),
                                     ),
                             );
                             for j in 0..group_count {

@@ -11,8 +11,8 @@ use crate::connection_combobox::{build_connection_combobox, connection_idx_for_i
 use crate::editor_buffer::EditorBuffer;
 use crate::icons::{script_category_chip, script_language_chip};
 use crate::syntax::highlight::render_code_block_with_language;
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone, Copy)]
 enum ValidationError {
@@ -590,10 +590,7 @@ impl ScriptForm {
     fn render_target_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.active_field == Some(FormField::Target);
         let options: Vec<(ScriptTarget, String)> = vec![
-            (
-                ScriptTarget::Local,
-                t!("scripts.target.local").to_string(),
-            ),
+            (ScriptTarget::Local, t!("scripts.target.local").to_string()),
             (
                 ScriptTarget::Remote(Uuid::nil()),
                 t!("scripts.target.remote").to_string(),
@@ -1036,7 +1033,7 @@ impl Render for ScriptForm {
                                             "cancel",
                                             t!("scripts.cancel").to_string(),
                                         )
-                                            .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
+                                        .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
                                     ),
                             )
                             .child({

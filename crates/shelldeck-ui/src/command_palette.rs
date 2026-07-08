@@ -6,8 +6,8 @@ use gpui::*;
 use shelldeck_core::config::app_config::ThemePreference;
 use shelldeck_core::config::cloud_account::AppMode;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 actions!(shelldeck, [ToggleCommandPalette]);
 

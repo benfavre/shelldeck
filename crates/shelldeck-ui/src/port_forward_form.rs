@@ -8,8 +8,8 @@ use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;
 
 use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 pub enum PortForwardFormEvent {
@@ -578,7 +578,7 @@ impl Render for PortForwardForm {
                                             "cancel",
                                             t!("scripts.cancel").to_string(),
                                         )
-                                            .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
+                                        .variant(adabraka_ui::prelude::ButtonVariant::Ghost),
                                     ),
                             )
                             .child({

@@ -9,10 +9,10 @@ use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, Scr
 use uuid::Uuid;
 
 use crate::editor_buffer::EditorBuffer;
-use crate::icons::{lucide_icon, lucide_path, script_category_chip, script_language_icon, script_language_chip};
+use crate::icons::{lucide_icon, lucide_path, script_category_chip, script_language_icon};
 use crate::syntax::highlight::render_code_block_with_language;
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 pub enum ScriptEvent {
@@ -533,18 +533,24 @@ impl ScriptEditorView {
                     .hover(|el| el.bg(ShellDeckColors::hover_bg()));
             }
 
-            tabs = tabs.child(all_tab.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(3.0))
-                    .child(lucide_icon("filter", 10.0, if all_selected {
-                        ShellDeckColors::primary()
-                    } else {
-                        ShellDeckColors::text_muted()
-                    }))
-                    .child(t!("scripts.category_all").to_string()),
-            ));
+            tabs = tabs.child(
+                all_tab.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .child(lucide_icon(
+                            "filter",
+                            10.0,
+                            if all_selected {
+                                ShellDeckColors::primary()
+                            } else {
+                                ShellDeckColors::text_muted()
+                            },
+                        ))
+                        .child(t!("scripts.category_all").to_string()),
+                ),
+            );
 
             // Category tabs (only show categories that have scripts)
             let used_categories: std::collections::HashSet<ScriptCategory> =
@@ -864,18 +870,17 @@ impl ScriptEditorView {
 
         // Build run buttons area
         let run_buttons = if self.is_running() {
-            div()
-                .id("stop-script-area")
-                .flex()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .id("stop-script-btn")
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(ScriptEvent::StopScript);
-                        }))
-                        .child(Button::new("stop-script", t!("scripts.stop").to_string()).variant(ButtonVariant::Destructive)),
-                )
+            div().id("stop-script-area").flex().gap(px(4.0)).child(
+                div()
+                    .id("stop-script-btn")
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        cx.emit(ScriptEvent::StopScript);
+                    }))
+                    .child(
+                        Button::new("stop-script", t!("scripts.stop").to_string())
+                            .variant(ButtonVariant::Destructive),
+                    ),
+            )
         } else {
             let menu_open = self.run_target_menu_open;
             let entity = cx.entity();
@@ -961,7 +966,10 @@ impl ScriptEditorView {
                     this.cancel_inline_edit();
                     cx.notify();
                 }))
-                .child(Button::new("cancel-edit-script", t!("scripts.cancel").to_string()).variant(ButtonVariant::Ghost))
+                .child(
+                    Button::new("cancel-edit-script", t!("scripts.cancel").to_string())
+                        .variant(ButtonVariant::Ghost),
+                )
         } else {
             div()
                 .id("edit-script-btn")
@@ -970,7 +978,10 @@ impl ScriptEditorView {
                     this.focus_handle.focus(window);
                     cx.notify();
                 }))
-                .child(Button::new("edit-script", t!("scripts.edit").to_string()).variant(ButtonVariant::Ghost))
+                .child(
+                    Button::new("edit-script", t!("scripts.edit").to_string())
+                        .variant(ButtonVariant::Ghost),
+                )
         };
 
         // Header bar
@@ -1069,8 +1080,11 @@ impl ScriptEditorView {
                                             cx.notify();
                                         }))
                                         .child(
-                                            Button::new("inline-cancel", t!("scripts.cancel_esc").to_string())
-                                                .variant(ButtonVariant::Ghost),
+                                            Button::new(
+                                                "inline-cancel",
+                                                t!("scripts.cancel_esc").to_string(),
+                                            )
+                                            .variant(ButtonVariant::Ghost),
                                         ),
                                 )
                                 .child(
@@ -1081,8 +1095,11 @@ impl ScriptEditorView {
                                             cx.notify();
                                         }))
                                         .child(
-                                            Button::new("inline-save", t!("scripts.save").to_string())
-                                                .variant(ButtonVariant::Default),
+                                            Button::new(
+                                                "inline-save",
+                                                t!("scripts.save").to_string(),
+                                            )
+                                            .variant(ButtonVariant::Default),
                                         ),
                                 ),
                         ),
@@ -1208,7 +1225,8 @@ impl ScriptEditorView {
 
         if self.run_target_connections.is_empty() {
             items.push(
-                PopoverMenuItem::new("run-target-none", t!("scripts.no_connections").to_string()).disabled(true),
+                PopoverMenuItem::new("run-target-none", t!("scripts.no_connections").to_string())
+                    .disabled(true),
             );
         } else {
             for (conn_id, conn_name) in &self.run_target_connections {
@@ -1630,7 +1648,8 @@ impl Render for ScriptEditorView {
         }
 
         if self.run_target_menu_open && !self.is_running() {
-            if let (Some(script), Some(pos)) = (selected.as_ref(), self.run_target_menu_position()) {
+            if let (Some(script), Some(pos)) = (selected.as_ref(), self.run_target_menu_position())
+            {
                 container = container.child(self.render_run_target_popover(script, pos, cx));
             }
         }

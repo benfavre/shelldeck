@@ -8,8 +8,8 @@ use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;
 use uuid::Uuid;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -191,9 +191,7 @@ impl ConnectionForm {
         if user.is_empty() {
             return Err(ValidationError::UserRequired);
         }
-        let port: u16 = port_str
-            .parse()
-            .map_err(|_| ValidationError::PortInvalid)?;
+        let port: u16 = port_str.parse().map_err(|_| ValidationError::PortInvalid)?;
         if port == 0 {
             return Err(ValidationError::PortRange);
         }

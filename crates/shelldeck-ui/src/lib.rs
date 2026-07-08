@@ -8,6 +8,7 @@ pub mod editor_buffer;
 pub mod file_editor;
 pub mod fleet_view;
 pub mod glyph_cache;
+pub mod i18n;
 pub mod icons;
 pub mod jean_view;
 pub mod login_form;
@@ -28,7 +29,6 @@ pub mod terminal_view;
 pub mod theme;
 pub mod toast;
 pub mod variable_prompt;
-pub mod i18n;
 pub mod workspace;
 
 rust_i18n::i18n!("../shelldeck-core/locales", fallback = "fr");

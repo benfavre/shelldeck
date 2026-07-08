@@ -125,6 +125,7 @@ where
     D: serde::Deserializer<'de>,
 {
     #[derive(Deserialize, Default)]
+    #[allow(non_snake_case)] // Manage API wire format uses camelCase keys.
     struct Raw {
         #[serde(default, deserialize_with = "de_nullable_string")]
         from: String,
@@ -218,7 +219,12 @@ pub struct SupportTicket {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub assignee: String,
     /// Last-activity timestamp in ms (server may send an ISO string).
-    #[serde(default, deserialize_with = "de_flex_millis", alias = "updatedAt", alias = "updated_at")]
+    #[serde(
+        default,
+        deserialize_with = "de_flex_millis",
+        alias = "updatedAt",
+        alias = "updated_at"
+    )]
     pub last_at: f64,
     #[serde(default)]
     pub msg_count: u32,
@@ -634,13 +640,14 @@ mod tests {
         }}"#;
         let tr: TicketResponse = serde_json::from_str(ticket).expect("parse aliases");
         assert!((tr.ticket.last_at - 1751470000000.0).abs() < 1.0);
-        assert!((tr.ticket.messages[0].at - chrono::DateTime::parse_from_rfc3339(
-            "2026-06-30T09:39:24.631Z"
-        )
-        .unwrap()
-        .timestamp_millis() as f64)
-            .abs()
-            < 1.0);
+        assert!(
+            (tr.ticket.messages[0].at
+                - chrono::DateTime::parse_from_rfc3339("2026-06-30T09:39:24.631Z")
+                    .unwrap()
+                    .timestamp_millis() as f64)
+                .abs()
+                < 1.0
+        );
         assert!((tr.ticket.messages[1].at - 1751461000000.0).abs() < 1.0);
     }
 
@@ -654,13 +661,14 @@ mod tests {
           ]
         }}"#;
         let tr: TicketResponse = serde_json::from_str(ticket).expect("parse message lastAt");
-        assert!((tr.ticket.messages[0].at - chrono::DateTime::parse_from_rfc3339(
-            "2026-06-30T09:39:24.631Z"
-        )
-        .unwrap()
-        .timestamp_millis() as f64)
-            .abs()
-            < 1.0);
+        assert!(
+            (tr.ticket.messages[0].at
+                - chrono::DateTime::parse_from_rfc3339("2026-06-30T09:39:24.631Z")
+                    .unwrap()
+                    .timestamp_millis() as f64)
+                .abs()
+                < 1.0
+        );
         assert!((tr.ticket.messages[1].at - 1751461000000.0).abs() < 1.0);
     }
 

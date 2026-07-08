@@ -6,16 +6,12 @@ use gpui::*;
 /// Monolith logo — square PNG (`shelldeck-icon.png`, logo variant, not dock rounding).
 /// GPUI `svg()` is monochrome-only; multi-color marks use a raster asset.
 pub fn brand_badge(size: f32) -> impl IntoElement {
-    div()
-        .flex_shrink_0()
-        .w(px(size))
-        .h(px(size))
-        .child(
-            img("images/shelldeck-icon.png")
-                .w_full()
-                .h_full()
-                .object_fit(ObjectFit::Contain),
-        )
+    div().flex_shrink_0().w(px(size)).h(px(size)).child(
+        img("images/shelldeck-icon.png")
+            .w_full()
+            .h_full()
+            .object_fit(ObjectFit::Contain),
+    )
 }
 
 /// Monochrome Monolith mark (`shelldeck-mark.svg`) — muted contexts, `currentColor`.

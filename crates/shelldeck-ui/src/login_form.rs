@@ -10,8 +10,8 @@ use gpui::*;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 pub enum LoginFormEvent {
@@ -373,13 +373,7 @@ impl Render for LoginForm {
             // Provider-less browser sign-in → manage password login page, which
             // round-trips back to authorize. For users with an existing manage
             // session or a password manager in the browser.
-            .child(self.oidc_button(
-                "login-oidc-browser",
-                &oidc_browser,
-                None,
-                None,
-                cx,
-            ))
+            .child(self.oidc_button("login-oidc-browser", &oidc_browser, None, None, cx))
             .child(
                 div()
                     .text_size(px(11.0))

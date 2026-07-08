@@ -15,11 +15,11 @@ use adabraka_ui::components::input::{Input, InputSize, InputState};
 use gpui::prelude::*;
 use gpui::*;
 
+use crate::t;
 use shelldeck_core::config::bext_cloud::{
     CloudInstance, CloudSite, CloudStats, CloudUser, SitesResponse,
 };
 use shelldeck_core::config::bext_instance::InstanceSite;
-use crate::t;
 
 use crate::theme::ShellDeckColors;
 

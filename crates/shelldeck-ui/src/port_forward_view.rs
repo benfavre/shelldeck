@@ -4,8 +4,8 @@ use gpui::*;
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus, PortForward};
 use uuid::Uuid;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 use shelldeck_core::models::port_forward::PortForward as PortForwardModel;
 
@@ -468,8 +468,8 @@ impl PortForwardView {
                     .flex_wrap()
                     .child(Self::render_preset_card(
                         "preset-opencode",
-                        &t!("forwards.preset.opencode.title").to_string(),
-                        &t!("forwards.preset.opencode.desc").to_string(),
+                        t!("forwards.preset.opencode.title").as_ref(),
+                        t!("forwards.preset.opencode.desc").as_ref(),
                         "localhost:4096",
                         "remote:4096",
                         "-->",
@@ -478,8 +478,8 @@ impl PortForwardView {
                     ))
                     .child(Self::render_preset_card(
                         "preset-chrome-devtools",
-                        &t!("forwards.preset.chrome.title").to_string(),
-                        &t!("forwards.preset.chrome.desc").to_string(),
+                        t!("forwards.preset.chrome.title").as_ref(),
+                        t!("forwards.preset.chrome.desc").as_ref(),
                         "localhost:9222",
                         "remote:9222",
                         "<--",
@@ -488,8 +488,8 @@ impl PortForwardView {
                     ))
                     .child(Self::render_preset_card(
                         "preset-dev-server",
-                        &t!("forwards.preset.dev_server.title").to_string(),
-                        &t!("forwards.preset.dev_server.desc").to_string(),
+                        t!("forwards.preset.dev_server.title").as_ref(),
+                        t!("forwards.preset.dev_server.desc").as_ref(),
                         "localhost:3060",
                         "remote:3060",
                         "-->",
@@ -534,8 +534,11 @@ impl Render for PortForwardView {
                                     cx.emit(PortForwardEvent::AddForward);
                                 }))
                                 .child(
-                                    Button::new("add-forward", t!("forwards.add_button").to_string())
-                                        .variant(ButtonVariant::Default),
+                                    Button::new(
+                                        "add-forward",
+                                        t!("forwards.add_button").to_string(),
+                                    )
+                                    .variant(ButtonVariant::Default),
                                 ),
                         ),
                     ),

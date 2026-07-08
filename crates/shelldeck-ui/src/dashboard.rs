@@ -2,8 +2,8 @@ use crate::scale::px;
 use gpui::prelude::*;
 use gpui::*;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 /// Events emitted by the dashboard.
 #[derive(Debug, Clone)]
@@ -254,22 +254,22 @@ impl Render for DashboardView {
                     .flex_wrap()
                     .gap(px(16.0))
                     .child(Self::render_stat_card(
-                        &t!("dashboard.stats.connections").to_string(),
+                        t!("dashboard.stats.connections").as_ref(),
                         self.active_connections,
                         ShellDeckColors::success(),
                     ))
                     .child(Self::render_stat_card(
-                        &t!("dashboard.stats.terminals").to_string(),
+                        t!("dashboard.stats.terminals").as_ref(),
                         self.active_terminals,
                         ShellDeckColors::primary(),
                     ))
                     .child(Self::render_stat_card(
-                        &t!("dashboard.stats.scripts").to_string(),
+                        t!("dashboard.stats.scripts").as_ref(),
                         self.running_scripts,
                         ShellDeckColors::warning(),
                     ))
                     .child(Self::render_stat_card(
-                        &t!("dashboard.stats.forwards").to_string(),
+                        t!("dashboard.stats.forwards").as_ref(),
                         self.active_forwards,
                         ShellDeckColors::primary_hover(),
                     )),
@@ -390,23 +390,23 @@ impl Render for DashboardView {
                                 )
                                 .child(Self::render_shortcut_item(
                                     &format!("{}T", cmd),
-                                    &t!("dashboard.shortcut.new_terminal").to_string(),
+                                    t!("dashboard.shortcut.new_terminal").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     "Ctrl+Tab",
-                                    &t!("dashboard.shortcut.next_tab").to_string(),
+                                    t!("dashboard.shortcut.next_tab").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}B", cmd),
-                                    &t!("dashboard.shortcut.toggle_sidebar").to_string(),
+                                    t!("dashboard.shortcut.toggle_sidebar").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{},", cmd),
-                                    &t!("dashboard.shortcut.settings").to_string(),
+                                    t!("dashboard.shortcut.settings").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}P", cmd, shift),
-                                    &t!("dashboard.shortcut.command_palette").to_string(),
+                                    t!("dashboard.shortcut.command_palette").as_ref(),
                                 )),
                         )
                         .child(
@@ -431,27 +431,27 @@ impl Render for DashboardView {
                                 )
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}C", ctrl, shift),
-                                    &t!("dashboard.shortcut.copy").to_string(),
+                                    t!("dashboard.shortcut.copy").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}V", ctrl, shift),
-                                    &t!("dashboard.shortcut.paste").to_string(),
+                                    t!("dashboard.shortcut.paste").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}F", cmd),
-                                    &t!("dashboard.shortcut.search").to_string(),
+                                    t!("dashboard.shortcut.search").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}L", cmd),
-                                    &t!("dashboard.shortcut.clear").to_string(),
+                                    t!("dashboard.shortcut.clear").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}{}D", ctrl, shift),
-                                    &t!("dashboard.shortcut.split").to_string(),
+                                    t!("dashboard.shortcut.split").as_ref(),
                                 ))
                                 .child(Self::render_shortcut_item(
                                     &format!("{}= / {}-", cmd, cmd),
-                                    &t!("dashboard.shortcut.zoom").to_string(),
+                                    t!("dashboard.shortcut.zoom").as_ref(),
                                 )),
                         ),
                 ),

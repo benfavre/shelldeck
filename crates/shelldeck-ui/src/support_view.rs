@@ -7,17 +7,17 @@
 
 use crate::icons::lucide_icon;
 use crate::scale::px;
+use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
-use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
-use adabraka_ui::components::avatar::{Avatar, AvatarSize};
-use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
+use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -26,8 +26,8 @@ use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
 };
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 /// Which section of the support console is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,9 +146,7 @@ fn adv_priority_label(value: Option<&str>) -> String {
 
 const ADV_PRIORITIES: &[AdvPriorityOpt] = &[
     AdvPriorityOpt { value: None },
-    AdvPriorityOpt {
-        value: Some("low"),
-    },
+    AdvPriorityOpt { value: Some("low") },
     AdvPriorityOpt {
         value: Some("normal"),
     },
@@ -305,8 +303,7 @@ pub struct SupportView {
 impl SupportView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let parent = cx.entity();
-        let assignee_draft_select =
-            Self::build_assignee_draft_select(None, &[], parent, cx);
+        let assignee_draft_select = Self::build_assignee_draft_select(None, &[], parent, cx);
         Self {
             tickets: Vec::new(),
             counts: SupportCounts::default(),
@@ -608,9 +605,7 @@ impl SupportView {
             );
         }
         let selected_value = Self::assignee_select_value(&draft);
-        let selected_index = options
-            .iter()
-            .position(|o| o.value == selected_value);
+        let selected_index = options.iter().position(|o| o.value == selected_value);
         cx.new(|select_cx| {
             Select::new(select_cx)
                 .options(options)
@@ -662,6 +657,7 @@ impl SupportView {
         cx.notify();
     }
 
+    #[expect(dead_code)]
     fn clear_advanced_filters(&mut self, cx: &mut Context<Self>) {
         self.adv_channel = None;
         self.adv_priority = None;
@@ -875,16 +871,14 @@ impl SupportView {
     }
 
     /// Compact adabraka `Button` for the support filter strip / modal (Sm is 36px tall by default).
-    fn compact_filter_button(
-        id: impl Into<ElementId>,
-        label: impl Into<SharedString>,
-    ) -> Button {
+    fn compact_filter_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
         Button::new(id, label)
             .size(ButtonSize::Sm)
             .h(gpui::px(26.0))
             .px(gpui::px(8.0))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_pick_button(
         &self,
         cx: &mut Context<Self>,
@@ -1142,11 +1136,7 @@ impl SupportView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(lucide_icon(
-                                "filter",
-                                14.0,
-                                ShellDeckColors::text_primary(),
-                            ))
+                            .child(lucide_icon("filter", 14.0, ShellDeckColors::text_primary()))
                             .child(
                                 div()
                                     .text_size(px(15.0))
@@ -1165,16 +1155,16 @@ impl SupportView {
                                     "filter-modal-reset",
                                     t!("support.filters.reset").to_string(),
                                 )
-                                    .variant(ButtonVariant::Ghost)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.reset_filter_draft(cx);
-                                                this.refresh_assignee_draft_select(cx);
-                                            });
-                                        }
-                                    }),
+                                .variant(ButtonVariant::Ghost)
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.reset_filter_draft(cx);
+                                            this.refresh_assignee_draft_select(cx);
+                                        });
+                                    }
+                                }),
                             )
                             .child(
                                 IconButton::new("x")
@@ -1263,17 +1253,17 @@ impl SupportView {
                             "filter-modal-apply",
                             t!("support.filters.apply").to_string(),
                         )
-                            .variant(ButtonVariant::Default)
-                            .icon(IconSource::from("check"))
-                            .w_full()
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.apply_filter_draft(cx);
-                                    });
-                                }
-                            }),
+                        .variant(ButtonVariant::Default)
+                        .icon(IconSource::from("check"))
+                        .w_full()
+                        .on_click({
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.apply_filter_draft(cx);
+                                });
+                            }
+                        }),
                     ),
             )
     }
@@ -1314,24 +1304,18 @@ impl SupportView {
             .pt(px(8.0))
             .pb(px(6.0))
             .child(
-                div()
-                    .flex_1()
-                    .child(
-                        Input::new(&self.search_state)
-                            .size(InputSize::Sm)
-                            .placeholder(t!("support.search_placeholder").to_string())
-                            .prefix(lucide_icon(
-                                "search",
-                                12.0,
-                                ShellDeckColors::text_muted(),
-                            ))
-                            .on_change({
-                                let entity = entity.clone();
-                                move |_, cx| {
-                                    entity.update(cx, |_, cx| cx.notify());
-                                }
-                            }),
-                    ),
+                div().flex_1().child(
+                    Input::new(&self.search_state)
+                        .size(InputSize::Sm)
+                        .placeholder(t!("support.search_placeholder").to_string())
+                        .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
+                        .on_change({
+                            let entity = entity.clone();
+                            move |_, cx| {
+                                entity.update(cx, |_, cx| cx.notify());
+                            }
+                        }),
+                ),
             )
             .child(
                 div()
@@ -1341,8 +1325,7 @@ impl SupportView {
                     .child(filter_btn)
                     .when(active_adv_count > 0, |el| {
                         el.child(
-                            Badge::new(active_adv_count.to_string())
-                                .variant(BadgeVariant::Default),
+                            Badge::new(active_adv_count.to_string()).variant(BadgeVariant::Default),
                         )
                     }),
             );
@@ -1380,9 +1363,7 @@ impl SupportView {
                             }
                         }),
                     )
-                    .child(
-                        Badge::new(count.to_string()).variant(BadgeVariant::Secondary),
-                    ),
+                    .child(Badge::new(count.to_string()).variant(BadgeVariant::Secondary)),
             );
         }
 
@@ -1446,7 +1427,10 @@ impl SupportView {
         }
 
         let kebab = div()
-            .id(ElementId::from(SharedString::from(format!("tk-kebab-{}", t.id))))
+            .id(ElementId::from(SharedString::from(format!(
+                "tk-kebab-{}",
+                t.id
+            ))))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -1470,7 +1454,11 @@ impl SupportView {
                 ));
                 cx.notify();
             }))
-            .child(lucide_icon("ellipsis-vertical", 14.0, ShellDeckColors::text_muted()));
+            .child(lucide_icon(
+                "ellipsis-vertical",
+                14.0,
+                ShellDeckColors::text_muted(),
+            ));
 
         // Line 1: channel glyph + subject + priority dot + time + kebab
         let subject_weight = if t.unread {
@@ -1725,13 +1713,10 @@ impl SupportView {
         };
         let id = ticket.id.clone();
         let is_pending = ticket.status == "pending";
-        let is_mine = !self.my_email().is_empty()
-            && ticket.assignee.eq_ignore_ascii_case(self.my_email());
+        let is_mine =
+            !self.my_email().is_empty() && ticket.assignee.eq_ignore_ascii_case(self.my_email());
         let (status_next, menu_status_label) = if is_pending {
-            (
-                "open".to_string(),
-                t!("support.menu.reopen").to_string(),
-            )
+            ("open".to_string(), t!("support.menu.reopen").to_string())
         } else {
             (
                 "pending".to_string(),
@@ -1763,11 +1748,7 @@ impl SupportView {
             let snext = status_next.clone();
             items.push(
                 PopoverMenuItem::new("menu-status", menu_status_label)
-                    .icon(if is_pending {
-                        "circle-check"
-                    } else {
-                        "clock"
-                    })
+                    .icon(if is_pending { "circle-check" } else { "clock" })
                     .on_click({
                         let entity = entity.clone();
                         move |_, cx| {
@@ -2408,32 +2389,30 @@ impl SupportView {
     }
 
     fn render_section_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = |label: String,
-                   icon: &'static str,
-                   section: SupportSection,
-                   cx: &mut Context<Self>| {
-            let active = self.section == section;
-            let entity = cx.entity();
-            Self::compact_filter_button(
-                ElementId::from(SharedString::from(format!("sup-sec-{section:?}"))),
-                label,
-            )
-            .variant(if active {
-                ButtonVariant::Default
-            } else {
-                ButtonVariant::Outline
-            })
-            .icon(IconSource::from(icon))
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| {
-                    this.section = section;
-                    if section == SupportSection::Requests {
-                        cx.emit(SupportViewEvent::IssuesRefresh);
-                    }
-                    cx.notify();
-                });
-            })
-        };
+        let tab =
+            |label: String, icon: &'static str, section: SupportSection, cx: &mut Context<Self>| {
+                let active = self.section == section;
+                let entity = cx.entity();
+                Self::compact_filter_button(
+                    ElementId::from(SharedString::from(format!("sup-sec-{section:?}"))),
+                    label,
+                )
+                .variant(if active {
+                    ButtonVariant::Default
+                } else {
+                    ButtonVariant::Outline
+                })
+                .icon(IconSource::from(icon))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.section = section;
+                        if section == SupportSection::Requests {
+                            cx.emit(SupportViewEvent::IssuesRefresh);
+                        }
+                        cx.notify();
+                    });
+                })
+            };
         div()
             .flex()
             .items_center()
@@ -2539,7 +2518,10 @@ impl SupportView {
         let when = rel_time(iss.updated_at);
 
         let mut row = div()
-            .id(ElementId::from(SharedString::from(format!("iss-{}", iss.id))))
+            .id(ElementId::from(SharedString::from(format!(
+                "iss-{}",
+                iss.id
+            ))))
             .flex()
             .flex_col()
             .gap(px(2.0))
@@ -2722,7 +2704,11 @@ impl SupportView {
         cx.notify();
     }
 
-    fn build_issue_menu_items(&self, iss: &Issue, entity: Entity<SupportView>) -> Vec<PopoverMenuItem> {
+    fn build_issue_menu_items(
+        &self,
+        iss: &Issue,
+        entity: Entity<SupportView>,
+    ) -> Vec<PopoverMenuItem> {
         if !self.issues_staff {
             return vec![];
         }
@@ -2816,17 +2802,20 @@ impl SupportView {
             );
         } else {
             items.push(
-                PopoverMenuItem::new("iss-menu-gh-push", t!("support.menu.github_create").to_string())
-                    .icon("upload")
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_issue_popover_menu(cx);
-                                cx.emit(SupportViewEvent::IssueGithubPush(gid.clone()));
-                            });
-                        }
-                    }),
+                PopoverMenuItem::new(
+                    "iss-menu-gh-push",
+                    t!("support.menu.github_create").to_string(),
+                )
+                .icon("upload")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_issue_popover_menu(cx);
+                            cx.emit(SupportViewEvent::IssueGithubPush(gid.clone()));
+                        });
+                    }
+                }),
             );
         }
 
@@ -2992,14 +2981,8 @@ impl SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(iss.tenant_name.clone()),
             );
-        if let Some(label) = iss
-            .site_label
-            .as_ref()
-            .filter(|l| !l.trim().is_empty())
-        {
-            meta_row = meta_row.child(
-                Badge::new(label.clone()).variant(BadgeVariant::Outline),
-            );
+        if let Some(label) = iss.site_label.as_ref().filter(|l| !l.trim().is_empty()) {
+            meta_row = meta_row.child(Badge::new(label.clone()).variant(BadgeVariant::Outline));
         }
         if let Some(g) = &iss.github {
             meta_row = meta_row.child(
@@ -3167,11 +3150,7 @@ impl SupportView {
                     Input::new(&self.composer_state)
                         .size(InputSize::Sm)
                         .placeholder(t!("support.issue_comment_placeholder").to_string())
-                        .prefix(lucide_icon(
-                            "reply",
-                            14.0,
-                            ShellDeckColors::text_muted(),
-                        ))
+                        .prefix(lucide_icon("reply", 14.0, ShellDeckColors::text_muted()))
                         .on_enter({
                             let entity = entity.clone();
                             move |_v, cx| {
@@ -3446,6 +3425,7 @@ pub(crate) fn assignee_display(assignee: &str, self_email: Option<&str>) -> Stri
 }
 
 /// The next priority in a low→normal→high→urgent→low cycle.
+#[expect(dead_code)]
 fn next_priority(p: &str) -> &'static str {
     match p {
         "low" => "normal",

@@ -3,8 +3,8 @@ use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
 
-use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use crate::t;
+use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::theme::{palette_for, ShellDeckColors};
@@ -289,13 +289,13 @@ impl SettingsView {
             .flex_col()
             .gap(px(4.0))
             .child(Self::render_setting_row(
-                &t!("settings.language.label").to_string(),
-                &t!("settings.language.description").to_string(),
+                t!("settings.language.label").as_ref(),
+                t!("settings.language.description").as_ref(),
                 lang_row,
             ))
             .child(Self::render_setting_row(
-                &t!("settings.general.auto_connect.label").to_string(),
-                &t!("settings.general.auto_connect.description").to_string(),
+                t!("settings.general.auto_connect.label").as_ref(),
+                t!("settings.general.auto_connect.description").as_ref(),
                 div()
                     .id("toggle-auto-connect")
                     .child(Self::render_toggle(
@@ -309,8 +309,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.general.notifications.label").to_string(),
-                &t!("settings.general.notifications.description").to_string(),
+                t!("settings.general.notifications.label").as_ref(),
+                t!("settings.general.notifications.description").as_ref(),
                 div()
                     .id("toggle-notifications")
                     .child(Self::render_toggle(self.config.general.show_notifications))
@@ -322,8 +322,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.general.confirm_close.label").to_string(),
-                &t!("settings.general.confirm_close.description").to_string(),
+                t!("settings.general.confirm_close.label").as_ref(),
+                t!("settings.general.confirm_close.description").as_ref(),
                 div()
                     .id("toggle-confirm-close")
                     .child(Self::render_toggle(
@@ -337,8 +337,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.general.tmux.label").to_string(),
-                &t!("settings.general.tmux.description").to_string(),
+                t!("settings.general.tmux.label").as_ref(),
+                t!("settings.general.tmux.description").as_ref(),
                 div()
                     .id("toggle-tmux")
                     .child(Self::render_toggle(self.config.general.auto_attach_tmux))
@@ -350,8 +350,8 @@ impl SettingsView {
                     })),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.general.auto_update.label").to_string(),
-                &t!("settings.general.auto_update.description").to_string(),
+                t!("settings.general.auto_update.label").as_ref(),
+                t!("settings.general.auto_update.description").as_ref(),
                 div()
                     .id("toggle-auto-update")
                     .child(Self::render_toggle(self.config.general.auto_update))
@@ -407,25 +407,27 @@ impl SettingsView {
         div()
             .flex()
             .flex_col()
-            .child(Self::render_about_section(&t!("settings.cloud_sync.section").to_string()))
+            .child(Self::render_about_section(
+                t!("settings.cloud_sync.section").as_ref(),
+            ))
             .child(Self::render_setting_row(
-                &t!("settings.cloud_sync.account.label").to_string(),
-                &t!("settings.cloud_sync.account.description").to_string(),
+                t!("settings.cloud_sync.account.label").as_ref(),
+                t!("settings.cloud_sync.account.description").as_ref(),
                 value_text(account_text),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.cloud_sync.status.label").to_string(),
-                &t!("settings.cloud_sync.status.description").to_string(),
+                t!("settings.cloud_sync.status.label").as_ref(),
+                t!("settings.cloud_sync.status.description").as_ref(),
                 value_text(status_text),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.cloud_sync.server.label").to_string(),
-                &t!("settings.cloud_sync.server.description").to_string(),
+                t!("settings.cloud_sync.server.label").as_ref(),
+                t!("settings.cloud_sync.server.description").as_ref(),
                 value_text(cfg.base_url.clone()),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.cloud_sync.token.label").to_string(),
-                &t!("settings.cloud_sync.token.description").to_string(),
+                t!("settings.cloud_sync.token.label").as_ref(),
+                t!("settings.cloud_sync.token.description").as_ref(),
                 value_text(token_display),
             ))
             .child(
@@ -467,8 +469,8 @@ impl SettingsView {
             .flex_col()
             .gap(px(4.0))
             .child(Self::render_setting_row(
-                &t!("settings.terminal.font_size.label").to_string(),
-                &t!("settings.terminal.font_size.description").to_string(),
+                t!("settings.terminal.font_size.label").as_ref(),
+                t!("settings.terminal.font_size.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -511,8 +513,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.terminal.font_family.label").to_string(),
-                &t!("settings.terminal.font_family.description").to_string(),
+                t!("settings.terminal.font_family.label").as_ref(),
+                t!("settings.terminal.font_family.description").as_ref(),
                 {
                     let fonts = [
                         "JetBrains Mono",
@@ -563,8 +565,8 @@ impl SettingsView {
                 },
             ))
             .child(Self::render_setting_row(
-                &t!("settings.terminal.scrollback.label").to_string(),
-                &t!("settings.terminal.scrollback.description").to_string(),
+                t!("settings.terminal.scrollback.label").as_ref(),
+                t!("settings.terminal.scrollback.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -611,8 +613,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.terminal.cursor_style.label").to_string(),
-                &t!("settings.terminal.cursor_style.description").to_string(),
+                t!("settings.terminal.cursor_style.label").as_ref(),
+                t!("settings.terminal.cursor_style.description").as_ref(),
                 {
                     let styles = ["block", "underline", "bar"];
                     let current = self.config.terminal.cursor_style.clone();
@@ -656,8 +658,8 @@ impl SettingsView {
                 },
             ))
             .child(Self::render_setting_row(
-                &t!("settings.terminal.cursor_blink.label").to_string(),
-                &t!("settings.terminal.cursor_blink.description").to_string(),
+                t!("settings.terminal.cursor_blink.label").as_ref(),
+                t!("settings.terminal.cursor_blink.description").as_ref(),
                 div()
                     .id("toggle-cursor-blink")
                     .child(Self::render_toggle(self.config.terminal.cursor_blink))
@@ -951,8 +953,8 @@ impl SettingsView {
                     .child(theme_cards),
             )
             .child(Self::render_setting_row(
-                &t!("settings.appearance.sidebar_width.label").to_string(),
-                &t!("settings.appearance.sidebar_width.description").to_string(),
+                t!("settings.appearance.sidebar_width.label").as_ref(),
+                t!("settings.appearance.sidebar_width.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -995,8 +997,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.appearance.ui_font_size.label").to_string(),
-                &t!("settings.appearance.ui_font_size.description").to_string(),
+                t!("settings.appearance.ui_font_size.label").as_ref(),
+                t!("settings.appearance.ui_font_size.description").as_ref(),
                 div()
                     .flex()
                     .items_center()
@@ -1039,8 +1041,8 @@ impl SettingsView {
                     ),
             ))
             .child(Self::render_setting_row(
-                &t!("settings.appearance.ui_font.label").to_string(),
-                &t!("settings.appearance.ui_font.description").to_string(),
+                t!("settings.appearance.ui_font.label").as_ref(),
+                t!("settings.appearance.ui_font.description").as_ref(),
                 {
                     let fonts = [
                         "System Default",
@@ -1151,8 +1153,14 @@ impl SettingsView {
         ];
 
         let shortcuts = [
-            (t!("settings.about.shortcut.new_terminal").to_string(), "Ctrl+T"),
-            (t!("settings.about.shortcut.close_tab").to_string(), "Ctrl+W"),
+            (
+                t!("settings.about.shortcut.new_terminal").to_string(),
+                "Ctrl+T",
+            ),
+            (
+                t!("settings.about.shortcut.close_tab").to_string(),
+                "Ctrl+W",
+            ),
             (
                 t!("settings.about.shortcut.toggle_sidebar").to_string(),
                 "Ctrl+B",
@@ -1163,7 +1171,10 @@ impl SettingsView {
             ),
             (t!("settings.about.shortcut.settings").to_string(), "Ctrl+,"),
             (t!("settings.about.shortcut.search").to_string(), "Ctrl+F"),
-            (t!("settings.about.shortcut.zoom").to_string(), "Ctrl++ / Ctrl+-"),
+            (
+                t!("settings.about.shortcut.zoom").to_string(),
+                "Ctrl++ / Ctrl+-",
+            ),
             (t!("settings.about.shortcut.quit").to_string(), "Ctrl+Q"),
         ];
 
@@ -1223,14 +1234,16 @@ impl SettingsView {
             .flex_col();
 
         // Tech stack section
-        card = card.child(Self::render_about_section(&t!("settings.about.tech_stack").to_string()));
+        card = card.child(Self::render_about_section(
+            t!("settings.about.tech_stack").as_ref(),
+        ));
         for (label, value) in &tech_stack {
             card = card.child(Self::render_about_row(label, value));
         }
 
         // Keyboard shortcuts section
         card = card.child(Self::render_about_section(
-            &t!("settings.about.shortcuts").to_string(),
+            t!("settings.about.shortcuts").as_ref(),
         ));
         for (label, key) in &shortcuts {
             card = card.child(
@@ -1259,14 +1272,16 @@ impl SettingsView {
         }
 
         // Links section
-        card = card.child(Self::render_about_section(&t!("settings.about.links").to_string()));
+        card = card.child(Self::render_about_section(
+            t!("settings.about.links").as_ref(),
+        ));
         card = card
             .child(Self::render_about_row(
-                &t!("settings.about.link.github").to_string(),
+                t!("settings.about.link.github").as_ref(),
                 "github.com/benfavre/shelldeck",
             ))
             .child(Self::render_about_row(
-                &t!("settings.about.link.website").to_string(),
+                t!("settings.about.link.website").as_ref(),
                 "shelldeck.1clic.pro",
             ));
 
@@ -1293,18 +1308,14 @@ impl SettingsView {
                         .child(t!("settings.about.made_by").to_string()),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .h(px(LOGO_H))
-                        .child(
-                            svg()
-                                .path("images/wd29-logo.svg")
-                                .w(px(62.0))
-                                .h(px(LOGO_H))
-                                .flex_shrink_0()
-                                .text_color(ShellDeckColors::text_muted()),
-                        ),
+                    div().flex().items_center().h(px(LOGO_H)).child(
+                        svg()
+                            .path("images/wd29-logo.svg")
+                            .w(px(62.0))
+                            .h(px(LOGO_H))
+                            .flex_shrink_0()
+                            .text_color(ShellDeckColors::text_muted()),
+                    ),
                 ),
         );
 
@@ -1400,22 +1411,22 @@ impl Render for SettingsView {
                             .border_color(ShellDeckColors::border())
                             .child(self.render_tab_button(
                                 SettingsTab::General,
-                                &t!("settings.tab.general").to_string(),
+                                t!("settings.tab.general").as_ref(),
                                 cx,
                             ))
                             .child(self.render_tab_button(
                                 SettingsTab::Terminal,
-                                &t!("settings.tab.terminal").to_string(),
+                                t!("settings.tab.terminal").as_ref(),
                                 cx,
                             ))
                             .child(self.render_tab_button(
                                 SettingsTab::Appearance,
-                                &t!("settings.tab.appearance").to_string(),
+                                t!("settings.tab.appearance").as_ref(),
                                 cx,
                             ))
                             .child(self.render_tab_button(
                                 SettingsTab::About,
-                                &t!("settings.tab.about").to_string(),
+                                t!("settings.tab.about").as_ref(),
                                 cx,
                             )),
                     )

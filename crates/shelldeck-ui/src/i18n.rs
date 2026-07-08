@@ -19,13 +19,7 @@ pub fn resolve_locale(preference: &UiLanguage) -> &'static str {
 /// Best-effort OS locale → `fr` or `en`. Unknown → **`fr`** (product default).
 fn detect_system_locale() -> &'static str {
     sys_locale::get_locale()
-        .map(|locale| {
-            if locale.starts_with("fr") {
-                "fr"
-            } else {
-                "en"
-            }
-        })
+        .map(|locale| if locale.starts_with("fr") { "fr" } else { "en" })
         .unwrap_or("fr")
 }
 

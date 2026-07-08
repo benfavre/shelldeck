@@ -6,8 +6,8 @@ use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::server_sync::*;
 use uuid::Uuid;
 
-use crate::theme::ShellDeckColors;
 use crate::t;
+use crate::theme::ShellDeckColors;
 
 // Theme helpers — map semantic names to existing ShellDeckColors methods.
 fn bg_secondary() -> gpui::Hsla {
@@ -349,11 +349,7 @@ impl ServerSyncView {
         toolbar = toolbar.child(left);
 
         // Right side: buttons
-        let mut right = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .flex_shrink_0();
+        let mut right = div().flex().items_center().gap(px(8.0)).flex_shrink_0();
 
         // Save Profile button
         if both_connected {
@@ -503,20 +499,10 @@ impl ServerSyncView {
         let src_id = self.source_panel.connection_id;
         let dest_id = self.dest_panel.connection_id;
         let conns = self.connections.clone();
-        self.source_select = Self::build_connection_select(
-            PanelSide::Source,
-            &conns,
-            src_id,
-            parent.clone(),
-            cx,
-        );
-        self.dest_select = Self::build_connection_select(
-            PanelSide::Destination,
-            &conns,
-            dest_id,
-            parent,
-            cx,
-        );
+        self.source_select =
+            Self::build_connection_select(PanelSide::Source, &conns, src_id, parent.clone(), cx);
+        self.dest_select =
+            Self::build_connection_select(PanelSide::Destination, &conns, dest_id, parent, cx);
     }
 
     fn on_connection_picked(&mut self, side: PanelSide, conn_id: Uuid, cx: &mut Context<Self>) {
@@ -751,9 +737,24 @@ impl ServerSyncView {
                 .text_color(ShellDeckColors::text_muted())
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(div().flex_grow().child(t!("sync.col.name").to_string()))
-                .child(div().w(px(80.0)).flex_shrink_0().child(t!("sync.col.size").to_string()))
-                .child(div().w(px(90.0)).flex_shrink_0().child(t!("sync.col.permissions").to_string()))
-                .child(div().w(px(130.0)).flex_shrink_0().child(t!("sync.col.modified").to_string())),
+                .child(
+                    div()
+                        .w(px(80.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.size").to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.permissions").to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(130.0))
+                        .flex_shrink_0()
+                        .child(t!("sync.col.modified").to_string()),
+                ),
         );
 
         // Parent directory ".." entry
@@ -1141,7 +1142,10 @@ impl ServerSyncView {
     // -----------------------------------------------------------------------
     fn render_server_panel(&self, side: PanelSide, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, accent_color) = match side {
-            PanelSide::Source => (t!("sync.panel.source").to_string(), ShellDeckColors::success()),
+            PanelSide::Source => (
+                t!("sync.panel.source").to_string(),
+                ShellDeckColors::success(),
+            ),
             PanelSide::Destination => (
                 t!("sync.panel.destination").to_string(),
                 ShellDeckColors::primary(),
@@ -1821,9 +1825,7 @@ impl ServerSyncView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(
-                        t!("sync.items_selected", count = self.wizard_items.len()).to_string(),
-                    ),
+                    .child(t!("sync.items_selected", count = self.wizard_items.len()).to_string()),
             );
         }
 
@@ -2331,11 +2333,12 @@ impl Render for ServerSyncView {
             .bg(ShellDeckColors::bg_primary())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key.as_str() == "escape" {
-                    if this.wizard_active && this.wizard_step != WizardStep::Executing {
-                        this.wizard_active = false;
-                        cx.notify();
-                    }
+                if event.keystroke.key.as_str() == "escape"
+                    && this.wizard_active
+                    && this.wizard_step != WizardStep::Executing
+                {
+                    this.wizard_active = false;
+                    cx.notify();
                 }
             }));
 
