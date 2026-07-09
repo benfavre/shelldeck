@@ -58,6 +58,43 @@ impl AppMode {
             AppMode::Dev => "Dev",
         }
     }
+
+    /// Pure predicate: whether the caller may switch the app mode. Signed-in
+    /// super-admins only — per SDUC-152, the titlebar switcher and the
+    /// `SetAppMode` palette entries must be hidden for every other case.
+    ///
+    /// Callers gate the *presentation* (switcher chrome, palette rows) on
+    /// this; the actual guard against a hand-edited action lives on the
+    /// server + `resolve_effective` below.
+    pub fn can_switch(signed_in: bool, is_superadmin: bool) -> bool {
+        signed_in && is_superadmin
+    }
+
+    /// Pure resolver for the effective app-mode surface.
+    ///
+    /// - `signed_in = false` (logged out or unconfigured cloud sync) → **Dev**
+    ///   (classic experience — no Manage-gated UI).
+    /// - `signed_in = true` + `is_superadmin = true` → the **persisted** mode
+    ///   (the user picked it and we honour it).
+    /// - `signed_in = true` + `is_superadmin = false` → **forced User**,
+    ///   regardless of the persisted value (a compromised or hand-edited
+    ///   `shelldeck.toml` must not let a non-super-admin land on the
+    ///   Support surface).
+    ///
+    /// This is the pure-logic port of `Workspace::effective_mode`; the method
+    /// delegates. Extracted so the truth table is testable without a GPUI
+    /// `Context` (per `.agents/testing.md` — "factor logic out of `Render`
+    /// blocks and unit-test the helpers").
+    pub fn resolve_effective(signed_in: bool, is_superadmin: bool, persisted: AppMode) -> AppMode {
+        if !signed_in {
+            return AppMode::Dev;
+        }
+        if is_superadmin {
+            persisted
+        } else {
+            AppMode::User
+        }
+    }
 }
 
 impl AccountInfo {
@@ -685,5 +722,102 @@ mod tests {
         });
         send_callback(port, "/callback?token=sd%5Fabc&state=s");
         assert_eq!(handle.join().unwrap().unwrap(), "sd_abc");
+    }
+
+    // ── SDTEST-1052 — effective_mode truth table (pure fn) ─────────────
+    //
+    // The invariant this protects: a non-superadmin user MUST NOT land
+    // on the Support surface even if their persisted `cloud_sync.mode`
+    // says so. Historically we caught one incident where a hand-edited
+    // `shelldeck.toml` briefly shipped Support to a regular tenant
+    // — the pure resolver is the single choke point that guarantees
+    // it can't happen again, so all four cells of the truth table are
+    // tested explicitly.
+
+    #[test]
+    fn resolve_effective_mode_logged_out_is_dev() {
+        // Logged out ⇒ Dev, regardless of persisted mode.
+        for persisted in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            assert_eq!(
+                AppMode::resolve_effective(false, false, persisted),
+                AppMode::Dev,
+                "logged out + persisted={persisted:?} must resolve to Dev",
+            );
+            assert_eq!(
+                AppMode::resolve_effective(false, true, persisted),
+                AppMode::Dev,
+                "logged out ignores is_superadmin (persisted={persisted:?})",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_effective_mode_superadmin_honours_persisted() {
+        for persisted in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            assert_eq!(
+                AppMode::resolve_effective(true, true, persisted),
+                persisted,
+                "signed-in super-admin ⇒ persisted mode wins",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_effective_mode_non_superadmin_forced_to_user() {
+        // The load-bearing security assertion: even if the persisted
+        // mode is Dev or Support, a non-super-admin gets User.
+        for persisted in [AppMode::User, AppMode::Support, AppMode::Dev] {
+            assert_eq!(
+                AppMode::resolve_effective(true, false, persisted),
+                AppMode::User,
+                "non-super-admin MUST be forced to User (persisted={persisted:?})",
+            );
+        }
+    }
+
+    // SDTEST-1057 — `can_switch` truth table (pure fn). Consumed by
+    // `Workspace::refresh_command_palette` to gate the "Mode : …"
+    // entries. Before this fn was extracted the loop was unconditional
+    // and a non-super-admin saw three actions that then no-op'd on
+    // dispatch — an inconsistency that this test locks out.
+    #[test]
+    fn can_switch_only_true_for_signed_in_superadmin() {
+        assert!(!AppMode::can_switch(false, false));
+        assert!(!AppMode::can_switch(false, true), "logged out ⇒ no switch");
+        assert!(
+            !AppMode::can_switch(true, false),
+            "signed-in non-super-admin ⇒ no switch",
+        );
+        assert!(AppMode::can_switch(true, true));
+    }
+
+    #[test]
+    fn resolve_effective_mode_covers_every_cell_of_the_truth_table() {
+        // Cross-product sanity: enumerate every (signed_in, is_superadmin, persisted)
+        // combination and confirm the result matches the rule set. Duplicates the
+        // three focused tests above, but catches a future logic drift that
+        // accidentally satisfies each single-axis test while breaking a diagonal.
+        let cases = [
+            // (signed_in, superadmin, persisted, expected)
+            (false, false, AppMode::User, AppMode::Dev),
+            (false, false, AppMode::Support, AppMode::Dev),
+            (false, false, AppMode::Dev, AppMode::Dev),
+            (false, true, AppMode::User, AppMode::Dev),
+            (false, true, AppMode::Support, AppMode::Dev),
+            (false, true, AppMode::Dev, AppMode::Dev),
+            (true, false, AppMode::User, AppMode::User),
+            (true, false, AppMode::Support, AppMode::User),
+            (true, false, AppMode::Dev, AppMode::User),
+            (true, true, AppMode::User, AppMode::User),
+            (true, true, AppMode::Support, AppMode::Support),
+            (true, true, AppMode::Dev, AppMode::Dev),
+        ];
+        for (signed_in, superadmin, persisted, expected) in cases {
+            assert_eq!(
+                AppMode::resolve_effective(signed_in, superadmin, persisted),
+                expected,
+                "cell (signed_in={signed_in}, superadmin={superadmin}, persisted={persisted:?})",
+            );
+        }
     }
 }

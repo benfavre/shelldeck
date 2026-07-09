@@ -691,4 +691,300 @@ mod tests {
         t.channel = "unknown".into();
         assert_eq!(t.channel_lucide(), "inbox");
     }
+
+    // ── SDTEST-225 — Body shapes for the 7 support write endpoints ─────
+    //
+    // Every write goes through `post_action` (POST to
+    // `/api/manage/shelldeck/support` with a JSON body carrying an
+    // `action` discriminator + endpoint-specific fields). A drift here
+    // (renamed field, missing action key, wrong JSON type) silently
+    // 400s on production Manage — the test surface catches it before
+    // the toast does.
+    //
+    // Mock pattern matches `issues.rs::start_mock` and
+    // `jean_fleet.rs::start_mock` — zero-dep loopback TcpListener
+    // + std thread, records every POST body verbatim, echoes back a
+    // canonical ticket response so `post_action` can parse Ok.
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    struct SupportMock {
+        url: String,
+        posts: Arc<Mutex<Vec<String>>>,
+        _handle: std::thread::JoinHandle<()>,
+    }
+
+    /// Canonical response body: minimal `TicketResponse`-shaped payload.
+    const TICKET_ECHO: &str = r#"{
+      "ok": true,
+      "ticket": {
+        "id": "t_echo", "channel": "email", "subject": "s",
+        "status": "open", "assignee": "", "priority": "normal",
+        "messages": []
+      }
+    }"#;
+
+    fn start_support_write_mock() -> SupportMock {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let posts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let posts2 = posts.clone();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..16 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let mut auth_ok = false;
+                let mut clen = 0usize;
+                loop {
+                    let mut l = String::new();
+                    if reader.read_line(&mut l).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let t = l.trim_end();
+                    if t.is_empty() {
+                        break;
+                    }
+                    if let Some(idx) = t.find(':') {
+                        let k = t[..idx].trim().to_ascii_lowercase();
+                        let v = t[idx + 1..].trim();
+                        if k == "authorization" && v.starts_with("Bearer ") {
+                            auth_ok = true;
+                        } else if k == "content-length" {
+                            clen = v.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = String::new();
+                if clen > 0 {
+                    let mut b = vec![0u8; clen];
+                    let _ = reader.read_exact(&mut b);
+                    body = String::from_utf8_lossy(&b).into_owned();
+                }
+                let method = request_line.split_whitespace().next().unwrap_or("");
+                let target = request_line.split_whitespace().nth(1).unwrap_or("");
+
+                let (status_line, out): (&str, String) = if !auth_ok {
+                    ("401 Unauthorized", r#"{"ok":false}"#.into())
+                } else if method == "POST" && target.contains("/api/manage/shelldeck/support") {
+                    posts2.lock().unwrap().push(body);
+                    ("200 OK", TICKET_ECHO.into())
+                } else {
+                    ("404 Not Found", r#"{"ok":false}"#.into())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status_line,
+                    out.as_bytes().len(),
+                    out,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        SupportMock {
+            url: format!("http://127.0.0.1:{}", port),
+            posts,
+            _handle: handle,
+        }
+    }
+
+    const WRITE_TOKEN: &str = "sd_write_test";
+    const TICKET_ID: &str = "t_test_1";
+
+    /// Parse one recorded POST body into a JSON value for assertions.
+    fn recorded(mock: &SupportMock, i: usize) -> serde_json::Value {
+        let posts = mock.posts.lock().unwrap();
+        serde_json::from_str(&posts[i]).expect("body is valid JSON")
+    }
+
+    #[test]
+    fn support_reply_sends_reply_action_with_text() {
+        let m = start_support_write_mock();
+        super::support_reply(&m.url, WRITE_TOKEN, TICKET_ID, "Bonjour Alice")
+            .expect("reply mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "reply");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["text"], "Bonjour Alice");
+    }
+
+    #[test]
+    fn support_note_sends_note_action_with_text() {
+        let m = start_support_write_mock();
+        super::support_note(&m.url, WRITE_TOKEN, TICKET_ID, "à escalader")
+            .expect("note mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "note");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["text"], "à escalader");
+    }
+
+    #[test]
+    fn support_status_sends_status_action_with_status_field() {
+        let m = start_support_write_mock();
+        super::support_status(&m.url, WRITE_TOKEN, TICKET_ID, "in_progress")
+            .expect("status mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "status");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["status"], "in_progress");
+    }
+
+    #[test]
+    fn support_priority_sends_priority_action_with_priority_field() {
+        let m = start_support_write_mock();
+        super::support_priority(&m.url, WRITE_TOKEN, TICKET_ID, "urgent")
+            .expect("priority mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "priority");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["priority"], "urgent");
+    }
+
+    #[test]
+    fn support_assign_sends_assign_action_with_assignee_field() {
+        let m = start_support_write_mock();
+        // "me" — the workspace shortcut for self-assign.
+        super::support_assign(&m.url, WRITE_TOKEN, TICKET_ID, "me")
+            .expect("assign mock returns TICKET_ECHO");
+        // Empty string — the workspace shortcut for unassign.
+        super::support_assign(&m.url, WRITE_TOKEN, TICKET_ID, "")
+            .expect("unassign mock returns TICKET_ECHO");
+
+        let b0 = recorded(&m, 0);
+        assert_eq!(b0["action"], "assign");
+        assert_eq!(b0["assignee"], "me");
+        let b1 = recorded(&m, 1);
+        assert_eq!(b1["action"], "assign");
+        assert_eq!(b1["assignee"], "");
+    }
+
+    #[test]
+    fn support_resolve_sends_resolve_action_with_resolution_field() {
+        let m = start_support_write_mock();
+        super::support_resolve(&m.url, WRITE_TOKEN, TICKET_ID, "duplicate")
+            .expect("resolve mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "resolve");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["resolution"], "duplicate");
+    }
+
+    #[test]
+    fn support_read_sends_read_action_id_only() {
+        let m = start_support_write_mock();
+        super::support_read(&m.url, WRITE_TOKEN, TICKET_ID).expect("read mock returns TICKET_ECHO");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "read");
+        assert_eq!(body["id"], TICKET_ID);
+        // No extra payload — mark-read is a bare acknowledgment.
+        assert!(body["text"].is_null());
+        assert!(body["status"].is_null());
+    }
+
+    #[test]
+    fn support_writes_surface_401_when_bearer_missing() {
+        // Belt-and-suspenders: a request with an empty token (which the
+        // mock treats as missing Bearer) surfaces a typed error, so a
+        // rejected session doesn't silently no-op.
+        let m = start_support_write_mock();
+        let err =
+            super::support_reply(&m.url, "", TICKET_ID, "hi").expect_err("no bearer must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("401") || msg.to_lowercase().contains("rejected"),
+            "expected 401/rejected in error, got: {msg}",
+        );
+    }
+
+    /// One-shot canned GET responder — serves a fixed JSON body to the
+    /// next N accepted requests. Used for the P2 defensive tests below
+    /// where we only need to verify the parser's behaviour on a
+    /// specific server payload, not any request-side assertion.
+    fn spawn_canned_get(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut l = String::new();
+                    if reader.read_line(&mut l).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if l.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status_line,
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://127.0.0.1:{}", port), handle)
+    }
+
+    // SDTEST-227 — `support_agents` on an empty list must return `Ok(vec![])`
+    // without panicking. Fresh tenants have zero staff members; the picker
+    // then renders "aucun agent" instead of crashing.
+    #[test]
+    fn support_agents_returns_empty_vec_cleanly() {
+        let (url, _h) = spawn_canned_get("200 OK", r#"{"ok":true,"agents":[]}"#);
+        let agents = super::support_agents(&url, WRITE_TOKEN).expect("empty agents parses");
+        assert!(agents.is_empty());
+    }
+
+    // SDTEST-228 — `support_list` preserves the server's order.
+    // Manage sorts by `lastAt` desc server-side; ShellDeck must NOT
+    // resort (a client-side re-order would drop unread/breaching
+    // tickets from the top of the list). This pins the pass-through.
+    #[test]
+    fn support_list_preserves_server_order() {
+        // Deliberately anti-sorted alphabetically to catch an accidental
+        // sort_by(|t| t.id) refactor.
+        let body = r#"{
+          "ok": true, "staff": true,
+          "tickets": [
+            { "id":"z", "channel":"email", "subject":"z", "status":"open", "priority":"low",  "assignee":"", "lastAt":3, "unread":false, "messages":[] },
+            { "id":"a", "channel":"email", "subject":"a", "status":"open", "priority":"high", "assignee":"", "lastAt":2, "unread":false, "messages":[] },
+            { "id":"m", "channel":"email", "subject":"m", "status":"open", "priority":"normal", "assignee":"", "lastAt":1, "unread":false, "messages":[] }
+          ],
+          "counts": {"all":3,"unassigned":3,"mine":0,"open":3,"pending":0,"breaching":0,"closed":0},
+          "me": {"email":"me@x","name":"Me","staff":true}
+        }"#;
+        // We need a *runtime* string so the whole test isn't tied to the
+        // 'static requirement of the canned helper — use include_str-style
+        // static reference via a Box::leak (test-only).
+        let leaked: &'static str = Box::leak(body.to_string().into_boxed_str());
+        let (url, _h) = spawn_canned_get("200 OK", leaked);
+
+        let r = super::support_list(&url, WRITE_TOKEN).expect("parse list");
+        let ids: Vec<&str> = r.tickets.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["z", "a", "m"],
+            "server order MUST be preserved, no client-side sort",
+        );
+    }
 }

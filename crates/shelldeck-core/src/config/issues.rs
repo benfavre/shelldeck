@@ -549,4 +549,71 @@ mod tests {
         let err = list_issues(&m.url, "", "", "").unwrap_err();
         assert!(err.to_string().contains("401"), "got {}", err);
     }
+
+    // SDTEST-298 — `dispatch_issue` body must carry both `id` and
+    // `instance_id` under the "dispatch" action. Fleet routing is
+    // never exercised live (would spawn a real claude job on a real
+    // instance), so this mock-only shape assertion is the only guard
+    // against a rename ("target_instance", "instance", "instanceId"…)
+    // that would silently 400 in prod.
+    //
+    // The mock returns 403 on `dispatch` (this fixture is the non-staff
+    // path), but crucially the POST body is RECORDED before the 403
+    // is emitted — so we can still assert the wire shape via the
+    // recorder even though the caller sees an error.
+    #[test]
+    fn dispatch_issue_body_carries_id_and_instance_id() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+        let err = dispatch_issue(&b, &t, "iss_42", "activ-2").unwrap_err();
+        assert!(err.to_string().contains("403"), "non-staff ⇒ 403: {err}");
+
+        let posts = m.posts.lock().unwrap();
+        let disp = posts
+            .iter()
+            .find(|p| p.contains("\"action\":\"dispatch\""))
+            .expect("dispatch body recorded");
+        let v: serde_json::Value = serde_json::from_str(disp).unwrap();
+        assert_eq!(v["action"], "dispatch");
+        assert_eq!(v["id"], "iss_42");
+        assert_eq!(
+            v["instance_id"], "activ-2",
+            "field name is `instance_id` (snake_case, per Manage contract)",
+        );
+    }
+
+    // SDTEST-295 — Explicit coverage for the create_issue optional
+    // field elision, which powers the Convert-to-Request bridge in
+    // Support. `create_and_comment_bodies` above already asserts that
+    // `source:"support"` reaches the wire; this test pins the
+    // complementary edges:
+    //   - source="" ⇒ the `source` key is OMITTED entirely (not sent
+    //     as an empty string — the server defaults to "user" iff the
+    //     key is absent).
+    //   - source="support" ⇒ present AND value is a JSON string
+    //     (not accidentally serialized as an object or number).
+    #[test]
+    fn create_issue_source_field_is_omitted_when_empty_and_present_when_support() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+
+        // Empty source ⇒ omitted from body.
+        create_issue(&b, &t, "titre A", "", "", "").expect("empty source");
+        // Explicit support source ⇒ present.
+        create_issue(&b, &t, "titre B", "", "", "support").expect("source=support");
+
+        let posts = m.posts.lock().unwrap();
+        let a = serde_json::from_str::<serde_json::Value>(&posts[0]).unwrap();
+        let b_ = serde_json::from_str::<serde_json::Value>(&posts[1]).unwrap();
+
+        assert!(
+            a.get("source").is_none(),
+            "empty source must not be sent on the wire, got: {a}",
+        );
+        assert_eq!(
+            b_.get("source").and_then(|v| v.as_str()),
+            Some("support"),
+            "source=support must land as a JSON string, got: {b_}",
+        );
+    }
 }

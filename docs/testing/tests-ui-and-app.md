@@ -66,14 +66,14 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1050 | *to write* — effective_mode(): logged-out → Dev | SDUC-309, SDUC-152 | **Red / P0** | Pure fn over `Option<AccountInfo>` + `AppMode`. |
-| SDTEST-1051 | *to write* — effective_mode(): superadmin returns persisted mode | SDUC-309 | **Red / P0** | |
-| SDTEST-1052 | *to write* — effective_mode(): non-superadmin forced to User | SDUC-309, SDUC-152 | **Red / P0** | Security-adjacent (SDUC-152). |
-| SDTEST-1053 | *to write* — can_switch_mode(): true only for signed-in superadmin | SDUC-309 | **Red / P0** | |
-| SDTEST-1054 | *to write* — has_jean(): true when local `[jeanclaude]` set OR server-delivered config exists | SDUC-185 | **Red / P0** | Precedence contract per AGENTS.md. |
-| SDTEST-1055 | *to write* — effective_jean_config prefers local over server | SDUC-185 | **Red / P0** | |
+| SDTEST-1050 | *(covered by SDTEST-184)* — effective_mode(): logged-out → Dev | SDUC-309, SDUC-152 | Green | 2026-07-09 — port cross-linked to shelldeck-core, see tests-core.md § SDTEST-184. |
+| SDTEST-1051 | *(covered by SDTEST-184)* — effective_mode(): superadmin returns persisted mode | SDUC-309 | Green | Same file/test as SDTEST-184. |
+| SDTEST-1052 | `cloud_account.rs::resolve_effective_mode_non_superadmin_forced_to_user` (+ full-truth-table sibling) | SDUC-309, SDUC-152 | Green | 2026-07-09. **P0 security invariant** — a non-super-admin CANNOT land on Support even if `cloud_sync.mode="Support"` is hand-persisted. Test sweeps all 3 persisted values × non-superadmin ⇒ forced User. |
+| SDTEST-1053 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` | SDUC-309 | Green | 2026-07-09. Pure predicate — signed-in super-admin only. |
+| SDTEST-1054 | `jeanclaude.rs::resolve_effective_{local_wins_over_server, falls_back_to_server_when_local_unset, falls_back_to_server_when_local_none, none_when_neither_set}` | SDUC-185 | Green | 4 tests, 2026-07-09. Precedence contract from AGENTS.md § JeanClaude pinned as a pure fn on `JeanConfig`. Cross-linked to tests-core.md § SDTEST-1054 (jean). |
+| SDTEST-1055 | *(covered by SDTEST-1054)* — effective_jean_config prefers local over server | SDUC-185 | Green | Same fn as SDTEST-1054 (`resolve_effective_local_wins_over_server`). |
 | SDTEST-1056 | *to write* — refresh_command_palette produces stable action list for stable input | SDUC-303 | **Red / P1** | Reducer-style test on the action-builder. |
-| SDTEST-1057 | *to write* — refresh_command_palette adds "Mode : User/Support/Dev" entries only for superadmin | SDUC-152, SDUC-303 | **Red / P1** | |
+| SDTEST-1057 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` (+ palette gating in `Workspace::base_palette_actions`) | SDUC-152, SDUC-303 | Green | 2026-07-09. Pure predicate under test; the palette-side gating (`if can_switch_mode { for m in AppMode::all() ... }`) fixed a **real leak** — before this cluster, mode entries were unconditionally added to `base_palette_actions`, so a regular user saw three actions that no-op'd on dispatch. Working-tree draft; call site lands with the delegate follow-up commit. |
 | SDTEST-1058 | *to write* — action-list contains SwitchSite entries capped at 20 | SDUC-303 | **Red / P2** | |
 | SDTEST-1059 | *to write* — poll schedulers no-op when the relevant surface is not visible | SDUC-168, SDUC-188, SDUC-227, SDUC-249 | **Red / P0** | Regression class: burning bandwidth / cache lines. Test as a pure predicate `should_poll(active_view, feature)`. |
 

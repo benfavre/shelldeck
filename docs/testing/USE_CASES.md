@@ -1257,3 +1257,16 @@ without erroring.
   entry point. SDTEST-154 is the load-bearing safety test — a bad
   token can never reach `merge_profiles` with an empty payload and
   silently prune every CloudSync connection.
+- **2026-07-09 (H)** — Cluster H user/support priority list from
+  reviewer: SDTEST-1052/184 (effective_mode truth table — non-super
+  forced User), SDTEST-225 (7 support write body shapes + 401),
+  SDTEST-295 (create_issue source elision), SDTEST-1053/1057
+  (can_switch predicate — palette leak fix drafted), SDTEST-1054/185
+  (JeanConfig::resolve_effective precedence), SDTEST-227/228
+  (support agents empty + list order preserved), SDTEST-298
+  (dispatch_issue instance_id body), SDTEST-246 (format_via_shelldeck
+  prefix shape). Ported 4 pure fns to `shelldeck-core` (`AppMode::can_switch`,
+  `AppMode::resolve_effective`, `JeanConfig::resolve_effective`,
+  `format_via_shelldeck`) so the truth tables are testable outside
+  GPUI. Workspace delegate call-sites drafted in the working tree,
+  land in a follow-up commit once the concurrent i18n WIP merges.

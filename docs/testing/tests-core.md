@@ -192,7 +192,7 @@ Existing: **0 tests**.
 | SDTEST-181 | *to write* — login_password sends `{action:"login", email, password}` body | SDUC-140 | **Red / P0** | Only URL/whoami paths are covered; the login body shape is not. Mock TcpListener assertion. |
 | SDTEST-182 | *to write* — logout POSTs `{action:"logout"}` and swallows errors | SDUC-143 | **Red / P1** | Assert local state clears even when server 500s. |
 | SDTEST-183 | *to write* — provider=None targets the password page URL | SDUC-149 | **Red / P1** | Regression sensor for the URL shape. |
-| SDTEST-184 | *to write* — effective_mode(): non-superadmin forced to User even when persisted mode is Dev/Support | SDUC-152 | **Red / P0** | This lives on Workspace (see UI inventory) — pure-logic port possible here on `AppMode` + `AccountInfo`. |
+| SDTEST-184 | `cloud_account.rs::resolve_effective_mode_logged_out_is_dev` + `resolve_effective_mode_superadmin_honours_persisted` + `resolve_effective_mode_non_superadmin_forced_to_user` + `resolve_effective_mode_covers_every_cell_of_the_truth_table` + `can_switch_only_true_for_signed_in_superadmin` | SDUC-152 | Green | 5 tests, added 2026-07-09. Ported `AppMode::resolve_effective(signed_in, is_superadmin, persisted) -> AppMode` + `AppMode::can_switch(signed_in, is_superadmin) -> bool` as pure fns on cloud_account.rs. Full truth-table sweep (12 cells) proves non-super-admins can't reach Support even via a hand-edited `shelldeck.toml`. `Workspace::effective_mode` / `can_switch_mode` will delegate in a follow-up commit (working-tree draft blocked on WIP merge). This is the same use case as SDTEST-1052. |
 
 ---
 
@@ -219,10 +219,10 @@ Existing: **0 tests**.
 | SDTEST-222 | `manage_support.rs::parses_null_message_and_ticket_strings` | SDUC-162 | Green | |
 | SDTEST-223 | `manage_support.rs::parses_iso_string_and_numeric_timestamps` | SDUC-163 | Green | |
 | SDTEST-224 | `manage_support.rs::channel_glyphs_have_a_fallback` | SDUC-164 | Green | |
-| SDTEST-225 | *to write* — support_reply / note / status / priority / assign / resolve / read body shapes | SDUC-166 | **Red / P0** | One table-driven test per write endpoint; assert route + JSON body. |
+| SDTEST-225 | `manage_support.rs::support_{reply,note,status,priority,assign,resolve,read}_*` (7 fns) + `support_writes_surface_401_when_bearer_missing` | SDUC-166 | Green | 8 tests, added 2026-07-09. `TcpListener` mock records POST bodies before responding with the canonical ticket echo. Each test parses the recorded body as `serde_json::Value` and asserts `action`, `id`, and the endpoint-specific field. `support_assign` covers both `"me"` (self-assign) and `""` (unassign) in a single test. `support_read` also asserts no leaked extras (`text`/`status` are null). Bonus 401 test proves a missing Bearer surfaces the typed error. |
 | SDTEST-226 | *to write* — non-staff caller receives 403 on staff-only endpoints | SDUC-166 | **Red / P1** | Mock TcpListener returns 403; assert typed error. |
-| SDTEST-227 | *to write* — support_agents returns [] when server responds with `[]` | SDUC-165 | **Red / P2** | Cheap defence. |
-| SDTEST-228 | *to write* — support_list ordering is server order (no sort mutation) | SDUC-160 | **Red / P2** | |
+| SDTEST-227 | `manage_support.rs::support_agents_returns_empty_vec_cleanly` | SDUC-165 | Green | Added 2026-07-09. Uses a one-shot canned GET mock (`spawn_canned_get`) that serves `{"ok":true,"agents":[]}`. Guards against a fresh tenant's empty picker crashing the composer. |
+| SDTEST-228 | `manage_support.rs::support_list_preserves_server_order` | SDUC-160 | Green | Added 2026-07-09. Fixture is deliberately anti-sorted alphabetically (`z`, `a`, `m`) so a stray `sort_by(|t| t.id)` refactor would flip the order and trip the test. Server-side `lastAt desc` ordering is the contract — client-side re-sort would drop unread/breaching tickets from the top. |
 | SDTEST-229 | `manage_support.rs::parses_created_at_alias_and_epoch_seconds` | SDUC-170 | Green | Added 2026-07-08. |
 | SDTEST-230 | `manage_support.rs::parses_message_last_at_alias` | SDUC-171 | Green | Added 2026-07-08. Older Manage builds emit `lastAt` on messages. |
 | SDTEST-231 | `manage_support.rs::channel_lucide_maps_known_channels` | SDUC-172 | Green | Added 2026-07-08 as part of the Lucide icon migration. |
@@ -239,8 +239,9 @@ Existing: **0 tests**.
 | SDTEST-243 | `jeanclaude.rs::wrong_credentials_surface_401` | SDUC-183 | Green | |
 | SDTEST-244 | `jeanclaude.rs::is_set_semantics` | SDUC-184 | Green | |
 | SDTEST-245 | *to write* — Basic auth header exact base64 shape | SDUC-183 | **Red / P1** | Right now the mock accepts *any* Basic auth. Assert the encoded `user:pass`. |
-| SDTEST-246 | *to write* — say body includes `[via ShellDeck — <name>]` prefix when invoked from support | SDUC-187 | **Red / P1** | The prefix contract is behavioural — regression sensor. |
+| SDTEST-246 | `jeanclaude.rs::format_via_shelldeck_prefix_shape_is_pinned` + `format_via_shelldeck_empty_name_still_brackets_cleanly` + `format_via_shelldeck_preserves_text_verbatim` | SDUC-187 | Green | 3 tests, added 2026-07-09. Extracted `jeanclaude::format_via_shelldeck(name, text) -> String` as a pure helper (the inline `format!` in `Workspace::send_jean_ask` now calls this). Contract pinned: square brackets, U+2014 em-dash, trailing space after `]`. Empty-name case still brackets so Slack channel filters stay greppable. Text payload copied byte-for-byte (multi-line + unicode preserved). |
 | SDTEST-247 | *to write* — numeric epoch-ms timestamps parse into DateTime<Utc> | SDUC-186 | **Red / P1** | Currently only implicitly checked via history parse — an explicit round-trip test protects it. |
+| SDTEST-1054 (jean) | `jeanclaude.rs::resolve_effective_local_wins_over_server` + `resolve_effective_falls_back_to_server_when_local_unset` + `resolve_effective_falls_back_to_server_when_local_none` + `resolve_effective_none_when_neither_set` | SDUC-185 | Green | 4 tests, added 2026-07-09. Ported `JeanConfig::resolve_effective(local, server) -> Option<JeanConfig>` as a pure fn. Local `[jeanclaude]` wins when `is_set()`; unset local falls through to server; neither set → None (feature unavailable). Also see UI inventory (SDTEST-1054). |
 
 ---
 
@@ -273,10 +274,10 @@ Existing: **0 tests**.
 | SDTEST-292 | `issues.rs::create_and_comment_bodies` | SDUC-222, SDUC-223 | Green | |
 | SDTEST-293 | `issues.rs::staff_actions_surface_403` | SDUC-225 | Green | |
 | SDTEST-294 | `issues.rs::missing_bearer_surfaces_401` | SDUC-226 | Green | |
-| SDTEST-295 | *to write* — create_issue with `source="support"` sets the link field | SDUC-222, SDUC-169 | **Red / P1** | Convert-to-request path. |
+| SDTEST-295 | `issues.rs::create_issue_source_field_is_omitted_when_empty_and_present_when_support` | SDUC-222, SDUC-169 | Green | Added 2026-07-09. Complementary edges to `create_and_comment_bodies`: source="" ⇒ the field is OMITTED from the wire body (not sent as `""`), source="support" ⇒ present as a JSON string. Server default of "user" applies only when the key is absent. |
 | SDTEST-296 | *to write* — set_status / assign / set_priority body shapes (mock-asserted) | SDUC-225 | **Red / P1** | Table-driven. |
 | SDTEST-297 | *to write* — github_push / github_refresh route shapes (not the GitHub call itself) | SDUC-225 | **Red / P2** | Mock only; the real GH call is out-of-scope. |
-| SDTEST-298 | *to write* — dispatch_issue body includes fleet target | SDUC-225 | **Red / P2** | |
+| SDTEST-298 | `issues.rs::dispatch_issue_body_carries_id_and_instance_id` | SDUC-225 | Green | Added 2026-07-09. Fleet routing is never exercised live (would fire a real claude job), so this mock-only body assertion is the only guard against a rename like `target_instance`/`instanceId` silently 400ing in prod. The existing mock returns 403 on `dispatch` (non-staff path) but records the POST body BEFORE the 403 fires — assertion happens on the recorder. Snake_case field name `instance_id` is pinned. |
 
 ---
 
