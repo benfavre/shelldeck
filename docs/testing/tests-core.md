@@ -166,9 +166,9 @@ Existing: **0 tests**.
 | SDTEST-149 | `cloud_sync.rs::sync_payload_parses_contract_example` | SDUC-111 | Green | |
 | SDTEST-150 | `cloud_sync.rs::merge_reports_no_change_when_nothing_moves` | SDUC-107 | Green | |
 | SDTEST-151 | `cloud_sync.rs::live_fetch_sync` (`#[ignore]`) | SDUC-112 | Yellow | Live smoke — gated by env token. Keep. |
-| SDTEST-152 | *to write* — sync_now falls back GET after 404 POST | SDUC-100 | **Red / P0** | Contract-critical, mock TcpListener that returns 404 on POST then a valid GET payload. |
-| SDTEST-153 | *to write* — sync_now falls back GET after 405 POST | SDUC-100 | **Red / P0** | Same rationale. |
-| SDTEST-154 | *to write* — sync_now surfaces 401 without wiping local store | SDUC-100 | **Red / P0** | A bad token must not delete cloud connections. |
+| SDTEST-152 | `cloud_sync.rs::sync_now_falls_back_get_after_404_post` | SDUC-100 | Green | Added 2026-07-09. Loopback `TcpListener` mock counts POST + GET hits and serves a canonical `SyncPayload` on the fallback GET. Asserts POST fired once, GET fired once, payload parsed. |
+| SDTEST-153 | `cloud_sync.rs::sync_now_falls_back_get_after_405_post` | SDUC-100 | Green | Added 2026-07-09. Same shape as SDTEST-152, 405 as trigger. |
+| SDTEST-154 | `cloud_sync.rs::sync_now_401_surfaces_and_does_not_retry_get` | SDUC-100 | Green | Added 2026-07-09. Critical safety invariant: on 401 the mock verifies **zero GET retries fired** — a rejected token must NOT silently degrade to an unauthenticated GET. Combined with the `sync_now` shape (fetch → merge → save), this guarantees a bad token can never reach `merge_profiles(empty_payload)` and prune every CloudSync connection in the local store. Error message must mention `401` or `rejected` for the toast contract. |
 | SDTEST-155 | *to write* — merge preserves user-added tags on a CloudSync connection | SDUC-102 | **Red / P1** | Local-only field surface. |
 | SDTEST-156 | *to write* — merge does not duplicate when the same profile arrives twice in one payload | SDUC-101 | **Red / P1** | Defence against Manage bug. |
 

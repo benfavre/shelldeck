@@ -1250,3 +1250,10 @@ without erroring.
   catalog invariants + `to_script`), SDTEST-069 (AppConfig defaults
   first-run pin). Closes the last "no-infra" pockets in
   `shelldeck-core::models` + `config::app_config`.
+- **2026-07-09 (G)** — Cluster G cloud_sync P0: SDTEST-152/153/154
+  (404/405 → GET fallback, 401 without retry). First mock-based
+  cluster of the session; extends the zero-dep `TcpListener` pattern
+  from `jean_fleet` / `issues` / `manage_support` to cover the sync
+  entry point. SDTEST-154 is the load-bearing safety test — a bad
+  token can never reach `merge_profiles` with an empty payload and
+  silently prune every CloudSync connection.
