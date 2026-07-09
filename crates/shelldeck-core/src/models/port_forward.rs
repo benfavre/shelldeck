@@ -138,3 +138,25 @@ impl PortForward {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_port;
+
+    // SDTEST-030 — port 0 is the wildcard bind and OS-assign sentinel;
+    // ShellDeck forwards must not silently accept it as a valid target.
+    #[test]
+    fn zero_is_rejected() {
+        assert!(validate_port(0).is_err());
+    }
+
+    // Every non-zero u16 is valid — including 1 (privileged), 22 (ssh),
+    // 65535 (max). Regression sensor if someone adds an off-by-one
+    // "< 1024" restriction or a max cap.
+    #[test]
+    fn all_non_zero_ports_are_accepted() {
+        for p in [1_u16, 22, 80, 1023, 1024, 8080, 32768, 65535] {
+            assert!(validate_port(p).is_ok(), "port {p} should be valid");
+        }
+    }
+}

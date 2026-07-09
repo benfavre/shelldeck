@@ -470,6 +470,16 @@ timestamp, port-forward customisations, tag additions) are preserved.
 A cloud profile that stops appearing in the payload is deleted from
 the local store on the next sync.
 
+### SDUC-104bis — Connection accessors (display_name / connection_string)
+
+`display_name()` returns a borrowed slice: the `alias` when it is
+non-empty, otherwise the `hostname`. There is **no UUID fallback** —
+callers must ensure at least one of `alias`/`hostname` is set at
+construction (both `new_manual` and cloud-sync paths do). Every
+sidebar row consumes this to render its label. `connection_string()`
+returns `user@host:port` — the port is **always included**, even
+when it is the default 22 (opinionated toward unambiguous strings).
+
 ### SDUC-104 — Merge: never touches Manual / SshConfig connections
 
 Connections with `ConnectionSource::Manual` or `ConnectionSource::SshConfig`
@@ -1214,3 +1224,9 @@ without erroring.
   `fuzzy_match_indices` returns CHAR positions, not byte offsets;
   `substitute_variables` LEAVES missing placeholders unchanged instead
   of emitting empty.
+- **2026-07-09 (D)** — Cluster D landed: SDTEST-030/032/033/037/044
+  (validate_port, Connection accessors, ScriptLanguage runner_spec
+  table, ExecutionRecord lifecycle). Introduced SDUC-104bis for the
+  Connection accessor contract; SDUC-104 no longer conflates that
+  with the cloud-sync merge rule. `display_name` fallback corrected:
+  alias → hostname only, **no UUID fallback**.

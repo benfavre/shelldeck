@@ -526,7 +526,71 @@ impl Script {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_variables;
+    use super::{extract_variables, ScriptLanguage};
+
+    // SDTEST-037 — every built-in ScriptLanguage produces a runnable
+    // spec: non-empty binary and non-empty args. Adding a new variant
+    // to `ScriptLanguage::ALL` without wiring it into `runner_spec`
+    // will trigger this test.
+    #[test]
+    fn every_builtin_language_has_a_runnable_spec() {
+        for lang in ScriptLanguage::ALL {
+            let spec = lang.runner_spec();
+            assert!(
+                !spec.binary.is_empty(),
+                "{lang:?}: runner_spec.binary must not be empty",
+            );
+            assert!(
+                !spec.args.is_empty(),
+                "{lang:?}: runner_spec.args must not be empty",
+            );
+        }
+    }
+
+    // File-based languages (`{script}` template in args) advertise a
+    // file extension so downstream can spill the body to a temp file
+    // when `needs_file` is set. Container / service languages
+    // (Docker, Compose, Systemd, Nginx) run a subcommand instead and
+    // legitimately expose an empty `file_ext` — asserting that
+    // separates the two families explicitly.
+    #[test]
+    fn file_based_languages_declare_an_extension() {
+        use ScriptLanguage::*;
+        let file_based = [Shell, Python, Node, Bun, Php, Mysql, Postgresql];
+        for lang in file_based {
+            let spec = lang.runner_spec();
+            assert!(
+                !spec.file_ext.is_empty(),
+                "{lang:?}: file_ext must be set for a file-based language",
+            );
+        }
+
+        let subcommand = [Docker, DockerCompose, Systemd, Nginx];
+        for lang in subcommand {
+            let spec = lang.runner_spec();
+            assert!(
+                spec.file_ext.is_empty(),
+                "{lang:?}: subcommand-style languages should not expose a file_ext",
+            );
+        }
+    }
+
+    // Every builtin resolves to a distinct combination — regression
+    // sensor for copy-paste bugs (e.g. two variants pointing at the
+    // same binary + args).
+    #[test]
+    fn each_builtin_has_a_unique_runner_binary_or_args() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<(String, Vec<String>)> = HashSet::new();
+        for lang in ScriptLanguage::ALL {
+            let spec = lang.runner_spec();
+            let key = (spec.binary.clone(), spec.args.clone());
+            assert!(
+                seen.insert(key),
+                "{lang:?}: (binary, args) collides with an earlier variant",
+            );
+        }
+    }
 
     // SDTEST-034 — `{{name}}` and `{{name:default}}` extraction is the
     // foundation of every template. First occurrence wins on dedup,
