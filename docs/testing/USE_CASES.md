@@ -1244,3 +1244,9 @@ without erroring.
   SyncProgress percent, rsync argv coverage). SDUC-076 amended: 
   `percent()` returns a percentage 0..=100, not a ratio 0..=1
   (initial catalogue was wrong).
+- **2026-07-09 (F)** — Cluster F long-tail: SDTEST-035 (fence
+  behaviour pinned as-is), SDTEST-038/039/040 (PM detect +
+  dependency check + install lookup), SDTEST-042/043 (templates
+  catalog invariants + `to_script`), SDTEST-069 (AppConfig defaults
+  first-run pin). Closes the last "no-infra" pockets in
+  `shelldeck-core::models` + `config::app_config`.

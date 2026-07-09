@@ -655,3 +655,81 @@ pub fn all_templates() -> Vec<ScriptTemplate> {
 
     t
 }
+
+#[cfg(test)]
+mod tests {
+    use super::all_templates;
+    use std::collections::HashSet;
+
+    // SDTEST-042 — sanity sweep across the shipped template catalog.
+    // Cheap invariants that grow for free with every new template
+    // and catch copy-paste bugs (duplicate IDs, empty bodies).
+    #[test]
+    fn all_templates_have_unique_ids() {
+        let templates = all_templates();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for t in &templates {
+            assert!(
+                seen.insert(&t.id),
+                "duplicate template ID: {} (collides with an earlier entry)",
+                t.id,
+            );
+        }
+    }
+
+    #[test]
+    fn all_templates_have_non_empty_body_and_name() {
+        for t in all_templates() {
+            assert!(!t.name.is_empty(), "template {} has an empty name", t.id);
+            assert!(!t.body.is_empty(), "template {} has an empty body", t.id);
+            assert!(
+                !t.description.is_empty(),
+                "template {} has an empty description",
+                t.id,
+            );
+        }
+    }
+
+    #[test]
+    fn all_templates_ids_are_kebab_and_prefixed() {
+        // ID format follows `<category-prefix>-<slug>` in kebab-case
+        // (e.g. `sys-disk-usage`, `web-nginx-status`). Regression
+        // sensor for a stray CamelCase or space-in-id.
+        for t in all_templates() {
+            assert!(
+                t.id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "template ID must be kebab-case ASCII: {:?}",
+                t.id,
+            );
+            assert!(
+                t.id.contains('-'),
+                "template ID must have a category prefix: {:?}",
+                t.id,
+            );
+        }
+    }
+
+    // SDTEST-043 — to_script() produces a Script that references back
+    // to the template ID and carries the template's body/language/
+    // category/dependencies/variables. This is the primary way users
+    // materialize a template into their library.
+    #[test]
+    fn to_script_carries_template_metadata() {
+        let templates = all_templates();
+        let t = templates
+            .iter()
+            .find(|t| !t.dependencies.is_empty() && !t.variables.is_empty())
+            .expect("at least one template exercises both dependencies + variables");
+        let script = t.to_script();
+
+        assert_eq!(script.template_id.as_deref(), Some(t.id.as_str()));
+        assert_eq!(script.body, t.body);
+        assert_eq!(script.language, t.language);
+        assert_eq!(script.category, t.category);
+        assert_eq!(script.dependencies, t.dependencies);
+        assert_eq!(script.variables.len(), t.variables.len());
+        // The materialized script is NOT itself a template (user-owned).
+        assert!(!script.is_template);
+    }
+}

@@ -653,4 +653,31 @@ mod tests {
         let vars = extract_variables(body);
         assert_eq!(vars, vec![("host".to_string(), None)]);
     }
+
+    // SDTEST-035 — Pin CURRENT behaviour: fenced code blocks are
+    // NOT special-cased. A `{{host}}` inside triple-backticks is
+    // still extracted as a variable. This bites if a user pastes an
+    // Ansible / Vue / Handlebars snippet that legitimately uses
+    // `{{…}}` syntax — they'll be prompted for it.
+    //
+    // Documented limitation, not a bug per se — the fix requires
+    // implementing fence-skip in the parser (SDTEST-035 was
+    // originally P1 in my inventory). This test locks the shape so
+    // a future fence-aware refactor is a deliberate contract change.
+    #[test]
+    fn extracts_placeholders_even_inside_code_fences() {
+        let body = "\
+            echo {{real_var}}\n\
+            ```yaml\n\
+            server: {{ansible_var}}\n\
+            template: '{{handlebars_var}}'\n\
+            ```\n\
+        ";
+        let vars = extract_variables(body);
+        let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"real_var"));
+        assert!(names.contains(&"ansible_var"));
+        assert!(names.contains(&"handlebars_var"));
+        assert_eq!(vars.len(), 3, "current parser doesn't fence-skip");
+    }
 }

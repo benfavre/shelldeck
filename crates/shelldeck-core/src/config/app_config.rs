@@ -483,4 +483,44 @@ ui_font_size = 14.0
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
+
+    // SDTEST-069 — pin the documented first-run values. A fresh
+    // ShellDeck install shows this exact terminal + general layout;
+    // silent drift on any of these fields would change what every
+    // new user sees on day one. Cheap invariant test.
+    #[test]
+    fn default_matches_documented_first_run_values() {
+        let cfg = AppConfig::default();
+
+        // Theme
+        assert_eq!(cfg.theme, ThemePreference::Dark);
+
+        // Terminal
+        assert_eq!(cfg.terminal.font_family, "JetBrains Mono");
+        assert_eq!(cfg.terminal.font_size, 14.0);
+        assert_eq!(cfg.terminal.scrollback_lines, 10_000);
+        assert!(cfg.terminal.default_shell.is_none());
+        assert_eq!(cfg.terminal.cursor_style, "block");
+        assert!(cfg.terminal.cursor_blink);
+        assert_eq!(cfg.terminal.theme, "Dark");
+
+        // General
+        assert!(!cfg.general.auto_connect_on_startup);
+        assert!(cfg.general.show_notifications);
+        assert!(cfg.general.confirm_before_close);
+        assert_eq!(cfg.general.sidebar_width, 260.0);
+        assert!(!cfg.general.sidebar_nav_collapsed);
+        assert!(!cfg.general.auto_attach_tmux);
+        assert!(cfg.general.auto_update);
+        assert_eq!(cfg.general.ui_language, UiLanguage::System);
+        assert_eq!(cfg.general.ui_font_family, "System Default");
+        assert_eq!(cfg.general.ui_font_size, 14.0);
+
+        // Session state that must be OFF on first run
+        assert!(cfg.account.is_none());
+        assert!(cfg.jeanclaude.is_none());
+        assert!(!cfg.cloud_sync.enabled);
+        assert!(!cfg.jean_runtime.enabled);
+        assert!(!cfg.bext_cloud.is_connected());
+    }
 }

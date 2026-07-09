@@ -347,4 +347,124 @@ mod tests {
         assert!(!out.is_empty());
         assert!(out.contains("oops"));
     }
+
+    // SDTEST-038a — the detect command must probe every supported PM.
+    // If a new PM is added to the enum without wiring the detect
+    // command, this catches it (search for the binary name below).
+    #[test]
+    fn detect_command_probes_every_supported_package_manager() {
+        let cmd = super::build_package_manager_detect_command();
+        // Every PM label should appear as an echo target.
+        for pm in ["apt", "dnf", "yum", "pacman", "brew", "apk"] {
+            assert!(
+                cmd.contains(&format!("echo '{pm}'")),
+                "missing echo for {pm}"
+            );
+        }
+        assert!(cmd.contains("echo 'unknown'"), "missing fallback branch");
+    }
+
+    // SDTEST-038b — the detect command actually runs cleanly on the
+    // local shell (integration smoke). `sh` is guaranteed on every
+    // Unix CI runner and on macOS; skipped on Windows where the
+    // detection command uses POSIX-only syntax.
+    #[cfg(unix)]
+    #[test]
+    fn detect_command_runs_on_local_shell() {
+        use std::process::Command;
+        let cmd = super::build_package_manager_detect_command();
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .expect("sh must be present on Unix");
+        assert!(
+            output.status.success(),
+            "detect command failed: stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Must print exactly one of the recognized labels.
+        assert!(
+            ["apt", "dnf", "yum", "pacman", "brew", "apk", "unknown"].contains(&stdout.as_str()),
+            "unexpected PM label: {stdout:?}",
+        );
+    }
+
+    // SDTEST-039 — dependency check command shape: one guarded
+    // `if …; then echo OK; else echo MISSING; fi` per dep, joined
+    // with `&&`. Empty input returns the sentinel string.
+    #[test]
+    fn build_dependency_check_command_shapes() {
+        use crate::models::script::ToolDependency;
+
+        let empty = super::build_dependency_check_command(&[]);
+        assert_eq!(empty, "echo 'No dependencies to check'");
+
+        let deps = vec![
+            ToolDependency {
+                name: "curl".into(),
+                check_command: "command -v curl".into(),
+                install_commands: vec![],
+            },
+            ToolDependency {
+                name: "jq".into(),
+                check_command: "command -v jq".into(),
+                install_commands: vec![],
+            },
+        ];
+        let cmd = super::build_dependency_check_command(&deps);
+        assert!(cmd.contains("'curl: OK'"));
+        assert!(cmd.contains("'curl: MISSING'"));
+        assert!(cmd.contains("'jq: OK'"));
+        assert!(cmd.contains("'jq: MISSING'"));
+        // Two deps ⇒ exactly one `&&` between them.
+        assert_eq!(cmd.matches(" && ").count(), 1);
+    }
+
+    // SDTEST-040 — install command lookup: matching PM returns its
+    // command; unknown PM returns None; PM without an entry for this
+    // dep returns None. Table-driven across all 6 supported PMs.
+    #[test]
+    fn get_install_command_per_package_manager() {
+        use crate::models::script::{InstallCommand, PackageManager, ToolDependency};
+
+        let dep = ToolDependency {
+            name: "jq".into(),
+            check_command: "command -v jq".into(),
+            install_commands: vec![
+                InstallCommand {
+                    package_manager: PackageManager::Apt,
+                    command: "apt-get install -y jq".into(),
+                },
+                InstallCommand {
+                    package_manager: PackageManager::Brew,
+                    command: "brew install jq".into(),
+                },
+                InstallCommand {
+                    package_manager: PackageManager::Apk,
+                    command: "apk add jq".into(),
+                },
+            ],
+        };
+
+        // Positive lookups: exact PM string ⇒ its command.
+        assert_eq!(
+            super::get_install_command("apt", &dep),
+            Some("apt-get install -y jq".into()),
+        );
+        assert_eq!(
+            super::get_install_command("brew", &dep),
+            Some("brew install jq".into()),
+        );
+
+        // Negative: a valid PM string but no InstallCommand for it.
+        assert!(super::get_install_command("dnf", &dep).is_none());
+        assert!(super::get_install_command("yum", &dep).is_none());
+        assert!(super::get_install_command("pacman", &dep).is_none());
+
+        // Negative: unknown PM string (e.g. Windows chocolatey typo).
+        assert!(super::get_install_command("choco", &dep).is_none());
+        assert!(super::get_install_command("", &dep).is_none());
+    }
 }
