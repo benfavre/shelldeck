@@ -247,3 +247,97 @@ impl SyncOperation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn progress(bytes_transferred: u64, total_bytes: Option<u64>) -> SyncProgress {
+        SyncProgress {
+            item_id: Uuid::new_v4(),
+            status: SyncOperationStatus::Running,
+            bytes_transferred,
+            total_bytes,
+            files_transferred: 0,
+            total_files: None,
+            current_file: None,
+            error_message: None,
+        }
+    }
+
+    fn op(items: Vec<SyncProgress>) -> SyncOperation {
+        SyncOperation {
+            id: Uuid::new_v4(),
+            profile_id: Uuid::new_v4(),
+            status: SyncOperationStatus::Running,
+            item_progress: items,
+            log_lines: Vec::new(),
+            started_at: Utc::now(),
+            finished_at: None,
+        }
+    }
+
+    // SDTEST-019a — percent(): None when total unknown, Some in [0, 100]
+    // otherwise. Contract correction vs my initial inventory: the fn
+    // returns a percentage (0..=100), NOT a ratio (0..=1). USE_CASES.md
+    // updated to match.
+    #[test]
+    fn percent_is_none_when_total_unknown() {
+        assert!(progress(500, None).percent().is_none());
+    }
+
+    #[test]
+    fn percent_zero_total_returns_100() {
+        // Empty item (nothing to transfer) reports 100% — guards against
+        // 0/0 in the UI progress bar.
+        assert_eq!(progress(0, Some(0)).percent(), Some(100.0));
+    }
+
+    #[test]
+    fn percent_clamps_to_100_even_if_transferred_exceeds_total() {
+        // rsync sometimes reports > total when compressed / verifying;
+        // the UI bar must not overshoot.
+        let p = progress(1500, Some(1000)).percent().unwrap();
+        assert!((0.0..=100.0).contains(&p), "clamp violated: {p}");
+        assert_eq!(p, 100.0);
+    }
+
+    #[test]
+    fn percent_normal_case() {
+        assert_eq!(progress(250, Some(1000)).percent(), Some(25.0));
+        assert_eq!(progress(1000, Some(1000)).percent(), Some(100.0));
+        assert_eq!(progress(0, Some(1000)).percent(), Some(0.0));
+    }
+
+    // SDTEST-019b — overall_percent() is SIZE-weighted, not
+    // item-count-weighted. A 1 GB item at 50% dominates ten 1 KB
+    // items at 100% — the aggregate is roughly 50%.
+    #[test]
+    fn overall_percent_is_size_weighted_not_count_weighted() {
+        let big = progress(500_000_000, Some(1_000_000_000)); // 1 GB, 50%
+        let tinies: Vec<_> = (0..10).map(|_| progress(1_000, Some(1_000))).collect();
+
+        let mut items = vec![big];
+        items.extend(tinies);
+        let overall = op(items).overall_percent().unwrap();
+
+        // count-weighted would be (0.5 + 10 * 1.0) / 11 ≈ 0.955 → 95.5%
+        // size-weighted is (500M + 10K) / (1G + 10K) ≈ 0.5 → ~50%
+        assert!(
+            (49.0..=51.0).contains(&overall),
+            "size-weighted expected ~50%, got {overall}%",
+        );
+    }
+
+    #[test]
+    fn overall_percent_empty_operation_is_none() {
+        assert!(op(vec![]).overall_percent().is_none());
+    }
+
+    #[test]
+    fn overall_percent_none_when_no_item_knows_its_total() {
+        let items = vec![progress(500, None), progress(750, None)];
+        assert!(op(items).overall_percent().is_none());
+    }
+}

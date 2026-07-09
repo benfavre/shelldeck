@@ -353,9 +353,18 @@ exclude patterns, checksum flag, remote-user@host prefix).
 
 ### SDUC-076 — Sync operation progress
 
-`SyncProgress::percent` returns a value in `[0, 1]` when both total
-and transferred are known; `None` otherwise. `overall_percent` is
-weighted by item size, not item count.
+`SyncProgress::percent` returns a value in **`[0, 100]`** (a
+percentage, not a ratio — corrected from initial catalogue) when
+`total_bytes` is known; `Some(100.0)` as a safety when `total_bytes = 0`
+(guards against 0/0 in the progress bar); `None` when
+`total_bytes.is_none()`. Value is clamped to `100.0` even if
+`bytes_transferred > total` (rsync sometimes over-reports during
+verify).
+
+`SyncOperation::overall_percent` is **size-weighted**, not
+item-count-weighted: a 1 GB item at 50% dominates ten 1 KB items at
+100% (aggregate stays ~50%, not ~95%). Returns `None` for an empty
+operation OR when no item knows its total.
 
 ---
 
@@ -1230,3 +1239,8 @@ without erroring.
   Connection accessor contract; SDUC-104 no longer conflates that
   with the cloud-sync merge rule. `display_name` fallback corrected:
   alias → hostname only, **no UUID fallback**.
+- **2026-07-09 (E)** — Cluster E landed: SDTEST-016/017/018/019/020
+  (parse_ls edges, nginx include tolerance + multi-name limitation,
+  SyncProgress percent, rsync argv coverage). SDUC-076 amended: 
+  `percent()` returns a percentage 0..=100, not a ratio 0..=1
+  (initial catalogue was wrong).

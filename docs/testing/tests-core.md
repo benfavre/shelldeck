@@ -33,11 +33,11 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-013 | `discovery.rs::test_parse_mysql_discovery` | SDUC-073 | Green | |
 | SDTEST-014 | `discovery.rs::test_parse_pg_discovery` | SDUC-074 | Green | |
 | SDTEST-015 | `discovery.rs::test_rsync_command` | SDUC-075 | Green | |
-| SDTEST-016 | *to write* — parse_ls_output handles filenames with spaces / non-utf8 | SDUC-071 | **Red / P1** | We hit real hosts with weird filenames; regression fixture needed. |
-| SDTEST-017 | *to write* — parse_nginx_configs picks up `include` directives | SDUC-072 | **Red / P1** | Common shape (`sites-enabled/*`) is not covered today. |
-| SDTEST-018 | *to write* — parse_nginx_configs extracts multiple `server_name` per block | SDUC-072 | **Red / P2** | |
-| SDTEST-019 | *to write* — SyncProgress::percent bounds & overall_percent size-weighted | SDUC-076 | **Red / P0** | Progress is user-visible; incorrect weighting reads as "stuck at 20%". |
-| SDTEST-020 | *to write* — SyncOptions builds a valid rsync argv (dry-run / delete / excludes / checksum) | SDUC-075 | **Red / P0** | Regression class: a broken `--exclude` shape corrupts a real sync. |
+| SDTEST-016 | `discovery.rs::parse_ls_output_handles_spaces_in_names_and_dotfiles` + `parse_ls_output_skips_malformed_lines` | SDUC-071 | Green | 2 tests, added 2026-07-09. Filenames with spaces re-joined intact via `parts[7..].join(" ")`, dotfiles kept, ragged lines silently skipped (never panics). |
+| SDTEST-017 | `discovery.rs::parse_nginx_configs_tolerates_include_directive` | SDUC-072 | Green | Added 2026-07-09. Real `include` expansion is the shell command's job; the parser just tolerates the directive without emitting a bogus site. |
+| SDTEST-018 | `discovery.rs::parse_nginx_configs_takes_first_server_name_when_multiple_listed` | SDUC-072 | Green | Added 2026-07-09. **Pins current limitation** — the parser calls `split_whitespace().next()`, so only the first host wins. Future TODO is to emit all names; this test locks the shape so a well-meaning refactor doesn't regress to picking the last. |
+| SDTEST-019 | `server_sync.rs::percent_is_none_when_total_unknown` + `percent_zero_total_returns_100` + `percent_clamps_to_100_even_if_transferred_exceeds_total` + `percent_normal_case` + `overall_percent_is_size_weighted_not_count_weighted` + `overall_percent_empty_operation_is_none` + `overall_percent_none_when_no_item_knows_its_total` | SDUC-076 | Green | 7 tests, added 2026-07-09. **Contract correction** — `percent()` is a percentage (0..=100), not a ratio (0..=1). Size-weighting test uses a 1 GB@50% + 10× 1 KB@100% fixture: naive count-weighting would report ~95%, correct size-weighting reports ~50%. |
+| SDTEST-020 | `discovery.rs::rsync_command_includes_delete_and_ignore_existing_switches` + `rsync_command_shell_escapes_source_and_dest_paths` + `rsync_command_emits_one_exclude_per_pattern` | SDUC-075 | Green | 3 tests, added 2026-07-09. Extends the existing `test_rsync_command` (SDTEST-015) with the untouched switches (`delete_extra`, `skip_existing`), verifies `shell_escape` wraps paths containing spaces, and asserts one `--exclude=` emitted per pattern. |
 
 ---
 
