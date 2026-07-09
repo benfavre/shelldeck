@@ -3,9 +3,10 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** These three crates have **0 tests** today. That is
-partly intentional (GPUI views are hard to unit-test, see
-`.agents/testing.md`) and partly a real gap.
+**Big picture.** These three crates have **12 tests** today
+(`shelldeck-ui/src/{i18n,command_palette,sidebar}.rs`) and huge gaps
+elsewhere. The low count is partly intentional (GPUI views are hard
+to unit-test, see `.agents/testing.md`) and partly a real gap.
 
 The recipe is: **push logic out of `Render` blocks into pure helpers,
 then unit-test the helpers**. The two working models already in the
@@ -26,10 +27,10 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1000 | *to write* — `fuzzy_match(haystack, needle)` — needle empty matches everything | SDUC-300 | **Red / P0** | Pure fn; foundational. |
-| SDTEST-1001 | *to write* — fuzzy_match preserves in-order requirement | SDUC-300 | **Red / P0** | `"ab" matches "arb"` but not `"ba"`. |
-| SDTEST-1002 | *to write* — fuzzy_match is case-insensitive | SDUC-300 | **Red / P0** | |
-| SDTEST-1003 | *to write* — fuzzy_match handles utf-8 correctly (accented chars) | SDUC-300 | **Red / P1** | French UI strings. |
+| SDTEST-1000 | `command_palette.rs::empty_needle_matches_everything` | SDUC-300 | Green | Added 2026-07-09. |
+| SDTEST-1001 | `command_palette.rs::subsequence_must_appear_in_order` | SDUC-300 | Green | Added 2026-07-09. |
+| SDTEST-1002 | `command_palette.rs::haystack_case_folded_but_needle_taken_as_is` | SDUC-300 | Green | Added 2026-07-09. **Contract correction** — the fn only lowercases the haystack; the caller must pre-lowercase the needle. Not "double-sided case-insensitive" as my original inventory claimed. |
+| SDTEST-1003 | `command_palette.rs::utf8_accented_chars_match` | SDUC-300 | Green | Added 2026-07-09. Comparison is by unicode `char`; `é` and `e` are distinct. |
 | SDTEST-1004 | *to write* — CommandPalette::set_actions replaces the action list wholesale | SDUC-303 | **Red / P1** | No accidental append. |
 | SDTEST-1005 | *to write* — update_filter is deterministic for identical input | SDUC-303 | **Red / P1** | Idempotent guarantee. |
 | SDTEST-1006 | *to write* — select_next / select_prev wrap at bounds | SDUC-305 | **Red / P1** | |
@@ -44,11 +45,11 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1020 | *to write* — `fuzzy_match_indices` returns Some(vec![]) for empty needle | SDUC-301 | **Red / P0** | Contract distinct from palette (needs highlight positions). |
-| SDTEST-1021 | *to write* — fuzzy_match_indices returns byte-position matches, not char-position | SDUC-301 | **Red / P0** | Consumed by highlight rendering. |
-| SDTEST-1022 | *to write* — fuzzy_match_indices returns None on no-match | SDUC-301 | **Red / P0** | |
-| SDTEST-1023 | *to write* — conn_matches_site: none-filter shows all | SDUC-302 | **Red / P0** | |
-| SDTEST-1024 | *to write* — conn_matches_site: filtered site shows matches + unbound | SDUC-302 | **Red / P0** | Behavioural contract per AGENTS.md. |
+| SDTEST-1020 | `sidebar.rs::empty_needle_returns_empty_indices` | SDUC-301 | Green | Added 2026-07-09. |
+| SDTEST-1021 | `sidebar.rs::returns_char_positions_not_bytes` | SDUC-301 | Green | Added 2026-07-09. **Contract correction** — returned indices are CHAR positions in the lowercased haystack, not byte offsets (consumer walks a `Vec<char>` at the same index). My original inventory was wrong. |
+| SDTEST-1022 | `sidebar.rs::no_match_returns_none` | SDUC-301 | Green | Added 2026-07-09. Also covers double-sided case-insensitivity (unlike `fuzzy_match`, this fn lowercases the needle too). |
+| SDTEST-1023 | `sidebar.rs::no_filter_matches_every_connection` | SDUC-302 | Green | Added 2026-07-09. |
+| SDTEST-1024 | `sidebar.rs::filter_matches_bound_site_and_all_unbound_connections` | SDUC-302 | Green | Added 2026-07-09. Test hits the extracted pure fn `conn_matches_site_filter(Option<Uuid>, Option<Uuid>) -> bool` so no GPUI `Context` needed. The method still exists and delegates. |
 | SDTEST-1025 | *to write* — conn_matches_search: alias, hostname, user, tag match | SDUC-306 | **Red / P1** | |
 | SDTEST-1026 | *to write* — set_width clamps within [MIN, MAX] | SDUC-307 | **Red / P1** | |
 | SDTEST-1027 | *to write* — toggle_collapsed toggles state and preserves other state | SDUC-308 | **Red / P2** | |
@@ -173,7 +174,35 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 ---
 
-## 8. Cross-platform coverage (referenced from everywhere)
+## 8. `shelldeck-ui/i18n.rs` — rust-i18n helpers
+
+Existing: **2 tests.** First non-view module in `shelldeck-ui` to
+carry unit tests — the pattern to copy for any future pure-logic
+helper extracted out of a `Render` block.
+
+⚠️ **Global-state footgun.** `rust_i18n::set_locale` writes a
+process-wide value. Any test that calls `apply_ui_language` races
+with any other. Keep locale-mutating tests **sequential inside a
+single `#[test]` fn** (see `locale_fr_and_en` for the canonical
+form). Do **not** add per-locale tests — they will flake under
+parallel `cargo test`.
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1300 | `i18n.rs::locale_fr_and_en` | SDUC-401, SDUC-403 | Green | Fused fr+en scenario — deliberate (locale is process-global). |
+| SDTEST-1301 | `i18n.rs::resolve_locale_system_is_fr_or_en` | SDUC-401 | Green | Smoke test that `System` resolves to a known locale on the CI runner regardless of OS. |
+| SDTEST-1302 | `i18n.rs::fr_en_locale_key_parity` | SDUC-403 | Green | Added 2026-07-09. Loads both TOMLs via `include_str!`, diffs the `toml::Table` key sets. Adds a `toml` dev-dependency to `shelldeck-ui` (workspace version). |
+| SDTEST-1303 | ~~missing key falls back to the French value~~ | ~~SDUC-403~~ | **Retired** | Subsumed by SDTEST-1302 (strict parity means the fallback path is never exercised in practice) and SDTEST-1300 (which proves the locale actually switches by asserting `"Se connecter"` ≠ `"Sign in"` — if fallback were silently masking, en would return the fr value). Any manufactured "canary key" would itself break parity. Kept in the inventory to preserve the sticky ID. |
+| SDTEST-1304 | *to write* — `rel_time(at_ms)` produces localized strings per locale | SDUC-404 | **Red / P1** | Same sequential pattern; assert "à l'instant" (fr) vs "just now" (en) at t=now. |
+| SDTEST-1305 | *to write* — `t!("login.device", device = "…")` interpolates `%{device}` | SDUC-405 | **Red / P1** | |
+| SDTEST-1306 | *to write* — `t!()` with no variables ignores extras without erroring | SDUC-405 | **Red / P2** | Defensive; matches rust-i18n behaviour. |
+| SDTEST-1307 | *to write* — `UiLanguage` round-trips through `shelldeck.toml` as snake_case | SDUC-400 | **Red / P1** | Lives in `shelldeck-core::config::app_config` — add there, not here. Cross-linked. |
+| SDTEST-1308 | *to write* — Config without `ui_language` still parses (defaults to `System`) | SDUC-400 | **Red / P1** | Same location; back-compat with pre-i18n configs. |
+| SDTEST-1309 | *to write* — Unknown OS locale resolves to `"fr"`, not `"en"` | SDUC-401 | **Red / P1** | Product default per AGENTS.md; regression sensor if someone flips the fallback. Needs an injectable locale-reader trait to test deterministically. |
+
+---
+
+## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST
 entries that carry cross-platform stakes and must run on multiple

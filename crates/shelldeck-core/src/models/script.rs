@@ -523,3 +523,70 @@ impl Script {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_variables;
+
+    // SDTEST-034 — `{{name}}` and `{{name:default}}` extraction is the
+    // foundation of every template. First occurrence wins on dedup,
+    // whitespace inside braces is trimmed, and an empty inner (`{{}}`)
+    // is ignored.
+    #[test]
+    fn extracts_bare_names_dedup_preserves_first_occurrence() {
+        let body = "echo {{host}} && ssh {{user}}@{{host}} echo {{message}}";
+        let vars = extract_variables(body);
+        assert_eq!(
+            vars,
+            vec![
+                ("host".to_string(), None),
+                ("user".to_string(), None),
+                ("message".to_string(), None),
+            ],
+            "dedup keeps first occurrence, order preserved",
+        );
+    }
+
+    #[test]
+    fn extracts_defaults_after_colon() {
+        let body = "curl {{url:https://example.com}} -H {{header:X-Auth: bearer}}";
+        let vars = extract_variables(body);
+        // NB: the split is on the FIRST `:`, so a colon inside the default
+        // is preserved intact (e.g. an `Authorization: bearer` header).
+        assert_eq!(
+            vars,
+            vec![
+                ("url".to_string(), Some("https://example.com".to_string())),
+                ("header".to_string(), Some("X-Auth: bearer".to_string())),
+            ],
+        );
+    }
+
+    #[test]
+    fn trims_inner_whitespace_and_ignores_empty() {
+        let body = "{{  spaced  }} then {{}} nothing then {{ :onlydefault }}";
+        let vars = extract_variables(body);
+        // `{{}}` is empty inside → skipped.
+        // `{{ :onlydefault }}` has empty `name` after trim → skipped
+        // (the impl checks `!name.is_empty()`).
+        assert_eq!(vars, vec![("spaced".to_string(), None)]);
+    }
+
+    #[test]
+    fn same_name_second_occurrence_ignored_even_with_default() {
+        // First `{{host}}` has no default; second `{{host:localhost}}` would
+        // introduce one, but dedup keeps the FIRST metadata as-is. This is
+        // the documented contract (dedup by name, first wins).
+        let body = "{{host}} then {{host:localhost}}";
+        let vars = extract_variables(body);
+        assert_eq!(vars, vec![("host".to_string(), None)]);
+    }
+
+    #[test]
+    fn unclosed_placeholder_is_silently_dropped() {
+        // `{{host}}` closes, `{{oops` never closes.
+        let body = "{{host}} and {{oops never closes";
+        let vars = extract_variables(body);
+        assert_eq!(vars, vec![("host".to_string(), None)]);
+    }
+}

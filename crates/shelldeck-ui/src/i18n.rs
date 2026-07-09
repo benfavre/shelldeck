@@ -65,4 +65,38 @@ mod tests {
         let loc = resolve_locale(&UiLanguage::System);
         assert!(loc == "fr" || loc == "en");
     }
+
+    /// SDTEST-1302 — key parity between `fr.toml` and `en.toml`.
+    ///
+    /// Every key present in one locale MUST exist in the other. `AGENTS.md`
+    /// § i18n commits to French fallback ­­(`rust_i18n::i18n!(fallback = "fr")`),
+    /// but that mechanism silently masks a missing translation as
+    /// "same as French" — a divergence would ship without any visible
+    /// error until an English-speaking user notices a random FR string
+    /// in the UI. This test is the regression sensor.
+    ///
+    /// Locale files are shape-flat (dotted keys, no nested tables), so
+    /// we parse them as `HashMap<String, toml::Value>` and diff the key
+    /// sets.
+    #[test]
+    fn fr_en_locale_key_parity() {
+        use std::collections::BTreeSet;
+
+        let fr_src = include_str!("../../shelldeck-core/locales/fr.toml");
+        let en_src = include_str!("../../shelldeck-core/locales/en.toml");
+
+        let fr: toml::Table = toml::from_str(fr_src).expect("fr.toml parses");
+        let en: toml::Table = toml::from_str(en_src).expect("en.toml parses");
+
+        let fr_keys: BTreeSet<&str> = fr.keys().map(String::as_str).collect();
+        let en_keys: BTreeSet<&str> = en.keys().map(String::as_str).collect();
+
+        let only_in_fr: Vec<&&str> = fr_keys.difference(&en_keys).collect();
+        let only_in_en: Vec<&&str> = en_keys.difference(&fr_keys).collect();
+
+        assert!(
+            only_in_fr.is_empty() && only_in_en.is_empty(),
+            "locale key drift — only in fr.toml: {only_in_fr:?}, only in en.toml: {only_in_en:?}",
+        );
+    }
 }

@@ -49,9 +49,9 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-031 | *to write* — port forward presets produce valid PortForward objects | SDUC-049 | **Red / P2** | `chrome_devtools_preset`, `web_server_preset`, `opencode_preset`, `dev_server_preset`. |
 | SDTEST-032 | *to write* — Connection::display_name falls back through alias → hostname → uuid | SDUC-104 | **Red / P1** | Sidebar rows must never render an empty label. |
 | SDTEST-033 | *to write* — Connection::connection_string shape (`user@host:port`) | SDUC-104 | **Red / P2** | |
-| SDTEST-034 | *to write* — extract_variables handles `{{ name }}`, `{{name:default}}`, deduplicates, preserves order | SDUC-060 | **Red / P0** | Foundational for script UX; regression here breaks every template. |
+| SDTEST-034 | `script.rs::extracts_bare_names_dedup_preserves_first_occurrence` + `extracts_defaults_after_colon` + `trims_inner_whitespace_and_ignores_empty` + `same_name_second_occurrence_ignored_even_with_default` + `unclosed_placeholder_is_silently_dropped` | SDUC-060 | Green | 5 tests, added 2026-07-09. Split-on-first-`:` (colon in default preserved), first-occurrence wins on dedup, unclosed `{{…` tolerated. |
 | SDTEST-035 | *to write* — extract_variables ignores placeholders inside fenced code blocks | SDUC-060 | **Red / P1** | User pastes a script that itself uses `{{…}}` (Ansible, Vue) — must not be prompted. |
-| SDTEST-036 | *to write* — substitute_variables applies defaults when value missing | SDUC-061 | **Red / P0** | Same criticality as SDTEST-034. |
+| SDTEST-036 | `script_runner.rs::provided_value_replaces_placeholder` + `missing_value_falls_back_to_inline_default` + `missing_value_without_default_leaves_placeholder` + `extra_values_in_map_are_ignored` + `substitution_is_utf8_safe` + `unclosed_placeholder_does_not_panic` | SDUC-061 | Green | 6 tests, added 2026-07-09. Key contract: **no value + no default → placeholder LEFT UNCHANGED**, not empty. Downstream re-prompt logic depends on this. |
 | SDTEST-037 | *to write* — ScriptLanguage::runner_spec — one row per language | SDUC-062 | **Red / P1** | Cheap, wide coverage. |
 | SDTEST-038 | *to write* — build_package_manager_detect_command runs on a real shell (integration) | SDUC-063 | **Red / P1** | Use `bash -c "…"` locally; assert exit + expected PM name. |
 | SDTEST-039 | *to write* — build_dependency_check_command shape | SDUC-064 | **Red / P1** | |
@@ -223,6 +223,9 @@ Existing: **0 tests**.
 | SDTEST-226 | *to write* — non-staff caller receives 403 on staff-only endpoints | SDUC-166 | **Red / P1** | Mock TcpListener returns 403; assert typed error. |
 | SDTEST-227 | *to write* — support_agents returns [] when server responds with `[]` | SDUC-165 | **Red / P2** | Cheap defence. |
 | SDTEST-228 | *to write* — support_list ordering is server order (no sort mutation) | SDUC-160 | **Red / P2** | |
+| SDTEST-229 | `manage_support.rs::parses_created_at_alias_and_epoch_seconds` | SDUC-170 | Green | Added 2026-07-08. |
+| SDTEST-230 | `manage_support.rs::parses_message_last_at_alias` | SDUC-171 | Green | Added 2026-07-08. Older Manage builds emit `lastAt` on messages. |
+| SDTEST-231 | `manage_support.rs::channel_lucide_maps_known_channels` | SDUC-172 | Green | Added 2026-07-08 as part of the Lucide icon migration. |
 
 ---
 

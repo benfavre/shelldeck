@@ -276,3 +276,75 @@ pub fn get_install_command(pm_name: &str, dep: &ToolDependency) -> Option<String
         .find(|ic| ic.package_manager == pm)
         .map(|ic| ic.command.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::substitute_variables;
+    use std::collections::HashMap;
+
+    fn m(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    // SDTEST-036 — provided value wins.
+    #[test]
+    fn provided_value_replaces_placeholder() {
+        let body = "ssh {{user}}@{{host}}";
+        let out = substitute_variables(body, &m(&[("user", "alice"), ("host", "server1")]));
+        assert_eq!(out, "ssh alice@server1");
+    }
+
+    // Documented contract per SDUC-061: no value → falls back to the
+    // inline default.
+    #[test]
+    fn missing_value_falls_back_to_inline_default() {
+        let body = "curl {{url:https://example.com}} -X {{method:GET}}";
+        let out = substitute_variables(body, &m(&[])); // no values provided
+        assert_eq!(out, "curl https://example.com -X GET");
+    }
+
+    // Documented contract: no value AND no default → the placeholder is
+    // LEFT UNCHANGED (not replaced by empty). Consumers rely on this to
+    // detect missing prompts and either error out or re-prompt.
+    #[test]
+    fn missing_value_without_default_leaves_placeholder() {
+        let body = "echo {{who}}";
+        let out = substitute_variables(body, &m(&[]));
+        assert_eq!(out, "echo {{who}}");
+    }
+
+    // Extra map entries never referenced by the body are ignored (they
+    // don't append or leak into output).
+    #[test]
+    fn extra_values_in_map_are_ignored() {
+        let body = "echo {{host}}";
+        let out = substitute_variables(body, &m(&[("host", "srv"), ("unused", "junk")]));
+        assert_eq!(out, "echo srv");
+    }
+
+    // Utf-8: substitution copies the value verbatim; the surrounding
+    // text (including accented chars) also survives byte-for-byte.
+    #[test]
+    fn substitution_is_utf8_safe() {
+        let body = "commentaire : {{msg}} — fin";
+        let out = substitute_variables(body, &m(&[("msg", "à bientôt")]));
+        assert_eq!(out, "commentaire : à bientôt — fin");
+    }
+
+    // Unclosed placeholder: the impl emits the stray `{` and moves on
+    // by one byte, mirroring extract_variables' tolerance. Verifies we
+    // never panic on malformed input.
+    #[test]
+    fn unclosed_placeholder_does_not_panic() {
+        let body = "echo {{oops never closes";
+        let out = substitute_variables(body, &m(&[]));
+        // The output contains the raw bytes; we don't over-specify the
+        // exact shape (implementation detail), but it must not panic
+        // and it must not be empty.
+        assert!(!out.is_empty());
+        assert!(out.contains("oops"));
+    }
+}
