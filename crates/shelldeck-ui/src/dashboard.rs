@@ -1,7 +1,9 @@
 use crate::scale::px;
+use adabraka_ui::display::card::Card;
 use gpui::prelude::*;
 use gpui::*;
 
+use crate::icons::lucide_icon;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -58,31 +60,40 @@ impl DashboardView {
         }
     }
 
-    fn render_stat_card(title: &str, value: usize, color: Hsla) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .p(px(20.0))
-            .rounded(px(12.0))
-            .bg(ShellDeckColors::bg_surface())
-            .border_1()
-            .border_color(ShellDeckColors::border())
+    fn render_stat_card(icon: &str, title: &str, value: usize, color: Hsla) -> impl IntoElement {
+        Card::new()
+            .content(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(lucide_icon(
+                                icon,
+                                14.0,
+                                ShellDeckColors::text_muted().opacity(0.7),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(title.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(32.0))
+                            .text_color(color)
+                            .font_weight(FontWeight::BOLD)
+                            .child(value.to_string()),
+                    ),
+            )
             .min_w(px(180.0))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(title.to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(32.0))
-                    .text_color(color)
-                    .font_weight(FontWeight::BOLD)
-                    .child(value.to_string()),
-            )
     }
 
     fn render_activity_item(event: &ActivityEvent) -> impl IntoElement {
@@ -254,21 +265,25 @@ impl Render for DashboardView {
                     .flex_wrap()
                     .gap(px(16.0))
                     .child(Self::render_stat_card(
+                        "server",
                         t!("dashboard.stats.connections").as_ref(),
                         self.active_connections,
                         ShellDeckColors::success(),
                     ))
                     .child(Self::render_stat_card(
+                        "terminal",
                         t!("dashboard.stats.terminals").as_ref(),
                         self.active_terminals,
                         ShellDeckColors::primary(),
                     ))
                     .child(Self::render_stat_card(
+                        "scroll-text",
                         t!("dashboard.stats.scripts").as_ref(),
                         self.running_scripts,
                         ShellDeckColors::warning(),
                     ))
                     .child(Self::render_stat_card(
+                        "arrow-left-right",
                         t!("dashboard.stats.forwards").as_ref(),
                         self.active_forwards,
                         ShellDeckColors::primary_hover(),
@@ -294,10 +309,17 @@ impl Render for DashboardView {
                     .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(16.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("dashboard.quick_connect").to_string()),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(lucide_icon("zap", 16.0, ShellDeckColors::text_muted()))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("dashboard.quick_connect").to_string()),
+                            ),
                     )
                     .child(host_buttons),
             );
@@ -332,10 +354,17 @@ impl Render for DashboardView {
                 .gap(px(8.0))
                 .child(
                     div()
-                        .text_size(px(16.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("dashboard.recent_activity").to_string()),
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(lucide_icon("activity", 16.0, ShellDeckColors::text_muted()))
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(t!("dashboard.recent_activity").to_string()),
+                        ),
                 )
                 .child(activity_panel),
         );
@@ -359,10 +388,17 @@ impl Render for DashboardView {
                 .gap(px(8.0))
                 .child(
                     div()
-                        .text_size(px(16.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(t!("dashboard.shortcuts.title").to_string()),
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(lucide_icon("keyboard", 16.0, ShellDeckColors::text_muted()))
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(t!("dashboard.shortcuts.title").to_string()),
+                        ),
                 )
                 .child(
                     div()

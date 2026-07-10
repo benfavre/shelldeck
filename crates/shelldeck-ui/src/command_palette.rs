@@ -445,3 +445,48 @@ impl Render for CommandPalette {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::fuzzy_match;
+
+    // SDTEST-1000 — empty needle matches every haystack, including empty.
+    #[test]
+    fn empty_needle_matches_everything() {
+        assert!(fuzzy_match("anything", ""));
+        assert!(fuzzy_match("", ""));
+        assert!(fuzzy_match("with spaces and éàç", ""));
+    }
+
+    // SDTEST-1001 — subsequence in order matches; wrong order does not.
+    #[test]
+    fn subsequence_must_appear_in_order() {
+        assert!(fuzzy_match("open new terminal", "ont"));
+        assert!(fuzzy_match("open new terminal", "opt"));
+        assert!(!fuzzy_match("open new terminal", "tno"));
+        assert!(!fuzzy_match("abc", "d"));
+    }
+
+    // SDTEST-1002 — haystack is lowercased before match; needle is passed
+    // through as-is. Caller (command_palette::update_filter) is responsible
+    // for lowercasing the query, so we test the actual contract, not the
+    // fantasy of "double-sided case-insensitivity". Documented behaviour:
+    // needle MUST be pre-lowercased by the caller.
+    #[test]
+    fn haystack_case_folded_but_needle_taken_as_is() {
+        assert!(fuzzy_match("OPEN Terminal", "opn"));
+        // needle with uppercase never matches (haystack is lowercased first).
+        assert!(!fuzzy_match("OPEN Terminal", "OPN"));
+    }
+
+    // SDTEST-1003 — utf-8 characters (French accents) survive the round
+    // trip; matching is by unicode `char`, not byte. Bare ASCII 'e' and
+    // 'é' are distinct chars, so a haystack without accents does not
+    // satisfy an accented needle.
+    #[test]
+    fn utf8_accented_chars_match() {
+        assert!(fuzzy_match("Créer une connexion", "créer"));
+        assert!(fuzzy_match("créer", "cé"));
+        assert!(!fuzzy_match("creer", "cré")); // no 'é' anywhere in haystack
+    }
+}

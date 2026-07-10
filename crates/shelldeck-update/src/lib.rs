@@ -305,3 +305,86 @@ impl AutoUpdater {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+mod release_parity_tests {
+    // SDTEST-1260/1261 — release manifest ↔ install scripts key parity.
+    //
+    // The three moving parts of a release (workflow, worker, client)
+    // must agree on the same `{os}-{arch}` string, or a fresh install
+    // silently 404s on the affected OS. Rather than mock a real
+    // Wrangler + KV setup, we read the source files at compile time
+    // via `include_str!` and assert the platform keys appear as
+    // literal strings in every shipping location.
+    //
+    // This is the highest-value cheap test in my inventory: a rename
+    // in one place without the others is the exact regression class
+    // that keeps us from noticing until an end user reports "install
+    // script doesn't work on Mac".
+
+    const WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
+    const WORKER: &str = include_str!("../../../cloudflare/update-worker/src/index.ts");
+
+    /// Every platform key `{os}-{arch}` that the release pipeline builds
+    /// AND the update worker serves. Must be a literal string in each
+    /// source file. `macos-x86_64` is served by the worker but not
+    /// currently built by the workflow matrix (documented drift); we
+    /// only enforce parity on the keys the workflow actually publishes.
+    const SHIPPING_KEYS: &[&str] = &["linux-x86_64", "macos-aarch64", "windows-x86_64"];
+
+    // SDTEST-1260 — every shipping platform key appears verbatim in the
+    // release workflow AND the update worker. If either drops one, the
+    // release job or the fresh install fails.
+    #[test]
+    fn every_shipping_key_appears_in_release_workflow() {
+        for key in SHIPPING_KEYS {
+            assert!(
+                WORKFLOW.contains(key),
+                "release.yml missing platform key {key:?} — release matrix drift",
+            );
+        }
+    }
+
+    #[test]
+    fn every_shipping_key_appears_in_update_worker() {
+        for key in SHIPPING_KEYS {
+            assert!(
+                WORKER.contains(key),
+                "worker/src/index.ts missing platform key {key:?} — install / update endpoint would 404",
+            );
+        }
+    }
+
+    // SDTEST-1261 — `darwin-*` MUST NEVER appear as a platform key.
+    // AGENTS.md § release: "Platform keys are {os}-{arch} and use
+    // **`macos-*`**, never **`darwin-*`**". The rustc identifier
+    // is `darwin` but the release contract renames it to `macos`;
+    // a drift here is silent and only surfaces at install time.
+    #[test]
+    fn darwin_prefix_is_forbidden_in_release_contract() {
+        for forbidden in ["darwin-x86_64", "darwin-aarch64", "darwin-arm64"] {
+            assert!(
+                !WORKFLOW.contains(forbidden),
+                "release.yml uses forbidden `{forbidden}` — AGENTS.md mandates `macos-*`",
+            );
+            assert!(
+                !WORKER.contains(forbidden),
+                "worker/src/index.ts uses forbidden `{forbidden}` — must be `macos-*`",
+            );
+        }
+    }
+
+    // Runtime `current_platform()` must produce a string that matches
+    // one of the release keys (or a known-unsupported build target).
+    // Guards the round-trip: build ↔ platform-string ↔ manifest key.
+    #[test]
+    fn current_platform_matches_a_release_key_or_is_explicitly_unsupported() {
+        let p = crate::platform::current_platform();
+        let known = SHIPPING_KEYS.iter().any(|k| p == *k);
+        let unsupported = p.contains("unknown");
+        assert!(
+            known || unsupported,
+            "current_platform()={p:?} matches neither a shipping key {SHIPPING_KEYS:?} nor an `unknown` fallback",
+        );
+    }
+}

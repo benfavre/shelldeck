@@ -5,6 +5,53 @@ custom widget when adabraka-ui genuinely has no equivalent. When you do
 hand-roll, factor it into a reusable helper if the same shape appears (or
 will obviously appear) in more than one place — otherwise leave it inline.
 
+## Harmonization — same shape, same look
+
+**When two surfaces do the same job, they render with the same widgets, in
+the same layout.** If Support > Tickets has a filter bar (search input +
+`IconButton` "filter" + count `Badge` + chips row of `compact_filter_button`
+with `selected(active)`), Support > Demandes must use the *identical*
+building blocks and the *identical* spacing/order. No visual re-invention
+per surface.
+
+**Incident (2026-07):** the Demandes filter bar shipped with a custom
+rounded pill "Filtres" button and custom filled chip divs, next to the
+tickets bar built from `IconButton` + adabraka `Badge` + `compact_filter_button`.
+Two filter bars, two designs, one app. The user flagged it as
+regression-worthy: *"il faut harmoniser les designs d'éléments similaires,
+sauf demande exceptionnelle."*
+
+**Why:** every re-invented shape is a visual drift, a maintenance fork,
+and a re-review cost for the user. The mental model becomes "this looks
+different, why?" — which is the wrong question to force on your reader.
+
+**How to apply:**
+
+- **Before building a new surface**, look for the closest sibling surface
+  in `shelldeck-ui/src/` that does the same job (filter, list, kebab
+  menu, form, empty state, badge …). Copy its structure and building
+  blocks; don't design a fresh one.
+- **If you catch yourself writing `div().px(…).py(…).rounded(…).bg(…)`
+  for a chip / pill / button-like affordance**, stop and check whether
+  the sibling surface uses an adabraka helper (`compact_filter_button`,
+  `Badge`, `IconButton`, `Label`, `Checkbox`, …). Reuse that helper.
+- **Container spacing (px/py/gap/border-b) must match too.** A filter bar
+  is not just "input + chips" — the specific `px(10) pt(8) pb(6)` matters
+  because it lines up with adjacent panes. Copy the exact values.
+- **Exceptions require a spelled-out reason.** If your new surface
+  genuinely can't reuse the sibling's shape (different information
+  density, different interaction contract), leave a one-line comment
+  next to the divergence explaining *why* — so the next reader doesn't
+  paper over your decision with a drift-fix.
+- **If the sibling itself is doing something ugly**, migrate the sibling
+  first, then use the new shape in both places. Don't fork "the ugly
+  one" and "the pretty one" — one hits both.
+
+The rule generalizes: **filter bars, kebab menus, empty states, confirm
+dialogs, section headers, sheet chrome, row hover actions — any element
+that appears in ≥2 surfaces must share the exact same widgets.** When in
+doubt, grep for the sibling.
+
 **Why:** adabraka-ui already ships ~85 components with consistent theming,
 keyboard handling, focus management, and hover/active states wired up. A
 fresh `div` for a chip / menu / dialog quietly loses those behaviors and

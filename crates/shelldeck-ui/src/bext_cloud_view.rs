@@ -254,7 +254,7 @@ impl BextCloudView {
         &self,
         submit_field: Field,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         Input::new(state)
@@ -367,7 +367,7 @@ impl BextCloudView {
                                 .bg(ShellDeckColors::primary().opacity(0.18))
                                 .text_size(px(9.0))
                                 .text_color(ShellDeckColors::primary())
-                                .child("super-admin"),
+                                .child(t!("bext_view.super_admin").to_string()),
                         )
                     } else {
                         None
@@ -381,7 +381,7 @@ impl BextCloudView {
             );
             card = card.child(ident).child(Self::btn(
                 "bx-disconnect",
-                "Se déconnecter",
+                t!("bext_view.disconnect").as_ref(),
                 cx,
                 |_t, cx| cx.emit(BextViewEvent::Disconnect),
             ));
@@ -396,13 +396,13 @@ impl BextCloudView {
                                 .text_size(px(15.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(ShellDeckColors::text_primary())
-                                .child("bext Cloud"),
+                                .child(t!("bext_view.title").to_string()),
                         )
                         .child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child("Connectez-vous au plan de contrôle hébergé."),
+                                .child(t!("bext_view.connect_hint").to_string()),
                         ),
                 )
                 .child(
@@ -454,10 +454,22 @@ impl BextCloudView {
             .flex_wrap()
             .gap(px(8.0))
             .mx(px(16.0))
-            .child(stat("Projets", self.stats.projects))
-            .child(stat("Déploiements", self.stats.deploys))
-            .child(stat("Domaines", self.stats.domains))
-            .child(stat("Cibles", self.stats.targets))
+            .child(stat(
+                t!("bext_view.stats.projects").as_ref(),
+                self.stats.projects,
+            ))
+            .child(stat(
+                t!("bext_view.stats.deploys").as_ref(),
+                self.stats.deploys,
+            ))
+            .child(stat(
+                t!("bext_view.stats.domains").as_ref(),
+                self.stats.domains,
+            ))
+            .child(stat(
+                t!("bext_view.stats.targets").as_ref(),
+                self.stats.targets,
+            ))
     }
 
     fn render_cloud_sites(&self, cx: &mut Context<Self>) -> Div {
@@ -473,7 +485,7 @@ impl BextCloudView {
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucun site."),
+                    .child(t!("bext_view.empty.sites").to_string()),
             );
         }
         for site in &self.sites.sites {
@@ -502,7 +514,7 @@ impl BextCloudView {
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Nouveau site WordPress"),
+                            .child(t!("bext_view.new_site_wordpress").to_string()),
                     )
                     .child(
                         div()
@@ -511,11 +523,16 @@ impl BextCloudView {
                             .child(format!("{}/{}", self.sites.count, self.sites.max.max(1))),
                     ),
             )
-            .child(self.input(Field::Site, &self.site_name_state, "slug (minuscules)", cx))
+            .child(self.input(
+                Field::Site,
+                &self.site_name_state,
+                t!("bext_view.slug_lowercase").to_string(),
+                cx,
+            ))
             .child(self.input(
                 Field::Site,
                 &self.site_title_state,
-                "Titre (facultatif)",
+                t!("bext_view.title_optional").to_string(),
                 cx,
             ))
             .child({
@@ -531,7 +548,7 @@ impl BextCloudView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child("Créer");
+                    .child(t!("user.requests.create").to_string());
                 if at_max {
                     b = b.bg(ShellDeckColors::text_muted()).opacity(0.5);
                 } else {
@@ -592,15 +609,18 @@ impl BextCloudView {
 
         if has_domain {
             let dom = site.primary_domain.clone();
-            row = row.child(Self::btn("bx-open", "Ouvrir ↗", cx, move |_t, cx| {
-                cx.emit(BextViewEvent::OpenSite(dom.clone()))
-            }));
+            row = row.child(Self::btn(
+                "bx-open",
+                t!("bext_view.open_external").as_ref(),
+                cx,
+                move |_t, cx| cx.emit(BextViewEvent::OpenSite(dom.clone())),
+            ));
         }
         {
             let s = slug.clone();
             row = row.child(Self::btn(
                 "bx-golive",
-                "Mettre en ligne",
+                t!("bext_view.go_live").as_ref(),
                 cx,
                 move |_t, cx| {
                     cx.emit(BextViewEvent::SiteAction {
@@ -632,7 +652,7 @@ impl BextCloudView {
                         .text_size(px(12.0))
                         .text_color(white())
                         .cursor_pointer()
-                        .child("Confirmer")
+                        .child(t!("bext_view.confirm").to_string())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.confirm_destroy = None;
                             cx.emit(BextViewEvent::SiteAction {
@@ -648,10 +668,15 @@ impl BextCloudView {
         } else {
             let s = slug.clone();
             row = row.child(
-                Self::btn("bx-destroy", "Détruire", cx, move |this, cx| {
-                    this.confirm_destroy = Some(s.clone());
-                    cx.notify();
-                })
+                Self::btn(
+                    "bx-destroy",
+                    t!("bext_view.destroy").as_ref(),
+                    cx,
+                    move |this, cx| {
+                        this.confirm_destroy = Some(s.clone());
+                        cx.notify();
+                    },
+                )
                 .text_color(ShellDeckColors::error()),
             );
         }
@@ -671,7 +696,7 @@ impl BextCloudView {
                     .py(px(6.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucune instance."),
+                    .child(t!("bext_view.empty.instances").to_string()),
             );
         }
         for inst in &self.instances {
@@ -734,7 +759,7 @@ impl BextCloudView {
 
         if self.connected {
             body = body
-                .child(section("Tableau de bord"))
+                .child(section(t!("bext_view.section.dashboard").as_ref()))
                 .child(self.render_dashboard_strip())
                 .child(section("Sites"))
                 .child(self.render_cloud_sites(cx));
@@ -745,7 +770,9 @@ impl BextCloudView {
                 .unwrap_or(false)
             {
                 body = body
-                    .child(section("Instances bext (super-admin)"))
+                    .child(section(
+                        t!("bext_view.section.instances_super_admin").as_ref(),
+                    ))
                     .child(self.render_instances());
             }
         }
@@ -765,30 +792,35 @@ impl BextCloudView {
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Cible"),
+                    .child(t!("bext_view.target").to_string()),
             )
             .child(div().w(px(200.0)).child(self.input(
                 Field::InstanceRefresh,
                 &self.inst_base_state,
-                "http://127.0.0.1",
+                "http://127.0.0.1".to_string(),
                 cx,
             )))
             .child(div().w(px(130.0)).child(self.input(
                 Field::InstanceRefresh,
                 &self.inst_app_id_state,
-                "app-id",
+                "app-id".to_string(),
                 cx,
             )))
-            .child(Self::btn("bx-inst-refresh", "Charger", cx, |this, cx| {
-                cx.emit(BextViewEvent::RefreshInstance {
-                    base: Self::field_value(&this.inst_base_state, cx)
-                        .trim()
-                        .to_string(),
-                    app_id: Self::field_value(&this.inst_app_id_state, cx)
-                        .trim()
-                        .to_string(),
-                });
-            }));
+            .child(Self::btn(
+                "bx-inst-refresh",
+                t!("bext_view.load").as_ref(),
+                cx,
+                |this, cx| {
+                    cx.emit(BextViewEvent::RefreshInstance {
+                        base: Self::field_value(&this.inst_base_state, cx)
+                            .trim()
+                            .to_string(),
+                        app_id: Self::field_value(&this.inst_app_id_state, cx)
+                            .trim()
+                            .to_string(),
+                    });
+                },
+            ));
 
         // Sites list.
         let mut list = div()
@@ -803,7 +835,7 @@ impl BextCloudView {
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucun site sur cette instance (ou non chargé)."),
+                    .child(t!("bext_view.empty.instance_sites").to_string()),
             );
         }
         for site in &self.instance_sites {
@@ -827,9 +859,14 @@ impl BextCloudView {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child("Nouveau site (SDK)"),
+                    .child(t!("bext_view.new_site_sdk").to_string()),
             )
-            .child(self.input(Field::Instance, &self.inst_slug_state, "slug", cx))
+            .child(self.input(
+                Field::Instance,
+                &self.inst_slug_state,
+                t!("bext_view.slug").to_string(),
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -839,17 +876,20 @@ impl BextCloudView {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Domaine (mise en ligne)"),
+                            .child(t!("bext_view.domain_golive").to_string()),
                     )
                     .child(div().flex_1().child(self.input(
                         Field::Instance,
                         &self.inst_domain_state,
-                        "exemple.com",
+                        t!("bext_view.example_domain").to_string(),
                         cx,
                     )))
-                    .child(Self::btn("bx-inst-create", "Créer", cx, |this, cx| {
-                        this.submit_instance_create(cx)
-                    })),
+                    .child(Self::btn(
+                        "bx-inst-create",
+                        t!("user.requests.create").as_ref(),
+                        cx,
+                        |this, cx| this.submit_instance_create(cx),
+                    )),
             );
 
         div()
@@ -859,7 +899,7 @@ impl BextCloudView {
             .flex()
             .flex_col()
             .child(target)
-            .child(section("Sites de l'instance"))
+            .child(section(t!("bext_view.section.instance_sites").as_ref()))
             .child(list)
             .child(create)
     }
@@ -928,11 +968,11 @@ impl BextCloudView {
                 .to_string();
             row = row.child(Self::btn(
                 "bx-inst-golive",
-                "Mettre en ligne",
+                t!("bext_view.go_live").as_ref(),
                 cx,
                 move |this, cx| {
                     if dom.is_empty() {
-                        this.set_error("Saisissez un domaine pour la mise en ligne.");
+                        this.set_error(t!("bext_view.enter_domain_for_golive").to_string());
                         cx.notify();
                         return;
                     }
@@ -964,7 +1004,7 @@ impl BextCloudView {
                         .text_size(px(12.0))
                         .text_color(white())
                         .cursor_pointer()
-                        .child("Confirmer")
+                        .child(t!("bext_view.confirm").to_string())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.confirm_instance_destroy = None;
                             cx.emit(BextViewEvent::InstanceDestroy {
@@ -976,7 +1016,7 @@ impl BextCloudView {
                 )
                 .child(Self::btn(
                     "bx-inst-destroy-no",
-                    "Annuler",
+                    t!("variable_prompt.cancel").as_ref(),
                     cx,
                     |this, cx| {
                         this.confirm_instance_destroy = None;
@@ -986,10 +1026,15 @@ impl BextCloudView {
         } else {
             let s = slug.clone();
             row = row.child(
-                Self::btn("bx-inst-destroy", "Détruire", cx, move |this, cx| {
-                    this.confirm_instance_destroy = Some(s.clone());
-                    cx.notify();
-                })
+                Self::btn(
+                    "bx-inst-destroy",
+                    t!("bext_view.destroy").as_ref(),
+                    cx,
+                    move |this, cx| {
+                        this.confirm_instance_destroy = Some(s.clone());
+                        cx.notify();
+                    },
+                )
                 .text_color(ShellDeckColors::error()),
             );
         }

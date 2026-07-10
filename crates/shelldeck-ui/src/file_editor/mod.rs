@@ -65,6 +65,7 @@ pub enum EditorLanguage {
     Html,
     Css,
     Sql,
+    Markdown,
     PlainText,
 }
 
@@ -83,6 +84,7 @@ impl EditorLanguage {
             "html" | "htm" | "xhtml" => Self::Html,
             "css" | "scss" | "less" => Self::Css,
             "sql" => Self::Sql,
+            "md" | "markdown" | "mdown" | "mkd" => Self::Markdown,
             _ => Self::PlainText,
         }
     }
@@ -114,7 +116,7 @@ impl EditorLanguage {
         match self {
             Self::Rust | Self::JavaScript | Self::TypeScript | Self::Css | Self::Sql => Some("// "),
             Self::Python | Self::Bash | Self::Toml | Self::Yaml => Some("# "),
-            Self::Html | Self::Json | Self::PlainText => None,
+            Self::Html | Self::Json | Self::Markdown | Self::PlainText => None,
         }
     }
 
@@ -131,6 +133,7 @@ impl EditorLanguage {
             Self::Html => "HTML",
             Self::Css => "CSS",
             Self::Sql => "SQL",
+            Self::Markdown => "Markdown",
             Self::PlainText => "Plain Text",
         }
     }

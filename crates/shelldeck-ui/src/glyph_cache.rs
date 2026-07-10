@@ -29,7 +29,16 @@ pub struct GlyphCache {
 }
 
 impl GlyphCache {
-    pub fn build(text_sys: &WindowTextSystem, font_family: &str, font_size: f32) -> Self {
+    /// Build the glyph cache for `font_family` @ `font_size`, with a per-cell
+    /// vertical extent of `font_size * line_height`. `line_height` is the
+    /// multiplier VS Code / Zed expose in their settings (1.4 = tight, 1.5 =
+    /// default, 1.7 = airy).
+    pub fn build(
+        text_sys: &WindowTextSystem,
+        font_family: &str,
+        font_size: f32,
+        line_height: f32,
+    ) -> Self {
         let fs = px(font_size);
         let family: SharedString = font_family.to_string().into();
         let base = font(family);
@@ -54,7 +63,10 @@ impl GlyphCache {
             None,
         );
         let cell_width = ref_line.width;
-        let cell_height = px(font_size * 1.4);
+        // Clamp the multiplier so a busted config can never collapse text into
+        // an invisible strip (< 1.0) or blow it up beyond usable (> 3.0).
+        let clamped_lh = line_height.clamp(1.0, 3.0);
+        let cell_height = px(font_size * clamped_lh);
         let ascent = ref_line.ascent;
         let descent = ref_line.descent;
         let baseline_y = (cell_height - ascent - descent) / 2.0 + ascent;

@@ -35,6 +35,7 @@ macro_rules! lucide_assets {
 }
 
 lucide_assets!(
+    "activity",
     "arrow-down",
     "arrow-up",
     "arrow-left-right",
@@ -66,6 +67,7 @@ lucide_assets!(
     "inbox",
     "info",
     "key",
+    "keyboard",
     "lock",
     "mail",
     "maximize-2",
@@ -92,6 +94,7 @@ lucide_assets!(
     "user-check",
     "users",
     "x",
+    "zap",
 );
 
 /// Embed Simple Icons SVGs at `icons/simple/{name}.svg` (brand / tech marks).
@@ -158,6 +161,44 @@ impl AssetSource for Assets {
             "images/brand/svg/expressions/dark-wink-logo.svg" => {
                 include_bytes!("../assets/images/brand/svg/expressions/dark-wink-logo.svg")
             }
+            // Per-theme in-app badge PNGs — `brand_badge()` swaps to match the
+            // active palette. Kept as PNG because GPUI `svg()` is monochrome.
+            "images/brand/png/themes/monolith-dark-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-dark-128.png")
+            }
+            "images/brand/png/themes/monolith-light-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-light-128.png")
+            }
+            "images/brand/png/themes/monolith-dracula-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-dracula-128.png")
+            }
+            "images/brand/png/themes/monolith-nord-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-nord-128.png")
+            }
+            "images/brand/png/themes/monolith-tokyo-night-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-tokyo-night-128.png")
+            }
+            "images/brand/png/themes/monolith-gruvbox-dark-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-gruvbox-dark-128.png")
+            }
+            "images/brand/png/themes/monolith-solarized-dark-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-solarized-dark-128.png")
+            }
+            "images/brand/png/themes/monolith-solarized-light-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-solarized-light-128.png")
+            }
+            "images/brand/png/themes/monolith-catppuccin-mocha-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-catppuccin-mocha-128.png")
+            }
+            "images/brand/png/themes/monolith-one-dark-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-one-dark-128.png")
+            }
+            "images/brand/png/themes/monolith-monokai-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-monokai-128.png")
+            }
+            "images/brand/png/themes/monolith-rose-pine-128.png" => {
+                include_bytes!("../assets/images/brand/png/themes/monolith-rose-pine-128.png")
+            }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
             // Vertical three-dot "kebab" menu handle used by list row actions.
@@ -203,6 +244,18 @@ impl AssetSource for Assets {
             SharedString::from("images/brand/svg/expressions/dark-default-logo.svg"),
             SharedString::from("images/brand/svg/expressions/dark-neutral-logo.svg"),
             SharedString::from("images/brand/svg/expressions/dark-wink-logo.svg"),
+            SharedString::from("images/brand/png/themes/monolith-dark-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-light-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-dracula-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-nord-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-tokyo-night-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-gruvbox-dark-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-solarized-dark-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-solarized-light-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-catppuccin-mocha-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-one-dark-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-monokai-128.png"),
+            SharedString::from("images/brand/png/themes/monolith-rose-pine-128.png"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),

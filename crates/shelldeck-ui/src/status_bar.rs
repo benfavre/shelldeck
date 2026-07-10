@@ -1,5 +1,6 @@
 use gpui::*;
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -131,7 +132,7 @@ impl Render for StatusBar {
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child("Command Palette"),
+                                    .child(t!("status_bar.command_palette").to_string()),
                             ),
                     )
                     .child({

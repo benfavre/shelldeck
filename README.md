@@ -1,5 +1,9 @@
 # ShellDeck
 
+<p align="center">
+  <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="ShellDeck Monolith logo" width="120" height="120" />
+</p>
+
 A GPU-accelerated native desktop terminal and SSH companion app built with Rust. ShellDeck provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
 
 ## Features

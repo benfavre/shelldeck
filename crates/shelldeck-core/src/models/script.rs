@@ -523,3 +523,161 @@ impl Script {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_variables, ScriptLanguage};
+
+    // SDTEST-037 — every built-in ScriptLanguage produces a runnable
+    // spec: non-empty binary and non-empty args. Adding a new variant
+    // to `ScriptLanguage::ALL` without wiring it into `runner_spec`
+    // will trigger this test.
+    #[test]
+    fn every_builtin_language_has_a_runnable_spec() {
+        for lang in ScriptLanguage::ALL {
+            let spec = lang.runner_spec();
+            assert!(
+                !spec.binary.is_empty(),
+                "{lang:?}: runner_spec.binary must not be empty",
+            );
+            assert!(
+                !spec.args.is_empty(),
+                "{lang:?}: runner_spec.args must not be empty",
+            );
+        }
+    }
+
+    // File-based languages (`{script}` template in args) advertise a
+    // file extension so downstream can spill the body to a temp file
+    // when `needs_file` is set. Container / service languages
+    // (Docker, Compose, Systemd, Nginx) run a subcommand instead and
+    // legitimately expose an empty `file_ext` — asserting that
+    // separates the two families explicitly.
+    #[test]
+    fn file_based_languages_declare_an_extension() {
+        use ScriptLanguage::*;
+        let file_based = [Shell, Python, Node, Bun, Php, Mysql, Postgresql];
+        for lang in file_based {
+            let spec = lang.runner_spec();
+            assert!(
+                !spec.file_ext.is_empty(),
+                "{lang:?}: file_ext must be set for a file-based language",
+            );
+        }
+
+        let subcommand = [Docker, DockerCompose, Systemd, Nginx];
+        for lang in subcommand {
+            let spec = lang.runner_spec();
+            assert!(
+                spec.file_ext.is_empty(),
+                "{lang:?}: subcommand-style languages should not expose a file_ext",
+            );
+        }
+    }
+
+    // Every builtin resolves to a distinct combination — regression
+    // sensor for copy-paste bugs (e.g. two variants pointing at the
+    // same binary + args).
+    #[test]
+    fn each_builtin_has_a_unique_runner_binary_or_args() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<(String, Vec<String>)> = HashSet::new();
+        for lang in ScriptLanguage::ALL {
+            let spec = lang.runner_spec();
+            let key = (spec.binary.clone(), spec.args.clone());
+            assert!(
+                seen.insert(key),
+                "{lang:?}: (binary, args) collides with an earlier variant",
+            );
+        }
+    }
+
+    // SDTEST-034 — `{{name}}` and `{{name:default}}` extraction is the
+    // foundation of every template. First occurrence wins on dedup,
+    // whitespace inside braces is trimmed, and an empty inner (`{{}}`)
+    // is ignored.
+    #[test]
+    fn extracts_bare_names_dedup_preserves_first_occurrence() {
+        let body = "echo {{host}} && ssh {{user}}@{{host}} echo {{message}}";
+        let vars = extract_variables(body);
+        assert_eq!(
+            vars,
+            vec![
+                ("host".to_string(), None),
+                ("user".to_string(), None),
+                ("message".to_string(), None),
+            ],
+            "dedup keeps first occurrence, order preserved",
+        );
+    }
+
+    #[test]
+    fn extracts_defaults_after_colon() {
+        let body = "curl {{url:https://example.com}} -H {{header:X-Auth: bearer}}";
+        let vars = extract_variables(body);
+        // NB: the split is on the FIRST `:`, so a colon inside the default
+        // is preserved intact (e.g. an `Authorization: bearer` header).
+        assert_eq!(
+            vars,
+            vec![
+                ("url".to_string(), Some("https://example.com".to_string())),
+                ("header".to_string(), Some("X-Auth: bearer".to_string())),
+            ],
+        );
+    }
+
+    #[test]
+    fn trims_inner_whitespace_and_ignores_empty() {
+        let body = "{{  spaced  }} then {{}} nothing then {{ :onlydefault }}";
+        let vars = extract_variables(body);
+        // `{{}}` is empty inside → skipped.
+        // `{{ :onlydefault }}` has empty `name` after trim → skipped
+        // (the impl checks `!name.is_empty()`).
+        assert_eq!(vars, vec![("spaced".to_string(), None)]);
+    }
+
+    #[test]
+    fn same_name_second_occurrence_ignored_even_with_default() {
+        // First `{{host}}` has no default; second `{{host:localhost}}` would
+        // introduce one, but dedup keeps the FIRST metadata as-is. This is
+        // the documented contract (dedup by name, first wins).
+        let body = "{{host}} then {{host:localhost}}";
+        let vars = extract_variables(body);
+        assert_eq!(vars, vec![("host".to_string(), None)]);
+    }
+
+    #[test]
+    fn unclosed_placeholder_is_silently_dropped() {
+        // `{{host}}` closes, `{{oops` never closes.
+        let body = "{{host}} and {{oops never closes";
+        let vars = extract_variables(body);
+        assert_eq!(vars, vec![("host".to_string(), None)]);
+    }
+
+    // SDTEST-035 — Pin CURRENT behaviour: fenced code blocks are
+    // NOT special-cased. A `{{host}}` inside triple-backticks is
+    // still extracted as a variable. This bites if a user pastes an
+    // Ansible / Vue / Handlebars snippet that legitimately uses
+    // `{{…}}` syntax — they'll be prompted for it.
+    //
+    // Documented limitation, not a bug per se — the fix requires
+    // implementing fence-skip in the parser (SDTEST-035 was
+    // originally P1 in my inventory). This test locks the shape so
+    // a future fence-aware refactor is a deliberate contract change.
+    #[test]
+    fn extracts_placeholders_even_inside_code_fences() {
+        let body = "\
+            echo {{real_var}}\n\
+            ```yaml\n\
+            server: {{ansible_var}}\n\
+            template: '{{handlebars_var}}'\n\
+            ```\n\
+        ";
+        let vars = extract_variables(body);
+        let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"real_var"));
+        assert!(names.contains(&"ansible_var"));
+        assert!(names.contains(&"handlebars_var"));
+        assert_eq!(vars.len(), 3, "current parser doesn't fence-skip");
+    }
+}

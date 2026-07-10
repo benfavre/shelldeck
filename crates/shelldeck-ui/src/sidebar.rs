@@ -13,6 +13,22 @@ use crate::icons::lucide_icon;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+/// Pure helper: whether a connection passes the sidebar's active-site
+/// filter. Extracted from `SidebarView::conn_matches_site` so unit tests
+/// don't need a GPUI `Context` to exercise the contract.
+///
+/// - `None` filter: everything passes.
+/// - `Some(active)` filter: the connection passes iff it is bound to
+///   `active` OR it is unbound (`conn_site_id.is_none()`) — the "manual /
+///   ssh-config / cloud-without-site connections always show" rule from
+///   AGENTS.md § 7.
+fn conn_matches_site_filter(site_filter: Option<Uuid>, conn_site_id: Option<Uuid>) -> bool {
+    match site_filter {
+        None => true,
+        Some(active) => conn_site_id == Some(active) || conn_site_id.is_none(),
+    }
+}
+
 /// Returns indices of matched characters in haystack for a fuzzy needle.
 fn fuzzy_match_indices(haystack: &str, needle: &str) -> Option<Vec<usize>> {
     let haystack_lower: Vec<char> = haystack.to_lowercase().chars().collect();
@@ -249,10 +265,7 @@ impl SidebarView {
     /// Whether `conn` passes the active-site filter: no filter, an exact site
     /// match, or an unbound connection (manual / ssh / cloud-without-site).
     fn conn_matches_site(&self, conn: &Connection) -> bool {
-        match self.site_filter {
-            None => true,
-            Some(active) => conn.site_id == Some(active) || conn.site_id.is_none(),
-        }
+        conn_matches_site_filter(self.site_filter, conn.site_id)
     }
 
     pub fn set_terminal_tab_count(&mut self, count: usize) {
@@ -835,5 +848,69 @@ impl Render for SidebarView {
             )
             .child(add_button)
             .child(resize_handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{conn_matches_site_filter, fuzzy_match_indices};
+    use uuid::Uuid;
+
+    // ── fuzzy_match_indices ────────────────────────────────────────────
+
+    // SDTEST-1020 — empty needle: Some(vec![]) means "matches, no highlights".
+    // Distinct from None (no match).
+    #[test]
+    fn empty_needle_returns_empty_indices() {
+        assert_eq!(fuzzy_match_indices("anything", ""), Some(vec![]));
+        assert_eq!(fuzzy_match_indices("", ""), Some(vec![]));
+    }
+
+    // SDTEST-1021 — returned indices are CHAR positions in the lowercased
+    // haystack (not byte positions). The highlighter walks a `Vec<char>` at
+    // the same char index, so this is the contract the renderer relies on.
+    // A byte-index return would misalign accented labels ("Créer" — 'é' is 2
+    // bytes, so byte-index 2 = middle of the accent, not the third char).
+    #[test]
+    fn returns_char_positions_not_bytes() {
+        assert_eq!(fuzzy_match_indices("abcdef", "ace"), Some(vec![0, 2, 4]));
+        // 'é' is 2 bytes but 1 char: pos 3 (char) vs 4 (byte).
+        // Needle "cé" matches at chars [0, 2] in "créer".
+        assert_eq!(fuzzy_match_indices("créer", "cé"), Some(vec![0, 2]));
+    }
+
+    // SDTEST-1022 — no match returns None (distinct from empty Some).
+    #[test]
+    fn no_match_returns_none() {
+        assert_eq!(fuzzy_match_indices("abc", "d"), None);
+        assert_eq!(fuzzy_match_indices("abc", "abcd"), None);
+        // Case sensitivity: both sides lowercased, so uppercase in needle
+        // is fine (unlike command_palette::fuzzy_match).
+        assert_eq!(fuzzy_match_indices("abc", "ABC"), Some(vec![0, 1, 2]));
+    }
+
+    // ── conn_matches_site_filter ───────────────────────────────────────
+
+    // SDTEST-1023 — no active site filter shows everything.
+    #[test]
+    fn no_filter_matches_every_connection() {
+        let bound = Some(Uuid::new_v4());
+        assert!(conn_matches_site_filter(None, bound));
+        assert!(conn_matches_site_filter(None, None));
+    }
+
+    // SDTEST-1024 — filter set: matches the exact site AND every unbound
+    // connection (manual / ssh-config / cloud-without-site). Contract per
+    // AGENTS.md § 7.
+    #[test]
+    fn filter_matches_bound_site_and_all_unbound_connections() {
+        let active = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        // exact site match
+        assert!(conn_matches_site_filter(Some(active), Some(active)));
+        // unbound connection (no site_id) is always visible
+        assert!(conn_matches_site_filter(Some(active), None));
+        // different site is filtered out
+        assert!(!conn_matches_site_filter(Some(active), Some(other)));
     }
 }

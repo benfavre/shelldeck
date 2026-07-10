@@ -559,6 +559,59 @@ sync_on_startup = false
         assert!(!merge_profiles(&mut store, &[]).changed());
     }
 
+    // SDTEST-155 — pin the current authoritative-tags policy: Manage
+    // owns the tag set on a CloudSync connection. User-added local
+    // tags ARE OVERWRITTEN on the next sync — this is by design (a
+    // regression to the aspirational "preserve local tags" behavior
+    // in my initial inventory would silently duplicate labels between
+    // Manage + ShellDeck). Test locks the current shape so any future
+    // change to a "merge tags" model becomes a deliberate contract
+    // decision, not a drift.
+    #[test]
+    fn merge_overwrites_local_tags_with_remote_tags() {
+        let mut store = ConnectionStore::default();
+        let id = Uuid::new_v4();
+        let mut existing = cloud_conn(id, "srv");
+        existing.tags = vec!["local-only".into(), "user-added".into()];
+        store.connections.push(existing);
+
+        // Remote comes with a different tag set.
+        let mut rp = remote(id, "srv", "1.2.3.4");
+        rp.tags = vec!["cloud-1".into(), "cloud-2".into()];
+        merge_profiles(&mut store, &[rp]);
+
+        let c = &store.connections[0];
+        assert_eq!(
+            c.tags,
+            vec!["cloud-1".to_string(), "cloud-2".to_string()],
+            "cloud sync is authoritative on tags — local set replaced verbatim",
+        );
+    }
+
+    // SDTEST-156 — same profile appearing twice in one payload does
+    // NOT produce a duplicate connection. Defence against a Manage
+    // bug that could feed the same entry across pagination boundaries.
+    // The first pass pushes; the second pass finds the existing entry
+    // by id and updates in place — final count is exactly 1.
+    #[test]
+    fn merge_does_not_duplicate_when_same_profile_arrives_twice() {
+        let mut store = ConnectionStore::default();
+        let id = Uuid::new_v4();
+        let rp1 = remote(id, "srv-v1", "1.2.3.4");
+        let mut rp2 = remote(id, "srv-v2", "5.6.7.8");
+        rp2.tags = vec!["updated".into()];
+
+        merge_profiles(&mut store, &[rp1, rp2]);
+
+        assert_eq!(store.connections.len(), 1, "no duplicate for same UUID");
+        // The last occurrence wins (typical last-write-wins) — pin it
+        // so a future "first wins" reordering surfaces here.
+        let c = &store.connections[0];
+        assert_eq!(c.alias, "srv-v2");
+        assert_eq!(c.hostname, "5.6.7.8");
+        assert_eq!(c.tags, vec!["updated".to_string()]);
+    }
+
     /// Live end-to-end check against a real sync endpoint. Ignored by default —
     /// requires network and a valid token, supplied via env so no secret lives
     /// in the repo:
@@ -595,6 +648,211 @@ sync_on_startup = false
             "live_fetch_sync: version {}, {} connection(s)",
             payload.version,
             payload.connections.len()
+        );
+    }
+
+    // ── SDTEST-152/153/154 — POST → GET fallback + 401 handling ────────
+    //
+    // A tiny loopback HTTP server exercises `fetch_sync` end-to-end
+    // against the same wire format the real Manage exposes. We don't
+    // reach for wiremock/mockito on purpose — the raw TcpListener
+    // pattern matches the rest of the crate (`jean_fleet`, `issues`,
+    // `manage_support`) and stays zero-dep.
+    //
+    // Behaviour under test:
+    //   1. POST → 404 must trigger a GET retry (`fetch_sync` returns
+    //      Ok with the GET payload).
+    //   2. POST → 405 does the same.
+    //   3. POST → 401 must return Err WITHOUT retrying, and the
+    //      caller's downstream (`sync_now`) never reaches the merge
+    //      step — so the local store's CloudSync connections cannot
+    //      be silently pruned by a bad token.
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// POST behaviour choice for the fallback mock.
+    #[derive(Clone, Copy)]
+    enum PostBehaviour {
+        Return404,
+        Return405,
+        Return401,
+    }
+
+    struct FallbackMock {
+        url: String,
+        post_hits: Arc<AtomicUsize>,
+        get_hits: Arc<AtomicUsize>,
+        _handle: std::thread::JoinHandle<()>,
+    }
+
+    fn start_fallback_mock(behaviour: PostBehaviour) -> FallbackMock {
+        // Canonical minimal sync payload — one profile so we can also
+        // assert the fallback actually parsed the GET response.
+        const GET_PAYLOAD: &str = r#"{"version":1,"connections":[
+            {"id":"11111111-1111-1111-1111-111111111111","alias":"activ-2","hostname":"1.2.3.4","port":22,"user":"root"}
+        ]}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let post_hits = Arc::new(AtomicUsize::new(0));
+        let get_hits = Arc::new(AtomicUsize::new(0));
+        let ph = post_hits.clone();
+        let gh = get_hits.clone();
+
+        let handle = std::thread::spawn(move || {
+            // Bounded loop — the tests only need at most 2 hits each.
+            for _ in 0..8 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let method = request_line
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let mut clen = 0usize;
+                let mut auth_ok = false;
+                loop {
+                    let mut l = String::new();
+                    if reader.read_line(&mut l).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let t = l.trim_end();
+                    if t.is_empty() {
+                        break;
+                    }
+                    if let Some(idx) = t.find(':') {
+                        let k = t[..idx].trim().to_ascii_lowercase();
+                        let v = t[idx + 1..].trim();
+                        if k == "content-length" {
+                            clen = v.parse().unwrap_or(0);
+                        } else if k == "authorization" && v.starts_with("Bearer ") {
+                            auth_ok = true;
+                        }
+                    }
+                }
+                // Drain body regardless of use — otherwise the client sees
+                // a broken pipe and the test flakes.
+                if clen > 0 {
+                    let mut b = vec![0u8; clen];
+                    let _ = reader.read_exact(&mut b);
+                }
+
+                let _ = auth_ok; // present but not gated — we test 401 via behaviour
+
+                let (status_line, body): (&str, &str) = match method.as_str() {
+                    "POST" => {
+                        ph.fetch_add(1, Ordering::SeqCst);
+                        match behaviour {
+                            PostBehaviour::Return404 => ("404 Not Found", ""),
+                            PostBehaviour::Return405 => ("405 Method Not Allowed", ""),
+                            PostBehaviour::Return401 => {
+                                ("401 Unauthorized", r#"{"error":"token rejected"}"#)
+                            }
+                        }
+                    }
+                    "GET" => {
+                        gh.fetch_add(1, Ordering::SeqCst);
+                        ("200 OK", GET_PAYLOAD)
+                    }
+                    _ => ("400 Bad Request", ""),
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status_line,
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        FallbackMock {
+            url: format!("http://127.0.0.1:{}", port),
+            post_hits,
+            get_hits,
+            _handle: handle,
+        }
+    }
+
+    fn test_cfg(base_url: &str) -> CloudSyncConfig {
+        CloudSyncConfig {
+            enabled: true,
+            base_url: base_url.to_string(),
+            token: "sd_test_token".to_string(),
+            ..Default::default()
+        }
+    }
+
+    // SDTEST-152 — POST 404 ⇒ retry as GET ⇒ Ok with parsed payload.
+    // Also asserts we actually retried (POST hit + GET hit, in order).
+    #[test]
+    fn sync_now_falls_back_get_after_404_post() {
+        let m = start_fallback_mock(PostBehaviour::Return404);
+        let cfg = test_cfg(&m.url);
+
+        let payload = fetch_sync(&cfg, "test-0.0.0").expect("fallback should succeed");
+
+        assert_eq!(m.post_hits.load(Ordering::SeqCst), 1, "POST attempted once");
+        assert_eq!(m.get_hits.load(Ordering::SeqCst), 1, "GET fallback fired");
+        assert_eq!(payload.version, 1);
+        assert_eq!(payload.connections.len(), 1);
+        assert_eq!(payload.connections[0].alias, "activ-2");
+    }
+
+    // SDTEST-153 — same contract with 405 as the trigger.
+    #[test]
+    fn sync_now_falls_back_get_after_405_post() {
+        let m = start_fallback_mock(PostBehaviour::Return405);
+        let cfg = test_cfg(&m.url);
+
+        let payload = fetch_sync(&cfg, "test-0.0.0").expect("405 fallback should succeed");
+
+        assert_eq!(m.post_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(m.get_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(payload.connections.len(), 1);
+    }
+
+    // SDTEST-154 — 401 surfaces as Err with a "token rejected" hint,
+    // AND crucially does NOT trigger a GET retry (a bad token must
+    // not silently degrade to an unauthenticated GET). Combined with
+    // the sync_now shape (fetch → merge → save), this guarantees
+    // a rejected token can never lead to `merge_profiles` running on
+    // an empty payload — which would prune every CloudSync connection
+    // in the local store.
+    #[test]
+    fn sync_now_401_surfaces_and_does_not_retry_get() {
+        let m = start_fallback_mock(PostBehaviour::Return401);
+        let cfg = test_cfg(&m.url);
+
+        let err = fetch_sync(&cfg, "test-0.0.0")
+            .expect_err("401 must surface as Err, not silently succeed");
+
+        // Only ONE POST attempt, no GET retry. This is the invariant
+        // that protects the local store from a bad-token prune.
+        assert_eq!(m.post_hits.load(Ordering::SeqCst), 1, "POST attempted once");
+        assert_eq!(
+            m.get_hits.load(Ordering::SeqCst),
+            0,
+            "401 must NOT fall back to GET (a rejected token stays rejected)",
+        );
+
+        // Message contract for the caller's toast.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("401") || msg.to_lowercase().contains("rejected"),
+            "401 error message should mention the status or 'rejected', got: {msg}",
         );
     }
 }

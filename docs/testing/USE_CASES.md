@@ -271,8 +271,13 @@ ignores escaped braces and code fences.
 ### SDUC-061 — Script variables: substitution
 
 `substitute_variables(body, values)` replaces every placeholder with
-the caller-provided value; missing values fall back to the declared
-default when present; extra `values` entries are ignored.
+the caller-provided value; missing values fall back to the inline
+default (`{{name:default}}`) when present. **When neither a value nor a
+default exists, the placeholder is left unchanged in the output** — not
+replaced by empty. Downstream code relies on this to detect
+missing-prompt cases and re-prompt or error out. Extra `values`
+entries are ignored. Malformed placeholders (unclosed `{{`) never
+panic — the stray brace is emitted verbatim.
 
 ### SDUC-062 — Runner spec per language
 
@@ -348,9 +353,18 @@ exclude patterns, checksum flag, remote-user@host prefix).
 
 ### SDUC-076 — Sync operation progress
 
-`SyncProgress::percent` returns a value in `[0, 1]` when both total
-and transferred are known; `None` otherwise. `overall_percent` is
-weighted by item size, not item count.
+`SyncProgress::percent` returns a value in **`[0, 100]`** (a
+percentage, not a ratio — corrected from initial catalogue) when
+`total_bytes` is known; `Some(100.0)` as a safety when `total_bytes = 0`
+(guards against 0/0 in the progress bar); `None` when
+`total_bytes.is_none()`. Value is clamped to `100.0` even if
+`bytes_transferred > total` (rsync sometimes over-reports during
+verify).
+
+`SyncOperation::overall_percent` is **size-weighted**, not
+item-count-weighted: a 1 GB item at 50% dominates ten 1 KB items at
+100% (aggregate stays ~50%, not ~95%). Returns `None` for an empty
+operation OR when no item knows its total.
 
 ---
 
@@ -464,6 +478,16 @@ timestamp, port-forward customisations, tag additions) are preserved.
 
 A cloud profile that stops appearing in the payload is deleted from
 the local store on the next sync.
+
+### SDUC-104bis — Connection accessors (display_name / connection_string)
+
+`display_name()` returns a borrowed slice: the `alias` when it is
+non-empty, otherwise the `hostname`. There is **no UUID fallback** —
+callers must ensure at least one of `alias`/`hostname` is set at
+construction (both `new_manual` and cloud-sync paths do). Every
+sidebar row consumes this to render its label. `connection_string()`
+returns `user@host:port` — the port is **always included**, even
+when it is the default 22 (opinionated toward unambiguous strings).
 
 ### SDUC-104 — Merge: never touches Manual / SshConfig connections
 
@@ -695,6 +719,25 @@ support surface — no wasted requests when the user is elsewhere.
 
 `ConvertToIssue` action creates an Issue with `source="support"`,
 linking back to the originating ticket ID.
+
+### SDUC-170 — `createdAt` / `created_at` alias parses
+
+Message and ticket timestamps deserialize from both the camelCase
+`createdAt` field and the snake_case `created_at` alias (Manage may
+send either shape depending on route). Epoch seconds are up-scaled
+to milliseconds.
+
+### SDUC-171 — `message.lastAt` alias parses as message timestamp
+
+Older Manage builds emit `lastAt` on individual messages instead of
+`at`; both forms accepted. Ensures backward compat with legacy tenants.
+
+### SDUC-172 — `channel_lucide(channel)` maps every documented channel
+
+`SupportTicket::channel_lucide()` returns the Lucide icon slug for
+each known channel (`email` → `mail`, `livechat` → `reply`, …).
+Unknown channel → `inbox` fallback (safe default, per SDUC-164 for the
+glyph variant).
 
 ---
 
@@ -1004,14 +1047,20 @@ regression class).
 ### SDUC-300 — Fuzzy match: palette
 
 `command_palette::fuzzy_match(haystack, needle)` returns true iff
-every char of `needle` appears in `haystack` in order (case-insensitive).
-Empty needle matches everything.
+every char of `needle` appears in the *lowercased* haystack in order.
+**The needle is taken as-is** — the caller
+(`CommandPalette::update_filter`) pre-lowercases the query. Empty
+needle matches every haystack, including empty. Comparison is by
+unicode `char`, not byte, so accented characters (`é`, `à`, `ü`) do
+not silently match their ASCII counterparts.
 
 ### SDUC-301 — Fuzzy match with indices: sidebar
 
-`sidebar::fuzzy_match_indices(haystack, needle)` returns the byte
-indices for highlighting; empty needle returns `Some(vec![])` (match,
-no highlights).
+`sidebar::fuzzy_match_indices(haystack, needle)` returns the **char
+positions** in the lowercased haystack (not byte offsets — the
+consumer walks a `Vec<char>` at the same index). Case-insensitive on
+both sides. Empty needle returns `Some(vec![])` (match, no
+highlights); no match returns `None`.
 
 ### SDUC-302 — Sidebar site filter
 
@@ -1117,6 +1166,54 @@ Windows (Credential Manager).
 
 ---
 
+## 18. Internationalisation (i18n)
+
+`crates/shelldeck-ui/src/i18n.rs` +
+`crates/shelldeck-core/locales/{fr,en}.toml` — governed by
+[`.agents/i18n.md`](../../.agents/i18n.md).
+
+### SDUC-400 — `[general].ui_language` persists across restart
+
+`UiLanguage` (`System` / `Fr` / `En`, `snake_case` on disk) round-trips
+in `shelldeck.toml`. Absent field parses back to `System` (the
+default) — **backward compat with configs written before i18n
+landed**.
+
+### SDUC-401 — Locale resolution is French-biased
+
+`resolve_locale(&Fr)` → `"fr"`. `resolve_locale(&En)` → `"en"`.
+`resolve_locale(&System)` returns `"fr"` when the OS locale starts
+with `fr*` **and also when the OS locale is unknown / not readable**
+(product default per AGENTS.md is French, not English).
+
+### SDUC-402 — Locale is applied at startup and on config change
+
+`apply_ui_language` runs once at boot (in `main.rs`) and once per
+`SettingsEvent::ConfigChanged` (in the workspace) — `rust_i18n::set_locale`
+is process-global; `cx.notify()` follows to repaint every open view.
+
+### SDUC-403 — Missing keys fall back to French, not English
+
+`rust_i18n::i18n!(fallback = "fr")` — a key present only in `fr.toml`
+still renders in the UI when the active locale is `en`, and vice versa
+never the reverse. Guarantee: no key ever renders as its raw slug.
+
+### SDUC-404 — `rel_time(at_ms)` is fully localized
+
+Relative timestamps ("à l'instant" / "just now" / "il y a 3 min" /
+"3 min ago") go through `t!("time.just_now")`,
+`t!("time.ago_minutes", count = …)`, `ago_hours`, `ago_days` — no
+hardcoded French strings in the view layer.
+
+### SDUC-405 — `t!()` accepts named variable interpolation
+
+`t!("login.device", device = self.device)` interpolates `%{device}`
+in the source key. The interpolation contract survives locale
+switches; a key without `%{…}` placeholders ignores extra vars
+without erroring.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1126,3 +1223,81 @@ Windows (Credential Manager).
 ## Change log
 
 - **2026-07-07** — Initial catalogue.
+- **2026-07-09** — Added SDUC-170/171/172 (Support timestamp aliases,
+  Lucide channel mapping) and § 18 i18n (SDUC-400..405) following the
+  rust-i18n landing (`.agents/i18n.md`, commits `ae99be5` +
+  `0837c74` + `c1ef0f3` + `4bd6d21` + `f8c2ac5`).
+- **2026-07-09 (later)** — Amended SDUC-060/061/300/301 wording after
+  implementing SDTEST-034/036/1000-1024/1302. Contract corrections:
+  `fuzzy_match` needle is NOT lowercased (caller's job);
+  `fuzzy_match_indices` returns CHAR positions, not byte offsets;
+  `substitute_variables` LEAVES missing placeholders unchanged instead
+  of emitting empty.
+- **2026-07-09 (D)** — Cluster D landed: SDTEST-030/032/033/037/044
+  (validate_port, Connection accessors, ScriptLanguage runner_spec
+  table, ExecutionRecord lifecycle). Introduced SDUC-104bis for the
+  Connection accessor contract; SDUC-104 no longer conflates that
+  with the cloud-sync merge rule. `display_name` fallback corrected:
+  alias → hostname only, **no UUID fallback**.
+- **2026-07-09 (E)** — Cluster E landed: SDTEST-016/017/018/019/020
+  (parse_ls edges, nginx include tolerance + multi-name limitation,
+  SyncProgress percent, rsync argv coverage). SDUC-076 amended: 
+  `percent()` returns a percentage 0..=100, not a ratio 0..=1
+  (initial catalogue was wrong).
+- **2026-07-09 (F)** — Cluster F long-tail: SDTEST-035 (fence
+  behaviour pinned as-is), SDTEST-038/039/040 (PM detect +
+  dependency check + install lookup), SDTEST-042/043 (templates
+  catalog invariants + `to_script`), SDTEST-069 (AppConfig defaults
+  first-run pin). Closes the last "no-infra" pockets in
+  `shelldeck-core::models` + `config::app_config`.
+- **2026-07-09 (G)** — Cluster G cloud_sync P0: SDTEST-152/153/154
+  (404/405 → GET fallback, 401 without retry). First mock-based
+  cluster of the session; extends the zero-dep `TcpListener` pattern
+  from `jean_fleet` / `issues` / `manage_support` to cover the sync
+  entry point. SDTEST-154 is the load-bearing safety test — a bad
+  token can never reach `merge_profiles` with an empty payload and
+  silently prune every CloudSync connection.
+- **2026-07-09 (H)** — Cluster H user/support priority list from
+  reviewer: SDTEST-1052/184 (effective_mode truth table — non-super
+  forced User), SDTEST-225 (7 support write body shapes + 401),
+  SDTEST-295 (create_issue source elision), SDTEST-1053/1057
+  (can_switch predicate — palette leak fix drafted), SDTEST-1054/185
+  (JeanConfig::resolve_effective precedence), SDTEST-227/228
+  (support agents empty + list order preserved), SDTEST-298
+  (dispatch_issue instance_id body), SDTEST-246 (format_via_shelldeck
+  prefix shape). Ported 4 pure fns to `shelldeck-core` (`AppMode::can_switch`,
+  `AppMode::resolve_effective`, `JeanConfig::resolve_effective`,
+  `format_via_shelldeck`) so the truth tables are testable outside
+  GPUI. Workspace delegate call-sites drafted in the working tree,
+  land in a follow-up commit once the concurrent i18n WIP merges.
+- **2026-07-09 (I)** — Cluster I `known_hosts` (SDTEST-580..585 +
+  bonus). Extracted `check_known_host_in(contents, …)`,
+  `build_known_host_line(…)`, `add_known_host_to(path, …)` as pure
+  fns testable without `$HOME` mutation (parallel-safe). MITM sensor
+  + append-never-overwrites property. Full SSH FakeTransport for
+  session/pool/tunnel deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (J)** — Cluster J release contract (SDTEST-1200..1203,
+  SDTEST-1260/1261). `platform.rs` OS/arch key format + `darwin-*`
+  forbidden; `include_str!`-based parity check between
+  `release.yml`, worker `index.ts`, and runtime `current_platform()`.
+  AutoUpdater cadence + hash-verify need injectable clock/HTTP →
+  [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (K)** — Cluster K PTY Unix smoke (SDTEST-960/962/963/965/966,
+  `#[cfg(all(test, unix))]`). Spawn/echo round-trip/resize/exit-code
+  on Linux CI. macOS/Windows deferred (CI matrix) →
+  [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md). Zombie-on-drop
+  (SDTEST-967) needs impl decision — deferred.
+- **2026-07-09 (L)** — Cluster L keychain (SDTEST-120/123/124). Pure
+  key builders (`entry_key`, `passphrase_entry_key`) + hostile
+  namespace-isolation test (SSH key path spelling out `user@host`
+  proves the `passphrase:` prefix is load-bearing). Live smoke gated
+  by `SHELLDECK_LIVE_KEYCHAIN=1`. macOS/Windows deferred (CI matrix)
+  → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (M)** — Cluster M long tail: SDTEST-084 (store mix),
+  SDTEST-106/108 (ssh_config Include + never-writes),
+  SDTEST-130/131/132 (themes builtins + fallback + fields),
+  SDTEST-045/046/047 (ManagedSite constructors + url elision),
+  SDTEST-155/156 (cloud_sync tags overwrite policy + no-dup).
+  Contract correction SDUC-102: cloud is authoritative on tags,
+  local additions ARE overwritten (initial inventory said
+  "preserves" — aspirational, reality tested and locked).

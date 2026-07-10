@@ -48,6 +48,9 @@ pub struct Palette {
 }
 
 static ACTIVE: Lazy<RwLock<Palette>> = Lazy::new(|| RwLock::new(dark_palette()));
+/// Filesystem slug of the active theme (matches `ThemePreference::brand_slug`)
+/// — used by `brand_badge()` to pick the matching per-palette PNG.
+static ACTIVE_SLUG: Lazy<RwLock<&'static str>> = Lazy::new(|| RwLock::new("dark"));
 
 /// Parse a `0xRRGGBB` literal into an `Hsla`.
 fn hx(c: u32) -> Hsla {
@@ -486,6 +489,7 @@ impl ShellDeckColors {
     /// Swap the active theme to the given preference.
     pub fn set_theme(pref: &ThemePreference) {
         *ACTIVE.write() = palette_for(pref);
+        *ACTIVE_SLUG.write() = pref.brand_slug();
     }
 
     /// Backwards-compatible dark/light toggle.
@@ -495,11 +499,18 @@ impl ShellDeckColors {
         } else {
             light_palette()
         };
+        *ACTIVE_SLUG.write() = if dark { "dark" } else { "light" };
     }
 
     /// The full active palette (handy for swatches/previews).
     pub fn palette() -> Palette {
         *ACTIVE.read()
+    }
+
+    /// Filesystem slug of the active palette (`"dark"`, `"dracula"`, …). Used
+    /// by the brand kit to pick per-theme raster assets.
+    pub fn palette_slug() -> &'static str {
+        *ACTIVE_SLUG.read()
     }
 
     pub fn is_dark() -> bool {
@@ -698,7 +709,14 @@ pub fn adabraka_theme_from_palette() -> adabraka_ui::prelude::Theme {
     t.card_foreground = ShellDeckColors::text_primary();
     t.popover = ShellDeckColors::bg_surface();
     t.popover_foreground = ShellDeckColors::text_primary();
-    t.muted = ShellDeckColors::hint_bg();
+    // shadcn/ui `muted` is meant as a *visible* mid-tone surface (control
+    // tracks, disabled fills, muted cards). Our `hint_bg` (semi-transparent
+    // 15% grey) collapses into the background on any dark palette — the
+    // adabraka `Toggle` OFF state was rendering as an invisible track under
+    // an invisible knob on Catppuccin Mocha, Dracula, One Dark… Point at
+    // `selected_bg` instead: it's already tuned per palette to stay visible
+    // on both light and dark bases (see `.agents/theming.md`).
+    t.muted = ShellDeckColors::selected_bg();
     t.muted_foreground = ShellDeckColors::text_muted();
     // Subtle list-row highlight — not full primary fill (unreadable with dark text).
     t.accent = ShellDeckColors::primary().opacity(if ShellDeckColors::is_dark() {

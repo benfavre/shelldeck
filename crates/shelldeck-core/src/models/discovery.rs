@@ -655,4 +655,154 @@ server {
         assert!(cmd.contains("--exclude="));
         assert!(cmd.contains("deploy@server.com"));
     }
+
+    // SDTEST-016 — filenames with spaces are re-joined intact
+    // (parts[7..].join(" ")). Symlinks show up as directories only if
+    // the `l` prefix isn't taken as "dir" — permissions.starts_with('d')
+    // gates that, so a symlink to a dir renders as a regular file for
+    // now. Dotfiles are not filtered out.
+    #[test]
+    fn parse_ls_output_handles_spaces_in_names_and_dotfiles() {
+        let output = concat!(
+            "total 4\n",
+            "-rw-r--r-- 1 root root 12 2024-01-15 10:00 my report v2.pdf\n",
+            "-rw-r--r-- 1 root root  0 2024-01-15 10:00 .env\n",
+            "drwxr-xr-x 2 root root 4096 2024-01-15 10:00 .config\n",
+        );
+        let entries = parse_ls_output(output, "/home/user");
+        assert_eq!(entries.len(), 3, "spaces + dotfiles all kept");
+        // Directories first (sort_by), then alphabetical case-insensitive.
+        assert_eq!(entries[0].name, ".config");
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].path, "/home/user/.config");
+        // Non-dir files sorted after; the space-in-name row survived
+        // parts[7..].join(" ").
+        let names: Vec<_> = entries[1..].iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"my report v2.pdf"));
+        assert!(names.contains(&".env"));
+    }
+
+    // Lines with fewer than 8 whitespace fields (e.g. a stray "total 8"
+    // header, empty lines, or an rsync/scp footer) are silently
+    // skipped. Ensures the parser never panics on ragged input.
+    #[test]
+    fn parse_ls_output_skips_malformed_lines() {
+        let output = concat!(
+            "total 8\n",
+            "\n",
+            "not a real line\n",
+            "-rw-r--r-- 1 root root 42 2024-01-15 10:00 real.txt\n",
+        );
+        let entries = parse_ls_output(output, "/tmp");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "real.txt");
+    }
+
+    // SDTEST-017 — an `include` directive inside a nginx server block
+    // is ignored (not a recognized directive at server-block depth 1).
+    // The parser must still emit the enclosing site correctly and
+    // never panic. Real `include` expansion is the shell command's
+    // job before the config text hits this parser.
+    #[test]
+    fn parse_nginx_configs_tolerates_include_directive() {
+        let output = r#"---FILE:/etc/nginx/sites-enabled/app.conf
+server {
+    listen 80;
+    server_name app.example.com;
+    include /etc/nginx/snippets/proxy.conf;
+    root /var/www/app;
+}"#;
+        let sites = parse_nginx_configs(output);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].server_name, "app.example.com");
+        assert_eq!(sites[0].root, "/var/www/app");
+    }
+
+    // SDTEST-018 — pin the CURRENT behaviour: when a `server_name`
+    // line lists multiple hosts (`server_name a b c;`), only the FIRST
+    // is extracted (the parser calls `split_whitespace().next()`).
+    // Multi-name is a documented limitation; a future enhancement
+    // would extract all names, but until then the test locks the
+    // shape so a well-meaning refactor doesn't accidentally regress
+    // by taking the last one instead.
+    #[test]
+    fn parse_nginx_configs_takes_first_server_name_when_multiple_listed() {
+        let output = r#"---FILE:/etc/nginx/sites-enabled/multi.conf
+server {
+    listen 80;
+    server_name primary.example.com www.example.com alias.example.com;
+    root /var/www/primary;
+}"#;
+        let sites = parse_nginx_configs(output);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            sites[0].server_name, "primary.example.com",
+            "current parser keeps only the first host — future TODO to emit all",
+        );
+    }
+
+    // rsync argv — extend the existing `test_rsync_command` coverage
+    // with the two switches it didn't touch (delete_extra,
+    // skip_existing) + verify the source path is shell-escaped so a
+    // space in the path doesn't break the command.
+    #[test]
+    fn rsync_command_includes_delete_and_ignore_existing_switches() {
+        let opts = SyncOptions {
+            compress: false,
+            dry_run: false,
+            delete_extra: true,
+            bandwidth_limit: None,
+            skip_existing: true,
+        };
+        let cmd = rsync_command("/src", "u", "h", "/dest", &opts, &[]);
+        assert!(cmd.contains("--delete"), "delete_extra ⇒ --delete");
+        assert!(
+            cmd.contains("--ignore-existing"),
+            "skip_existing ⇒ --ignore-existing",
+        );
+        assert!(!cmd.contains("--dry-run"), "dry_run=false ⇒ no --dry-run");
+        assert!(!cmd.contains("--bwlimit"), "bw=None ⇒ no --bwlimit");
+    }
+
+    #[test]
+    fn rsync_command_shell_escapes_source_and_dest_paths() {
+        let opts = SyncOptions {
+            compress: true,
+            dry_run: false,
+            delete_extra: false,
+            bandwidth_limit: None,
+            skip_existing: false,
+        };
+        let cmd = rsync_command("/var/www/my site", "u", "h", "/var/www/dest v2", &opts, &[]);
+        // Should NOT contain the raw unquoted path (which would break argv).
+        assert!(
+            !cmd.contains(" /var/www/my site "),
+            "raw path with a space must be shell-quoted, got: {cmd}",
+        );
+        assert!(cmd.contains("u@h:"));
+    }
+
+    #[test]
+    fn rsync_command_emits_one_exclude_per_pattern() {
+        let opts = SyncOptions {
+            compress: false,
+            dry_run: false,
+            delete_extra: false,
+            bandwidth_limit: None,
+            skip_existing: false,
+        };
+        let cmd = rsync_command(
+            "/src",
+            "u",
+            "h",
+            "/dest",
+            &opts,
+            &["*.log".into(), "node_modules".into(), ".git".into()],
+        );
+        let count = cmd.matches("--exclude=").count();
+        assert_eq!(
+            count, 3,
+            "one --exclude= per pattern, got {count} in: {cmd}"
+        );
+    }
 }

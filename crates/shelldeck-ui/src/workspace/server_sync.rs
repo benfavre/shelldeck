@@ -6,6 +6,7 @@ use shelldeck_ssh::client::SshClient;
 use uuid::Uuid;
 
 use crate::server_sync_view::{PanelSide, ServerSyncEvent, LOCAL_MACHINE_ID};
+use crate::t;
 use crate::toast::ToastLevel;
 
 use super::{ActiveScript, Workspace};
@@ -184,7 +185,7 @@ impl Workspace {
         if let Err(e) = spawn_result {
             tracing::error!("Failed to spawn ls thread: {}", e);
             self.show_toast(
-                format!("Failed to list remote files: {}", e),
+                t!("toast.sync.list_files_failed", error = e.to_string()).to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -446,7 +447,7 @@ impl Workspace {
             Err(e) => {
                 tracing::error!("Failed to spawn sync thread: {}", e);
                 self.show_toast(
-                    format!("Failed to start sync: {}", e),
+                    t!("toast.sync.start_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );

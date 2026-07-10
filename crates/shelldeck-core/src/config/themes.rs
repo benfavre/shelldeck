@@ -169,3 +169,55 @@ impl TerminalTheme {
             .unwrap_or_else(Self::dark)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalTheme;
+
+    // SDTEST-130 — the shipped catalog is exactly the four themes
+    // documented in AGENTS.md § Theming. Adding a new builtin without
+    // wiring it into `builtins()` trips this test.
+    #[test]
+    fn builtins_returns_the_four_shipped_themes() {
+        let names: Vec<String> = TerminalTheme::builtins()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            names.len(),
+            4,
+            "shipped catalog is 4 themes today: {names:?}"
+        );
+        assert!(names.iter().any(|n| n == "Dark"));
+        assert!(names.iter().any(|n| n == "Light"));
+    }
+
+    // SDTEST-131 — by_name() with an unknown name MUST fall back to
+    // Dark instead of panicking or returning an empty theme. Load-
+    // bearing safety: a stale theme name in `shelldeck.toml` (renamed
+    // upstream, corrupt config) must not crash the app at boot.
+    #[test]
+    fn by_name_unknown_falls_back_to_dark_no_panic() {
+        let t = TerminalTheme::by_name("no-such-theme");
+        assert_eq!(t.name, "Dark");
+        // Empty string is also unknown — same fallback.
+        assert_eq!(TerminalTheme::by_name("").name, "Dark");
+    }
+
+    #[test]
+    fn by_name_returns_the_matching_builtin() {
+        assert_eq!(TerminalTheme::by_name("Light").name, "Light");
+        assert_eq!(TerminalTheme::by_name("Dark").name, "Dark");
+    }
+
+    // SDTEST-132 — every builtin has non-empty foreground/background
+    // + name. Sensor for accidental "" fields introduced in a refactor.
+    #[test]
+    fn every_builtin_has_name_bg_and_fg() {
+        for t in TerminalTheme::builtins() {
+            assert!(!t.name.is_empty(), "theme has empty name: {t:?}");
+            assert!(!t.background.is_empty(), "{}: bg is empty", t.name);
+            assert!(!t.foreground.is_empty(), "{}: fg is empty", t.name);
+        }
+    }
+}

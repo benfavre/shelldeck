@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::dashboard::{ActivityEvent, ActivityType};
 use crate::port_forward_form::{PortForwardForm, PortForwardFormEvent};
 use crate::port_forward_view::PortForwardEvent;
+use crate::t;
 use crate::toast::ToastLevel;
 
 use super::{ActiveTunnel, Workspace};
@@ -37,11 +38,15 @@ impl Workspace {
                     None => {
                         tracing::error!("Port forward not found: {}", forward_id);
                         self.add_activity(
-                            format!("Port forward not found: {}", forward_id),
+                            t!("activity.forward_not_found", id = forward_id).to_string(),
                             ActivityType::Error,
                             cx,
                         );
-                        self.show_toast("Port forward not found", ToastLevel::Error, cx);
+                        self.show_toast(
+                            t!("toast.port_forward.not_found").to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
                         return;
                     }
                 };
@@ -72,12 +77,12 @@ impl Workspace {
                             }
                         });
                         self.add_activity(
-                            "Connection not found for port forward".to_string(),
+                            t!("activity.forward_connection_not_found").to_string(),
                             ActivityType::Error,
                             cx,
                         );
                         self.show_toast(
-                            "Connection not found for port forward",
+                            t!("toast.forward.connection_not_found").to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -99,12 +104,12 @@ impl Workspace {
                 });
 
                 self.add_activity(
-                    format!("Starting port forward: {}", label),
+                    t!("activity.forward_starting", label = label.as_str()).to_string(),
                     ActivityType::Forward,
                     cx,
                 );
                 self.show_toast(
-                    format!("Starting port forward: {}", label),
+                    t!("toast.forward.starting", label = label.as_str()).to_string(),
                     ToastLevel::Info,
                     cx,
                 );
@@ -245,12 +250,12 @@ impl Workspace {
                             }
                         });
                         self.add_activity(
-                            format!("Failed to start port forward: {}", label),
+                            t!("activity.forward_start_failed", label = label.as_str()).to_string(),
                             ActivityType::Error,
                             cx,
                         );
                         self.show_toast(
-                            format!("Failed to start port forward: {}", e),
+                            t!("toast.forward.start_failed", error = e.to_string()).to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -304,12 +309,17 @@ impl Workspace {
                                 });
 
                                 ws.add_activity(
-                                    format!("Port forward active: {}", label_for_activity),
+                                    t!(
+                                        "activity.forward_active",
+                                        label = label_for_activity.as_str()
+                                    )
+                                    .to_string(),
                                     ActivityType::Forward,
                                     cx,
                                 );
                                 ws.show_toast(
-                                    format!("Port forward active: {}", label_for_activity),
+                                    t!("toast.forward.active", label = label_for_activity.as_str())
+                                        .to_string(),
                                     ToastLevel::Success,
                                     cx,
                                 );
@@ -337,7 +347,11 @@ impl Workspace {
                                     0,
                                     ActivityEvent {
                                         icon: "alert",
-                                        message: format!("Port forward failed: {}", err_msg),
+                                        message: t!(
+                                            "activity.forward_failed",
+                                            error = err_msg.as_str()
+                                        )
+                                        .to_string(),
                                         timestamp: chrono::Local::now()
                                             .format("%H:%M:%S")
                                             .to_string(),
@@ -351,7 +365,8 @@ impl Workspace {
 
                             let _ = weak_self.update(cx, |ws, cx| {
                                 ws.show_toast(
-                                    format!("Port forward failed: {}", err_msg),
+                                    t!("toast.forward.failed", error = err_msg.as_str())
+                                        .to_string(),
                                     ToastLevel::Error,
                                     cx,
                                 );
@@ -373,10 +388,11 @@ impl Workspace {
                                     0,
                                     ActivityEvent {
                                         icon: "alert",
-                                        message: format!(
-                                            "Port forward timed out: {}",
-                                            label_for_activity
-                                        ),
+                                        message: t!(
+                                            "activity.forward_timeout",
+                                            label = label_for_activity.as_str()
+                                        )
+                                        .to_string(),
                                         timestamp: chrono::Local::now()
                                             .format("%H:%M:%S")
                                             .to_string(),
@@ -390,7 +406,11 @@ impl Workspace {
 
                             let _ = weak_self.update(cx, |ws, cx| {
                                 ws.show_toast(
-                                    format!("Port forward timed out: {}", label_for_activity),
+                                    t!(
+                                        "toast.forward.timeout",
+                                        label = label_for_activity.as_str()
+                                    )
+                                    .to_string(),
                                     ToastLevel::Warning,
                                     cx,
                                 );
@@ -436,12 +456,12 @@ impl Workspace {
                     };
 
                     self.add_activity(
-                        format!("Stopped port forward: {}", label),
+                        t!("activity.forward_stopped", label = label.as_str()).to_string(),
                         ActivityType::Forward,
                         cx,
                     );
                     self.show_toast(
-                        format!("Stopped port forward: {}", label),
+                        t!("toast.forward.stopped", label = label.as_str()).to_string(),
                         ToastLevel::Info,
                         cx,
                     );
@@ -458,7 +478,7 @@ impl Workspace {
                     });
 
                     self.add_activity(
-                        "Port forward stop requested (no active tunnel)".to_string(),
+                        t!("activity.forward_stop_no_active").to_string(),
                         ActivityType::Forward,
                         cx,
                     );
@@ -506,7 +526,7 @@ impl Workspace {
                     if let Err(e) = this.store.add_port_forward(forward.clone()) {
                         tracing::error!("Failed to save port forward: {}", e);
                         this.show_toast(
-                            format!("Failed to save port forward: {}", e),
+                            t!("toast.forward.save_failed", error = e.to_string()).to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -516,12 +536,20 @@ impl Workspace {
                         pf.forwards.push(forward.clone());
                     });
                     this.add_activity(
-                        format!("Added port forward: {}", forward.description()),
+                        t!(
+                            "activity.forward_added",
+                            desc = forward.description().to_string()
+                        )
+                        .to_string(),
                         ActivityType::Forward,
                         cx,
                     );
                     this.show_toast(
-                        format!("Port forward created: {}", forward.description()),
+                        t!(
+                            "toast.forward.created",
+                            desc = forward.description().to_string()
+                        )
+                        .to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -570,7 +598,8 @@ impl Workspace {
                             if let Err(e) = this.store.add_port_forward(forward.clone()) {
                                 tracing::error!("Failed to save port forward: {}", e);
                                 this.show_toast(
-                                    format!("Failed to save port forward: {}", e),
+                                    t!("toast.forward.save_failed", error = e.to_string())
+                                        .to_string(),
                                     ToastLevel::Error,
                                     cx,
                                 );
@@ -579,7 +608,8 @@ impl Workspace {
                         Err(e) => {
                             tracing::error!("Failed to update port forward: {}", e);
                             this.show_toast(
-                                format!("Failed to update port forward: {}", e),
+                                t!("toast.forward.update_failed", error = e.to_string())
+                                    .to_string(),
                                 ToastLevel::Error,
                                 cx,
                             );
@@ -593,12 +623,20 @@ impl Workspace {
                         }
                     });
                     this.add_activity(
-                        format!("Updated port forward: {}", forward.description()),
+                        t!(
+                            "activity.forward_updated",
+                            desc = forward.description().to_string()
+                        )
+                        .to_string(),
                         ActivityType::Forward,
                         cx,
                     );
                     this.show_toast(
-                        format!("Port forward updated: {}", forward.description()),
+                        t!(
+                            "toast.forward.updated",
+                            desc = forward.description().to_string()
+                        )
+                        .to_string(),
                         ToastLevel::Success,
                         cx,
                     );

@@ -3,9 +3,10 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** These three crates have **0 tests** today. That is
-partly intentional (GPUI views are hard to unit-test, see
-`.agents/testing.md`) and partly a real gap.
+**Big picture.** These three crates have **12 tests** today
+(`shelldeck-ui/src/{i18n,command_palette,sidebar}.rs`) and huge gaps
+elsewhere. The low count is partly intentional (GPUI views are hard
+to unit-test, see `.agents/testing.md`) and partly a real gap.
 
 The recipe is: **push logic out of `Render` blocks into pure helpers,
 then unit-test the helpers**. The two working models already in the
@@ -26,10 +27,10 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1000 | *to write* — `fuzzy_match(haystack, needle)` — needle empty matches everything | SDUC-300 | **Red / P0** | Pure fn; foundational. |
-| SDTEST-1001 | *to write* — fuzzy_match preserves in-order requirement | SDUC-300 | **Red / P0** | `"ab" matches "arb"` but not `"ba"`. |
-| SDTEST-1002 | *to write* — fuzzy_match is case-insensitive | SDUC-300 | **Red / P0** | |
-| SDTEST-1003 | *to write* — fuzzy_match handles utf-8 correctly (accented chars) | SDUC-300 | **Red / P1** | French UI strings. |
+| SDTEST-1000 | `command_palette.rs::empty_needle_matches_everything` | SDUC-300 | Green | Added 2026-07-09. |
+| SDTEST-1001 | `command_palette.rs::subsequence_must_appear_in_order` | SDUC-300 | Green | Added 2026-07-09. |
+| SDTEST-1002 | `command_palette.rs::haystack_case_folded_but_needle_taken_as_is` | SDUC-300 | Green | Added 2026-07-09. **Contract correction** — the fn only lowercases the haystack; the caller must pre-lowercase the needle. Not "double-sided case-insensitive" as my original inventory claimed. |
+| SDTEST-1003 | `command_palette.rs::utf8_accented_chars_match` | SDUC-300 | Green | Added 2026-07-09. Comparison is by unicode `char`; `é` and `e` are distinct. |
 | SDTEST-1004 | *to write* — CommandPalette::set_actions replaces the action list wholesale | SDUC-303 | **Red / P1** | No accidental append. |
 | SDTEST-1005 | *to write* — update_filter is deterministic for identical input | SDUC-303 | **Red / P1** | Idempotent guarantee. |
 | SDTEST-1006 | *to write* — select_next / select_prev wrap at bounds | SDUC-305 | **Red / P1** | |
@@ -44,11 +45,11 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1020 | *to write* — `fuzzy_match_indices` returns Some(vec![]) for empty needle | SDUC-301 | **Red / P0** | Contract distinct from palette (needs highlight positions). |
-| SDTEST-1021 | *to write* — fuzzy_match_indices returns byte-position matches, not char-position | SDUC-301 | **Red / P0** | Consumed by highlight rendering. |
-| SDTEST-1022 | *to write* — fuzzy_match_indices returns None on no-match | SDUC-301 | **Red / P0** | |
-| SDTEST-1023 | *to write* — conn_matches_site: none-filter shows all | SDUC-302 | **Red / P0** | |
-| SDTEST-1024 | *to write* — conn_matches_site: filtered site shows matches + unbound | SDUC-302 | **Red / P0** | Behavioural contract per AGENTS.md. |
+| SDTEST-1020 | `sidebar.rs::empty_needle_returns_empty_indices` | SDUC-301 | Green | Added 2026-07-09. |
+| SDTEST-1021 | `sidebar.rs::returns_char_positions_not_bytes` | SDUC-301 | Green | Added 2026-07-09. **Contract correction** — returned indices are CHAR positions in the lowercased haystack, not byte offsets (consumer walks a `Vec<char>` at the same index). My original inventory was wrong. |
+| SDTEST-1022 | `sidebar.rs::no_match_returns_none` | SDUC-301 | Green | Added 2026-07-09. Also covers double-sided case-insensitivity (unlike `fuzzy_match`, this fn lowercases the needle too). |
+| SDTEST-1023 | `sidebar.rs::no_filter_matches_every_connection` | SDUC-302 | Green | Added 2026-07-09. |
+| SDTEST-1024 | `sidebar.rs::filter_matches_bound_site_and_all_unbound_connections` | SDUC-302 | Green | Added 2026-07-09. Test hits the extracted pure fn `conn_matches_site_filter(Option<Uuid>, Option<Uuid>) -> bool` so no GPUI `Context` needed. The method still exists and delegates. |
 | SDTEST-1025 | *to write* — conn_matches_search: alias, hostname, user, tag match | SDUC-306 | **Red / P1** | |
 | SDTEST-1026 | *to write* — set_width clamps within [MIN, MAX] | SDUC-307 | **Red / P1** | |
 | SDTEST-1027 | *to write* — toggle_collapsed toggles state and preserves other state | SDUC-308 | **Red / P2** | |
@@ -65,14 +66,14 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1050 | *to write* — effective_mode(): logged-out → Dev | SDUC-309, SDUC-152 | **Red / P0** | Pure fn over `Option<AccountInfo>` + `AppMode`. |
-| SDTEST-1051 | *to write* — effective_mode(): superadmin returns persisted mode | SDUC-309 | **Red / P0** | |
-| SDTEST-1052 | *to write* — effective_mode(): non-superadmin forced to User | SDUC-309, SDUC-152 | **Red / P0** | Security-adjacent (SDUC-152). |
-| SDTEST-1053 | *to write* — can_switch_mode(): true only for signed-in superadmin | SDUC-309 | **Red / P0** | |
-| SDTEST-1054 | *to write* — has_jean(): true when local `[jeanclaude]` set OR server-delivered config exists | SDUC-185 | **Red / P0** | Precedence contract per AGENTS.md. |
-| SDTEST-1055 | *to write* — effective_jean_config prefers local over server | SDUC-185 | **Red / P0** | |
+| SDTEST-1050 | *(covered by SDTEST-184)* — effective_mode(): logged-out → Dev | SDUC-309, SDUC-152 | Green | 2026-07-09 — port cross-linked to shelldeck-core, see tests-core.md § SDTEST-184. |
+| SDTEST-1051 | *(covered by SDTEST-184)* — effective_mode(): superadmin returns persisted mode | SDUC-309 | Green | Same file/test as SDTEST-184. |
+| SDTEST-1052 | `cloud_account.rs::resolve_effective_mode_non_superadmin_forced_to_user` (+ full-truth-table sibling) | SDUC-309, SDUC-152 | Green | 2026-07-09. **P0 security invariant** — a non-super-admin CANNOT land on Support even if `cloud_sync.mode="Support"` is hand-persisted. Test sweeps all 3 persisted values × non-superadmin ⇒ forced User. |
+| SDTEST-1053 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` | SDUC-309 | Green | 2026-07-09. Pure predicate — signed-in super-admin only. |
+| SDTEST-1054 | `jeanclaude.rs::resolve_effective_{local_wins_over_server, falls_back_to_server_when_local_unset, falls_back_to_server_when_local_none, none_when_neither_set}` | SDUC-185 | Green | 4 tests, 2026-07-09. Precedence contract from AGENTS.md § JeanClaude pinned as a pure fn on `JeanConfig`. Cross-linked to tests-core.md § SDTEST-1054 (jean). |
+| SDTEST-1055 | *(covered by SDTEST-1054)* — effective_jean_config prefers local over server | SDUC-185 | Green | Same fn as SDTEST-1054 (`resolve_effective_local_wins_over_server`). |
 | SDTEST-1056 | *to write* — refresh_command_palette produces stable action list for stable input | SDUC-303 | **Red / P1** | Reducer-style test on the action-builder. |
-| SDTEST-1057 | *to write* — refresh_command_palette adds "Mode : User/Support/Dev" entries only for superadmin | SDUC-152, SDUC-303 | **Red / P1** | |
+| SDTEST-1057 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` (+ palette gating in `Workspace::base_palette_actions`) | SDUC-152, SDUC-303 | Green | 2026-07-09. Pure predicate under test; the palette-side gating (`if can_switch_mode { for m in AppMode::all() ... }`) fixed a **real leak** — before this cluster, mode entries were unconditionally added to `base_palette_actions`, so a regular user saw three actions that no-op'd on dispatch. Working-tree draft; call site lands with the delegate follow-up commit. |
 | SDTEST-1058 | *to write* — action-list contains SwitchSite entries capped at 20 | SDUC-303 | **Red / P2** | |
 | SDTEST-1059 | *to write* — poll schedulers no-op when the relevant surface is not visible | SDUC-168, SDUC-188, SDUC-227, SDUC-249 | **Red / P0** | Regression class: burning bandwidth / cache lines. Test as a pure predicate `should_poll(active_view, feature)`. |
 
@@ -139,10 +140,10 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1200 | *to write* — current_platform() returns `linux-{arch}` on Linux | SDUC-280 | **Red / P0** | Linux CI. |
-| SDTEST-1201 | *to write* — current_platform() returns `macos-{arch}` on macOS (never `darwin-*`) | SDUC-280 | **Red / P0** | macOS CI. Contract-critical. |
-| SDTEST-1202 | *to write* — current_platform() returns `windows-{arch}` on Windows | SDUC-280 | **Red / P0** | Windows CI. |
-| SDTEST-1203 | *to write* — arch covers `x86_64` and `aarch64` | SDUC-280 | **Red / P0** | Both macOS silicons. |
+| SDTEST-1200 | `platform.rs::linux_uses_linux_prefix` (`#[cfg(target_os = "linux")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). Runs on Linux CI. |
+| SDTEST-1201 | `platform.rs::macos_uses_macos_prefix_never_darwin` (`#[cfg(target_os = "macos")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). **Contract-critical** — asserts `macos-*` AND explicitly forbids `darwin-*`. macOS CI runner needed to exercise the assertion. |
+| SDTEST-1202 | `platform.rs::windows_uses_windows_prefix` (`#[cfg(target_os = "windows")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). Windows CI. |
+| SDTEST-1203 | `platform.rs::arch_is_a_known_value` + `platform_string_shape_is_os_dash_arch` | SDUC-280 | Green | 2 tests, added 2026-07-09 (cluster J). Runs on every target; warns (not errors) if a new arch slips in as `unknown`. |
 
 ### `lib.rs` — `AutoUpdater`
 
@@ -168,12 +169,40 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1260 | *to write* — install.sh + install.ps1 grep for the same platform keys the worker emits | SDUC-286, SDUC-287 | **Red / P0** | Bash regex check in CI. A drift here is what breaks releases silently — this is the highest-value cheap test in the whole doc. |
-| SDTEST-1261 | *to write* — release.yml asset names match the worker's manifest keys | SDUC-287 | **Red / P0** | YAML+JS parser check in CI. |
+| SDTEST-1260 | `lib.rs::release_parity_tests::every_shipping_key_appears_in_release_workflow` + `every_shipping_key_appears_in_update_worker` + `current_platform_matches_a_release_key_or_is_explicitly_unsupported` | SDUC-286, SDUC-287 | Green | 3 tests, added 2026-07-09 (cluster J). `include_str!` reads `.github/workflows/release.yml` + `cloudflare/update-worker/src/index.ts` at compile time; asserts each shipping key (`linux-x86_64`, `macos-aarch64`, `windows-x86_64`) is a literal string in BOTH sources + round-trips to `current_platform()`. |
+| SDTEST-1261 | `lib.rs::release_parity_tests::darwin_prefix_is_forbidden_in_release_contract` | SDUC-287 | Green | Added 2026-07-09 (cluster J). Explicit forbid on `darwin-x86_64`, `darwin-aarch64`, `darwin-arm64` in workflow AND worker source. AGENTS.md contract. |
 
 ---
 
-## 8. Cross-platform coverage (referenced from everywhere)
+## 8. `shelldeck-ui/i18n.rs` — rust-i18n helpers
+
+Existing: **2 tests.** First non-view module in `shelldeck-ui` to
+carry unit tests — the pattern to copy for any future pure-logic
+helper extracted out of a `Render` block.
+
+⚠️ **Global-state footgun.** `rust_i18n::set_locale` writes a
+process-wide value. Any test that calls `apply_ui_language` races
+with any other. Keep locale-mutating tests **sequential inside a
+single `#[test]` fn** (see `locale_fr_and_en` for the canonical
+form). Do **not** add per-locale tests — they will flake under
+parallel `cargo test`.
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1300 | `i18n.rs::locale_fr_and_en` | SDUC-401, SDUC-403 | Green | Fused fr+en scenario — deliberate (locale is process-global). |
+| SDTEST-1301 | `i18n.rs::resolve_locale_system_is_fr_or_en` | SDUC-401 | Green | Smoke test that `System` resolves to a known locale on the CI runner regardless of OS. |
+| SDTEST-1302 | `i18n.rs::fr_en_locale_key_parity` | SDUC-403 | Green | Added 2026-07-09. Loads both TOMLs via `include_str!`, diffs the `toml::Table` key sets. Adds a `toml` dev-dependency to `shelldeck-ui` (workspace version). |
+| SDTEST-1303 | ~~missing key falls back to the French value~~ | ~~SDUC-403~~ | **Retired** | Subsumed by SDTEST-1302 (strict parity means the fallback path is never exercised in practice) and SDTEST-1300 (which proves the locale actually switches by asserting `"Se connecter"` ≠ `"Sign in"` — if fallback were silently masking, en would return the fr value). Any manufactured "canary key" would itself break parity. Kept in the inventory to preserve the sticky ID. |
+| SDTEST-1304 | *to write* — `rel_time(at_ms)` produces localized strings per locale | SDUC-404 | **Red / P1** | Same sequential pattern; assert "à l'instant" (fr) vs "just now" (en) at t=now. |
+| SDTEST-1305 | *to write* — `t!("login.device", device = "…")` interpolates `%{device}` | SDUC-405 | **Red / P1** | |
+| SDTEST-1306 | *to write* — `t!()` with no variables ignores extras without erroring | SDUC-405 | **Red / P2** | Defensive; matches rust-i18n behaviour. |
+| SDTEST-1307 | *to write* — `UiLanguage` round-trips through `shelldeck.toml` as snake_case | SDUC-400 | **Red / P1** | Lives in `shelldeck-core::config::app_config` — add there, not here. Cross-linked. |
+| SDTEST-1308 | *to write* — Config without `ui_language` still parses (defaults to `System`) | SDUC-400 | **Red / P1** | Same location; back-compat with pre-i18n configs. |
+| SDTEST-1309 | *to write* — Unknown OS locale resolves to `"fr"`, not `"en"` | SDUC-401 | **Red / P1** | Product default per AGENTS.md; regression sensor if someone flips the fallback. Needs an injectable locale-reader trait to test deterministically. |
+
+---
+
+## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST
 entries that carry cross-platform stakes and must run on multiple

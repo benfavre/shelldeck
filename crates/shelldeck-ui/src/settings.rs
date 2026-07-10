@@ -1,4 +1,8 @@
 use crate::scale::px;
+use adabraka_ui::components::icon_button::IconButton;
+use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::select::{Select, SelectOption};
+use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
@@ -10,10 +14,25 @@ use shelldeck_core::config::themes::TerminalTheme;
 use crate::theme::{palette_for, ShellDeckColors};
 use crate::workspace::CloudSyncNow;
 
+/// Fixed shortlist of monospace families offered for the editor + terminal.
+/// Kept in sync between the two settings tabs; extend here to surface new
+/// picks everywhere.
+const MONOSPACE_FONTS: &[&str] = &[
+    "JetBrains Mono",
+    "Fira Code",
+    "Source Code Pro",
+    "Cascadia Code",
+    "Menlo",
+    "Consolas",
+];
+
+const EDITOR_TAB_SIZES: &[usize] = &[2, 4, 8];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
     Terminal,
+    Editor,
     Appearance,
     About,
 }
@@ -32,19 +51,64 @@ pub struct SettingsView {
     pub config: AppConfig,
     pub active_tab: SettingsTab,
     pub unsaved_changes: bool,
+    /// Adabraka `Select` entities. Each keeps its own open/highlighted state
+    /// and is rebuilt in `sync_selects` whenever the underlying config
+    /// changes externally so the shown selection stays true.
+    editor_font_family_select: Entity<Select<SharedString>>,
+    editor_tab_size_select: Entity<Select<usize>>,
+    terminal_font_family_select: Entity<Select<SharedString>>,
+    terminal_cursor_style_select: Entity<Select<SharedString>>,
+    general_language_select: Entity<Select<UiLanguage>>,
+    ui_font_family_select: Entity<Select<SharedString>>,
 }
 
 impl SettingsView {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, cx: &mut Context<Self>) -> Self {
+        let editor_font_family_select = build_editor_font_family_select(&config, cx);
+        let editor_tab_size_select = build_editor_tab_size_select(&config, cx);
+        let terminal_font_family_select = build_terminal_font_family_select(&config, cx);
+        let terminal_cursor_style_select = build_terminal_cursor_style_select(&config, cx);
+        let general_language_select = build_general_language_select(&config, cx);
+        let ui_font_family_select = build_ui_font_family_select(&config, cx);
         Self {
             config,
             active_tab: SettingsTab::General,
             unsaved_changes: false,
+            editor_font_family_select,
+            editor_tab_size_select,
+            terminal_font_family_select,
+            terminal_cursor_style_select,
+            general_language_select,
+            ui_font_family_select,
         }
     }
 
-    fn mark_changed(&mut self) {
-        self.unsaved_changes = true;
+    /// Rebuild only the `Select` entities whose backing config slice differs
+    /// from `old`. Called from `Workspace::sync_settings_config` — a mode
+    /// switch or `cloud_sync` toggle no longer nukes the 6 dropdown
+    /// popovers just to refresh their `selected_index` (which fixed a UX
+    /// bug where opening a Select then triggering any workspace event
+    /// would close the popover mid-pick).
+    pub fn sync_selects_if_changed(&mut self, old: &AppConfig, cx: &mut Context<Self>) {
+        if self.config.editor.font_family != old.editor.font_family {
+            self.editor_font_family_select = build_editor_font_family_select(&self.config, cx);
+        }
+        if self.config.editor.tab_size != old.editor.tab_size {
+            self.editor_tab_size_select = build_editor_tab_size_select(&self.config, cx);
+        }
+        if self.config.terminal.font_family != old.terminal.font_family {
+            self.terminal_font_family_select = build_terminal_font_family_select(&self.config, cx);
+        }
+        if self.config.terminal.cursor_style != old.terminal.cursor_style {
+            self.terminal_cursor_style_select =
+                build_terminal_cursor_style_select(&self.config, cx);
+        }
+        if self.config.general.ui_language != old.general.ui_language {
+            self.general_language_select = build_general_language_select(&self.config, cx);
+        }
+        if self.config.general.ui_font_family != old.general.ui_font_family {
+            self.ui_font_family_select = build_ui_font_family_select(&self.config, cx);
+        }
     }
 
     /// Select a terminal color theme by name and persist it immediately.
@@ -208,82 +272,18 @@ impl SettingsView {
                     .overflow_hidden()
                     .flex()
                     .justify_end()
+                    // Right padding so the rounded end of a Toggle or the
+                    // caret of a Select never sits under the vertical
+                    // scrollbar overlay (`scrollable_vertical`) — used to
+                    // clip the last ~4-6px and printed a hard vertical
+                    // seam. See `.agents/spacing.md`.
+                    .pr(px(4.0))
                     .child(control),
             )
     }
 
-    fn render_toggle(enabled: bool) -> impl IntoElement {
-        let mut el = div()
-            .w(px(40.0))
-            .h(px(22.0))
-            .rounded_full()
-            .cursor_pointer()
-            .flex()
-            .items_center();
-
-        if enabled {
-            el = el.bg(ShellDeckColors::primary()).child(
-                div()
-                    .ml_auto()
-                    .mr(px(2.0))
-                    .w(px(18.0))
-                    .h(px(18.0))
-                    .rounded_full()
-                    .bg(white()),
-            );
-        } else {
-            el = el.bg(ShellDeckColors::toggle_off_bg()).child(
-                div()
-                    .ml(px(2.0))
-                    .w(px(18.0))
-                    .h(px(18.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::toggle_off_knob()),
-            );
-        }
-
-        el
-    }
-
     fn render_general_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_lang = self.config.general.ui_language.clone();
-        let mut lang_row = div().flex().gap(px(6.0)).flex_wrap();
-        for lang in UiLanguage::all() {
-            let lang = lang.clone();
-            let is_active = current_lang == lang;
-            let label = match lang {
-                UiLanguage::System => t!("settings.language.system").to_string(),
-                UiLanguage::Fr => t!("settings.language.fr").to_string(),
-                UiLanguage::En => t!("settings.language.en").to_string(),
-            };
-            let mut btn = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "ui-lang-{lang:?}"
-                ))))
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .text_size(px(12.0))
-                .border_1()
-                .border_color(ShellDeckColors::border());
-            if is_active {
-                btn = btn
-                    .bg(ShellDeckColors::primary().opacity(0.15))
-                    .text_color(ShellDeckColors::primary())
-                    .font_weight(FontWeight::MEDIUM);
-            } else {
-                btn = btn
-                    .text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()));
-            }
-            lang_row = lang_row.child(btn.child(label).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.select_ui_language(lang.clone(), cx);
-                },
-            )));
-        }
-
+        let entity = cx.entity();
         div()
             .flex()
             .flex_col()
@@ -291,77 +291,93 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.language.label").as_ref(),
                 t!("settings.language.description").as_ref(),
-                lang_row,
+                div()
+                    .w(px(180.0))
+                    .child(self.general_language_select.clone()),
             ))
             .child(Self::render_setting_row(
                 t!("settings.general.auto_connect.label").as_ref(),
                 t!("settings.general.auto_connect.description").as_ref(),
-                div()
-                    .id("toggle-auto-connect")
-                    .child(Self::render_toggle(
-                        self.config.general.auto_connect_on_startup,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.auto_connect_on_startup =
-                            !this.config.general.auto_connect_on_startup;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                Self::bind_toggle(
+                    "general-auto-connect",
+                    self.config.general.auto_connect_on_startup,
+                    &entity,
+                    |this, value| {
+                        this.config.general.auto_connect_on_startup = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.general.notifications.label").as_ref(),
                 t!("settings.general.notifications.description").as_ref(),
-                div()
-                    .id("toggle-notifications")
-                    .child(Self::render_toggle(self.config.general.show_notifications))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.show_notifications =
-                            !this.config.general.show_notifications;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                Self::bind_toggle(
+                    "general-notifications",
+                    self.config.general.show_notifications,
+                    &entity,
+                    |this, value| {
+                        this.config.general.show_notifications = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.general.confirm_close.label").as_ref(),
                 t!("settings.general.confirm_close.description").as_ref(),
-                div()
-                    .id("toggle-confirm-close")
-                    .child(Self::render_toggle(
-                        self.config.general.confirm_before_close,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.confirm_before_close =
-                            !this.config.general.confirm_before_close;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                Self::bind_toggle(
+                    "general-confirm-close",
+                    self.config.general.confirm_before_close,
+                    &entity,
+                    |this, value| {
+                        this.config.general.confirm_before_close = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.general.tmux.label").as_ref(),
                 t!("settings.general.tmux.description").as_ref(),
-                div()
-                    .id("toggle-tmux")
-                    .child(Self::render_toggle(self.config.general.auto_attach_tmux))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.auto_attach_tmux =
-                            !this.config.general.auto_attach_tmux;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                Self::bind_toggle(
+                    "general-tmux",
+                    self.config.general.auto_attach_tmux,
+                    &entity,
+                    |this, value| {
+                        this.config.general.auto_attach_tmux = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.general.auto_update.label").as_ref(),
                 t!("settings.general.auto_update.description").as_ref(),
-                div()
-                    .id("toggle-auto-update")
-                    .child(Self::render_toggle(self.config.general.auto_update))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.general.auto_update = !this.config.general.auto_update;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                Self::bind_toggle(
+                    "general-auto-update",
+                    self.config.general.auto_update,
+                    &entity,
+                    |this, value| {
+                        this.config.general.auto_update = value;
+                    },
+                ),
             ))
             .child(self.render_cloud_sync_settings(cx))
+    }
+
+    /// Shared adabraka `Toggle` bound to a single `bool` config field. The
+    /// `set` callback mutates the field on `SettingsView`; `save_config` is
+    /// invoked automatically so every toggle in the Settings screen persists
+    /// on the fly (no “Save” button required).
+    fn bind_toggle(
+        id: &'static str,
+        checked: bool,
+        entity: &Entity<SettingsView>,
+        set: impl Fn(&mut SettingsView, bool) + 'static,
+    ) -> impl IntoElement {
+        let entity = entity.clone();
+        Toggle::new(id)
+            .checked(checked)
+            .on_click(move |value, _window, cx| {
+                let value = *value;
+                entity.update(cx, |this, cx| {
+                    set(this, value);
+                    this.save_config(cx);
+                });
+            })
     }
 
     /// Mask a Cloud Sync token for display: never show the full secret, just a
@@ -464,6 +480,7 @@ impl SettingsView {
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
         div()
             .flex()
             .flex_col()
@@ -471,203 +488,236 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.terminal.font_size.label").as_ref(),
                 t!("settings.terminal.font_size.description").as_ref(),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("font-size-down")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.font_size =
-                                    (this.config.terminal.font_size - 1.0).max(8.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(format!("{}px", self.config.terminal.font_size)),
-                    )
-                    .child(
-                        div()
-                            .id("font-size-up")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.font_size =
-                                    (this.config.terminal.font_size + 1.0).min(32.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    ),
+                Self::render_number_stepper(
+                    "terminal-font-size",
+                    format!("{}px", self.config.terminal.font_size),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.terminal.font_size - 1.0).max(8.0);
+                        if (new - this.config.terminal.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.terminal.font_size = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.terminal.font_size + 1.0).min(32.0);
+                        if (new - this.config.terminal.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.terminal.font_size = new;
+                        this.save_config(cx);
+                    }),
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.terminal.font_family.label").as_ref(),
                 t!("settings.terminal.font_family.description").as_ref(),
-                {
-                    let fonts = [
-                        "JetBrains Mono",
-                        "Fira Code",
-                        "Source Code Pro",
-                        "Cascadia Code",
-                        "Menlo",
-                        "Consolas",
-                    ];
-                    let current = self.config.terminal.font_family.clone();
-                    let mut row = div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(4.0))
-                        .flex_wrap();
-                    for font_name in &fonts {
-                        let f = font_name.to_string();
-                        let is_active = current == f;
-                        let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!("font-{}", f))))
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .text_size(px(11.0))
-                            .cursor_pointer();
-
-                        if is_active {
-                            btn = btn
-                                .bg(ShellDeckColors::primary().opacity(0.2))
-                                .text_color(ShellDeckColors::primary());
-                        } else {
-                            btn = btn
-                                .text_color(ShellDeckColors::text_muted())
-                                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
-                        }
-
-                        let f_clone = f.clone();
-                        btn = btn.child(f).on_click(cx.listener(move |this, _, _, cx| {
-                            this.config.terminal.font_family = f_clone.clone();
-                            this.mark_changed();
-                            cx.notify();
-                        }));
-
-                        row = row.child(btn);
-                    }
-                    row
-                },
+                div()
+                    .w(px(200.0))
+                    .child(self.terminal_font_family_select.clone()),
             ))
             .child(Self::render_setting_row(
                 t!("settings.terminal.scrollback.label").as_ref(),
                 t!("settings.terminal.scrollback.description").as_ref(),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("scrollback-down")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.scrollback_lines = this
-                                    .config
-                                    .terminal
-                                    .scrollback_lines
-                                    .saturating_sub(1000)
-                                    .max(1000);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(format!("{}", self.config.terminal.scrollback_lines)),
-                    )
-                    .child(
-                        div()
-                            .id("scrollback-up")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.terminal.scrollback_lines =
-                                    (this.config.terminal.scrollback_lines + 1000).min(100_000);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    ),
+                Self::render_number_stepper(
+                    "terminal-scrollback",
+                    format!("{}", self.config.terminal.scrollback_lines),
+                    cx.listener(|this, _, _, cx| {
+                        let new = this
+                            .config
+                            .terminal
+                            .scrollback_lines
+                            .saturating_sub(1000)
+                            .max(1000);
+                        if new == this.config.terminal.scrollback_lines {
+                            return;
+                        }
+                        this.config.terminal.scrollback_lines = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.terminal.scrollback_lines + 1000).min(100_000);
+                        if new == this.config.terminal.scrollback_lines {
+                            return;
+                        }
+                        this.config.terminal.scrollback_lines = new;
+                        this.save_config(cx);
+                    }),
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.terminal.cursor_style.label").as_ref(),
                 t!("settings.terminal.cursor_style.description").as_ref(),
-                {
-                    let styles = ["block", "underline", "bar"];
-                    let current = self.config.terminal.cursor_style.clone();
-                    let mut row = div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(4.0))
-                        .flex_wrap();
-                    for style in &styles {
-                        let s = style.to_string();
-                        let is_active = current == s;
-                        let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!("cursor-{}", s))))
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .text_size(px(12.0))
-                            .cursor_pointer();
-
-                        if is_active {
-                            btn = btn
-                                .bg(ShellDeckColors::primary().opacity(0.2))
-                                .text_color(ShellDeckColors::primary());
-                        } else {
-                            btn = btn
-                                .text_color(ShellDeckColors::text_muted())
-                                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
-                        }
-
-                        let s_clone = s.clone();
-                        btn = btn.child(s).on_click(cx.listener(move |this, _, _, cx| {
-                            this.config.terminal.cursor_style = s_clone.clone();
-                            this.mark_changed();
-                            cx.notify();
-                        }));
-
-                        row = row.child(btn);
-                    }
-                    row
-                },
+                div()
+                    .w(px(140.0))
+                    .child(self.terminal_cursor_style_select.clone()),
             ))
             .child(Self::render_setting_row(
                 t!("settings.terminal.cursor_blink.label").as_ref(),
                 t!("settings.terminal.cursor_blink.description").as_ref(),
+                Self::bind_toggle(
+                    "terminal-cursor-blink",
+                    self.config.terminal.cursor_blink,
+                    &entity,
+                    |this, value| {
+                        this.config.terminal.cursor_blink = value;
+                    },
+                ),
+            ))
+    }
+
+    /// Shared `[- value +]` stepper — used by every numeric setting that
+    /// doesn't have a natural adabraka NumberInput fit (font size, scrollback,
+    /// sidebar width, UI font size). The `-`/`+` buttons are adabraka
+    /// `IconButton` so clicks land reliably through the icon (the previous
+    /// hand-rolled `div + svg` swallowed events on some builds).
+    ///
+    /// The `on_*` closures use the raw GPUI listener signature (`(&ClickEvent,
+    /// &mut Window, &mut App)`) so callers can pass `cx.listener(...)`
+    /// directly — the same shape adabraka's own `on_click` expects.
+    fn render_number_stepper(
+        _id: &str,
+        value: String,
+        on_minus: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        on_plus: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                IconButton::new(IconSource::Named("minus".into()))
+                    .size(gpui::px(28.0))
+                    .icon_size(gpui::px(14.0))
+                    .no_background(true)
+                    .on_click(on_minus),
+            )
+            .child(
                 div()
-                    .id("toggle-cursor-blink")
-                    .child(Self::render_toggle(self.config.terminal.cursor_blink))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.terminal.cursor_blink = !this.config.terminal.cursor_blink;
-                        this.mark_changed();
-                        cx.notify();
-                    })),
+                    .min_w(px(64.0))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(value),
+            )
+            .child(
+                IconButton::new(IconSource::Named("plus".into()))
+                    .size(gpui::px(28.0))
+                    .icon_size(gpui::px(14.0))
+                    .no_background(true)
+                    .on_click(on_plus),
+            )
+    }
+
+    fn render_editor_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(Self::render_setting_row(
+                t!("settings.editor.font_size.label").as_ref(),
+                t!("settings.editor.font_size.description").as_ref(),
+                Self::render_number_stepper(
+                    "editor-font-size",
+                    format!("{}px", self.config.editor.font_size),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.editor.font_size - 1.0).max(8.0);
+                        if (new - this.config.editor.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.editor.font_size = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.editor.font_size + 1.0).min(40.0);
+                        if (new - this.config.editor.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.editor.font_size = new;
+                        this.save_config(cx);
+                    }),
+                ),
+            ))
+            // Font family — adabraka Select (searchable dropdown).
+            .child(Self::render_setting_row(
+                t!("settings.editor.font_family.label").as_ref(),
+                t!("settings.editor.font_family.description").as_ref(),
+                div()
+                    .w(px(200.0))
+                    .child(self.editor_font_family_select.clone()),
+            ))
+            // Tab size — adabraka Select (2 / 4 / 8).
+            .child(Self::render_setting_row(
+                t!("settings.editor.tab_size.label").as_ref(),
+                t!("settings.editor.tab_size.description").as_ref(),
+                div()
+                    .w(px(100.0))
+                    .child(self.editor_tab_size_select.clone()),
+            ))
+            // Toggles — all through adabraka Toggle, so the OFF state renders
+            // with theme-aware muted/background tokens (fixes the visible
+            // "seam" we had in Solarized Light with the hand-rolled toggle).
+            .child(Self::render_setting_row(
+                t!("settings.editor.insert_spaces.label").as_ref(),
+                t!("settings.editor.insert_spaces.description").as_ref(),
+                Self::bind_toggle(
+                    "editor-insert-spaces",
+                    self.config.editor.insert_spaces,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.insert_spaces = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.editor.show_line_numbers.label").as_ref(),
+                t!("settings.editor.show_line_numbers.description").as_ref(),
+                Self::bind_toggle(
+                    "editor-line-numbers",
+                    self.config.editor.show_line_numbers,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.show_line_numbers = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.editor.show_whitespace.label").as_ref(),
+                t!("settings.editor.show_whitespace.description").as_ref(),
+                Self::bind_toggle(
+                    "editor-whitespace",
+                    self.config.editor.show_whitespace,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.show_whitespace = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.editor.word_wrap.label").as_ref(),
+                t!("settings.editor.word_wrap.description").as_ref(),
+                Self::bind_toggle(
+                    "editor-word-wrap",
+                    self.config.editor.word_wrap,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.word_wrap = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.editor.cursor_blink.label").as_ref(),
+                t!("settings.editor.cursor_blink.description").as_ref(),
+                Self::bind_toggle(
+                    "editor-cursor-blink",
+                    self.config.editor.cursor_blink,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.cursor_blink = value;
+                    },
+                ),
             ))
     }
 
@@ -844,7 +894,12 @@ impl SettingsView {
                 .flex()
                 .flex_col()
                 .justify_between()
-                .child(div().text_size(px(10.0)).text_color(fg).child("Aa Bb 123"));
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(fg)
+                        .child(t!("settings.theme.preview_sample").to_string()),
+                );
             let mut dots = div().flex().gap(px(3.0));
             for s in swatches {
                 dots = dots.child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(s));
@@ -955,146 +1010,55 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.appearance.sidebar_width.label").as_ref(),
                 t!("settings.appearance.sidebar_width.description").as_ref(),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("sidebar-width-down")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.sidebar_width =
-                                    (this.config.general.sidebar_width - 20.0).max(140.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(format!("{}px", self.config.general.sidebar_width)),
-                    )
-                    .child(
-                        div()
-                            .id("sidebar-width-up")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.sidebar_width =
-                                    (this.config.general.sidebar_width + 20.0).min(400.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    ),
+                Self::render_number_stepper(
+                    "sidebar-width",
+                    format!("{}px", self.config.general.sidebar_width),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.sidebar_width - 20.0).max(140.0);
+                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.sidebar_width = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.sidebar_width + 20.0).min(400.0);
+                        if (new - this.config.general.sidebar_width).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.sidebar_width = new;
+                        this.save_config(cx);
+                    }),
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.appearance.ui_font_size.label").as_ref(),
                 t!("settings.appearance.ui_font_size.description").as_ref(),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("ui-font-size-down")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/minus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.ui_font_size =
-                                    (this.config.general.ui_font_size - 1.0).max(10.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(format!("{}px", self.config.general.ui_font_size)),
-                    )
-                    .child(
-                        div()
-                            .id("ui-font-size-up")
-                            .text_size(px(16.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                            .child(svg().path("icons/lucide/plus.svg").size(px(12.0)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.config.general.ui_font_size =
-                                    (this.config.general.ui_font_size + 1.0).min(22.0);
-                                this.mark_changed();
-                                cx.notify();
-                            })),
-                    ),
+                Self::render_number_stepper(
+                    "ui-font-size",
+                    format!("{}px", self.config.general.ui_font_size),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.ui_font_size - 1.0).max(10.0);
+                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.ui_font_size = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.general.ui_font_size + 1.0).min(22.0);
+                        if (new - this.config.general.ui_font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.general.ui_font_size = new;
+                        this.save_config(cx);
+                    }),
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.appearance.ui_font.label").as_ref(),
                 t!("settings.appearance.ui_font.description").as_ref(),
-                {
-                    let fonts = [
-                        "System Default",
-                        "Inter",
-                        "SF Pro Text",
-                        "Segoe UI",
-                        "Roboto",
-                        "Ubuntu",
-                        "JetBrains Mono",
-                    ];
-                    let current = self.config.general.ui_font_family.clone();
-                    let mut row = div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(4.0))
-                        .flex_wrap();
-                    for font_name in &fonts {
-                        let f = font_name.to_string();
-                        let is_active = current == f;
-                        let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "ui-font-{}",
-                                f
-                            ))))
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .text_size(px(11.0))
-                            .cursor_pointer();
-
-                        if is_active {
-                            btn = btn
-                                .bg(ShellDeckColors::primary().opacity(0.2))
-                                .text_color(ShellDeckColors::primary());
-                        } else {
-                            btn = btn
-                                .text_color(ShellDeckColors::text_muted())
-                                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
-                        }
-
-                        let f_clone = f.clone();
-                        btn = btn.child(f).on_click(cx.listener(move |this, _, _, cx| {
-                            this.config.general.ui_font_family = f_clone.clone();
-                            this.mark_changed();
-                            cx.notify();
-                        }));
-
-                        row = row.child(btn);
-                    }
-                    row
-                },
+                div().w(px(200.0)).child(self.ui_font_family_select.clone()),
             ))
     }
 
@@ -1217,7 +1181,7 @@ impl SettingsView {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("MIT License"),
+                            .child(t!("settings.about.license").to_string()),
                     ),
             );
 
@@ -1375,6 +1339,9 @@ impl Render for SettingsView {
             SettingsTab::Terminal => {
                 tab_content = tab_content.child(self.render_terminal_settings(cx));
             }
+            SettingsTab::Editor => {
+                tab_content = tab_content.child(self.render_editor_settings(cx));
+            }
             SettingsTab::Appearance => {
                 tab_content = tab_content.child(self.render_appearance_settings(cx));
             }
@@ -1420,6 +1387,11 @@ impl Render for SettingsView {
                                 cx,
                             ))
                             .child(self.render_tab_button(
+                                SettingsTab::Editor,
+                                t!("settings.tab.editor").as_ref(),
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
                                 SettingsTab::Appearance,
                                 t!("settings.tab.appearance").as_ref(),
                                 cx,
@@ -1434,4 +1406,238 @@ impl Render for SettingsView {
                     .child(scrollable_vertical(tab_content)),
             )
     }
+}
+
+/// Build a `Select<SharedString>` bound to a `String` field of
+/// `AppConfig`, persisting via `save_config` on change. `field_get`
+/// reads the current value (used for the equality guard so a no-op
+/// pick doesn't rewrite the config file); `field_set` writes the
+/// new value.
+///
+/// Options are passed as `(value, label)` pairs — same convention
+/// `SelectOption::new` uses, so callers with i18n'd labels or a
+/// sentinel-value shortlist (e.g. `"System Default"`) can keep the
+/// value stable while translating the display.
+fn build_string_field_select<G, S>(
+    entries: Vec<(SharedString, SharedString)>,
+    current: &str,
+    placeholder: Option<SharedString>,
+    searchable: bool,
+    cx: &mut Context<SettingsView>,
+    field_get: G,
+    field_set: S,
+) -> Entity<Select<SharedString>>
+where
+    G: Fn(&SettingsView) -> &str + Send + Sync + 'static,
+    S: Fn(&mut SettingsView, String) + Send + Sync + 'static,
+{
+    let options: Vec<SelectOption<SharedString>> = entries
+        .iter()
+        .map(|(value, label)| SelectOption::new(value.clone(), label.clone()))
+        .collect();
+    let selected = entries.iter().position(|(v, _)| v.as_ref() == current);
+    let parent = cx.entity();
+    cx.new(move |select_cx| {
+        let mut sel = Select::new(select_cx)
+            .options(options)
+            .selected_index(selected);
+        if let Some(p) = placeholder {
+            sel = sel.placeholder(p);
+        }
+        if searchable {
+            sel = sel.searchable(true);
+        }
+        sel.on_change(move |value, _window, cx| {
+            let picked = value.to_string();
+            parent.update(cx, |this, cx| {
+                if field_get(this) == picked {
+                    return;
+                }
+                field_set(this, picked);
+                this.save_config(cx);
+            });
+        })
+    })
+}
+
+fn build_editor_font_family_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<SharedString>> {
+    let entries: Vec<(SharedString, SharedString)> = MONOSPACE_FONTS
+        .iter()
+        .map(|name| (SharedString::from(*name), SharedString::from(*name)))
+        .collect();
+    build_string_field_select(
+        entries,
+        &config.editor.font_family,
+        Some(SharedString::from("JetBrains Mono")),
+        true,
+        cx,
+        |this| this.config.editor.font_family.as_str(),
+        |this, v| this.config.editor.font_family = v,
+    )
+}
+
+/// Fresh `Select<usize>` for the editor tab size (2/4/8). Same wiring pattern
+/// as the font-family select.
+fn build_editor_tab_size_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<usize>> {
+    let options: Vec<SelectOption<usize>> = EDITOR_TAB_SIZES
+        .iter()
+        .map(|size| SelectOption::new(*size, format!("{}", size)))
+        .collect();
+    let selected = EDITOR_TAB_SIZES
+        .iter()
+        .position(|s| *s == config.editor.tab_size);
+    let parent = cx.entity();
+    cx.new(move |select_cx| {
+        Select::new(select_cx)
+            .options(options)
+            .selected_index(selected)
+            .on_change(move |value, _window, cx| {
+                let picked = *value;
+                parent.update(cx, |this, cx| {
+                    if this.config.editor.tab_size == picked {
+                        return;
+                    }
+                    this.config.editor.tab_size = picked;
+                    this.save_config(cx);
+                });
+            })
+    })
+}
+
+/// Fresh `Select<SharedString>` for the terminal font family. Same shortlist
+/// as the editor (both need monospace metrics).
+fn build_terminal_font_family_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<SharedString>> {
+    let entries: Vec<(SharedString, SharedString)> = MONOSPACE_FONTS
+        .iter()
+        .map(|name| (SharedString::from(*name), SharedString::from(*name)))
+        .collect();
+    build_string_field_select(
+        entries,
+        &config.terminal.font_family,
+        Some(SharedString::from("JetBrains Mono")),
+        true,
+        cx,
+        |this| this.config.terminal.font_family.as_str(),
+        |this, v| this.config.terminal.font_family = v,
+    )
+}
+
+/// Fresh `Select<SharedString>` for the terminal cursor style (block /
+/// underline / bar). Snake_case values match the runtime `set_cursor_style`
+/// API, so the picker persists exactly what the terminal expects.
+fn build_terminal_cursor_style_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<SharedString>> {
+    let entries: Vec<(SharedString, SharedString)> = vec![
+        (
+            "block".into(),
+            t!("settings.terminal.cursor_style.block").to_string().into(),
+        ),
+        (
+            "underline".into(),
+            t!("settings.terminal.cursor_style.underline")
+                .to_string()
+                .into(),
+        ),
+        (
+            "bar".into(),
+            t!("settings.terminal.cursor_style.bar").to_string().into(),
+        ),
+    ];
+    build_string_field_select(
+        entries,
+        &config.terminal.cursor_style,
+        None,
+        false,
+        cx,
+        |this| this.config.terminal.cursor_style.as_str(),
+        |this, v| this.config.terminal.cursor_style = v,
+    )
+}
+
+/// Fresh `Select<UiLanguage>` for the interface language (System / Français /
+/// English). Persists via `select_ui_language` so the workspace re-applies
+/// `rust_i18n::set_locale` and every view repaints.
+fn build_general_language_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<UiLanguage>> {
+    let entries: &[(UiLanguage, &str)] = &[
+        (UiLanguage::System, "settings.language.system"),
+        (UiLanguage::Fr, "settings.language.fr"),
+        (UiLanguage::En, "settings.language.en"),
+    ];
+    let options: Vec<SelectOption<UiLanguage>> = entries
+        .iter()
+        .map(|(lang, key)| SelectOption::new(lang.clone(), t!(*key).to_string()))
+        .collect();
+    let selected = entries
+        .iter()
+        .position(|(lang, _)| *lang == config.general.ui_language);
+    let parent = cx.entity();
+    cx.new(move |select_cx| {
+        Select::new(select_cx)
+            .options(options)
+            .selected_index(selected)
+            .on_change(move |value, _window, cx| {
+                let picked = value.clone();
+                parent.update(cx, |this, cx| {
+                    this.select_ui_language(picked, cx);
+                });
+            })
+    })
+}
+
+/// Fresh `Select<SharedString>` for the app UI font. Mirrors the terminal
+/// shortlist with a “System Default” option on top — that value falls back
+/// to the platform's default sans-serif family.
+fn build_ui_font_family_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<SharedString>> {
+    // "System Default" is a stable sentinel value persisted in config
+    // (see `AppConfig::default().general.ui_font_family`); only the display
+    // label is translated.
+    let system_default_label: SharedString =
+        t!("settings.general.font.system_default").to_string().into();
+    let fonts: &[&str] = &[
+        "System Default",
+        "Inter",
+        "SF Pro Text",
+        "Segoe UI",
+        "Ubuntu",
+        "Roboto",
+        "JetBrains Mono",
+        "Fira Code",
+    ];
+    let entries: Vec<(SharedString, SharedString)> = fonts
+        .iter()
+        .map(|name| {
+            let label: SharedString = if *name == "System Default" {
+                system_default_label.clone()
+            } else {
+                SharedString::from(*name)
+            };
+            (SharedString::from(*name), label)
+        })
+        .collect();
+    build_string_field_select(
+        entries,
+        &config.general.ui_font_family,
+        Some(system_default_label),
+        true,
+        cx,
+        |this| this.config.general.ui_font_family.as_str(),
+        |this, v| this.config.general.ui_font_family = v,
+    )
 }

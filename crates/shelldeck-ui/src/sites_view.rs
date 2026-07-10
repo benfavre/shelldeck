@@ -1542,7 +1542,7 @@ impl SitesView {
                     .justify_center()
                     .text_size(px(20.0))
                     .text_color(ShellDeckColors::primary())
-                    .child("W"),
+                    .child(t!("sites.empty.badge").to_string()),
             )
             .child(
                 div()

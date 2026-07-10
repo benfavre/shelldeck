@@ -276,3 +276,195 @@ pub fn get_install_command(pm_name: &str, dep: &ToolDependency) -> Option<String
         .find(|ic| ic.package_manager == pm)
         .map(|ic| ic.command.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::substitute_variables;
+    use std::collections::HashMap;
+
+    fn m(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    // SDTEST-036 — provided value wins.
+    #[test]
+    fn provided_value_replaces_placeholder() {
+        let body = "ssh {{user}}@{{host}}";
+        let out = substitute_variables(body, &m(&[("user", "alice"), ("host", "server1")]));
+        assert_eq!(out, "ssh alice@server1");
+    }
+
+    // Documented contract per SDUC-061: no value → falls back to the
+    // inline default.
+    #[test]
+    fn missing_value_falls_back_to_inline_default() {
+        let body = "curl {{url:https://example.com}} -X {{method:GET}}";
+        let out = substitute_variables(body, &m(&[])); // no values provided
+        assert_eq!(out, "curl https://example.com -X GET");
+    }
+
+    // Documented contract: no value AND no default → the placeholder is
+    // LEFT UNCHANGED (not replaced by empty). Consumers rely on this to
+    // detect missing prompts and either error out or re-prompt.
+    #[test]
+    fn missing_value_without_default_leaves_placeholder() {
+        let body = "echo {{who}}";
+        let out = substitute_variables(body, &m(&[]));
+        assert_eq!(out, "echo {{who}}");
+    }
+
+    // Extra map entries never referenced by the body are ignored (they
+    // don't append or leak into output).
+    #[test]
+    fn extra_values_in_map_are_ignored() {
+        let body = "echo {{host}}";
+        let out = substitute_variables(body, &m(&[("host", "srv"), ("unused", "junk")]));
+        assert_eq!(out, "echo srv");
+    }
+
+    // Utf-8: substitution copies the value verbatim; the surrounding
+    // text (including accented chars) also survives byte-for-byte.
+    #[test]
+    fn substitution_is_utf8_safe() {
+        let body = "commentaire : {{msg}} — fin";
+        let out = substitute_variables(body, &m(&[("msg", "à bientôt")]));
+        assert_eq!(out, "commentaire : à bientôt — fin");
+    }
+
+    // Unclosed placeholder: the impl emits the stray `{` and moves on
+    // by one byte, mirroring extract_variables' tolerance. Verifies we
+    // never panic on malformed input.
+    #[test]
+    fn unclosed_placeholder_does_not_panic() {
+        let body = "echo {{oops never closes";
+        let out = substitute_variables(body, &m(&[]));
+        // The output contains the raw bytes; we don't over-specify the
+        // exact shape (implementation detail), but it must not panic
+        // and it must not be empty.
+        assert!(!out.is_empty());
+        assert!(out.contains("oops"));
+    }
+
+    // SDTEST-038a — the detect command must probe every supported PM.
+    // If a new PM is added to the enum without wiring the detect
+    // command, this catches it (search for the binary name below).
+    #[test]
+    fn detect_command_probes_every_supported_package_manager() {
+        let cmd = super::build_package_manager_detect_command();
+        // Every PM label should appear as an echo target.
+        for pm in ["apt", "dnf", "yum", "pacman", "brew", "apk"] {
+            assert!(
+                cmd.contains(&format!("echo '{pm}'")),
+                "missing echo for {pm}"
+            );
+        }
+        assert!(cmd.contains("echo 'unknown'"), "missing fallback branch");
+    }
+
+    // SDTEST-038b — the detect command actually runs cleanly on the
+    // local shell (integration smoke). `sh` is guaranteed on every
+    // Unix CI runner and on macOS; skipped on Windows where the
+    // detection command uses POSIX-only syntax.
+    #[cfg(unix)]
+    #[test]
+    fn detect_command_runs_on_local_shell() {
+        use std::process::Command;
+        let cmd = super::build_package_manager_detect_command();
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .expect("sh must be present on Unix");
+        assert!(
+            output.status.success(),
+            "detect command failed: stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Must print exactly one of the recognized labels.
+        assert!(
+            ["apt", "dnf", "yum", "pacman", "brew", "apk", "unknown"].contains(&stdout.as_str()),
+            "unexpected PM label: {stdout:?}",
+        );
+    }
+
+    // SDTEST-039 — dependency check command shape: one guarded
+    // `if …; then echo OK; else echo MISSING; fi` per dep, joined
+    // with `&&`. Empty input returns the sentinel string.
+    #[test]
+    fn build_dependency_check_command_shapes() {
+        use crate::models::script::ToolDependency;
+
+        let empty = super::build_dependency_check_command(&[]);
+        assert_eq!(empty, "echo 'No dependencies to check'");
+
+        let deps = vec![
+            ToolDependency {
+                name: "curl".into(),
+                check_command: "command -v curl".into(),
+                install_commands: vec![],
+            },
+            ToolDependency {
+                name: "jq".into(),
+                check_command: "command -v jq".into(),
+                install_commands: vec![],
+            },
+        ];
+        let cmd = super::build_dependency_check_command(&deps);
+        assert!(cmd.contains("'curl: OK'"));
+        assert!(cmd.contains("'curl: MISSING'"));
+        assert!(cmd.contains("'jq: OK'"));
+        assert!(cmd.contains("'jq: MISSING'"));
+        // Two deps ⇒ exactly one `&&` between them.
+        assert_eq!(cmd.matches(" && ").count(), 1);
+    }
+
+    // SDTEST-040 — install command lookup: matching PM returns its
+    // command; unknown PM returns None; PM without an entry for this
+    // dep returns None. Table-driven across all 6 supported PMs.
+    #[test]
+    fn get_install_command_per_package_manager() {
+        use crate::models::script::{InstallCommand, PackageManager, ToolDependency};
+
+        let dep = ToolDependency {
+            name: "jq".into(),
+            check_command: "command -v jq".into(),
+            install_commands: vec![
+                InstallCommand {
+                    package_manager: PackageManager::Apt,
+                    command: "apt-get install -y jq".into(),
+                },
+                InstallCommand {
+                    package_manager: PackageManager::Brew,
+                    command: "brew install jq".into(),
+                },
+                InstallCommand {
+                    package_manager: PackageManager::Apk,
+                    command: "apk add jq".into(),
+                },
+            ],
+        };
+
+        // Positive lookups: exact PM string ⇒ its command.
+        assert_eq!(
+            super::get_install_command("apt", &dep),
+            Some("apt-get install -y jq".into()),
+        );
+        assert_eq!(
+            super::get_install_command("brew", &dep),
+            Some("brew install jq".into()),
+        );
+
+        // Negative: a valid PM string but no InstallCommand for it.
+        assert!(super::get_install_command("dnf", &dep).is_none());
+        assert!(super::get_install_command("yum", &dep).is_none());
+        assert!(super::get_install_command("pacman", &dep).is_none());
+
+        // Negative: unknown PM string (e.g. Windows chocolatey typo).
+        assert!(super::get_install_command("choco", &dep).is_none());
+        assert!(super::get_install_command("", &dep).is_none());
+    }
+}

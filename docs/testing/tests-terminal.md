@@ -152,14 +152,14 @@ must run on all three targets or be gated with a target-cfg reason.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-960 | *to write* — spawn returns alive PTY with writable stdin (default shell) | SDUC-022 | **Red / P0** | All three targets. Use `sh -c 'exit 0'` / `cmd /c exit 0` respectively. |
-| SDTEST-961 | *to write* — spawn honours explicit shell path | SDUC-022 | **Red / P0** | |
-| SDTEST-962 | *to write* — write / read round-trip: `echo hello` produces `hello` on stdout | SDUC-022, SDUC-023 | **Red / P0** | Foundational integration test. |
-| SDTEST-963 | *to write* — resize before spawn / after spawn both work | SDUC-024 | **Red / P0** | |
-| SDTEST-964 | *to write* — resize triggers SIGWINCH on Unix (verify via `stty size`) | SDUC-024 | **Red / P1** | Unix-only. |
-| SDTEST-965 | *to write* — is_alive transitions false after child exit | SDUC-022 | **Red / P0** | Race-prone — needs a proper `wait` before the assertion. |
-| SDTEST-966 | *to write* — wait() returns the child exit code | SDUC-022 | **Red / P1** | |
-| SDTEST-967 | *to write* — dropping PtyMaster kills the child (no zombies) | SDUC-022 | **Red / P0** | Regression class: leaked processes on tab close. |
+| SDTEST-960 | `pty.rs::spawn_returns_alive_pty` (`#[cfg(all(test, unix))]`) | SDUC-022 | Green | Added 2026-07-09 (cluster K). Linux CI covers Unix path. macOS/Windows deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md). |
+| SDTEST-961 | *to write* — spawn honours explicit shell path | SDUC-022 | **Red / P1** | Partially covered — SDTEST-962 uses explicit `/bin/sh`. Standalone assert on `LocalPty::spawn(Some("/bin/dash"), …)` still Red. |
+| SDTEST-962 | `pty.rs::write_and_read_echo_round_trip` (`#[cfg(all(test, unix))]`) | SDUC-022, SDUC-023 | Green | Added 2026-07-09 (cluster K). Sentinel + `exit` + 3s timeout cap on the read loop. |
+| SDTEST-963 | `pty.rs::resize_returns_ok` (`#[cfg(all(test, unix))]`) | SDUC-024 | Green | Added 2026-07-09 (cluster K). |
+| SDTEST-964 | *to write* — resize triggers SIGWINCH on Unix (verify via `stty size`) | SDUC-024 | **Red / P2** | Portable_pty handles the syscall — verifying SIGWINCH delivery adds fragility for a low-value assertion. |
+| SDTEST-965 | `pty.rs::is_alive_and_wait_reflect_child_exit` (`#[cfg(all(test, unix))]`) | SDUC-022 | Green | Added 2026-07-09 (cluster K). Combined with SDTEST-966 — `exit 3` → `wait()` returns non-zero, `is_alive()` flips false. Exact code not pinned (fragile across shell implementations). |
+| SDTEST-966 | (same as SDTEST-965) | SDUC-022 | Green | Same test — the wait() return-code assertion is bundled with is_alive(). |
+| SDTEST-967 | *to write* — dropping PtyMaster kills the child (no zombies) | SDUC-022 | **Red / P0** | Requires a follow-up: `Drop` for `PtyMaster` doesn't kill by default in portable_pty. Deferred pending impl decision. |
 | SDTEST-968 | *to write* — spawn Errs cleanly when shell path is invalid | SDUC-022 | **Red / P1** | |
 
 ---

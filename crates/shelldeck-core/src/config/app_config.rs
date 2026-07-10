@@ -11,6 +11,11 @@ pub struct AppConfig {
     pub theme: ThemePreference,
     pub terminal: TerminalConfig,
     pub general: GeneralConfig,
+    /// `[editor]` — code editor preferences (font, indent, wrap, gutter…).
+    /// `#[serde(default)]` keeps existing `shelldeck.toml` files without an
+    /// `[editor]` section parsing cleanly.
+    #[serde(default)]
+    pub editor: EditorConfig,
     /// Cloud Sync (Inklura Manage). `#[serde(default)]` keeps existing
     /// `shelldeck.toml` files without a `[cloud_sync]` section parsing cleanly.
     #[serde(default)]
@@ -100,6 +105,27 @@ impl ThemePreference {
         use ThemePreference::*;
         !matches!(self, Light | SolarizedLight)
     }
+
+    /// Filesystem slug used by the brand kit (`brand/svg/themes/{slug}-…`,
+    /// `brand/png/themes/monolith-{slug}-…`). Kept in sync with
+    /// `scripts/export-monolith-brand.py`. `System` follows the dark asset.
+    pub fn brand_slug(&self) -> &'static str {
+        use ThemePreference::*;
+        match self {
+            Dark | System => "dark",
+            Light => "light",
+            Dracula => "dracula",
+            Nord => "nord",
+            TokyoNight => "tokyo-night",
+            GruvboxDark => "gruvbox-dark",
+            SolarizedDark => "solarized-dark",
+            SolarizedLight => "solarized-light",
+            CatppuccinMocha => "catppuccin-mocha",
+            OneDark => "one-dark",
+            Monokai => "monokai",
+            RosePine => "rose-pine",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +180,53 @@ pub struct GeneralConfig {
     pub ui_font_family: String,
     /// Base font size in pixels for the application UI.
     pub ui_font_size: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// Editor font family (must be monospace — the paint loop assumes fixed
+    /// cell width). "System Default" falls back to the app's UI font family.
+    pub font_family: String,
+    /// Editor base font size in pixels. Per-tab zoom stacks on top and is
+    /// not persisted here.
+    pub font_size: f32,
+    /// Line-height multiplier applied to the font size (1.4 ≈ VS Code default).
+    pub line_height: f32,
+    /// Visible width of a tab, in columns.
+    pub tab_size: usize,
+    /// When true, pressing Tab inserts spaces; when false, a real `\t`.
+    pub insert_spaces: bool,
+    /// Show the gutter with line numbers.
+    pub show_line_numbers: bool,
+    /// Render whitespace glyphs (space dots, tab arrows).
+    pub show_whitespace: bool,
+    /// Soft-wrap long lines at `word_wrap_column`.
+    pub word_wrap: bool,
+    /// Wrap column when `word_wrap` is on.
+    pub word_wrap_column: usize,
+    /// Blink the primary cursor.
+    pub cursor_blink: bool,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            font_family: "JetBrains Mono".to_string(),
+            font_size: 14.0,
+            // VS Code / Zed default — feels aired-out, matches the reference
+            // look the maintainer targets. Tighter values (1.2..1.4) work but
+            // start to feel cramped past 15px.
+            line_height: 1.5,
+            tab_size: 4,
+            insert_spaces: true,
+            show_line_numbers: true,
+            show_whitespace: false,
+            word_wrap: false,
+            word_wrap_column: 120,
+            cursor_blink: true,
+        }
+    }
 }
 
 impl Default for TerminalConfig {
@@ -459,6 +532,40 @@ ui_font_size = 14.0
     }
 
     #[test]
+    fn editor_config_round_trips_and_defaults_apply() {
+        // Defaults are applied when the section is absent, and a round-trip
+        // preserves every field. Keeps the wire format stable for older
+        // shelldeck.toml files that predate `[editor]`.
+        let path = temp_path("config.toml");
+        AppConfig::default().save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert_eq!(loaded.editor.font_family, "JetBrains Mono");
+        assert!((loaded.editor.font_size - 14.0).abs() < f32::EPSILON);
+        assert_eq!(loaded.editor.tab_size, 4);
+        assert!(loaded.editor.insert_spaces);
+        assert!(loaded.editor.show_line_numbers);
+        assert!(!loaded.editor.word_wrap);
+
+        // Round-trip a customised editor block.
+        let mut cfg = AppConfig::default();
+        cfg.editor.font_family = "Fira Code".to_string();
+        cfg.editor.font_size = 16.0;
+        cfg.editor.tab_size = 2;
+        cfg.editor.insert_spaces = false;
+        cfg.editor.word_wrap = true;
+        cfg.editor.word_wrap_column = 80;
+        cfg.save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert_eq!(loaded.editor.font_family, "Fira Code");
+        assert_eq!(loaded.editor.tab_size, 2);
+        assert!(!loaded.editor.insert_spaces);
+        assert!(loaded.editor.word_wrap);
+        assert_eq!(loaded.editor.word_wrap_column, 80);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn load_from_missing_creates_defaults() {
         let path = temp_path("config.toml");
         assert!(!path.exists());
@@ -482,5 +589,45 @@ ui_font_size = 14.0
         assert!(result.is_err(), "corrupt config should error, not panic");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-069 — pin the documented first-run values. A fresh
+    // ShellDeck install shows this exact terminal + general layout;
+    // silent drift on any of these fields would change what every
+    // new user sees on day one. Cheap invariant test.
+    #[test]
+    fn default_matches_documented_first_run_values() {
+        let cfg = AppConfig::default();
+
+        // Theme
+        assert_eq!(cfg.theme, ThemePreference::Dark);
+
+        // Terminal
+        assert_eq!(cfg.terminal.font_family, "JetBrains Mono");
+        assert_eq!(cfg.terminal.font_size, 14.0);
+        assert_eq!(cfg.terminal.scrollback_lines, 10_000);
+        assert!(cfg.terminal.default_shell.is_none());
+        assert_eq!(cfg.terminal.cursor_style, "block");
+        assert!(cfg.terminal.cursor_blink);
+        assert_eq!(cfg.terminal.theme, "Dark");
+
+        // General
+        assert!(!cfg.general.auto_connect_on_startup);
+        assert!(cfg.general.show_notifications);
+        assert!(cfg.general.confirm_before_close);
+        assert_eq!(cfg.general.sidebar_width, 260.0);
+        assert!(!cfg.general.sidebar_nav_collapsed);
+        assert!(!cfg.general.auto_attach_tmux);
+        assert!(cfg.general.auto_update);
+        assert_eq!(cfg.general.ui_language, UiLanguage::System);
+        assert_eq!(cfg.general.ui_font_family, "System Default");
+        assert_eq!(cfg.general.ui_font_size, 14.0);
+
+        // Session state that must be OFF on first run
+        assert!(cfg.account.is_none());
+        assert!(cfg.jeanclaude.is_none());
+        assert!(!cfg.cloud_sync.enabled);
+        assert!(!cfg.jean_runtime.enabled);
+        assert!(!cfg.bext_cloud.is_connected());
     }
 }

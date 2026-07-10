@@ -39,6 +39,37 @@ impl JeanConfig {
     pub fn is_set(&self) -> bool {
         !self.url.trim().is_empty()
     }
+
+    /// Pure resolver: local `[jeanclaude]` in `shelldeck.toml` wins when
+    /// set; otherwise fall back to the server-delivered config (super-admin
+    /// only, per AGENTS.md § JeanClaude). Neither set ⇒ feature unavailable.
+    ///
+    /// This is the pure-logic port of `Workspace::effective_jean_config`.
+    /// The GPUI method delegates; unit tests hit this directly without a
+    /// `Context`.
+    pub fn resolve_effective(
+        local: Option<&JeanConfig>,
+        server: Option<&JeanConfig>,
+    ) -> Option<JeanConfig> {
+        if let Some(l) = local {
+            if l.is_set() {
+                return Some(l.clone());
+            }
+        }
+        server.filter(|s| s.is_set()).cloned()
+    }
+}
+
+/// Format a JeanClaude `say` message with the "via ShellDeck" origin
+/// prefix, so a bot admin reading Slack knows the message came from a
+/// ShellDeck operator (and which one, by display name).
+///
+/// Contract: `"[via ShellDeck — {name}] {text}"`. Consumed by
+/// `Workspace::send_jean_ask` and the Support "Envoyer à Jean" flow.
+/// Pinned so a copy-paste refactor doesn't drop the brackets or the
+/// em-dash (SDTEST-246).
+pub fn format_via_shelldeck(name: &str, text: &str) -> String {
+    format!("[via ShellDeck — {}] {}", name, text)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -704,5 +735,87 @@ mod tests {
             ..Default::default()
         }
         .is_set());
+    }
+
+    // SDTEST-1054 — `resolve_effective` precedence per AGENTS.md §
+    // JeanClaude: a local `[jeanclaude]` (typically pointing at an SSH
+    // tunnel on 127.0.0.1) MUST override the server-delivered config,
+    // and an unset local slot MUST fall through to the server one.
+    // Neither ⇒ feature unavailable.
+
+    fn set_cfg(url: &str) -> JeanConfig {
+        JeanConfig {
+            url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_effective_local_wins_over_server() {
+        let local = set_cfg("http://127.0.0.1:3100");
+        let server = set_cfg("https://jean.manage.example");
+        let out = JeanConfig::resolve_effective(Some(&local), Some(&server));
+        assert_eq!(out.expect("some").url, "http://127.0.0.1:3100");
+    }
+
+    #[test]
+    fn resolve_effective_falls_back_to_server_when_local_unset() {
+        let local = JeanConfig::default(); // empty url ⇒ !is_set
+        let server = set_cfg("https://jean.manage.example");
+        let out = JeanConfig::resolve_effective(Some(&local), Some(&server));
+        assert_eq!(out.expect("some").url, "https://jean.manage.example");
+    }
+
+    #[test]
+    fn resolve_effective_falls_back_to_server_when_local_none() {
+        let server = set_cfg("https://jean.manage.example");
+        let out = JeanConfig::resolve_effective(None, Some(&server));
+        assert_eq!(out.expect("some").url, "https://jean.manage.example");
+    }
+
+    #[test]
+    fn resolve_effective_none_when_neither_set() {
+        assert!(JeanConfig::resolve_effective(None, None).is_none());
+        assert!(JeanConfig::resolve_effective(Some(&JeanConfig::default()), None).is_none());
+        assert!(
+            JeanConfig::resolve_effective(None, Some(&JeanConfig::default())).is_none(),
+            "server present but empty url ⇒ not available",
+        );
+    }
+
+    // SDTEST-246 — the "Envoyer à Jean" bridge from Support prefixes
+    // every message with `[via ShellDeck — <name>]` so the Slack
+    // reader can trace it back to the ShellDeck operator. Contract is
+    // deliberately opinionated — square brackets, em-dash (`—`, U+2014),
+    // trailing space after the closing bracket. A copy-paste refactor
+    // that drops any of those would break the visual pattern the bot
+    // team relies on to filter Slack.
+    #[test]
+    fn format_via_shelldeck_prefix_shape_is_pinned() {
+        let out = format_via_shelldeck("Ben", "corrige X");
+        assert_eq!(out, "[via ShellDeck — Ben] corrige X");
+    }
+
+    #[test]
+    fn format_via_shelldeck_empty_name_still_brackets_cleanly() {
+        // The Workspace falls back to an empty name for logged-out or
+        // anonymous cases. The bracket + em-dash still appear — that's
+        // what makes the prefix greppable in the bot's channel filter,
+        // even when the operator is unnamed.
+        let out = format_via_shelldeck("", "corrige X");
+        assert_eq!(out, "[via ShellDeck — ] corrige X");
+    }
+
+    #[test]
+    fn format_via_shelldeck_preserves_text_verbatim() {
+        // Multi-line, unicode, and existing brackets in the payload
+        // survive untouched — no escaping, no truncation.
+        let text = "ligne 1\nligne 2 [avec crochets] — et un tiret";
+        let out = format_via_shelldeck("Alice", text);
+        assert_eq!(
+            out,
+            format!("[via ShellDeck — Alice] {}", text),
+            "the text payload is copied byte-for-byte after the prefix",
+        );
     }
 }

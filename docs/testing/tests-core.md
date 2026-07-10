@@ -33,11 +33,11 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-013 | `discovery.rs::test_parse_mysql_discovery` | SDUC-073 | Green | |
 | SDTEST-014 | `discovery.rs::test_parse_pg_discovery` | SDUC-074 | Green | |
 | SDTEST-015 | `discovery.rs::test_rsync_command` | SDUC-075 | Green | |
-| SDTEST-016 | *to write* — parse_ls_output handles filenames with spaces / non-utf8 | SDUC-071 | **Red / P1** | We hit real hosts with weird filenames; regression fixture needed. |
-| SDTEST-017 | *to write* — parse_nginx_configs picks up `include` directives | SDUC-072 | **Red / P1** | Common shape (`sites-enabled/*`) is not covered today. |
-| SDTEST-018 | *to write* — parse_nginx_configs extracts multiple `server_name` per block | SDUC-072 | **Red / P2** | |
-| SDTEST-019 | *to write* — SyncProgress::percent bounds & overall_percent size-weighted | SDUC-076 | **Red / P0** | Progress is user-visible; incorrect weighting reads as "stuck at 20%". |
-| SDTEST-020 | *to write* — SyncOptions builds a valid rsync argv (dry-run / delete / excludes / checksum) | SDUC-075 | **Red / P0** | Regression class: a broken `--exclude` shape corrupts a real sync. |
+| SDTEST-016 | `discovery.rs::parse_ls_output_handles_spaces_in_names_and_dotfiles` + `parse_ls_output_skips_malformed_lines` | SDUC-071 | Green | 2 tests, added 2026-07-09. Filenames with spaces re-joined intact via `parts[7..].join(" ")`, dotfiles kept, ragged lines silently skipped (never panics). |
+| SDTEST-017 | `discovery.rs::parse_nginx_configs_tolerates_include_directive` | SDUC-072 | Green | Added 2026-07-09. Real `include` expansion is the shell command's job; the parser just tolerates the directive without emitting a bogus site. |
+| SDTEST-018 | `discovery.rs::parse_nginx_configs_takes_first_server_name_when_multiple_listed` | SDUC-072 | Green | Added 2026-07-09. **Pins current limitation** — the parser calls `split_whitespace().next()`, so only the first host wins. Future TODO is to emit all names; this test locks the shape so a well-meaning refactor doesn't regress to picking the last. |
+| SDTEST-019 | `server_sync.rs::percent_is_none_when_total_unknown` + `percent_zero_total_returns_100` + `percent_clamps_to_100_even_if_transferred_exceeds_total` + `percent_normal_case` + `overall_percent_is_size_weighted_not_count_weighted` + `overall_percent_empty_operation_is_none` + `overall_percent_none_when_no_item_knows_its_total` | SDUC-076 | Green | 7 tests, added 2026-07-09. **Contract correction** — `percent()` is a percentage (0..=100), not a ratio (0..=1). Size-weighting test uses a 1 GB@50% + 10× 1 KB@100% fixture: naive count-weighting would report ~95%, correct size-weighting reports ~50%. |
+| SDTEST-020 | `discovery.rs::rsync_command_includes_delete_and_ignore_existing_switches` + `rsync_command_shell_escapes_source_and_dest_paths` + `rsync_command_emits_one_exclude_per_pattern` | SDUC-075 | Green | 3 tests, added 2026-07-09. Extends the existing `test_rsync_command` (SDTEST-015) with the untouched switches (`delete_extra`, `skip_existing`), verifies `shell_escape` wraps paths containing spaces, and asserts one `--exclude=` emitted per pattern. |
 
 ---
 
@@ -45,24 +45,24 @@ entries, `git grep <fn>` lands on the code.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-030 | *to write* — `validate_port(0)` and `validate_port(u16::MAX)` boundaries | SDUC-313 | **Red / P1** | Consumed by both form validation and preset builders — one place to break both. |
+| SDTEST-030 | `port_forward.rs::zero_is_rejected` + `all_non_zero_ports_are_accepted` | SDUC-313 | Green | 2 tests, added 2026-07-09. Boundary sweep covers 1 / 22 / 1023 / 1024 / 65535. Regression sensor if someone re-adds a `< 1024` privileged-port restriction. |
 | SDTEST-031 | *to write* — port forward presets produce valid PortForward objects | SDUC-049 | **Red / P2** | `chrome_devtools_preset`, `web_server_preset`, `opencode_preset`, `dev_server_preset`. |
-| SDTEST-032 | *to write* — Connection::display_name falls back through alias → hostname → uuid | SDUC-104 | **Red / P1** | Sidebar rows must never render an empty label. |
-| SDTEST-033 | *to write* — Connection::connection_string shape (`user@host:port`) | SDUC-104 | **Red / P2** | |
-| SDTEST-034 | *to write* — extract_variables handles `{{ name }}`, `{{name:default}}`, deduplicates, preserves order | SDUC-060 | **Red / P0** | Foundational for script UX; regression here breaks every template. |
-| SDTEST-035 | *to write* — extract_variables ignores placeholders inside fenced code blocks | SDUC-060 | **Red / P1** | User pastes a script that itself uses `{{…}}` (Ansible, Vue) — must not be prompted. |
-| SDTEST-036 | *to write* — substitute_variables applies defaults when value missing | SDUC-061 | **Red / P0** | Same criticality as SDTEST-034. |
-| SDTEST-037 | *to write* — ScriptLanguage::runner_spec — one row per language | SDUC-062 | **Red / P1** | Cheap, wide coverage. |
-| SDTEST-038 | *to write* — build_package_manager_detect_command runs on a real shell (integration) | SDUC-063 | **Red / P1** | Use `bash -c "…"` locally; assert exit + expected PM name. |
-| SDTEST-039 | *to write* — build_dependency_check_command shape | SDUC-064 | **Red / P1** | |
-| SDTEST-040 | *to write* — get_install_command per package manager × dep | SDUC-064 | **Red / P1** | Table-driven test: apt/yum/dnf/apk/brew/pacman/zypper × representative deps. |
+| SDTEST-032 | `connection.rs::display_name_prefers_alias_falls_back_to_hostname` + `display_name_returns_borrowed_slice` + `new_manual_sets_manual_source_and_default_port` | SDUC-104bis | Green | 3 tests, added 2026-07-09. **Contract correction** — fallback is alias → hostname only, NO UUID fallback (my initial inventory was wrong). Bonus test proves no allocation on paint (`ptr::eq` on the borrowed slice). |
+| SDTEST-033 | `connection.rs::connection_string_always_includes_port` | SDUC-104bis | Green | Added 2026-07-09. Port is always in the output, even when it's the default 22 (opinionated contract). |
+| SDTEST-034 | `script.rs::extracts_bare_names_dedup_preserves_first_occurrence` + `extracts_defaults_after_colon` + `trims_inner_whitespace_and_ignores_empty` + `same_name_second_occurrence_ignored_even_with_default` + `unclosed_placeholder_is_silently_dropped` | SDUC-060 | Green | 5 tests, added 2026-07-09. Split-on-first-`:` (colon in default preserved), first-occurrence wins on dedup, unclosed `{{…` tolerated. |
+| SDTEST-035 | `script.rs::extracts_placeholders_even_inside_code_fences` | SDUC-060 | Green | Added 2026-07-09. **Pins current limitation, not the ideal behavior** — the parser does NOT skip triple-backtick fences today, so `{{ansible_var}}` inside a YAML block is still extracted. Test locks the shape so a future fence-aware refactor is a deliberate contract change. Original inventory called this a P1 gap; keeping it as a locked-in reality until someone implements the fence skip. |
+| SDTEST-036 | `script_runner.rs::provided_value_replaces_placeholder` + `missing_value_falls_back_to_inline_default` + `missing_value_without_default_leaves_placeholder` + `extra_values_in_map_are_ignored` + `substitution_is_utf8_safe` + `unclosed_placeholder_does_not_panic` | SDUC-061 | Green | 6 tests, added 2026-07-09. Key contract: **no value + no default → placeholder LEFT UNCHANGED**, not empty. Downstream re-prompt logic depends on this. |
+| SDTEST-037 | `script.rs::every_builtin_language_has_a_runnable_spec` + `file_based_languages_declare_an_extension` + `each_builtin_has_a_unique_runner_binary_or_args` | SDUC-062 | Green | 3 tests, added 2026-07-09. Table-driven over `ScriptLanguage::ALL` — adding a new variant without wiring `runner_spec` trips the test. Separates file-based (Shell/Python/Node/Bun/Php/Mysql/Postgresql — non-empty `file_ext`) from subcommand-style (Docker/Compose/Systemd/Nginx — empty `file_ext`, uses `{body_as_args}`). |
+| SDTEST-038 | `script_runner.rs::detect_command_probes_every_supported_package_manager` + `detect_command_runs_on_local_shell` (`#[cfg(unix)]`) | SDUC-063 | Green | 2 tests, added 2026-07-09. Shape check probes for `echo 'apt'`/`dnf`/`yum`/`pacman`/`brew`/`apk` + `unknown` fallback; integration test runs the command through `sh -c` on Unix and asserts stdout is one of the recognized labels. Windows-skipped because the detect script is POSIX-only. |
+| SDTEST-039 | `script_runner.rs::build_dependency_check_command_shapes` | SDUC-064 | Green | Added 2026-07-09. Empty input → sentinel `"No dependencies to check"`; N deps → N `if…else…fi` guarded probes joined by `&&`. |
+| SDTEST-040 | `script_runner.rs::get_install_command_per_package_manager` | SDUC-064 | Green | Added 2026-07-09. Table-driven per PM: matching PM → its command; valid PM without an `InstallCommand` for this dep → None; unknown PM string → None. Guards against a typo like `"choco"` silently returning a valid command from another PM. |
 | SDTEST-041 | *to write* — Script::builtin_* round-trip through serde | SDUC-065 | **Red / P2** | |
-| SDTEST-042 | *to write* — all_templates() has unique IDs, non-empty bodies, at least one var each | SDUC-066 | **Red / P1** | Cheap invariant check; grows for free with new templates. |
-| SDTEST-043 | *to write* — ScriptTemplate::to_script produces a Script with matching runner spec | SDUC-066 | **Red / P2** | |
-| SDTEST-044 | *to write* — ExecutionRecord lifecycle: new → append_output → finish | SDUC-067 | **Red / P1** | Assert `is_running`, `succeeded`, `duration_secs` transitions. |
-| SDTEST-045 | *to write* — ManagedSite::from_nginx maps a DiscoveredSite → ManagedSite correctly | SDUC-072 | **Red / P2** | Currently no test on the model constructors. |
-| SDTEST-046 | *to write* — ManagedSite::url, has_ssl, port derived from the source site | SDUC-072 | **Red / P2** | |
-| SDTEST-047 | *to write* — ManagedSite::from_database preserves engine + size | SDUC-073 | **Red / P2** | |
+| SDTEST-042 | `templates.rs::all_templates_have_unique_ids` + `all_templates_have_non_empty_body_and_name` + `all_templates_ids_are_kebab_and_prefixed` | SDUC-066 | Green | 3 tests, added 2026-07-09. Sweep across the shipped catalog: no duplicate IDs, non-empty name/body/description, IDs are kebab-case ASCII with a `<category>-<slug>` prefix. Grows for free with every new template. |
+| SDTEST-043 | `templates.rs::to_script_carries_template_metadata` | SDUC-066 | Green | Added 2026-07-09. Finds a template that exercises both dependencies AND variables (there's at least one), materializes it, asserts template_id link + body/language/category/deps/vars preserved and `is_template=false`. |
+| SDTEST-044 | `execution.rs::new_starts_in_running_state` + `append_output_accumulates` + `finish_with_zero_marks_succeeded_and_produces_duration` + `finish_with_non_zero_marks_failure` + `connection_id_is_preserved` | SDUC-067 | Green | 5 tests, added 2026-07-09. Full lifecycle sweep: `is_running` / `succeeded` / `duration_secs` transitions, non-zero exit codes (including negative like `-1` and 127), local vs remote (`connection_id`) round-trip. 5ms sleep in the finish test to make duration observable at ms precision. |
+| SDTEST-045 | `managed_site.rs::from_nginx_preserves_server_name_port_and_ssl` | SDUC-072 | Green | Added 2026-07-09 (cluster M). |
+| SDTEST-046 | `managed_site.rs::url_elides_default_ports_and_keeps_custom_ones` | SDUC-072 | Green | Added 2026-07-09 (cluster M). `url()` elides port for scheme defaults (443 https / 80 http), keeps for custom (8080, 8443). |
+| SDTEST-047 | `managed_site.rs::from_database_preserves_engine_and_reports_no_url` | SDUC-073 | Green | Added 2026-07-09 (cluster M). Engine (PostgreSQL/MySQL) preserved, `url()`/`port()` return None (no HTTP surface on databases). |
 
 ---
 
@@ -79,7 +79,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-066 | `app_config.rs::load_from_missing_creates_defaults` | SDUC-085 | Green | |
 | SDTEST-067 | `app_config.rs::load_from_corrupt_returns_err` | SDUC-086 | Green | |
 | SDTEST-068 | *to write* — config with unknown fields still loads (forward compat) | SDUC-081 | **Red / P1** | Server may add a `[foo]` we don't know about yet; must not Err. |
-| SDTEST-069 | *to write* — AppConfig::default matches documented first-run values | SDUC-093 | **Red / P2** | Cheap; catches accidental default drift. |
+| SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/jean_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
 | SDTEST-070 | *to write* — save_to writes atomically | SDUC-091 | **Red / P0** | The config is the user's investment; a torn write on power loss is unrecoverable. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 
@@ -93,7 +93,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-081 | `store.rs::load_from_missing_creates_empty` | SDUC-088 | Green | |
 | SDTEST-082 | `store.rs::load_from_corrupt_returns_err` | SDUC-088 | Green | |
 | SDTEST-083 | *to write* — save writes atomically | SDUC-091 | **Red / P0** | Same rationale as SDTEST-070. |
-| SDTEST-084 | *to write* — Manual + SshConfig + CloudSync coexist in the same store round-trip | SDUC-087 | **Red / P1** | Regression sensor for cloud_sync merge (SDUC-104). |
+| SDTEST-084 | `store.rs::round_trip_preserves_manual_ssh_config_and_cloud_sync_sources` | SDUC-087 | Green | Added 2026-07-09 (cluster M). Regression sensor for cloud_sync merge (SDUC-104): 3 connections (one per source) survive save/load with sources + tags preserved. |
 
 ---
 
@@ -118,9 +118,9 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-103 | `ssh_config.rs::test_parse_forward_directive` | SDUC-040 | Green | |
 | SDTEST-104 | `ssh_config.rs::test_parse_extra_fields` | SDUC-040 | Green | |
 | SDTEST-105 | `ssh_config.rs::test_expand_tilde` | SDUC-040 | Green | |
-| SDTEST-106 | *to write* — Include directive expands nested files | SDUC-040 | **Red / P1** | Common shape (`Include ~/.ssh/conf.d/*`); currently unlabelled. |
-| SDTEST-107 | *to write* — wildcard `Host *` fields apply as defaults to specific hosts | SDUC-040 | **Red / P1** | |
-| SDTEST-108 | *to write* — never writes to ~/.ssh/config (guard test) | SDUC-040 | **Red / P0** | Contract per AGENTS.md "Critical Rules". Use a `TempDir` + `std::fs::metadata` sensor. |
+| SDTEST-106 | `ssh_config.rs::include_directive_does_not_break_parse` | SDUC-040 | Green | Added 2026-07-09 (cluster M). Common shape `Include ~/.ssh/conf.d/*` is tolerated (`ALLOW_UNKNOWN_FIELDS`) — top-level hosts still extracted even if the underlying `ssh2_config` crate doesn't expand the Include itself. |
+| SDTEST-107 | *to write* — wildcard `Host *` fields apply as defaults to specific hosts | SDUC-040 | **Red / P1** | Handled by the `ssh2_config` crate; needs a functional smoke test to lock the merge behaviour. |
+| SDTEST-108 | `ssh_config.rs::parse_never_mutates_the_input_file` | SDUC-040 | Green | Added 2026-07-09 (cluster M). AGENTS.md "Critical Rules" guarantee: mtime + size + content unchanged after parse. Uses `TempDir` + `std::fs::metadata` sensor. |
 
 ---
 
@@ -130,11 +130,11 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-120 | *to write* — store / get / delete password round-trip (Linux) | SDUC-042 | **Red / P0** | On Linux dev machine, the `keyring` crate uses Secret Service — mock it via `SecretServiceMock` or run only when `SHELLDECK_LIVE_KEYCHAIN=1`. |
-| SDTEST-121 | *to write* — same on macOS | SDUC-042, SDUC-334 | **Red / P0** | CI-gated (macOS runner). |
-| SDTEST-122 | *to write* — same on Windows | SDUC-042, SDUC-334 | **Red / P0** | CI-gated (Windows runner). |
-| SDTEST-123 | *to write* — get_password returns Ok(None) for missing entry (not Err) | SDUC-042 | **Red / P1** | Consumers rely on this distinction. |
-| SDTEST-124 | *to write* — key passphrase namespace does not collide with password namespace | SDUC-042 | **Red / P1** | Prefix / service-name test. |
+| SDTEST-120 | `keychain.rs::live_password_round_trip` (`#[ignore]`, `SHELLDECK_LIVE_KEYCHAIN=1`) | SDUC-042 | Yellow | Added 2026-07-09 (cluster L). Live Secret Service round-trip; `SHELLDECK_LIVE_KEYCHAIN=1 cargo test -- --ignored keychain::tests::live_`. |
+| SDTEST-121 | *to write* — same on macOS | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
+| SDTEST-122 | *to write* — same on Windows | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
+| SDTEST-123 | `keychain.rs::live_get_password_none_for_missing_entry` + `live_delete_password_missing_entry_is_ok` (`#[ignore]`) | SDUC-042 | Yellow | 2 tests, added 2026-07-09 (cluster L). Ok(None) distinction pinned; delete on missing = Ok(()) for idempotent logout. |
+| SDTEST-124 | `keychain.rs::password_and_passphrase_key_namespaces_do_not_collide` + `entry_key_is_user_at_host` + `passphrase_key_carries_prefix_and_path` | SDUC-042 | Green | 3 tests, added 2026-07-09 (cluster L). Pure fns — no OS keychain. Hostile fixture: SSH key path spelling out `user@host.example` proves the `passphrase:` prefix is load-bearing. |
 
 ---
 
@@ -144,33 +144,33 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-130 | *to write* — builtins() returns exactly the four shipped themes with the right names | SDUC-092 | **Red / P1** | Cheap invariant. |
-| SDTEST-131 | *to write* — by_name(unknown) falls back to dark, does not panic | SDUC-092 | **Red / P0** | Regression class: a stale theme name in `shelldeck.toml` crashing the boot. |
-| SDTEST-132 | *to write* — every builtin has a full 16-colour palette + a background + a foreground | SDUC-092, SDUC-025 | **Red / P2** | Non-nullable field sanity. |
+| SDTEST-130 | `themes.rs::builtins_returns_the_four_shipped_themes` + `by_name_returns_the_matching_builtin` | SDUC-092 | Green | 2 tests, added 2026-07-09 (cluster M). Catalog is Dark/Light/Pastel Dark/High Contrast. |
+| SDTEST-131 | `themes.rs::by_name_unknown_falls_back_to_dark_no_panic` | SDUC-092 | Green | Added 2026-07-09 (cluster M). Load-bearing safety — a stale theme name (renamed upstream, corrupt config) falls back to Dark instead of crashing at boot. Empty string also covered. |
+| SDTEST-132 | `themes.rs::every_builtin_has_name_bg_and_fg` | SDUC-092, SDUC-025 | Green | Added 2026-07-09 (cluster M). Cheap invariant — accidental `""` field in a refactor would trip. |
 
 ---
 
 ## 10. `config/cloud_sync.rs` — Manage sync + merge
 
-| ID | Location | SDUC | Status | Notes |
-|---|---|---|---|---|
-| SDTEST-140 | `cloud_sync.rs::merge_adds_new_profiles` | SDUC-101 | Green | |
-| SDTEST-141 | `cloud_sync.rs::merge_copies_site_binding` | SDUC-106 | Green | |
-| SDTEST-142 | `cloud_sync.rs::merge_updates_existing_and_preserves_local_only_fields` | SDUC-102 | Green | |
-| SDTEST-143 | `cloud_sync.rs::merge_removes_vanished_cloud_profiles` | SDUC-103 | Green | |
-| SDTEST-144 | `cloud_sync.rs::merge_never_touches_manual_or_ssh_config` | SDUC-104 | Green | |
-| SDTEST-145 | `cloud_sync.rs::merge_skips_unparseable_ids` | SDUC-105 | Green | |
-| SDTEST-146 | `cloud_sync.rs::cloud_sync_config_parses_without_active_site_fields` | SDUC-108 | Green | |
-| SDTEST-147 | `cloud_sync.rs::is_configured_semantics` | SDUC-109 | Green | |
-| SDTEST-148 | `cloud_sync.rs::remote_profile_parses_nulls_and_missing_fields` | SDUC-110 | Green | |
-| SDTEST-149 | `cloud_sync.rs::sync_payload_parses_contract_example` | SDUC-111 | Green | |
-| SDTEST-150 | `cloud_sync.rs::merge_reports_no_change_when_nothing_moves` | SDUC-107 | Green | |
-| SDTEST-151 | `cloud_sync.rs::live_fetch_sync` (`#[ignore]`) | SDUC-112 | Yellow | Live smoke — gated by env token. Keep. |
-| SDTEST-152 | *to write* — sync_now falls back GET after 404 POST | SDUC-100 | **Red / P0** | Contract-critical, mock TcpListener that returns 404 on POST then a valid GET payload. |
-| SDTEST-153 | *to write* — sync_now falls back GET after 405 POST | SDUC-100 | **Red / P0** | Same rationale. |
-| SDTEST-154 | *to write* — sync_now surfaces 401 without wiping local store | SDUC-100 | **Red / P0** | A bad token must not delete cloud connections. |
-| SDTEST-155 | *to write* — merge preserves user-added tags on a CloudSync connection | SDUC-102 | **Red / P1** | Local-only field surface. |
-| SDTEST-156 | *to write* — merge does not duplicate when the same profile arrives twice in one payload | SDUC-101 | **Red / P1** | Defence against Manage bug. |
+| ID         | Location                                                                                 | SDUC     | Status       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SDTEST-140 | `cloud_sync.rs::merge_adds_new_profiles`                                                 | SDUC-101 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-141 | `cloud_sync.rs::merge_copies_site_binding`                                               | SDUC-106 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-142 | `cloud_sync.rs::merge_updates_existing_and_preserves_local_only_fields`                  | SDUC-102 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-143 | `cloud_sync.rs::merge_removes_vanished_cloud_profiles`                                   | SDUC-103 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-144 | `cloud_sync.rs::merge_never_touches_manual_or_ssh_config`                                | SDUC-104 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-145 | `cloud_sync.rs::merge_skips_unparseable_ids`                                             | SDUC-105 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-146 | `cloud_sync.rs::cloud_sync_config_parses_without_active_site_fields`                     | SDUC-108 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-147 | `cloud_sync.rs::is_configured_semantics`                                                 | SDUC-109 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-148 | `cloud_sync.rs::remote_profile_parses_nulls_and_missing_fields`                          | SDUC-110 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-149 | `cloud_sync.rs::sync_payload_parses_contract_example`                                    | SDUC-111 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-150 | `cloud_sync.rs::merge_reports_no_change_when_nothing_moves`                              | SDUC-107 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-151 | `cloud_sync.rs::live_fetch_sync` (`#[ignore]`)                                           | SDUC-112 | Yellow       | Live smoke — gated by env token. Keep.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| SDTEST-152 | `cloud_sync.rs::sync_now_falls_back_get_after_404_post`                                  | SDUC-100 | Green        | Added 2026-07-09. Loopback `TcpListener` mock counts POST + GET hits and serves a canonical `SyncPayload` on the fallback GET. Asserts POST fired once, GET fired once, payload parsed.                                                                                                                                                                                                                                                         |
+| SDTEST-153 | `cloud_sync.rs::sync_now_falls_back_get_after_405_post`                                  | SDUC-100 | Green        | Added 2026-07-09. Same shape as SDTEST-152, 405 as trigger.                                                                                                                                                                                                                                                                                                                                                                                     |
+| SDTEST-154 | `cloud_sync.rs::sync_now_401_surfaces_and_does_not_retry_get`                            | SDUC-100 | Green        | Added 2026-07-09. Critical safety invariant: on 401 the mock verifies **zero GET retries fired** — a rejected token must NOT silently degrade to an unauthenticated GET. Combined with the `sync_now` shape (fetch → merge → save), this guarantees a bad token can never reach `merge_profiles(empty_payload)` and prune every CloudSync connection in the local store. Error message must mention `401` or `rejected` for the toast contract. |
+| SDTEST-155 | `cloud_sync.rs::merge_overwrites_local_tags_with_remote_tags` | SDUC-102 | Green | Added 2026-07-09 (cluster M). **Contract correction** — my initial inventory said "preserves local tags"; the actual impl OVERWRITES them (cloud is authoritative). Test pins current shape so a future "merge tags" change is a deliberate contract decision. |
+| SDTEST-156 | `cloud_sync.rs::merge_does_not_duplicate_when_same_profile_arrives_twice` | SDUC-101 | Green | Added 2026-07-09 (cluster M). Defence against a Manage pagination-boundary duplicate. First occurrence pushes, second updates in place — final count exactly 1, last-write-wins on fields. |
 
 ---
 
@@ -192,7 +192,7 @@ Existing: **0 tests**.
 | SDTEST-181 | *to write* — login_password sends `{action:"login", email, password}` body | SDUC-140 | **Red / P0** | Only URL/whoami paths are covered; the login body shape is not. Mock TcpListener assertion. |
 | SDTEST-182 | *to write* — logout POSTs `{action:"logout"}` and swallows errors | SDUC-143 | **Red / P1** | Assert local state clears even when server 500s. |
 | SDTEST-183 | *to write* — provider=None targets the password page URL | SDUC-149 | **Red / P1** | Regression sensor for the URL shape. |
-| SDTEST-184 | *to write* — effective_mode(): non-superadmin forced to User even when persisted mode is Dev/Support | SDUC-152 | **Red / P0** | This lives on Workspace (see UI inventory) — pure-logic port possible here on `AppMode` + `AccountInfo`. |
+| SDTEST-184 | `cloud_account.rs::resolve_effective_mode_logged_out_is_dev` + `resolve_effective_mode_superadmin_honours_persisted` + `resolve_effective_mode_non_superadmin_forced_to_user` + `resolve_effective_mode_covers_every_cell_of_the_truth_table` + `can_switch_only_true_for_signed_in_superadmin` | SDUC-152 | Green | 5 tests, added 2026-07-09. Ported `AppMode::resolve_effective(signed_in, is_superadmin, persisted) -> AppMode` + `AppMode::can_switch(signed_in, is_superadmin) -> bool` as pure fns on cloud_account.rs. Full truth-table sweep (12 cells) proves non-super-admins can't reach Support even via a hand-edited `shelldeck.toml`. `Workspace::effective_mode` / `can_switch_mode` will delegate in a follow-up commit (working-tree draft blocked on WIP merge). This is the same use case as SDTEST-1052. |
 
 ---
 
@@ -219,10 +219,13 @@ Existing: **0 tests**.
 | SDTEST-222 | `manage_support.rs::parses_null_message_and_ticket_strings` | SDUC-162 | Green | |
 | SDTEST-223 | `manage_support.rs::parses_iso_string_and_numeric_timestamps` | SDUC-163 | Green | |
 | SDTEST-224 | `manage_support.rs::channel_glyphs_have_a_fallback` | SDUC-164 | Green | |
-| SDTEST-225 | *to write* — support_reply / note / status / priority / assign / resolve / read body shapes | SDUC-166 | **Red / P0** | One table-driven test per write endpoint; assert route + JSON body. |
+| SDTEST-225 | `manage_support.rs::support_{reply,note,status,priority,assign,resolve,read}_*` (7 fns) + `support_writes_surface_401_when_bearer_missing` | SDUC-166 | Green | 8 tests, added 2026-07-09. `TcpListener` mock records POST bodies before responding with the canonical ticket echo. Each test parses the recorded body as `serde_json::Value` and asserts `action`, `id`, and the endpoint-specific field. `support_assign` covers both `"me"` (self-assign) and `""` (unassign) in a single test. `support_read` also asserts no leaked extras (`text`/`status` are null). Bonus 401 test proves a missing Bearer surfaces the typed error. |
 | SDTEST-226 | *to write* — non-staff caller receives 403 on staff-only endpoints | SDUC-166 | **Red / P1** | Mock TcpListener returns 403; assert typed error. |
-| SDTEST-227 | *to write* — support_agents returns [] when server responds with `[]` | SDUC-165 | **Red / P2** | Cheap defence. |
-| SDTEST-228 | *to write* — support_list ordering is server order (no sort mutation) | SDUC-160 | **Red / P2** | |
+| SDTEST-227 | `manage_support.rs::support_agents_returns_empty_vec_cleanly` | SDUC-165 | Green | Added 2026-07-09. Uses a one-shot canned GET mock (`spawn_canned_get`) that serves `{"ok":true,"agents":[]}`. Guards against a fresh tenant's empty picker crashing the composer. |
+| SDTEST-228 | `manage_support.rs::support_list_preserves_server_order` | SDUC-160 | Green | Added 2026-07-09. Fixture is deliberately anti-sorted alphabetically (`z`, `a`, `m`) so a stray `sort_by(|t| t.id)` refactor would flip the order and trip the test. Server-side `lastAt desc` ordering is the contract — client-side re-sort would drop unread/breaching tickets from the top. |
+| SDTEST-229 | `manage_support.rs::parses_created_at_alias_and_epoch_seconds` | SDUC-170 | Green | Added 2026-07-08. |
+| SDTEST-230 | `manage_support.rs::parses_message_last_at_alias` | SDUC-171 | Green | Added 2026-07-08. Older Manage builds emit `lastAt` on messages. |
+| SDTEST-231 | `manage_support.rs::channel_lucide_maps_known_channels` | SDUC-172 | Green | Added 2026-07-08 as part of the Lucide icon migration. |
 
 ---
 
@@ -236,8 +239,9 @@ Existing: **0 tests**.
 | SDTEST-243 | `jeanclaude.rs::wrong_credentials_surface_401` | SDUC-183 | Green | |
 | SDTEST-244 | `jeanclaude.rs::is_set_semantics` | SDUC-184 | Green | |
 | SDTEST-245 | *to write* — Basic auth header exact base64 shape | SDUC-183 | **Red / P1** | Right now the mock accepts *any* Basic auth. Assert the encoded `user:pass`. |
-| SDTEST-246 | *to write* — say body includes `[via ShellDeck — <name>]` prefix when invoked from support | SDUC-187 | **Red / P1** | The prefix contract is behavioural — regression sensor. |
+| SDTEST-246 | `jeanclaude.rs::format_via_shelldeck_prefix_shape_is_pinned` + `format_via_shelldeck_empty_name_still_brackets_cleanly` + `format_via_shelldeck_preserves_text_verbatim` | SDUC-187 | Green | 3 tests, added 2026-07-09. Extracted `jeanclaude::format_via_shelldeck(name, text) -> String` as a pure helper (the inline `format!` in `Workspace::send_jean_ask` now calls this). Contract pinned: square brackets, U+2014 em-dash, trailing space after `]`. Empty-name case still brackets so Slack channel filters stay greppable. Text payload copied byte-for-byte (multi-line + unicode preserved). |
 | SDTEST-247 | *to write* — numeric epoch-ms timestamps parse into DateTime<Utc> | SDUC-186 | **Red / P1** | Currently only implicitly checked via history parse — an explicit round-trip test protects it. |
+| SDTEST-1054 (jean) | `jeanclaude.rs::resolve_effective_local_wins_over_server` + `resolve_effective_falls_back_to_server_when_local_unset` + `resolve_effective_falls_back_to_server_when_local_none` + `resolve_effective_none_when_neither_set` | SDUC-185 | Green | 4 tests, added 2026-07-09. Ported `JeanConfig::resolve_effective(local, server) -> Option<JeanConfig>` as a pure fn. Local `[jeanclaude]` wins when `is_set()`; unset local falls through to server; neither set → None (feature unavailable). Also see UI inventory (SDTEST-1054). |
 
 ---
 
@@ -270,10 +274,10 @@ Existing: **0 tests**.
 | SDTEST-292 | `issues.rs::create_and_comment_bodies` | SDUC-222, SDUC-223 | Green | |
 | SDTEST-293 | `issues.rs::staff_actions_surface_403` | SDUC-225 | Green | |
 | SDTEST-294 | `issues.rs::missing_bearer_surfaces_401` | SDUC-226 | Green | |
-| SDTEST-295 | *to write* — create_issue with `source="support"` sets the link field | SDUC-222, SDUC-169 | **Red / P1** | Convert-to-request path. |
+| SDTEST-295 | `issues.rs::create_issue_source_field_is_omitted_when_empty_and_present_when_support` | SDUC-222, SDUC-169 | Green | Added 2026-07-09. Complementary edges to `create_and_comment_bodies`: source="" ⇒ the field is OMITTED from the wire body (not sent as `""`), source="support" ⇒ present as a JSON string. Server default of "user" applies only when the key is absent. |
 | SDTEST-296 | *to write* — set_status / assign / set_priority body shapes (mock-asserted) | SDUC-225 | **Red / P1** | Table-driven. |
 | SDTEST-297 | *to write* — github_push / github_refresh route shapes (not the GitHub call itself) | SDUC-225 | **Red / P2** | Mock only; the real GH call is out-of-scope. |
-| SDTEST-298 | *to write* — dispatch_issue body includes fleet target | SDUC-225 | **Red / P2** | |
+| SDTEST-298 | `issues.rs::dispatch_issue_body_carries_id_and_instance_id` | SDUC-225 | Green | Added 2026-07-09. Fleet routing is never exercised live (would fire a real claude job), so this mock-only body assertion is the only guard against a rename like `target_instance`/`instanceId` silently 400ing in prod. The existing mock returns 403 on `dispatch` (non-staff path) but records the POST body BEFORE the 403 fires — assertion happens on the recorder. Snake_case field name `instance_id` is pinned. |
 
 ---
 
