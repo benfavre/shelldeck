@@ -349,4 +349,82 @@ Host webserver
         let abs = PathBuf::from("/etc/ssh/id_rsa");
         assert_eq!(expand_tilde(&abs), abs);
     }
+
+    // SDTEST-106 — `Include` directive tolerance. `parse_ssh_config_file`
+    // uses `ALLOW_UNKNOWN_FIELDS` so a config that references an
+    // Include (which the underlying ssh2_config crate may or may not
+    // expand) still parses cleanly and yields the top-level hosts.
+    // Regression sensor: dropping the flag would panic-error the boot
+    // for anyone using `Include ~/.ssh/conf.d/*` (common shape).
+    #[test]
+    fn include_directive_does_not_break_parse() {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-ssh-include-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config");
+        std::fs::write(
+            &cfg,
+            "\
+Include ~/.ssh/conf.d/*
+Host bastion
+    HostName 10.0.0.1
+    User admin
+",
+        )
+        .unwrap();
+        let conns = parse_ssh_config_file(&cfg).expect("Include must not error");
+        // The `bastion` host at the top-level must appear regardless of
+        // whether the Include was expanded.
+        assert!(
+            conns.iter().any(|c| c.alias == "bastion"),
+            "top-level host lost, got aliases: {:?}",
+            conns.iter().map(|c| c.alias.clone()).collect::<Vec<_>>(),
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // SDTEST-108 — the parser MUST NOT modify the file it reads. This
+    // is the AGENTS.md § "Critical Rules" guarantee: ShellDeck never
+    // writes to ~/.ssh/config. Sensor: capture the file's mtime + size
+    // before parse, and assert both are unchanged after.
+    #[test]
+    fn parse_never_mutates_the_input_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-ssh-readonly-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config");
+        let content = "Host readonly-test\n    HostName 1.2.3.4\n    User me\n";
+        std::fs::write(&cfg, content).unwrap();
+
+        let before_meta = std::fs::metadata(&cfg).unwrap();
+        let before_mtime = before_meta.modified().unwrap();
+        let before_len = before_meta.len();
+
+        let _ = parse_ssh_config_file(&cfg).unwrap();
+
+        let after_meta = std::fs::metadata(&cfg).unwrap();
+        assert_eq!(after_meta.len(), before_len, "file size changed");
+        assert_eq!(
+            after_meta.modified().unwrap(),
+            before_mtime,
+            "file mtime changed (parser wrote to the file)",
+        );
+
+        let after_content = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(after_content, content, "file content mutated");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

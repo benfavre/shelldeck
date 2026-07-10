@@ -399,4 +399,54 @@ mod tests {
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
+
+    // SDTEST-084 — Manual, SshConfig, and CloudSync connections must
+    // coexist in a single store round-trip without one squashing
+    // another. Regression sensor for cloud_sync merge (SDUC-104): a
+    // sync must not silently prune a manual/ssh-config connection
+    // just because they live in the same file.
+    #[test]
+    fn round_trip_preserves_manual_ssh_config_and_cloud_sync_sources() {
+        use crate::models::connection::{Connection, ConnectionSource};
+
+        let path = temp_path("connections.json");
+        let mut store = ConnectionStore::default();
+
+        let mut manual = Connection::new_manual("m".into(), "m.example".into(), "u".into());
+        manual.tags = vec!["manual-tag".into()];
+
+        let mut ssh_cfg = Connection::new_manual("s".into(), "s.example".into(), "u".into());
+        ssh_cfg.source = ConnectionSource::SshConfig;
+
+        let mut cloud = Connection::new_manual("c".into(), "c.example".into(), "u".into());
+        cloud.source = ConnectionSource::CloudSync;
+
+        let ids = (manual.id, ssh_cfg.id, cloud.id);
+        store.connections.push(manual);
+        store.connections.push(ssh_cfg);
+        store.connections.push(cloud);
+
+        store.save_to(&path).expect("save_to");
+        let loaded = ConnectionStore::load_from(&path).expect("load_from");
+
+        assert_eq!(loaded.connections.len(), 3);
+        let by_id: std::collections::HashMap<_, _> =
+            loaded.connections.iter().map(|c| (c.id, c)).collect();
+
+        assert!(
+            matches!(by_id[&ids.0].source, ConnectionSource::Manual),
+            "manual source lost on round trip",
+        );
+        assert!(
+            matches!(by_id[&ids.1].source, ConnectionSource::SshConfig),
+            "ssh_config source lost on round trip",
+        );
+        assert!(
+            matches!(by_id[&ids.2].source, ConnectionSource::CloudSync),
+            "cloud_sync source lost on round trip",
+        );
+        assert_eq!(by_id[&ids.0].tags, vec!["manual-tag".to_string()]);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
 }

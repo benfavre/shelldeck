@@ -559,6 +559,59 @@ sync_on_startup = false
         assert!(!merge_profiles(&mut store, &[]).changed());
     }
 
+    // SDTEST-155 — pin the current authoritative-tags policy: Manage
+    // owns the tag set on a CloudSync connection. User-added local
+    // tags ARE OVERWRITTEN on the next sync — this is by design (a
+    // regression to the aspirational "preserve local tags" behavior
+    // in my initial inventory would silently duplicate labels between
+    // Manage + ShellDeck). Test locks the current shape so any future
+    // change to a "merge tags" model becomes a deliberate contract
+    // decision, not a drift.
+    #[test]
+    fn merge_overwrites_local_tags_with_remote_tags() {
+        let mut store = ConnectionStore::default();
+        let id = Uuid::new_v4();
+        let mut existing = cloud_conn(id, "srv");
+        existing.tags = vec!["local-only".into(), "user-added".into()];
+        store.connections.push(existing);
+
+        // Remote comes with a different tag set.
+        let mut rp = remote(id, "srv", "1.2.3.4");
+        rp.tags = vec!["cloud-1".into(), "cloud-2".into()];
+        merge_profiles(&mut store, &[rp]);
+
+        let c = &store.connections[0];
+        assert_eq!(
+            c.tags,
+            vec!["cloud-1".to_string(), "cloud-2".to_string()],
+            "cloud sync is authoritative on tags — local set replaced verbatim",
+        );
+    }
+
+    // SDTEST-156 — same profile appearing twice in one payload does
+    // NOT produce a duplicate connection. Defence against a Manage
+    // bug that could feed the same entry across pagination boundaries.
+    // The first pass pushes; the second pass finds the existing entry
+    // by id and updates in place — final count is exactly 1.
+    #[test]
+    fn merge_does_not_duplicate_when_same_profile_arrives_twice() {
+        let mut store = ConnectionStore::default();
+        let id = Uuid::new_v4();
+        let rp1 = remote(id, "srv-v1", "1.2.3.4");
+        let mut rp2 = remote(id, "srv-v2", "5.6.7.8");
+        rp2.tags = vec!["updated".into()];
+
+        merge_profiles(&mut store, &[rp1, rp2]);
+
+        assert_eq!(store.connections.len(), 1, "no duplicate for same UUID");
+        // The last occurrence wins (typical last-write-wins) — pin it
+        // so a future "first wins" reordering surfaces here.
+        let c = &store.connections[0];
+        assert_eq!(c.alias, "srv-v2");
+        assert_eq!(c.hostname, "5.6.7.8");
+        assert_eq!(c.tags, vec!["updated".to_string()]);
+    }
+
     /// Live end-to-end check against a real sync endpoint. Ignored by default —
     /// requires network and a valid token, supplied via env so no secret lives
     /// in the repo:
