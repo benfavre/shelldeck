@@ -165,6 +165,7 @@ Core clients (committed by the lead, `3d961cf`): `shelldeck-core::config::bext_c
 
 - NEVER write to `~/.ssh/config` - ShellDeck-specific data goes in its own config
 - Rust nightly is **pinned** in `rust-toolchain.toml` (`nightly-2026-03-06`). Do NOT float it back to `nightly`: a newer nightly drops the `simd_fmin/simd_fmax` intrinsics `pathfinder_simd` needs and breaks the macOS release build (Linux/Windows are unaffected, so `cargo check` won't catch it). Bump only deliberately and verify the macOS release build.
+- `pathfinder_simd` is **held at 0.5.5** in `Cargo.lock` to match the pinned nightly. 0.5.6 renamed the intrinsics to `simd_minimum_number_nsz` / `simd_maximum_number_nsz`, which don't exist in our nightly and break the macOS release build. A blind `cargo update` will bump it and re-break macOS — after any `cargo update`, run `cargo update -p pathfinder_simd --precise 0.5.5`. If we ever bump the nightly, retest whether 0.5.6+ works and drop this pin.
 - ALWAYS set PKG_CONFIG_PATH on Linux for OpenSSL
 - Terminal grid operations must be fast - they're on the rendering hot path
 - Use `parking_lot::Mutex` for thread-safe grid access, not `std::sync::Mutex`
