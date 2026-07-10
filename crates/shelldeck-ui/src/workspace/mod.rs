@@ -6254,14 +6254,107 @@ impl Workspace {
             .child(scrollable_vertical(body))
     }
 
+    /// One row of the "Mes demandes" list — status badge, title, priority,
+    /// optional GitHub number, and a hover-only red trash icon that opens
+    /// the delete confirm. The hover kebab is hand-rolled (matches the
+    /// sidebar's per-row action pattern) because adabraka `IconButton`
+    /// derives its ElementId from the icon name and would collide across
+    /// rows.
+    fn render_user_request_row(
+        &self,
+        iss: &Issue,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = iss.id.clone();
+        let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
+        let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
+        let mut row = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "uiss-{}",
+                iss.id
+            ))))
+            .group(group_name.clone())
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(if selected {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::border()
+            })
+            .cursor_pointer()
+            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+            .on_click({
+                let id = id.clone();
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.select_issue(id.clone(), cx)
+                })
+            })
+            .child(issue_status_badge(&iss.status))
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(iss.title.clone()),
+            )
+            .child(priority_badge(&iss.priority));
+        if let Some(g) = &iss.github {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("user.github_issue", number = g.number).to_string()),
+            );
+        }
+        let del_id = iss.id.clone();
+        row.child(
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "uiss-del-{}",
+                    iss.id
+                ))))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(22.0))
+                .h(px(22.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_color(ShellDeckColors::error())
+                .opacity(0.0)
+                .group_hover(group_name.clone(), |el| el.opacity(1.0))
+                .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
+                .child(
+                    svg()
+                        .path(lucide_path("trash-2"))
+                        .size(px(13.0))
+                        .text_color(ShellDeckColors::error()),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.confirm_issue_delete = Some(del_id.clone());
+                    cx.notify();
+                })),
+        )
+    }
+
     /// User-mode "Mes demandes": a list of the tenant's requests. Selecting a
     /// row opens the detail as a right-side sheet; the "+ Nouvelle demande"
     /// button in the header opens the composer as another right-side sheet.
     /// Both live at the workspace root — they slide over the list without
     /// pushing it down (the pre-sheet layout used to append them inline).
     fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Issue list. User mode is the "as-a-normal-user" surface — even for
-        // a super-admin viewing it, we only surface requests *they* filed.
+        // User mode is the "as-a-normal-user" surface — even for a
+        // super-admin viewing it, we only surface requests *they* filed.
         // (The server hands staff every in-scope request without a
         // `requested_by` filter — cf. `issuesInScope` in the manage repo — so
         // the "Mes demandes" label would otherwise be misleading.)
@@ -6281,94 +6374,7 @@ impl Workspace {
             );
         }
         for iss in mine.iter().copied() {
-            let id = iss.id.clone();
-            let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
-            let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
-            let mut row =
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "uiss-{}",
-                        iss.id
-                    ))))
-                    .group(group_name.clone())
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(if selected {
-                        ShellDeckColors::primary()
-                    } else {
-                        ShellDeckColors::border()
-                    })
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .on_click({
-                        let id = id.clone();
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.select_issue(id.clone(), cx)
-                        })
-                    })
-                    .child(issue_status_badge(&iss.status))
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(iss.title.clone()),
-                    )
-                    .child(priority_badge(&iss.priority));
-            if let Some(g) = &iss.github {
-                row = row.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("user.github_issue", number = g.number).to_string()),
-                );
-            }
-            // Quick action: destructive delete surfaced on row hover — spares
-            // the user opening the sheet just to remove a demande. `is_my_issue`
-            // already gates the whole `mine` list, so no per-row gate needed.
-            // Hand-rolled (matches sidebar's per-row kebab pattern) because
-            // adabraka `IconButton` derives its ElementId from the icon name
-            // and would collide across rows.
-            let del_id = iss.id.clone();
-            row = row.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "uiss-del-{}",
-                        iss.id
-                    ))))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(22.0))
-                    .h(px(22.0))
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .text_color(ShellDeckColors::error())
-                    .opacity(0.0)
-                    .group_hover(group_name.clone(), |el| el.opacity(1.0))
-                    .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
-                    .child(
-                        svg()
-                            .path(lucide_path("trash-2"))
-                            .size(px(13.0))
-                            .text_color(ShellDeckColors::error()),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.confirm_issue_delete = Some(del_id.clone());
-                        cx.notify();
-                    })),
-            );
-            list = list.child(row);
+            list = list.child(self.render_user_request_row(iss, cx));
         }
 
         // Section header: title + "Nouvelle demande" button.

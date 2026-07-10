@@ -152,9 +152,11 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 - [x] **`bext_cloud_view.rs:382`** — `t!("user.account.logout")` réutilisé
   pour un bouton **bext** disconnect. Clé sémantiquement fausse. Ajouter
   `bext_view.disconnect`.
-- [ ] **`workspace/mod.rs:6280-6425`** — `render_user_requests` : 145
+- [x] **`workspace/mod.rs:6280-6425`** — `render_user_requests` : 145
   lignes de chaîne `div().flex()` avec 4 niveaux de nesting dans la kebab
   au hover. Extraire `render_user_request_row(iss, cx)`.
+  (Row extraite en `Self::render_user_request_row(iss, cx)` — le corps
+  de `render_user_requests` retombe à ~25 lignes.)
 - [ ] **Commentaires narratifs** style commit-message dans plusieurs
   fichiers :
   - `workspace/mod.rs:2107-2114` (« Cross-mode selection carry-over: … »)
