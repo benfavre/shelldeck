@@ -3542,44 +3542,11 @@ impl SupportView {
         }
 
         // Since — 4 chips: all / 24h / 7d / 30d. We stamp an ISO instant at
-        // pick time (chrono-free — the server does lexicographic compare
-        // and the timestamps are ISO too, so `now - offset` in local time
-        // formatted as `%Y-%m-%dT%H:%M:%SZ` is enough).
-        use std::time::{SystemTime, UNIX_EPOCH};
+        // pick time — server does lexicographic compare on ISO strings, so
+        // `now - offset` in UTC formatted as `%Y-%m-%dT%H:%M:%SZ` is enough.
         fn iso_since(hours: i64) -> String {
-            let secs_now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let then = secs_now - hours * 3600;
-            // Poor-man's UTC ISO — no chrono dep. Not exact to the second
-            // in the case of leap seconds; good enough for the "since"
-            // gate the server does.
-            let d = time_of_epoch(then);
-            format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                d.0, d.1, d.2, d.3, d.4, d.5
-            )
-        }
-        // (year, month, day, hour, min, sec)
-        fn time_of_epoch(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
-            let days_since_epoch = secs.div_euclid(86_400);
-            let secs_of_day = secs.rem_euclid(86_400) as u32;
-            let hour = secs_of_day / 3600;
-            let min = (secs_of_day % 3600) / 60;
-            let sec = secs_of_day % 60;
-            // Days-to-date via a proleptic Gregorian algo (Howard Hinnant).
-            let z = days_since_epoch + 719_468;
-            let era = z.div_euclid(146_097);
-            let doe = z.rem_euclid(146_097) as u32;
-            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-            let y = yoe as i64 + era * 400;
-            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-            let mp = (5 * doy + 2) / 153;
-            let d = doy - (153 * mp + 2) / 5 + 1;
-            let m = if mp < 10 { mp + 3 } else { mp - 9 };
-            let y = if m <= 2 { y + 1 } else { y };
-            (y as i32, m, d, hour, min, sec)
+            let then = chrono::Utc::now() - chrono::Duration::hours(hours);
+            then.format("%Y-%m-%dT%H:%M:%SZ").to_string()
         }
         let since_entries: &[(&str, &str, Option<i64>, &'static str)] = &[
             ("all", "support.issues.since.all", None, "ellipsis"),

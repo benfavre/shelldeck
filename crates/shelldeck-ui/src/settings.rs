@@ -464,6 +464,7 @@ impl SettingsView {
     }
 
     fn render_terminal_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
         div()
             .flex()
             .flex_col()
@@ -538,18 +539,14 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.terminal.cursor_blink.label").as_ref(),
                 t!("settings.terminal.cursor_blink.description").as_ref(),
-                Toggle::new("terminal-cursor-blink")
-                    .checked(self.config.terminal.cursor_blink)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.terminal.cursor_blink = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "terminal-cursor-blink",
+                    self.config.terminal.cursor_blink,
+                    &entity,
+                    |this, value| {
+                        this.config.terminal.cursor_blink = value;
+                    },
+                ),
             ))
     }
 
@@ -598,56 +595,34 @@ impl SettingsView {
     }
 
     fn render_editor_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
         div()
             .flex()
             .flex_col()
             .gap(px(4.0))
-            // Font size — adabraka IconButton so clicks land through the icon
-            // without the raw-svg pass-through pitfalls of the old chip row.
             .child(Self::render_setting_row(
                 t!("settings.editor.font_size.label").as_ref(),
                 t!("settings.editor.font_size.description").as_ref(),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        IconButton::new(IconSource::Named("minus".into()))
-                            .size(gpui::px(28.0))
-                            .icon_size(gpui::px(14.0))
-                            .no_background(true)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let new = (this.config.editor.font_size - 1.0).max(8.0);
-                                if (new - this.config.editor.font_size).abs() < f32::EPSILON {
-                                    return;
-                                }
-                                this.config.editor.font_size = new;
-                                this.save_config(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(48.0))
-                            .flex()
-                            .justify_center()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(format!("{}px", self.config.editor.font_size)),
-                    )
-                    .child(
-                        IconButton::new(IconSource::Named("plus".into()))
-                            .size(gpui::px(28.0))
-                            .icon_size(gpui::px(14.0))
-                            .no_background(true)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let new = (this.config.editor.font_size + 1.0).min(40.0);
-                                if (new - this.config.editor.font_size).abs() < f32::EPSILON {
-                                    return;
-                                }
-                                this.config.editor.font_size = new;
-                                this.save_config(cx);
-                            })),
-                    ),
+                Self::render_number_stepper(
+                    "editor-font-size",
+                    format!("{}px", self.config.editor.font_size),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.editor.font_size - 1.0).max(8.0);
+                        if (new - this.config.editor.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.editor.font_size = new;
+                        this.save_config(cx);
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        let new = (this.config.editor.font_size + 1.0).min(40.0);
+                        if (new - this.config.editor.font_size).abs() < f32::EPSILON {
+                            return;
+                        }
+                        this.config.editor.font_size = new;
+                        this.save_config(cx);
+                    }),
+                ),
             ))
             // Font family — adabraka Select (searchable dropdown).
             .child(Self::render_setting_row(
@@ -667,86 +642,66 @@ impl SettingsView {
             ))
             // Toggles — all through adabraka Toggle, so the OFF state renders
             // with theme-aware muted/background tokens (fixes the visible
-            // “seam” we had in Solarized Light with the hand-rolled toggle).
+            // "seam" we had in Solarized Light with the hand-rolled toggle).
             .child(Self::render_setting_row(
                 t!("settings.editor.insert_spaces.label").as_ref(),
                 t!("settings.editor.insert_spaces.description").as_ref(),
-                Toggle::new("editor-insert-spaces")
-                    .checked(self.config.editor.insert_spaces)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.editor.insert_spaces = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "editor-insert-spaces",
+                    self.config.editor.insert_spaces,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.insert_spaces = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.editor.show_line_numbers.label").as_ref(),
                 t!("settings.editor.show_line_numbers.description").as_ref(),
-                Toggle::new("editor-line-numbers")
-                    .checked(self.config.editor.show_line_numbers)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.editor.show_line_numbers = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "editor-line-numbers",
+                    self.config.editor.show_line_numbers,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.show_line_numbers = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.editor.show_whitespace.label").as_ref(),
                 t!("settings.editor.show_whitespace.description").as_ref(),
-                Toggle::new("editor-whitespace")
-                    .checked(self.config.editor.show_whitespace)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.editor.show_whitespace = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "editor-whitespace",
+                    self.config.editor.show_whitespace,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.show_whitespace = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.editor.word_wrap.label").as_ref(),
                 t!("settings.editor.word_wrap.description").as_ref(),
-                Toggle::new("editor-word-wrap")
-                    .checked(self.config.editor.word_wrap)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.editor.word_wrap = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "editor-word-wrap",
+                    self.config.editor.word_wrap,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.word_wrap = value;
+                    },
+                ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.editor.cursor_blink.label").as_ref(),
                 t!("settings.editor.cursor_blink.description").as_ref(),
-                Toggle::new("editor-cursor-blink")
-                    .checked(self.config.editor.cursor_blink)
-                    .on_click({
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            let value = *checked;
-                            entity.update(cx, |this, cx| {
-                                this.config.editor.cursor_blink = value;
-                                this.save_config(cx);
-                            });
-                        }
-                    }),
+                Self::bind_toggle(
+                    "editor-cursor-blink",
+                    self.config.editor.cursor_blink,
+                    &entity,
+                    |this, value| {
+                        this.config.editor.cursor_blink = value;
+                    },
+                ),
             ))
     }
 

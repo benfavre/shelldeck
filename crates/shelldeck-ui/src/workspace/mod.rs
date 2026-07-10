@@ -2110,9 +2110,20 @@ impl Workspace {
         // Cross-mode selection carry-over: opening a request in Support then
         // switching to User made the User-mode detail sheet auto-open on top
         // of the (unrelated) User list, because both surfaces share
-        // `issue_selected`/`issue_detail`. Reset every "which row is open"
-        // bit — Workspace side and SupportView side — so mode changes always
-        // land on a clean list.
+        // `issue_selected`/`issue_detail`.
+        self.reset_issue_selection(cx);
+
+        self.activate_current_mode(cx);
+        cx.notify();
+    }
+
+    /// Wipe every "which issue row is open" bit — Workspace-side selection
+    /// (`issue_selected`, `issue_detail`), the User-mode sheet flags, the
+    /// delete confirm dialog, AND the child `SupportView` selection — so
+    /// mode switches (and any future "return to a clean list" flow) always
+    /// land on an empty state. Any new issue-selection field added to
+    /// `Workspace` must be reset here too.
+    fn reset_issue_selection(&mut self, cx: &mut Context<Self>) {
         self.issue_selected = None;
         self.issue_detail = None;
         self.user_new_request_sheet_open = false;
@@ -2123,9 +2134,6 @@ impl Workspace {
             v.clear_selection();
             cx.notify();
         });
-
-        self.activate_current_mode(cx);
-        cx.notify();
     }
 
     /// Start/stop the support poll and load support data for the current mode.

@@ -40,10 +40,10 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 - [ ] **`settings.rs:1443-1611`** — 6 `build_*_select` quasi-identiques
   (~150 lignes). Extraire un helper générique
   `bind_select<T>(cx, options, current_idx, apply)`.
-- [ ] **`settings.rs:770-825`** — 6 blocs `Toggle::new(...)` copy-paste
+- [x] **`settings.rs:770-825`** — 6 blocs `Toggle::new(...)` copy-paste
   alors que `bind_toggle` (défini ligne 350) est le helper prévu et
   déjà utilisé dans `render_general_settings`. À réécrire pour appeler
-  le helper.
+  le helper. (5 toggles Editor + `terminal-cursor-blink` migrés.)
 - [ ] **`settings.rs:277` + `workspace/mod.rs:1690`** — `sync_selects`
   rebâtit les 6 `Select` entities à chaque `sync_settings_config`, même
   quand seul le thème ou `cloud_sync` a changé. Ferme les popovers
@@ -91,22 +91,25 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   normalisées (`account_name_lc`, `account_email_lc`) mises à jour dans
   `set_account`. À faire en même temps que le fix session-state du
   point session-state ci-dessus.
-- [ ] **`support_view.rs:700-770`** — `iso_since` / `time_of_epoch`
+- [x] **`support_view.rs:700-770`** — `iso_since` / `time_of_epoch`
   fns imbriquées dans `render_issues_filter_modal` qui réimplémentent
   du Gregorian. `chrono` est déjà dep workspace. Remplacer par
   `chrono::Utc::now() - chrono::Duration::hours(h)` +
   `.format("%Y-%m-%dT%H:%M:%SZ")`. Sauf si on veut réduire le pull de
   `chrono` — dans ce cas noter le choix.
+  (`time_of_epoch` supprimé, `iso_since` réduit à 2 lignes chrono.)
 - [ ] **`support_view.rs:2822 + workspace/mod.rs:6180`** — chaque
   render de la liste requests alloue 3 `SharedString::from(format!(...))`
   par ligne (row id, area id, del id). Pré-construire les IDs stables
   quand la liste est set (petit struct `IssueRow { iss: Issue,
   ids: RowIds }`).
-- [ ] **`workspace/mod.rs:2109`** (`set_app_mode`) — reset manuel de 6
+- [x] **`workspace/mod.rs:2109`** (`set_app_mode`) — reset manuel de 6
   champs de sélection issue. Chaque nouveau champ sera oublié. Extraire
   `Workspace::reset_issue_selection(cx)` (déjà répété dans
-  `delete_issue_now:3496`).
-- [ ] **`settings.rs:573-640`** — l'onglet Editor duplique inline le
+  `delete_issue_now:3496`). Note : le reset conditionnel dans
+  `delete_issue_now` (2 champs, gated sur `deleted_id == selected`)
+  reste à part — sémantique différente du wipe complet.
+- [x] **`settings.rs:573-640`** — l'onglet Editor duplique inline le
   stepper (IconButton minus/plus + label) alors que
   `render_number_stepper` (:505-545) est le helper à appeler.
 
