@@ -105,9 +105,13 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 - [x] **`workspace/mod.rs:2241` (`select_support_ticket`)** — appelle
   `refresh_support` immédiatement après `set_detail`, alors que le poll
   30 s couvre déjà les unread flags. Deux round-trips par sélection.
-- [ ] **`file_editor/view.rs:1837` (`paint_editor`)** — 17 paramètres
+- [x] **`file_editor/view.rs:1837` (`paint_editor`)** — 17 paramètres
   positionnels + une prépaint tuple monstrueuse (~1770-1810). Bundler
   dans un `struct PaintCtx { … }`.
+  (`struct PaintCtx<'a>` avec 22 champs, borrows contre la prépaint
+  tuple — pas de clone par frame. `paint_editor` destructure en tête
+  → body inchangé, call-site construit `PaintCtx { … }` inline.
+  Suppression de `#[allow(clippy::too_many_arguments)]`.)
 - [x] **`support_view.rs:3068-3200`** — `render_issue_popover_items`
   avec un `if issues_staff` non-indenté à l'intérieur ⇒ les `items.push`
   staff-only ressemblent visuellement à du code inconditionnel. Extraire

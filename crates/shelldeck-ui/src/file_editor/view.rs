@@ -68,6 +68,35 @@ struct ContextMenuItem {
     action: ContextMenuAction,
 }
 
+/// State bundle handed from the prepaint pass to `paint_editor`. Groups the
+/// 20+ pieces that used to be positional params so a caller can't silently
+/// swap two `usize`s and misalign the whole paint. Fields borrow against
+/// the prepaint tuple; nothing is cloned per frame.
+struct PaintCtx<'a> {
+    bounds: Bounds<Pixels>,
+    cache: &'a GlyphCache,
+    line_texts: &'a [String],
+    line_numbers: &'a [usize],
+    fold_markers: &'a [u8],
+    highlights: &'a [Vec<HighlightSpan>],
+    total_lines: usize,
+    first_visible: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+    sel_coords: Option<(usize, usize, usize, usize)>,
+    gutter_w: f32,
+    show_line_numbers: bool,
+    cursor_blink_on: bool,
+    has_focus: bool,
+    search_match_coords: &'a [(usize, usize, usize, usize)],
+    search_current_coord: Option<usize>,
+    tab_size: usize,
+    bracket_match: Option<(usize, usize)>,
+    word_highlight_coords: &'a [(usize, usize, usize, usize)],
+    extra_cursors: &'a [(usize, usize)],
+    h_scroll: usize,
+}
+
 /// Modifier prefix for the primary shortcut key — Command (⌘) on macOS,
 /// Ctrl+ elsewhere. Terminal has an inline `cfg!` for the same swap; if a
 /// third caller shows up, promote to a shared `crate::platform` helper.
@@ -1794,28 +1823,30 @@ impl FileEditorView {
                           window,
                           cx| {
                         Self::paint_editor(
-                            bounds,
-                            &cache,
-                            &line_texts,
-                            &line_numbers,
-                            &fold_markers,
-                            &highlights,
-                            total_lines,
-                            first_visible,
-                            cursor_line,
-                            cursor_col,
-                            sel_coords,
-                            gutter_w,
-                            show_line_numbers,
-                            cursor_blink_on,
-                            has_focus,
-                            &search_match_coords,
-                            search_current_coord,
-                            tab_size,
-                            bracket_match,
-                            &word_highlight_coords,
-                            &extra_cursor_coords,
-                            h_scroll,
+                            PaintCtx {
+                                bounds,
+                                cache: &cache,
+                                line_texts: &line_texts,
+                                line_numbers: &line_numbers,
+                                fold_markers: &fold_markers,
+                                highlights: &highlights,
+                                total_lines,
+                                first_visible,
+                                cursor_line,
+                                cursor_col,
+                                sel_coords,
+                                gutter_w,
+                                show_line_numbers,
+                                cursor_blink_on,
+                                has_focus,
+                                search_match_coords: &search_match_coords,
+                                search_current_coord,
+                                tab_size,
+                                bracket_match,
+                                word_highlight_coords: &word_highlight_coords,
+                                extra_cursors: &extra_cursor_coords,
+                                h_scroll,
+                            },
                             window,
                             cx,
                         );
@@ -1829,33 +1860,31 @@ impl FileEditorView {
     // Paint: the actual pixel-level rendering
     // -----------------------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
-    fn paint_editor(
-        bounds: Bounds<Pixels>,
-        cache: &GlyphCache,
-        line_texts: &[String],
-        line_numbers: &[usize],
-        fold_markers: &[u8],
-        highlights: &[Vec<HighlightSpan>],
-        total_lines: usize,
-        first_visible: usize,
-        cursor_line: usize,
-        cursor_col: usize,
-        sel_coords: Option<(usize, usize, usize, usize)>,
-        gutter_w: f32,
-        show_line_numbers: bool,
-        cursor_blink_on: bool,
-        has_focus: bool,
-        search_match_coords: &[(usize, usize, usize, usize)],
-        search_current_coord: Option<usize>,
-        tab_size: usize,
-        bracket_match: Option<(usize, usize)>,
-        word_highlight_coords: &[(usize, usize, usize, usize)],
-        extra_cursors: &[(usize, usize)],
-        h_scroll: usize,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    fn paint_editor(ctx: PaintCtx<'_>, window: &mut Window, cx: &mut App) {
+        let PaintCtx {
+            bounds,
+            cache,
+            line_texts,
+            line_numbers,
+            fold_markers,
+            highlights,
+            total_lines,
+            first_visible,
+            cursor_line,
+            cursor_col,
+            sel_coords,
+            gutter_w,
+            show_line_numbers,
+            cursor_blink_on,
+            has_focus,
+            search_match_coords,
+            search_current_coord,
+            tab_size,
+            bracket_match,
+            word_highlight_coords,
+            extra_cursors,
+            h_scroll,
+        } = ctx;
         let cell_w = cache.cell_width;
         // Text starts at `bounds.origin.x + gutter_px` for column 0 in a
         // non-scrolled view; when `h_scroll > 0` we back-off by that many
