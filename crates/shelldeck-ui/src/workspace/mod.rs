@@ -1678,11 +1678,11 @@ impl Workspace {
     fn sync_settings_config(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.app_config.clone();
         self.settings.update(cx, |settings, cx| {
-            settings.config = snapshot;
-            // The Editor tab's Select entities cache the last `selected_index`;
-            // rebuild them so an externally-changed editor slice doesn't
-            // silently drift out of sync with the shown value.
-            settings.sync_selects(cx);
+            // Only rebuild the Select entities whose backing slice actually
+            // changed — otherwise a login/logout/mode switch would nuke
+            // every open dropdown popover.
+            let old = std::mem::replace(&mut settings.config, snapshot);
+            settings.sync_selects_if_changed(&old, cx);
             cx.notify();
         });
     }

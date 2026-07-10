@@ -64,11 +64,14 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   alors que `bind_toggle` (défini ligne 350) est le helper prévu et
   déjà utilisé dans `render_general_settings`. À réécrire pour appeler
   le helper. (5 toggles Editor + `terminal-cursor-blink` migrés.)
-- [ ] **`settings.rs:277` + `workspace/mod.rs:1690`** — `sync_selects`
+- [x] **`settings.rs:277` + `workspace/mod.rs:1690`** — `sync_selects`
   rebâtit les 6 `Select` entities à chaque `sync_settings_config`, même
   quand seul le thème ou `cloud_sync` a changé. Ferme les popovers
   ouverts. Ne rebuild que le Select dont le champ backing a réellement
   changé (comparer old vs new snapshot).
+  (Renommé `sync_selects_if_changed(&AppConfig, cx)`. `sync_settings_config`
+  fait `std::mem::replace` sur `settings.config` pour capturer l'ancien
+  et compare les 6 slices — seuls les Select impactés sont rebuild.)
 - [/] **`file_editor/view.rs`** — menu contextuel hand-rolled au lieu
   d'`adabraka_ui::overlays::ContextMenu` (violation
   `.agents/ui-components.md`) + raccourcis `"Ctrl+..."` hardcodés cassés

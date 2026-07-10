@@ -83,16 +83,32 @@ impl SettingsView {
         }
     }
 
-    /// Rebuild every `Select` entity so their `selected_index` reflects the
-    /// latest `self.config`. Called after `save_config` and when the
-    /// workspace pushes a new snapshot via `sync_settings_config`.
-    pub fn sync_selects(&mut self, cx: &mut Context<Self>) {
-        self.editor_font_family_select = build_editor_font_family_select(&self.config, cx);
-        self.editor_tab_size_select = build_editor_tab_size_select(&self.config, cx);
-        self.terminal_font_family_select = build_terminal_font_family_select(&self.config, cx);
-        self.terminal_cursor_style_select = build_terminal_cursor_style_select(&self.config, cx);
-        self.general_language_select = build_general_language_select(&self.config, cx);
-        self.ui_font_family_select = build_ui_font_family_select(&self.config, cx);
+    /// Rebuild only the `Select` entities whose backing config slice differs
+    /// from `old`. Called from `Workspace::sync_settings_config` — a mode
+    /// switch or `cloud_sync` toggle no longer nukes the 6 dropdown
+    /// popovers just to refresh their `selected_index` (which fixed a UX
+    /// bug where opening a Select then triggering any workspace event
+    /// would close the popover mid-pick).
+    pub fn sync_selects_if_changed(&mut self, old: &AppConfig, cx: &mut Context<Self>) {
+        if self.config.editor.font_family != old.editor.font_family {
+            self.editor_font_family_select = build_editor_font_family_select(&self.config, cx);
+        }
+        if self.config.editor.tab_size != old.editor.tab_size {
+            self.editor_tab_size_select = build_editor_tab_size_select(&self.config, cx);
+        }
+        if self.config.terminal.font_family != old.terminal.font_family {
+            self.terminal_font_family_select = build_terminal_font_family_select(&self.config, cx);
+        }
+        if self.config.terminal.cursor_style != old.terminal.cursor_style {
+            self.terminal_cursor_style_select =
+                build_terminal_cursor_style_select(&self.config, cx);
+        }
+        if self.config.general.ui_language != old.general.ui_language {
+            self.general_language_select = build_general_language_select(&self.config, cx);
+        }
+        if self.config.general.ui_font_family != old.general.ui_font_family {
+            self.ui_font_family_select = build_ui_font_family_select(&self.config, cx);
+        }
     }
 
     /// Select a terminal color theme by name and persist it immediately.
