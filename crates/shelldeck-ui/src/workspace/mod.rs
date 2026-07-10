@@ -3520,7 +3520,7 @@ impl Workspace {
                 }
                 Err(e) => ws.show_toast(
                     t!(
-                        "toast.issue.staff_failed",
+                        "toast.issue.delete_failed",
                         error = cloud_account::user_message(&e)
                     )
                     .to_string(),

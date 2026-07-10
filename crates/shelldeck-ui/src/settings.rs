@@ -1542,14 +1542,25 @@ fn build_terminal_cursor_style_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
-    let entries: &[(&str, &str)] = &[
-        ("block", "Bloc"),
-        ("underline", "Souligné"),
-        ("bar", "Barre"),
+    let entries: [(&str, SharedString); 3] = [
+        (
+            "block",
+            t!("settings.terminal.cursor_style.block").to_string().into(),
+        ),
+        (
+            "underline",
+            t!("settings.terminal.cursor_style.underline")
+                .to_string()
+                .into(),
+        ),
+        (
+            "bar",
+            t!("settings.terminal.cursor_style.bar").to_string().into(),
+        ),
     ];
     let options: Vec<SelectOption<SharedString>> = entries
         .iter()
-        .map(|(value, label)| SelectOption::new(SharedString::from(*value), *label))
+        .map(|(value, label)| SelectOption::new(SharedString::from(*value), label.clone()))
         .collect();
     let selected = entries
         .iter()
@@ -1612,6 +1623,11 @@ fn build_ui_font_family_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
+    // "System Default" is a stable sentinel value persisted in config
+    // (see `AppConfig::default().general.ui_font_family`); only the display
+    // label is translated.
+    let system_default_label: SharedString =
+        t!("settings.general.font.system_default").to_string().into();
     let fonts: &[&str] = &[
         "System Default",
         "Inter",
@@ -1624,7 +1640,14 @@ fn build_ui_font_family_select(
     ];
     let options: Vec<SelectOption<SharedString>> = fonts
         .iter()
-        .map(|name| SelectOption::new(SharedString::from(*name), *name))
+        .map(|name| {
+            let label: SharedString = if *name == "System Default" {
+                system_default_label.clone()
+            } else {
+                SharedString::from(*name)
+            };
+            SelectOption::new(SharedString::from(*name), label)
+        })
         .collect();
     let selected = fonts
         .iter()
@@ -1634,7 +1657,7 @@ fn build_ui_font_family_select(
         Select::new(select_cx)
             .options(options)
             .selected_index(selected)
-            .placeholder(SharedString::from("System Default"))
+            .placeholder(system_default_label.clone())
             .searchable(true)
             .on_change(move |value, _window, cx| {
                 let picked = value.to_string();

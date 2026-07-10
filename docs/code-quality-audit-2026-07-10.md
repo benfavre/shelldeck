@@ -30,7 +30,7 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   ou mieux, passer à `adabraka_ui::overlays::alert_dialog::AlertDialog`
   (le primitif prévu pour les confirms destructifs — cf.
   `.agents/ui-components.md`).
-- [ ] **`workspace/mod.rs:3500` (`delete_issue_now`)** — la branche Err
+- [x] **`workspace/mod.rs:3500` (`delete_issue_now`)** — la branche Err
   utilise `t!("toast.issue.staff_failed", …)` mais `delete_issue` est
   owner-or-staff. Un owner non-staff verra un message trompeur. Ajouter
   `toast.issue.delete_failed` dans `fr.toml` + `en.toml`.
@@ -55,16 +55,20 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   sur macOS (violation `.agents/cross-platform.md`). Réutiliser le
   helper de switch modifier déjà présent dans `terminal_view.rs:2254`
   (à extraire dans `crate::platform` — le pattern se duplique).
-- [ ] **`settings.rs:1545` + :1191** — `"Bloc" / "Souligné" / "Barre"`
+- [x] **`settings.rs:1545` + :1191** — `"Bloc" / "Souligné" / "Barre"`
   et `"System Default"` hardcodés au lieu de `t!` (violation
   `.agents/i18n.md`). Ajouter les clés
   `settings.terminal.cursor_style.*` + `settings.general.font.system`.
-- [ ] **`file_editor/view.rs:2828-2865`** —
+  Note : `"System Default"` reste comme **sentinelle** stockée dans
+  `AppConfig.general.ui_font_family` (compat config) — seul le label
+  est traduit via `settings.general.font.system_default`.
+- [x] **`file_editor/view.rs:2828-2865`** —
   `hsla(0.08, 0.7, 0.5, …)` amber + `hsla(0.0, 0.7, 0.6, 1.0)` rouge
   dans la barre d'unsaved changes. Remplacer par
   `ShellDeckColors::warning().opacity(0.2)` /
   `ShellDeckColors::error().opacity(0.4)` (violation
-  `.agents/theming.md` rule 3).
+  `.agents/theming.md` rule 3). Le badge PDF (:3574-3575) est laissé —
+  couleur sémantique pour "fichier PDF", pas un état d'erreur.
 - [ ] **`workspace/mod.rs`** — mutations issues (`create/comment/delete/
   staff_action`) qui ré-appellent `refresh_issues` alors que la mutation
   a déjà retourné l'issue muté. Round-trip HTTP redondant à chaque
@@ -108,10 +112,12 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 
 ## Low — polish
 
-- [ ] **`fleet_view.rs:511` + `support_view.rs:4267`** — thin wrappers
+- [x] **`fleet_view.rs:511` + `support_view.rs:4267`** — thin wrappers
   `fn rel_time(at_ms) { crate::i18n::rel_time(at_ms) }`. Supprimer, les
   appelants utilisent directement `crate::i18n::rel_time`.
-- [ ] **`bext_cloud_view.rs:382`** — `t!("user.account.logout")` réutilisé
+  (Remplacés par `use crate::i18n::rel_time;` en haut du fichier — les
+  call-sites restent inchangés.)
+- [x] **`bext_cloud_view.rs:382`** — `t!("user.account.logout")` réutilisé
   pour un bouton **bext** disconnect. Clé sémantiquement fausse. Ajouter
   `bext_view.disconnect`.
 - [ ] **`workspace/mod.rs:6280-6425`** — `render_user_requests` : 145

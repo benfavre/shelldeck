@@ -5,6 +5,7 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
+use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
@@ -4478,9 +4479,4 @@ fn next_priority(p: &str) -> &'static str {
         "high" => "urgent",
         _ => "low",
     }
-}
-
-/// Rough relative time from an epoch-ms timestamp.
-fn rel_time(at_ms: f64) -> String {
-    crate::i18n::rel_time(at_ms)
 }

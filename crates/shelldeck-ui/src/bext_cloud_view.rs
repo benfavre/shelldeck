@@ -381,7 +381,7 @@ impl BextCloudView {
             );
             card = card.child(ident).child(Self::btn(
                 "bx-disconnect",
-                t!("user.account.logout").as_ref(),
+                t!("bext_view.disconnect").as_ref(),
                 cx,
                 |_t, cx| cx.emit(BextViewEvent::Disconnect),
             ));

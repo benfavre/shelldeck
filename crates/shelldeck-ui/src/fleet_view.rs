@@ -12,6 +12,7 @@ use gpui::*;
 
 use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
 
+use crate::i18n::rel_time;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -506,8 +507,4 @@ impl Render for FleetView {
         }
         root
     }
-}
-
-fn rel_time(at_ms: f64) -> String {
-    crate::i18n::rel_time(at_ms)
 }
