@@ -6129,25 +6129,17 @@ impl Workspace {
                     .justify_between()
                     .gap(px(10.0))
                     .child({
-                        let mut identity = div()
-                            .flex()
-                            .flex_col()
-                            .min_w(px(0.0))
-                            .overflow_hidden();
+                        let mut identity = div().flex().flex_col().min_w(px(0.0)).overflow_hidden();
                         // Label row = title + optional WP badge (when the
                         // site was flagged as WordPress by the manage probe).
-                        let mut label_row = div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .truncate()
-                                    .child(label.clone()),
-                            );
+                        let mut label_row = div().flex().items_center().gap(px(6.0)).child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .truncate()
+                                .child(label.clone()),
+                        );
                         if site.is_wordpress == Some(true) {
                             label_row = label_row.child(
                                 div()
@@ -6219,7 +6211,10 @@ impl Workspace {
                 let wp_url_owned = wp_url.clone();
                 areas_row = areas_row.child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("uh-wp-{}", sid))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "uh-wp-{}",
+                            sid
+                        ))))
                         .flex()
                         .items_center()
                         .gap(px(5.0))
