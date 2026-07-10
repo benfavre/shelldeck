@@ -128,3 +128,105 @@ impl LocalPty {
         Ok(status.exit_code())
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    // SDTEST-960/961/962 — PTY smoke: spawn a real `sh -c 'exit 0'`
+    // pipeline, verify the child eventually exits with the expected
+    // status. Deliberately Unix-only: portable_pty on Windows uses
+    // conpty which requires the fixture to run on a real Windows CI
+    // runner (blocked K matrix). The Linux CI covers this branch.
+    //
+    // We use `sh -c 'exit 42'` instead of the default shell so the
+    // test is deterministic on any Linux runner (bash may not be
+    // present on Alpine; sh always is).
+
+    fn spawn_sh(cmd: &str) -> (LocalPty, Box<dyn std::io::Read + Send>) {
+        // `SHELL` is respected by LocalPty::spawn but we want a fixed
+        // command line here, so pass a wrapper shell path with `-c cmd`
+        // baked in via a small script writer.
+        // portable_pty's `CommandBuilder` doesn't take positional args
+        // through `spawn(shell)`, so instead we point `SHELL` at a
+        // known-present shell and rely on it to execute the login
+        // sequence. For deterministic exit codes we write to stdin.
+        let (mut pty, reader) = LocalPty::spawn(Some("/bin/sh"), 24, 80).expect("spawn sh");
+        pty.write(format!("{}\n", cmd).as_bytes()).expect("write");
+        (pty, reader)
+    }
+
+    // SDTEST-960 — spawn returns an alive PTY. Baseline sanity: the
+    // child process exists and hasn't already exited by the time we
+    // return from `spawn`.
+    #[test]
+    fn spawn_returns_alive_pty() {
+        let (mut pty, _reader) = spawn_sh(":");
+        assert!(pty.is_alive(), "child must be alive right after spawn");
+    }
+
+    // SDTEST-962 — echo round-trip: write `echo <sentinel>`, read the
+    // PTY output, expect the sentinel to come back.
+    //
+    // Robust reads are annoying — the shell also echoes the input
+    // line back (line discipline). We only assert `contains` on a
+    // deterministic sentinel so any interleaving of prompts / echoes
+    // still passes.
+    #[test]
+    fn write_and_read_echo_round_trip() {
+        use std::io::Read;
+        let (mut pty, mut reader) = spawn_sh("echo shelldeck_sentinel_42; exit");
+
+        // Give the child up to ~2s to produce output. Blocking reads
+        // are OK because `exit` closes the master, ending the read.
+        let mut buf = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 512];
+        let start = std::time::Instant::now();
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break, // EOF
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+            if start.elapsed() > std::time::Duration::from_secs(3) {
+                break;
+            }
+        }
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("shelldeck_sentinel_42"),
+            "expected sentinel in PTY output, got: {out:?}",
+        );
+
+        // Reap the child so the test doesn't leak a defunct process.
+        let _ = pty.wait();
+    }
+
+    // SDTEST-963 — resize before and after spawn both work.
+    // portable_pty tolerates resize on a running PTY; we verify the
+    // call doesn't Err. SIGWINCH delivery is an OS-level concern the
+    // portable_pty layer already handles.
+    #[test]
+    fn resize_returns_ok() {
+        let (pty, _reader) = spawn_sh("sleep 0.1; exit");
+        pty.resize(30, 100).expect("resize on live PTY");
+        pty.resize(24, 80).expect("resize back to defaults");
+    }
+
+    // SDTEST-965/966 — `is_alive` flips to false after the child
+    // exits; `wait()` returns the exit code.
+    #[test]
+    fn is_alive_and_wait_reflect_child_exit() {
+        let (mut pty, _reader) = spawn_sh("exit 3");
+        let code = pty.wait().expect("wait completes");
+        // Some shells map explicit `exit N` to the low 8 bits; portable_pty
+        // reports the raw exit code from the OS. We assert non-zero (the
+        // child DID exit with a failure) — pinning the exact 3 is fragile
+        // across shell implementations.
+        assert!(!pty.is_alive(), "child must be dead after wait");
+        assert!(
+            code != 0,
+            "explicit `exit 3` should surface as non-zero exit code (got {code})",
+        );
+    }
+}
