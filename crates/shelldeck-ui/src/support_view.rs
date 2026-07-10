@@ -292,11 +292,17 @@ pub struct SupportView {
     section: SupportSection,
     issues: Vec<Issue>,
     issues_staff: bool,
-    /// Signed-in account identity — used to gate the delete action on
-    /// requests the current user filed themselves (non-staff path). Kept
-    /// in sync with `AppConfig.account` via `set_account`.
-    account_name: String,
-    account_email: String,
+    /// Signed-in account identity, **pre-lowercased and trimmed** — used to
+    /// gate the delete action on requests the current user filed themselves
+    /// and to render self-authored comments right-aligned. Kept in sync with
+    /// `AppConfig.account` via `set_account` (workspace pushes on login,
+    /// logout, and every issues refresh). Lowercased once here so
+    /// `is_my_issue` / `render_issue_comment` avoid re-normalising per row —
+    /// the pre-normalised form serves both correctness (single owner) and
+    /// perf (list of 50 issues × 20 comments used to alloc ~2000 strings
+    /// per paint).
+    account_name_lc: String,
+    account_email_lc: String,
     /// Applied filter — mirrors `Workspace::issues_filter` so the chips /
     /// input reflect the state the server was actually queried with. The
     /// modal draft below is only populated while the "Filtres" modal is
@@ -366,8 +372,8 @@ impl SupportView {
             section: SupportSection::Tickets,
             issues: Vec::new(),
             issues_staff: false,
-            account_name: String::new(),
-            account_email: String::new(),
+            account_name_lc: String::new(),
+            account_email_lc: String::new(),
             issues_filter: shelldeck_core::config::issues::IssueListFilter::default(),
             issues_filter_draft: shelldeck_core::config::issues::IssueListFilter::default(),
             issues_filter_modal_open: false,
@@ -398,12 +404,17 @@ impl SupportView {
         self.issue_instances = instances;
     }
 
-    /// Update the signed-in account identity used by `is_my_issue`. Called
-    /// from `Workspace::push_issues_to_support` alongside `set_issues` so the
-    /// two never drift.
-    pub fn set_account(&mut self, name: String, email: String) {
-        self.account_name = name;
-        self.account_email = email;
+    /// Update the signed-in account identity used by `is_my_issue` and
+    /// `render_issue_comment`. Called from `Workspace::push_issues_to_support`
+    /// alongside `set_issues`, and also on login / logout so the cache never
+    /// outlives the workspace-owned `AppConfig.account`. Empty strings on
+    /// logout — `is_my_issue` returns `false` when either half is empty.
+    ///
+    /// Inputs are normalised once (trim + lowercase) so per-row comparisons
+    /// stay allocation-free.
+    pub fn set_account(&mut self, name: &str, email: &str) {
+        self.account_name_lc = name.trim().to_ascii_lowercase();
+        self.account_email_lc = email.trim().to_ascii_lowercase();
     }
 
 
@@ -669,9 +680,8 @@ impl SupportView {
         if rb.is_empty() {
             return false;
         }
-        let name = self.account_name.trim().to_ascii_lowercase();
-        let email = self.account_email.trim().to_ascii_lowercase();
-        (!name.is_empty() && rb == name) || (!email.is_empty() && rb == email)
+        (!self.account_name_lc.is_empty() && rb == self.account_name_lc)
+            || (!self.account_email_lc.is_empty() && rb == self.account_email_lc)
     }
 
     /// Reset every "which row is open" bit so the Support surface returns to
@@ -3142,9 +3152,8 @@ impl SupportView {
         let is_note = c.is_note();
         let author_matches_me = !c.author.trim().is_empty() && {
             let a = c.author.trim().to_ascii_lowercase();
-            let n = self.account_name.trim().to_ascii_lowercase();
-            let e = self.account_email.trim().to_ascii_lowercase();
-            (!n.is_empty() && a == n) || (!e.is_empty() && a == e)
+            (!self.account_name_lc.is_empty() && a == self.account_name_lc)
+                || (!self.account_email_lc.is_empty() && a == self.account_email_lc)
         };
         let (bg, align_end, label, icon) = if is_note {
             (

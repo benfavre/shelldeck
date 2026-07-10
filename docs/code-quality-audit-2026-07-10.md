@@ -22,12 +22,19 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   (Fan-out sur 3 `std::thread` pour whoami/sites/dashboard ; instances
   reste sériel après whoami car super-admin seulement. Client bext est
   reqwest-blocking donc pas de futures::join possible sans refonte.)
-- [ ] **`workspace/mod.rs:3405` + `support_view.rs:290`** —
+- [x] **`workspace/mod.rs:3405` + `support_view.rs:290`** —
   `SupportView` cache `account_name` / `account_email` alors que
   `AppConfig.account` est l'unique source. Violation directe de
   `.agents/session-state.md` (« Did I add a new view that holds its own
   AppConfig copy? → don't »). `is_my_issue` est aussi dupliqué byte-à-byte
   entre workspace et support_view.
+  (Fields renommés `account_name_lc` / `account_email_lc`,
+  pré-normalisés à `set_account` (trim+lowercase — combine H3 + M11).
+  Nouveau helper `push_account_to_support` appelé depuis `apply_login`
+  et `invalidate_cloud_session` — le cache ne survit plus au logout.
+  La duplication du `is_my_issue` workspace-side reste — sémantique
+  différente : c'est un `&self` sur `Workspace` et l'appelant User
+  mode n'a pas de `SupportView` sous la main.)
 - [x] **`workspace/mod.rs:3554` + `support_view.rs:3520`** — deux copies
   ~120 lignes de `render_delete_issue_modal`. Extraire un helper commun,
   ou mieux, passer à `adabraka_ui::overlays::alert_dialog::AlertDialog`
@@ -95,13 +102,13 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   (Extrait en `Self::staff_triage_items(iss, id, include_dispatch,
   entity)` — la gate `!issue_instances.is_empty()` reste côté appelant
   car le helper n'a pas `&self`.)
-- [ ] **`support_view.rs:2828+`** — `is_my_issue` +
+- [x] **`support_view.rs:2828+`** — `is_my_issue` +
   `render_issue_comment` re-trim + re-lowercase le nom et l'email du
   compte à chaque issue/comment pendant le render (list de 50 issues ×
   20 comments = 1000 alloc pairs par paint). Cacher les copies
   normalisées (`account_name_lc`, `account_email_lc`) mises à jour dans
   `set_account`. À faire en même temps que le fix session-state du
-  point session-state ci-dessus.
+  point session-state ci-dessus. (Fait avec H3.)
 - [x] **`support_view.rs:700-770`** — `iso_since` / `time_of_epoch`
   fns imbriquées dans `render_issues_filter_modal` qui réimplémentent
   du Gregorian. `chrono` est déjà dep workspace. Remplacer par

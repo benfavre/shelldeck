@@ -1618,6 +1618,7 @@ impl Workspace {
             tracing::error!("Failed to save config after login: {}", e);
         }
         self.sync_settings_config(cx);
+        self.push_account_to_support(cx);
         self.account_status = AccountStatus::Ok;
         self.login_form = None;
         self._login_form_sub = None;
@@ -1697,6 +1698,7 @@ impl Workspace {
             tracing::error!("Failed to save config after session invalidation: {}", e);
         }
         self.sync_settings_config(cx);
+        self.push_account_to_support(cx);
         self.account_status = AccountStatus::Unknown;
         self.account_menu_open = false;
         self.site_directory = None;
@@ -3310,9 +3312,26 @@ impl Workspace {
             .map(|a| (a.name.clone(), a.email.clone()))
             .unwrap_or_default();
         self.support.update(cx, |v, cx| {
-            v.set_account(acc_name, acc_email);
+            v.set_account(&acc_name, &acc_email);
             v.set_issues(issues, staff, instances);
             v.set_issue_detail(detail);
+            cx.notify();
+        });
+    }
+
+    /// Push the current `AppConfig.account` identity to `SupportView` — used
+    /// on login/logout transitions so the child's identity cache doesn't
+    /// outlive the workspace-owned account state (violation of
+    /// `.agents/session-state.md` if it does).
+    fn push_account_to_support(&mut self, cx: &mut Context<Self>) {
+        let (acc_name, acc_email) = self
+            .app_config
+            .account
+            .as_ref()
+            .map(|a| (a.name.clone(), a.email.clone()))
+            .unwrap_or_default();
+        self.support.update(cx, |v, cx| {
+            v.set_account(&acc_name, &acc_email);
             cx.notify();
         });
     }
