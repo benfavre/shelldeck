@@ -2248,8 +2248,9 @@ impl Workspace {
                             v.set_detail(t, cx);
                             cx.notify();
                         });
-                        // Refresh the list so unread flags/counts update.
-                        ws.refresh_support(cx);
+                        // Unread counts drift ≤30 s until the poll runs — an
+                        // eager `refresh_support` here doubled the HTTP round
+                        // trips on every selection.
                     }
                     Err(e) => {
                         let msg = cloud_account::user_message(&e);
@@ -3396,6 +3397,23 @@ impl Workspace {
     }
 
     /// Create a request. `source` = "user" (User mode) or "support".
+    /// Replace an existing issue in `issues_list` by id, or prepend it if
+    /// absent (matches the server's default `updated_at DESC` order for a
+    /// freshly-created row). Called after a server-side mutation returns
+    /// the updated record so we don't need an eager list refetch.
+    fn upsert_issue_in_list(&mut self, iss: Issue) {
+        if let Some(pos) = self.issues_list.iter().position(|i| i.id == iss.id) {
+            self.issues_list[pos] = iss;
+        } else {
+            self.issues_list.insert(0, iss);
+        }
+    }
+
+    /// Drop an issue from `issues_list` by id (soft-delete).
+    fn remove_issue_from_list(&mut self, id: &str) {
+        self.issues_list.retain(|i| i.id != id);
+    }
+
     fn create_issue_now(
         &mut self,
         title: String,
@@ -3430,9 +3448,10 @@ impl Workspace {
                     ws.user_new_request_sheet_open = false;
                     Self::reset_input(&ws.issue_title_state.clone(), cx);
                     Self::reset_input(&ws.issue_body_state.clone(), cx);
+                    ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss.clone());
                     ws.issue_selected = Some(iss.id.clone());
-                    ws.refresh_issues(cx);
+                    ws.push_issues_to_support(cx);
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
@@ -3465,9 +3484,9 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
+                    ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss);
                     ws.push_issues_to_support(cx);
-                    ws.refresh_issues(cx);
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
@@ -3485,7 +3504,8 @@ impl Workspace {
     }
 
     /// Generic staff issue action (status/assign/priority/dispatch/github);
-    /// installs the updated issue + refreshes the list.
+    /// installs the updated issue in the list + refreshes the detail. The
+    /// 15 s issues poll catches any drift on other rows.
     pub fn issue_staff_action<F>(&mut self, cx: &mut Context<Self>, f: F)
     where
         F: FnOnce(String, String) -> shelldeck_core::Result<Issue> + Send + 'static,
@@ -3500,9 +3520,9 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
+                    ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss);
                     ws.push_issues_to_support(cx);
-                    ws.refresh_issues(cx);
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
@@ -3519,8 +3539,9 @@ impl Workspace {
         .detach();
     }
 
-    /// Soft-delete a request (owner-or-staff). On success the detail pane is
-    /// closed (the issue is gone) and the list refreshed; failures toast.
+    /// Soft-delete a request (owner-or-staff). On success the row is
+    /// removed from the local list, the detail pane closed, and any drift
+    /// is caught by the 15 s issues poll.
     fn delete_issue_now(&mut self, id: String, cx: &mut Context<Self>) {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
@@ -3533,12 +3554,12 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(_) => {
+                    ws.remove_issue_from_list(&deleted_id);
                     if ws.issue_selected.as_deref() == Some(deleted_id.as_str()) {
                         ws.issue_selected = None;
                         ws.issue_detail = None;
                     }
                     ws.push_issues_to_support(cx);
-                    ws.refresh_issues(cx);
                     ws.show_toast(
                         t!("toast.issue.deleted").to_string(),
                         ToastLevel::Success,

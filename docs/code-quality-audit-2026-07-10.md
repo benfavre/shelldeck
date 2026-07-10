@@ -88,7 +88,7 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   staff_action`) qui ré-appellent `refresh_issues` alors que la mutation
   a déjà retourné l'issue muté. Round-trip HTTP redondant à chaque
   écriture. Splicer par id dans la liste locale et sauter le refetch.
-- [ ] **`workspace/mod.rs:2241` (`select_support_ticket`)** — appelle
+- [x] **`workspace/mod.rs:2241` (`select_support_ticket`)** — appelle
   `refresh_support` immédiatement après `set_detail`, alors que le poll
   30 s couvre déjà les unread flags. Deux round-trips par sélection.
 - [ ] **`file_editor/view.rs:1837` (`paint_editor`)** — 17 paramètres
