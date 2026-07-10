@@ -28,6 +28,13 @@ FRAME_INNER = (
     "M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"
 )
 
+# Tight bbox of the outer octagon (125,125)-(899,899) = 774×774. Used for the
+# logo variant so the SVG "canvas" is the octagon itself — no transparent
+# padding around the shape. The app-icon variant keeps the full 1024 canvas
+# because it draws the squircle background at that size.
+FULL_VIEWBOX = "0 0 1024 1024"
+TIGHT_VIEWBOX = "125 125 774 774"
+
 FACE_DEFAULT = """  <path fill="{face}" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
   <path fill="{face}" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
   <rect x="417" y="624" width="190" height="40" rx="6" fill="{face}"/>"""
@@ -82,19 +89,30 @@ def convert_cmd() -> list[str]:
 
 
 def svg_body(canvas: str, primary: str, inner: str, face_tpl: str, face: str, rounded: bool) -> str:
-    rx = ' rx="224"' if rounded else ""
+    # rounded=True → app-icon (packaging): opaque squircle so macOS/Windows dock
+    # tiles look native. rounded=False → logo: transparent canvas so the octagon
+    # frame IS the silhouette (no dark tile around the cut corners).
     face_block = face_tpl.format(face=face)
-    return f"""  <rect width="1024" height="1024"{rx} fill="{canvas}"/>
-  <path fill="{primary}" d="{FRAME_OUTER}"/>
-  <path fill="{inner}" d="{FRAME_INNER}"/>
-{face_block}"""
+    canvas_rect = (
+        f'  <rect width="1024" height="1024" rx="224" fill="{canvas}"/>\n' if rounded else ""
+    )
+    return (
+        f"{canvas_rect}"
+        f'  <path fill="{primary}" d="{FRAME_OUTER}"/>\n'
+        f'  <path fill="{inner}" d="{FRAME_INNER}"/>\n'
+        f"{face_block}"
+    )
 
 
-def write_svg(path: Path, body: str) -> None:
+def write_svg(path: Path, body: str, viewbox: str = FULL_VIEWBOX) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # width/height attribute matches viewBox extent so the SVG rasterizes at
+    # native resolution without unexpected scaling.
+    parts = viewbox.split()
+    size_w, size_h = parts[2], parts[3]
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{viewbox}" width="{size_w}" height="{size_h}">\n'
         f"{body}\n</svg>\n",
         encoding="utf-8",
     )
@@ -125,7 +143,8 @@ def main() -> None:
         for variant, rounded in (("logo", False), ("app-icon", True)):
             suffix = "app-icon" if variant == "app-icon" else "logo"
             body = svg_body(canvas, primary, inner, FACE_DEFAULT, face, rounded)
-            write_svg(themes_dir / f"{slug}-{suffix}.svg", body)
+            viewbox = FULL_VIEWBOX if rounded else TIGHT_VIEWBOX
+            write_svg(themes_dir / f"{slug}-{suffix}.svg", body, viewbox)
 
     shutil.copy(themes_dir / "dark-logo.svg", themes_dir / "system-logo.svg")
     shutil.copy(themes_dir / "dark-app-icon.svg", themes_dir / "system-app-icon.svg")
@@ -151,11 +170,12 @@ def main() -> None:
             continue
         for variant, rounded in (("logo", False), ("app-icon", True)):
             suffix = "app-icon" if variant == "app-icon" else "logo"
+            viewbox = FULL_VIEWBOX if rounded else TIGHT_VIEWBOX
             for slug, canvas, primary, inner, face, _label in all_themes:
                 if slug == "system":
                     continue
                 body = svg_body(canvas, primary, inner, face_tpl, face, rounded)
-                write_svg(expr_dir / f"{slug}-{expr_name}-{suffix}.svg", body)
+                write_svg(expr_dir / f"{slug}-{expr_name}-{suffix}.svg", body, viewbox)
             shutil.copy(
                 expr_dir / f"dark-{expr_name}-{suffix}.svg",
                 expr_dir / f"system-{expr_name}-{suffix}.svg",
@@ -183,18 +203,17 @@ def main() -> None:
         for name in targets:
             shutil.copy(png_by_size[size], iconset / name)
 
-    # In-app embeds — square logo (no dock rounding) for titlebar/sidebar UI.
+    # In-app embeds — logo variant (no dock rounding, tight viewBox = octagon
+    # silhouette fills the render box, no transparent padding around).
     logo_svg = themes_dir / "dark-logo.svg"
     icon_body = svg_body("#1a1a1a", "#2ec4a8", "#1a1a1a", FACE_DEFAULT, "#e6e6e6", False)
-    write_svg(
-        IMAGES / "shelldeck-icon.svg",
-        icon_body.replace('width="1024" height="1024"', 'width="1024" height="1024"', 1),
-    )
-    # shelldeck-icon: add width/height 32 for GPUI
+    write_svg(IMAGES / "shelldeck-icon.svg", icon_body, TIGHT_VIEWBOX)
+    # GPUI wants a small display size hint — override the tight extent with
+    # a 32×32 render box (viewBox stays tight so the shape still fills it).
     icon_text = (IMAGES / "shelldeck-icon.svg").read_text(encoding="utf-8")
     icon_text = icon_text.replace(
-        'viewBox="0 0 1024 1024" width="1024" height="1024"',
-        'viewBox="0 0 1024 1024" width="32" height="32"',
+        f'viewBox="{TIGHT_VIEWBOX}" width="774" height="774"',
+        f'viewBox="{TIGHT_VIEWBOX}" width="32" height="32"',
     )
     (IMAGES / "shelldeck-icon.svg").write_text(icon_text, encoding="utf-8")
 
@@ -207,11 +226,11 @@ def main() -> None:
         + "\n</svg>\n",
         encoding="utf-8",
     )
-    # Fix mark — build manually
+    # Fix mark — build manually (tight viewBox so the silhouette fills the box)
     mark_path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!-- Monolith mark — monochrome, currentColor -->\n'
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="currentColor">\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{TIGHT_VIEWBOX}" fill="currentColor">\n'
         f'  <path fill-rule="evenodd" d="{FRAME_OUTER} {FRAME_INNER}"/>\n'
         '  <path d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>\n'
         '  <path d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>\n'
@@ -221,6 +240,15 @@ def main() -> None:
     )
 
     rasterize(cmd, logo_svg, IMAGES / "shelldeck-icon.png", 128)
+
+    # Per-theme in-app badge PNGs — one 128px raster per palette so
+    # `brand_badge()` can swap the mark to match the active theme. Kept as
+    # PNG because GPUI's `svg()` is monochrome-only.
+    theme_png_dir = BRAND / "png/themes"
+    theme_png_dir.mkdir(parents=True, exist_ok=True)
+    for slug, *_ in all_themes:
+        src = themes_dir / f"{slug}-logo.svg"
+        rasterize(cmd, src, theme_png_dir / f"monolith-{slug}-128.png", 128)
 
     manifest = {
         "name": "ShellDeck Monolith",

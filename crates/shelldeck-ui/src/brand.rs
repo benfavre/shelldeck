@@ -2,12 +2,18 @@ use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::*;
+use gpui::SharedString;
 
-/// Monolith logo — square PNG (`shelldeck-icon.png`, logo variant, not dock rounding).
+/// Monolith logo — 128px PNG per theme (`brand/png/themes/monolith-{slug}-128.png`).
 /// GPUI `svg()` is monochrome-only; multi-color marks use a raster asset.
+/// Falls back to the dark badge for unknown slugs (should be unreachable —
+/// slugs are enumerated in `ThemePreference::brand_slug`).
 pub fn brand_badge(size: f32) -> impl IntoElement {
+    let slug = ShellDeckColors::palette_slug();
+    let path: SharedString =
+        format!("images/brand/png/themes/monolith-{slug}-128.png").into();
     div().flex_shrink_0().w(px(size)).h(px(size)).child(
-        img("images/shelldeck-icon.png")
+        img(path)
             .w_full()
             .h_full()
             .object_fit(ObjectFit::Contain),

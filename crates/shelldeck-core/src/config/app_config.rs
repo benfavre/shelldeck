@@ -105,6 +105,27 @@ impl ThemePreference {
         use ThemePreference::*;
         !matches!(self, Light | SolarizedLight)
     }
+
+    /// Filesystem slug used by the brand kit (`brand/svg/themes/{slug}-…`,
+    /// `brand/png/themes/monolith-{slug}-…`). Kept in sync with
+    /// `scripts/export-monolith-brand.py`. `System` follows the dark asset.
+    pub fn brand_slug(&self) -> &'static str {
+        use ThemePreference::*;
+        match self {
+            Dark | System => "dark",
+            Light => "light",
+            Dracula => "dracula",
+            Nord => "nord",
+            TokyoNight => "tokyo-night",
+            GruvboxDark => "gruvbox-dark",
+            SolarizedDark => "solarized-dark",
+            SolarizedLight => "solarized-light",
+            CatppuccinMocha => "catppuccin-mocha",
+            OneDark => "one-dark",
+            Monokai => "monokai",
+            RosePine => "rose-pine",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
