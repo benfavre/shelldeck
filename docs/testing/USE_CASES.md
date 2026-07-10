@@ -1270,3 +1270,34 @@ without erroring.
   `format_via_shelldeck`) so the truth tables are testable outside
   GPUI. Workspace delegate call-sites drafted in the working tree,
   land in a follow-up commit once the concurrent i18n WIP merges.
+- **2026-07-09 (I)** — Cluster I `known_hosts` (SDTEST-580..585 +
+  bonus). Extracted `check_known_host_in(contents, …)`,
+  `build_known_host_line(…)`, `add_known_host_to(path, …)` as pure
+  fns testable without `$HOME` mutation (parallel-safe). MITM sensor
+  + append-never-overwrites property. Full SSH FakeTransport for
+  session/pool/tunnel deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (J)** — Cluster J release contract (SDTEST-1200..1203,
+  SDTEST-1260/1261). `platform.rs` OS/arch key format + `darwin-*`
+  forbidden; `include_str!`-based parity check between
+  `release.yml`, worker `index.ts`, and runtime `current_platform()`.
+  AutoUpdater cadence + hash-verify need injectable clock/HTTP →
+  [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (K)** — Cluster K PTY Unix smoke (SDTEST-960/962/963/965/966,
+  `#[cfg(all(test, unix))]`). Spawn/echo round-trip/resize/exit-code
+  on Linux CI. macOS/Windows deferred (CI matrix) →
+  [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md). Zombie-on-drop
+  (SDTEST-967) needs impl decision — deferred.
+- **2026-07-09 (L)** — Cluster L keychain (SDTEST-120/123/124). Pure
+  key builders (`entry_key`, `passphrase_entry_key`) + hostile
+  namespace-isolation test (SSH key path spelling out `user@host`
+  proves the `passphrase:` prefix is load-bearing). Live smoke gated
+  by `SHELLDECK_LIVE_KEYCHAIN=1`. macOS/Windows deferred (CI matrix)
+  → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md).
+- **2026-07-09 (M)** — Cluster M long tail: SDTEST-084 (store mix),
+  SDTEST-106/108 (ssh_config Include + never-writes),
+  SDTEST-130/131/132 (themes builtins + fallback + fields),
+  SDTEST-045/046/047 (ManagedSite constructors + url elision),
+  SDTEST-155/156 (cloud_sync tags overwrite policy + no-dup).
+  Contract correction SDUC-102: cloud is authoritative on tags,
+  local additions ARE overwritten (initial inventory said
+  "preserves" — aspirational, reality tested and locked).

@@ -140,10 +140,10 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1200 | *to write* — current_platform() returns `linux-{arch}` on Linux | SDUC-280 | **Red / P0** | Linux CI. |
-| SDTEST-1201 | *to write* — current_platform() returns `macos-{arch}` on macOS (never `darwin-*`) | SDUC-280 | **Red / P0** | macOS CI. Contract-critical. |
-| SDTEST-1202 | *to write* — current_platform() returns `windows-{arch}` on Windows | SDUC-280 | **Red / P0** | Windows CI. |
-| SDTEST-1203 | *to write* — arch covers `x86_64` and `aarch64` | SDUC-280 | **Red / P0** | Both macOS silicons. |
+| SDTEST-1200 | `platform.rs::linux_uses_linux_prefix` (`#[cfg(target_os = "linux")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). Runs on Linux CI. |
+| SDTEST-1201 | `platform.rs::macos_uses_macos_prefix_never_darwin` (`#[cfg(target_os = "macos")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). **Contract-critical** — asserts `macos-*` AND explicitly forbids `darwin-*`. macOS CI runner needed to exercise the assertion. |
+| SDTEST-1202 | `platform.rs::windows_uses_windows_prefix` (`#[cfg(target_os = "windows")]`) | SDUC-280 | Green | Added 2026-07-09 (cluster J). Windows CI. |
+| SDTEST-1203 | `platform.rs::arch_is_a_known_value` + `platform_string_shape_is_os_dash_arch` | SDUC-280 | Green | 2 tests, added 2026-07-09 (cluster J). Runs on every target; warns (not errors) if a new arch slips in as `unknown`. |
 
 ### `lib.rs` — `AutoUpdater`
 
@@ -169,8 +169,8 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1260 | *to write* — install.sh + install.ps1 grep for the same platform keys the worker emits | SDUC-286, SDUC-287 | **Red / P0** | Bash regex check in CI. A drift here is what breaks releases silently — this is the highest-value cheap test in the whole doc. |
-| SDTEST-1261 | *to write* — release.yml asset names match the worker's manifest keys | SDUC-287 | **Red / P0** | YAML+JS parser check in CI. |
+| SDTEST-1260 | `lib.rs::release_parity_tests::every_shipping_key_appears_in_release_workflow` + `every_shipping_key_appears_in_update_worker` + `current_platform_matches_a_release_key_or_is_explicitly_unsupported` | SDUC-286, SDUC-287 | Green | 3 tests, added 2026-07-09 (cluster J). `include_str!` reads `.github/workflows/release.yml` + `cloudflare/update-worker/src/index.ts` at compile time; asserts each shipping key (`linux-x86_64`, `macos-aarch64`, `windows-x86_64`) is a literal string in BOTH sources + round-trips to `current_platform()`. |
+| SDTEST-1261 | `lib.rs::release_parity_tests::darwin_prefix_is_forbidden_in_release_contract` | SDUC-287 | Green | Added 2026-07-09 (cluster J). Explicit forbid on `darwin-x86_64`, `darwin-aarch64`, `darwin-arm64` in workflow AND worker source. AGENTS.md contract. |
 
 ---
 

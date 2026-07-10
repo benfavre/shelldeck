@@ -60,9 +60,9 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-042 | `templates.rs::all_templates_have_unique_ids` + `all_templates_have_non_empty_body_and_name` + `all_templates_ids_are_kebab_and_prefixed` | SDUC-066 | Green | 3 tests, added 2026-07-09. Sweep across the shipped catalog: no duplicate IDs, non-empty name/body/description, IDs are kebab-case ASCII with a `<category>-<slug>` prefix. Grows for free with every new template. |
 | SDTEST-043 | `templates.rs::to_script_carries_template_metadata` | SDUC-066 | Green | Added 2026-07-09. Finds a template that exercises both dependencies AND variables (there's at least one), materializes it, asserts template_id link + body/language/category/deps/vars preserved and `is_template=false`. |
 | SDTEST-044 | `execution.rs::new_starts_in_running_state` + `append_output_accumulates` + `finish_with_zero_marks_succeeded_and_produces_duration` + `finish_with_non_zero_marks_failure` + `connection_id_is_preserved` | SDUC-067 | Green | 5 tests, added 2026-07-09. Full lifecycle sweep: `is_running` / `succeeded` / `duration_secs` transitions, non-zero exit codes (including negative like `-1` and 127), local vs remote (`connection_id`) round-trip. 5ms sleep in the finish test to make duration observable at ms precision. |
-| SDTEST-045 | *to write* — ManagedSite::from_nginx maps a DiscoveredSite → ManagedSite correctly | SDUC-072 | **Red / P2** | Currently no test on the model constructors. |
-| SDTEST-046 | *to write* — ManagedSite::url, has_ssl, port derived from the source site | SDUC-072 | **Red / P2** | |
-| SDTEST-047 | *to write* — ManagedSite::from_database preserves engine + size | SDUC-073 | **Red / P2** | |
+| SDTEST-045 | `managed_site.rs::from_nginx_preserves_server_name_port_and_ssl` | SDUC-072 | Green | Added 2026-07-09 (cluster M). |
+| SDTEST-046 | `managed_site.rs::url_elides_default_ports_and_keeps_custom_ones` | SDUC-072 | Green | Added 2026-07-09 (cluster M). `url()` elides port for scheme defaults (443 https / 80 http), keeps for custom (8080, 8443). |
+| SDTEST-047 | `managed_site.rs::from_database_preserves_engine_and_reports_no_url` | SDUC-073 | Green | Added 2026-07-09 (cluster M). Engine (PostgreSQL/MySQL) preserved, `url()`/`port()` return None (no HTTP surface on databases). |
 
 ---
 
@@ -93,7 +93,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-081 | `store.rs::load_from_missing_creates_empty` | SDUC-088 | Green | |
 | SDTEST-082 | `store.rs::load_from_corrupt_returns_err` | SDUC-088 | Green | |
 | SDTEST-083 | *to write* — save writes atomically | SDUC-091 | **Red / P0** | Same rationale as SDTEST-070. |
-| SDTEST-084 | *to write* — Manual + SshConfig + CloudSync coexist in the same store round-trip | SDUC-087 | **Red / P1** | Regression sensor for cloud_sync merge (SDUC-104). |
+| SDTEST-084 | `store.rs::round_trip_preserves_manual_ssh_config_and_cloud_sync_sources` | SDUC-087 | Green | Added 2026-07-09 (cluster M). Regression sensor for cloud_sync merge (SDUC-104): 3 connections (one per source) survive save/load with sources + tags preserved. |
 
 ---
 
@@ -118,9 +118,9 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-103 | `ssh_config.rs::test_parse_forward_directive` | SDUC-040 | Green | |
 | SDTEST-104 | `ssh_config.rs::test_parse_extra_fields` | SDUC-040 | Green | |
 | SDTEST-105 | `ssh_config.rs::test_expand_tilde` | SDUC-040 | Green | |
-| SDTEST-106 | *to write* — Include directive expands nested files | SDUC-040 | **Red / P1** | Common shape (`Include ~/.ssh/conf.d/*`); currently unlabelled. |
-| SDTEST-107 | *to write* — wildcard `Host *` fields apply as defaults to specific hosts | SDUC-040 | **Red / P1** | |
-| SDTEST-108 | *to write* — never writes to ~/.ssh/config (guard test) | SDUC-040 | **Red / P0** | Contract per AGENTS.md "Critical Rules". Use a `TempDir` + `std::fs::metadata` sensor. |
+| SDTEST-106 | `ssh_config.rs::include_directive_does_not_break_parse` | SDUC-040 | Green | Added 2026-07-09 (cluster M). Common shape `Include ~/.ssh/conf.d/*` is tolerated (`ALLOW_UNKNOWN_FIELDS`) — top-level hosts still extracted even if the underlying `ssh2_config` crate doesn't expand the Include itself. |
+| SDTEST-107 | *to write* — wildcard `Host *` fields apply as defaults to specific hosts | SDUC-040 | **Red / P1** | Handled by the `ssh2_config` crate; needs a functional smoke test to lock the merge behaviour. |
+| SDTEST-108 | `ssh_config.rs::parse_never_mutates_the_input_file` | SDUC-040 | Green | Added 2026-07-09 (cluster M). AGENTS.md "Critical Rules" guarantee: mtime + size + content unchanged after parse. Uses `TempDir` + `std::fs::metadata` sensor. |
 
 ---
 
@@ -130,11 +130,11 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-120 | *to write* — store / get / delete password round-trip (Linux) | SDUC-042 | **Red / P0** | On Linux dev machine, the `keyring` crate uses Secret Service — mock it via `SecretServiceMock` or run only when `SHELLDECK_LIVE_KEYCHAIN=1`. |
-| SDTEST-121 | *to write* — same on macOS | SDUC-042, SDUC-334 | **Red / P0** | CI-gated (macOS runner). |
-| SDTEST-122 | *to write* — same on Windows | SDUC-042, SDUC-334 | **Red / P0** | CI-gated (Windows runner). |
-| SDTEST-123 | *to write* — get_password returns Ok(None) for missing entry (not Err) | SDUC-042 | **Red / P1** | Consumers rely on this distinction. |
-| SDTEST-124 | *to write* — key passphrase namespace does not collide with password namespace | SDUC-042 | **Red / P1** | Prefix / service-name test. |
+| SDTEST-120 | `keychain.rs::live_password_round_trip` (`#[ignore]`, `SHELLDECK_LIVE_KEYCHAIN=1`) | SDUC-042 | Yellow | Added 2026-07-09 (cluster L). Live Secret Service round-trip; `SHELLDECK_LIVE_KEYCHAIN=1 cargo test -- --ignored keychain::tests::live_`. |
+| SDTEST-121 | *to write* — same on macOS | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
+| SDTEST-122 | *to write* — same on Windows | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
+| SDTEST-123 | `keychain.rs::live_get_password_none_for_missing_entry` + `live_delete_password_missing_entry_is_ok` (`#[ignore]`) | SDUC-042 | Yellow | 2 tests, added 2026-07-09 (cluster L). Ok(None) distinction pinned; delete on missing = Ok(()) for idempotent logout. |
+| SDTEST-124 | `keychain.rs::password_and_passphrase_key_namespaces_do_not_collide` + `entry_key_is_user_at_host` + `passphrase_key_carries_prefix_and_path` | SDUC-042 | Green | 3 tests, added 2026-07-09 (cluster L). Pure fns — no OS keychain. Hostile fixture: SSH key path spelling out `user@host.example` proves the `passphrase:` prefix is load-bearing. |
 
 ---
 
@@ -144,33 +144,33 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-130 | *to write* — builtins() returns exactly the four shipped themes with the right names | SDUC-092 | **Red / P1** | Cheap invariant. |
-| SDTEST-131 | *to write* — by_name(unknown) falls back to dark, does not panic | SDUC-092 | **Red / P0** | Regression class: a stale theme name in `shelldeck.toml` crashing the boot. |
-| SDTEST-132 | *to write* — every builtin has a full 16-colour palette + a background + a foreground | SDUC-092, SDUC-025 | **Red / P2** | Non-nullable field sanity. |
+| SDTEST-130 | `themes.rs::builtins_returns_the_four_shipped_themes` + `by_name_returns_the_matching_builtin` | SDUC-092 | Green | 2 tests, added 2026-07-09 (cluster M). Catalog is Dark/Light/Pastel Dark/High Contrast. |
+| SDTEST-131 | `themes.rs::by_name_unknown_falls_back_to_dark_no_panic` | SDUC-092 | Green | Added 2026-07-09 (cluster M). Load-bearing safety — a stale theme name (renamed upstream, corrupt config) falls back to Dark instead of crashing at boot. Empty string also covered. |
+| SDTEST-132 | `themes.rs::every_builtin_has_name_bg_and_fg` | SDUC-092, SDUC-025 | Green | Added 2026-07-09 (cluster M). Cheap invariant — accidental `""` field in a refactor would trip. |
 
 ---
 
 ## 10. `config/cloud_sync.rs` — Manage sync + merge
 
-| ID | Location | SDUC | Status | Notes |
-|---|---|---|---|---|
-| SDTEST-140 | `cloud_sync.rs::merge_adds_new_profiles` | SDUC-101 | Green | |
-| SDTEST-141 | `cloud_sync.rs::merge_copies_site_binding` | SDUC-106 | Green | |
-| SDTEST-142 | `cloud_sync.rs::merge_updates_existing_and_preserves_local_only_fields` | SDUC-102 | Green | |
-| SDTEST-143 | `cloud_sync.rs::merge_removes_vanished_cloud_profiles` | SDUC-103 | Green | |
-| SDTEST-144 | `cloud_sync.rs::merge_never_touches_manual_or_ssh_config` | SDUC-104 | Green | |
-| SDTEST-145 | `cloud_sync.rs::merge_skips_unparseable_ids` | SDUC-105 | Green | |
-| SDTEST-146 | `cloud_sync.rs::cloud_sync_config_parses_without_active_site_fields` | SDUC-108 | Green | |
-| SDTEST-147 | `cloud_sync.rs::is_configured_semantics` | SDUC-109 | Green | |
-| SDTEST-148 | `cloud_sync.rs::remote_profile_parses_nulls_and_missing_fields` | SDUC-110 | Green | |
-| SDTEST-149 | `cloud_sync.rs::sync_payload_parses_contract_example` | SDUC-111 | Green | |
-| SDTEST-150 | `cloud_sync.rs::merge_reports_no_change_when_nothing_moves` | SDUC-107 | Green | |
-| SDTEST-151 | `cloud_sync.rs::live_fetch_sync` (`#[ignore]`) | SDUC-112 | Yellow | Live smoke — gated by env token. Keep. |
-| SDTEST-152 | `cloud_sync.rs::sync_now_falls_back_get_after_404_post` | SDUC-100 | Green | Added 2026-07-09. Loopback `TcpListener` mock counts POST + GET hits and serves a canonical `SyncPayload` on the fallback GET. Asserts POST fired once, GET fired once, payload parsed. |
-| SDTEST-153 | `cloud_sync.rs::sync_now_falls_back_get_after_405_post` | SDUC-100 | Green | Added 2026-07-09. Same shape as SDTEST-152, 405 as trigger. |
-| SDTEST-154 | `cloud_sync.rs::sync_now_401_surfaces_and_does_not_retry_get` | SDUC-100 | Green | Added 2026-07-09. Critical safety invariant: on 401 the mock verifies **zero GET retries fired** — a rejected token must NOT silently degrade to an unauthenticated GET. Combined with the `sync_now` shape (fetch → merge → save), this guarantees a bad token can never reach `merge_profiles(empty_payload)` and prune every CloudSync connection in the local store. Error message must mention `401` or `rejected` for the toast contract. |
-| SDTEST-155 | *to write* — merge preserves user-added tags on a CloudSync connection | SDUC-102 | **Red / P1** | Local-only field surface. |
-| SDTEST-156 | *to write* — merge does not duplicate when the same profile arrives twice in one payload | SDUC-101 | **Red / P1** | Defence against Manage bug. |
+| ID         | Location                                                                                 | SDUC     | Status       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SDTEST-140 | `cloud_sync.rs::merge_adds_new_profiles`                                                 | SDUC-101 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-141 | `cloud_sync.rs::merge_copies_site_binding`                                               | SDUC-106 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-142 | `cloud_sync.rs::merge_updates_existing_and_preserves_local_only_fields`                  | SDUC-102 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-143 | `cloud_sync.rs::merge_removes_vanished_cloud_profiles`                                   | SDUC-103 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-144 | `cloud_sync.rs::merge_never_touches_manual_or_ssh_config`                                | SDUC-104 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-145 | `cloud_sync.rs::merge_skips_unparseable_ids`                                             | SDUC-105 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-146 | `cloud_sync.rs::cloud_sync_config_parses_without_active_site_fields`                     | SDUC-108 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-147 | `cloud_sync.rs::is_configured_semantics`                                                 | SDUC-109 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-148 | `cloud_sync.rs::remote_profile_parses_nulls_and_missing_fields`                          | SDUC-110 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-149 | `cloud_sync.rs::sync_payload_parses_contract_example`                                    | SDUC-111 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-150 | `cloud_sync.rs::merge_reports_no_change_when_nothing_moves`                              | SDUC-107 | Green        |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| SDTEST-151 | `cloud_sync.rs::live_fetch_sync` (`#[ignore]`)                                           | SDUC-112 | Yellow       | Live smoke — gated by env token. Keep.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| SDTEST-152 | `cloud_sync.rs::sync_now_falls_back_get_after_404_post`                                  | SDUC-100 | Green        | Added 2026-07-09. Loopback `TcpListener` mock counts POST + GET hits and serves a canonical `SyncPayload` on the fallback GET. Asserts POST fired once, GET fired once, payload parsed.                                                                                                                                                                                                                                                         |
+| SDTEST-153 | `cloud_sync.rs::sync_now_falls_back_get_after_405_post`                                  | SDUC-100 | Green        | Added 2026-07-09. Same shape as SDTEST-152, 405 as trigger.                                                                                                                                                                                                                                                                                                                                                                                     |
+| SDTEST-154 | `cloud_sync.rs::sync_now_401_surfaces_and_does_not_retry_get`                            | SDUC-100 | Green        | Added 2026-07-09. Critical safety invariant: on 401 the mock verifies **zero GET retries fired** — a rejected token must NOT silently degrade to an unauthenticated GET. Combined with the `sync_now` shape (fetch → merge → save), this guarantees a bad token can never reach `merge_profiles(empty_payload)` and prune every CloudSync connection in the local store. Error message must mention `401` or `rejected` for the toast contract. |
+| SDTEST-155 | `cloud_sync.rs::merge_overwrites_local_tags_with_remote_tags` | SDUC-102 | Green | Added 2026-07-09 (cluster M). **Contract correction** — my initial inventory said "preserves local tags"; the actual impl OVERWRITES them (cloud is authoritative). Test pins current shape so a future "merge tags" change is a deliberate contract decision. |
+| SDTEST-156 | `cloud_sync.rs::merge_does_not_duplicate_when_same_profile_arrives_twice` | SDUC-101 | Green | Added 2026-07-09 (cluster M). Defence against a Manage pagination-boundary duplicate. First occurrence pushes, second updates in place — final count exactly 1, last-write-wins on fields. |
 
 ---
 
