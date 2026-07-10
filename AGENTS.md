@@ -155,6 +155,7 @@ Core clients (committed by the lead, `3d961cf`): `shelldeck-core::config::bext_c
 
 ## Releasing & Auto-Update
 
+- **Slash command (Claude Code / Cursor):** `/release [patch|minor|major|status|check|monitor]` — drives `scripts/release.sh` (bump, tag, push, optional CI monitor). Spec: `.claude/commands/release.md`.
 - **Cut a release:** bump `[workspace.package] version` in the root `Cargo.toml`, commit, then push a matching `vX.Y.Z` git tag. The tag triggers `.github/workflows/release.yml`: it builds linux/macos/windows, creates the GitHub Release with assets, and publishes the update manifest to Cloudflare KV (key `latest-release`). If any build fails, the release + manifest jobs are SKIPPED — fix and re-tag.
 - **Site + update server:** a single Cloudflare Worker (`cloudflare/update-worker/`, bound to `shelldeck.1clic.pro`) serves the landing/marketing page (`/`), the update API (`/api/releases/latest?platform=…`), and install scripts (`/install.sh`, `/install.ps1`).
 - **Update client:** `crates/shelldeck-update/` polls that API hourly. Platform keys are `{os}-{arch}` and use **`macos-*`, never `darwin-*`** — manifest, workflow, client, and worker must all agree.
