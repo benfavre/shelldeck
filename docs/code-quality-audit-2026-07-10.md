@@ -28,11 +28,16 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   `.agents/session-state.md` (« Did I add a new view that holds its own
   AppConfig copy? → don't »). `is_my_issue` est aussi dupliqué byte-à-byte
   entre workspace et support_view.
-- [ ] **`workspace/mod.rs:3554` + `support_view.rs:3520`** — deux copies
+- [x] **`workspace/mod.rs:3554` + `support_view.rs:3520`** — deux copies
   ~120 lignes de `render_delete_issue_modal`. Extraire un helper commun,
   ou mieux, passer à `adabraka_ui::overlays::alert_dialog::AlertDialog`
   (le primitif prévu pour les confirms destructifs — cf.
   `.agents/ui-components.md`).
+  (Extrait `render_issue_delete_dialog` free fn dans `support_view.rs`
+  — les deux callers passent leurs closures `on_close` / `on_confirm`.
+  Migration vers adabraka `AlertDialog` reste ouverte : elle demande une
+  Entity + `cx.new(...)` + gestion escape/focus — plus lourd, à faire
+  quand on migre l'ensemble des confirms destructifs.)
 - [x] **`workspace/mod.rs:3500` (`delete_issue_now`)** — la branche Err
   utilise `t!("toast.issue.staff_failed", …)` mais `delete_issue` est
   owner-or-staff. Un owner non-staff verra un message trompeur. Ajouter

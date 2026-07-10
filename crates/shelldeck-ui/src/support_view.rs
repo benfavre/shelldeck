@@ -3726,7 +3726,7 @@ impl SupportView {
     /// Destructive confirm modal for a request soft-delete (staff only).
     fn render_delete_issue_modal(&self, id: String, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
-        let title = self
+        let title: SharedString = self
             .issue_detail
             .as_ref()
             .filter(|i| i.id == id)
@@ -3737,91 +3737,28 @@ impl SupportView {
                     .find(|i| i.id == id)
                     .map(|i| i.title.clone())
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into();
 
-        UiDialog::new()
-            .width(gpui::px(400.0))
-            .on_backdrop_click({
-                let entity = entity.clone();
-                move |_, cx| {
-                    entity.update(cx, |this, cx| this.close_delete_issue_modal(cx));
-                }
-            })
-            .header(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(16.0))
-                    .py(px(14.0))
-                    .child(lucide_icon("trash-2", 16.0, ShellDeckColors::error()))
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("support.delete.title").to_string()),
-                    ),
-            )
-            .content(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .px(px(16.0))
-                    .py(px(16.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(if title.trim().is_empty() {
-                                t!("support.delete.body_generic").to_string()
-                            } else {
-                                t!("support.delete.body", title = title.clone()).to_string()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("support.delete.irreversible").to_string()),
-                    ),
-            )
-            .footer(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .child(
-                        Button::new("iss-del-cancel", t!("support.delete.cancel").to_string())
-                            .variant(ButtonVariant::Ghost)
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| this.close_delete_issue_modal(cx));
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("iss-del-confirm", t!("support.delete.confirm").to_string())
-                            .variant(ButtonVariant::Destructive)
-                            .icon(IconSource::from("trash-2"))
-                            .on_click({
-                                let entity = entity.clone();
-                                let id = id.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.confirm_issue_delete = None;
-                                        cx.emit(SupportViewEvent::IssueDelete(id.clone()));
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    ),
-            )
+        let close_entity = entity.clone();
+        let confirm_entity = entity;
+        let confirm_id = id;
+
+        render_issue_delete_dialog(
+            title,
+            "iss-del",
+            move |cx| {
+                close_entity.update(cx, |this, cx| this.close_delete_issue_modal(cx));
+            },
+            move |cx| {
+                let id = confirm_id.clone();
+                confirm_entity.update(cx, |this, cx| {
+                    this.confirm_issue_delete = None;
+                    cx.emit(SupportViewEvent::IssueDelete(id));
+                    cx.notify();
+                });
+            },
+        )
     }
 
     fn render_issue_popover(
@@ -4468,4 +4405,92 @@ fn next_priority(p: &str) -> &'static str {
         "high" => "urgent",
         _ => "low",
     }
+}
+
+/// Shared "delete request" destructive confirm — used from both
+/// `SupportView` and `Workspace` (User mode also shows this modal on
+/// requests filed by the current user). Callers pass a resolved
+/// `title` (already looked up in whichever list they own) plus the
+/// close / confirm actions; the visuals (trash-2 icon, red destructive
+/// button, irreversible warning) are shared.
+///
+/// `id_prefix` scopes the button IDs so both surfaces can be alive at
+/// once without adabraka's ElementId collision (see support/workspace
+/// prefixes at the two call sites).
+pub(crate) fn render_issue_delete_dialog(
+    title: SharedString,
+    id_prefix: &'static str,
+    on_close: impl Fn(&mut App) + Clone + 'static,
+    on_confirm: impl Fn(&mut App) + Clone + 'static,
+) -> impl IntoElement {
+    let body_line = if title.trim().is_empty() {
+        t!("support.delete.body_generic").to_string()
+    } else {
+        t!("support.delete.body", title = title.to_string()).to_string()
+    };
+
+    let backdrop_close = on_close.clone();
+    let cancel_close = on_close;
+    let cancel_id: SharedString = format!("{id_prefix}-cancel").into();
+    let confirm_id: SharedString = format!("{id_prefix}-confirm").into();
+
+    UiDialog::new()
+        .width(gpui::px(400.0))
+        .on_backdrop_click(move |_, cx| backdrop_close(cx))
+        .header(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(14.0))
+                .child(lucide_icon("trash-2", 16.0, ShellDeckColors::error()))
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("support.delete.title").to_string()),
+                ),
+        )
+        .content(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(16.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(body_line),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("support.delete.irreversible").to_string()),
+                ),
+        )
+        .footer(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(12.0))
+                .child(
+                    Button::new(cancel_id, t!("support.delete.cancel").to_string())
+                        .variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _, cx| cancel_close(cx)),
+                )
+                .child(
+                    Button::new(confirm_id, t!("support.delete.confirm").to_string())
+                        .variant(ButtonVariant::Destructive)
+                        .icon(IconSource::from("trash-2"))
+                        .on_click(move |_, _, cx| on_confirm(cx)),
+                ),
+        )
 }
