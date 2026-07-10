@@ -1392,38 +1392,75 @@ impl Render for SettingsView {
     }
 }
 
-/// Fresh `Select<SharedString>` seeded with the current editor font family.
-/// The `on_change` callback lives entirely inside the parent — it looks up
-/// `SettingsView`, mutates the font and persists via `save_config`.
+/// Build a `Select<SharedString>` bound to a `String` field of
+/// `AppConfig`, persisting via `save_config` on change. `field_get`
+/// reads the current value (used for the equality guard so a no-op
+/// pick doesn't rewrite the config file); `field_set` writes the
+/// new value.
+///
+/// Options are passed as `(value, label)` pairs — same convention
+/// `SelectOption::new` uses, so callers with i18n'd labels or a
+/// sentinel-value shortlist (e.g. `"System Default"`) can keep the
+/// value stable while translating the display.
+fn build_string_field_select<G, S>(
+    entries: Vec<(SharedString, SharedString)>,
+    current: &str,
+    placeholder: Option<SharedString>,
+    searchable: bool,
+    cx: &mut Context<SettingsView>,
+    field_get: G,
+    field_set: S,
+) -> Entity<Select<SharedString>>
+where
+    G: Fn(&SettingsView) -> &str + Send + Sync + 'static,
+    S: Fn(&mut SettingsView, String) + Send + Sync + 'static,
+{
+    let options: Vec<SelectOption<SharedString>> = entries
+        .iter()
+        .map(|(value, label)| SelectOption::new(value.clone(), label.clone()))
+        .collect();
+    let selected = entries.iter().position(|(v, _)| v.as_ref() == current);
+    let parent = cx.entity();
+    cx.new(move |select_cx| {
+        let mut sel = Select::new(select_cx)
+            .options(options)
+            .selected_index(selected);
+        if let Some(p) = placeholder {
+            sel = sel.placeholder(p);
+        }
+        if searchable {
+            sel = sel.searchable(true);
+        }
+        sel.on_change(move |value, _window, cx| {
+            let picked = value.to_string();
+            parent.update(cx, |this, cx| {
+                if field_get(this) == picked {
+                    return;
+                }
+                field_set(this, picked);
+                this.save_config(cx);
+            });
+        })
+    })
+}
+
 fn build_editor_font_family_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
-    let options: Vec<SelectOption<SharedString>> = MONOSPACE_FONTS
+    let entries: Vec<(SharedString, SharedString)> = MONOSPACE_FONTS
         .iter()
-        .map(|name| SelectOption::new(SharedString::from(*name), *name))
+        .map(|name| (SharedString::from(*name), SharedString::from(*name)))
         .collect();
-    let selected = MONOSPACE_FONTS
-        .iter()
-        .position(|f| *f == config.editor.font_family.as_str());
-    let parent = cx.entity();
-    cx.new(move |select_cx| {
-        Select::new(select_cx)
-            .options(options)
-            .selected_index(selected)
-            .placeholder(SharedString::from("JetBrains Mono"))
-            .searchable(true)
-            .on_change(move |value, _window, cx| {
-                let picked = value.to_string();
-                parent.update(cx, |this, cx| {
-                    if this.config.editor.font_family == picked {
-                        return;
-                    }
-                    this.config.editor.font_family = picked;
-                    this.save_config(cx);
-                });
-            })
-    })
+    build_string_field_select(
+        entries,
+        &config.editor.font_family,
+        Some(SharedString::from("JetBrains Mono")),
+        true,
+        cx,
+        |this| this.config.editor.font_family.as_str(),
+        |this, v| this.config.editor.font_family = v,
+    )
 }
 
 /// Fresh `Select<usize>` for the editor tab size (2/4/8). Same wiring pattern
@@ -1463,31 +1500,19 @@ fn build_terminal_font_family_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
-    let options: Vec<SelectOption<SharedString>> = MONOSPACE_FONTS
+    let entries: Vec<(SharedString, SharedString)> = MONOSPACE_FONTS
         .iter()
-        .map(|name| SelectOption::new(SharedString::from(*name), *name))
+        .map(|name| (SharedString::from(*name), SharedString::from(*name)))
         .collect();
-    let selected = MONOSPACE_FONTS
-        .iter()
-        .position(|f| *f == config.terminal.font_family.as_str());
-    let parent = cx.entity();
-    cx.new(move |select_cx| {
-        Select::new(select_cx)
-            .options(options)
-            .selected_index(selected)
-            .placeholder(SharedString::from("JetBrains Mono"))
-            .searchable(true)
-            .on_change(move |value, _window, cx| {
-                let picked = value.to_string();
-                parent.update(cx, |this, cx| {
-                    if this.config.terminal.font_family == picked {
-                        return;
-                    }
-                    this.config.terminal.font_family = picked;
-                    this.save_config(cx);
-                });
-            })
-    })
+    build_string_field_select(
+        entries,
+        &config.terminal.font_family,
+        Some(SharedString::from("JetBrains Mono")),
+        true,
+        cx,
+        |this| this.config.terminal.font_family.as_str(),
+        |this, v| this.config.terminal.font_family = v,
+    )
 }
 
 /// Fresh `Select<SharedString>` for the terminal cursor style (block /
@@ -1497,45 +1522,31 @@ fn build_terminal_cursor_style_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
-    let entries: [(&str, SharedString); 3] = [
+    let entries: Vec<(SharedString, SharedString)> = vec![
         (
-            "block",
+            "block".into(),
             t!("settings.terminal.cursor_style.block").to_string().into(),
         ),
         (
-            "underline",
+            "underline".into(),
             t!("settings.terminal.cursor_style.underline")
                 .to_string()
                 .into(),
         ),
         (
-            "bar",
+            "bar".into(),
             t!("settings.terminal.cursor_style.bar").to_string().into(),
         ),
     ];
-    let options: Vec<SelectOption<SharedString>> = entries
-        .iter()
-        .map(|(value, label)| SelectOption::new(SharedString::from(*value), label.clone()))
-        .collect();
-    let selected = entries
-        .iter()
-        .position(|(value, _)| *value == config.terminal.cursor_style.as_str());
-    let parent = cx.entity();
-    cx.new(move |select_cx| {
-        Select::new(select_cx)
-            .options(options)
-            .selected_index(selected)
-            .on_change(move |value, _window, cx| {
-                let picked = value.to_string();
-                parent.update(cx, |this, cx| {
-                    if this.config.terminal.cursor_style == picked {
-                        return;
-                    }
-                    this.config.terminal.cursor_style = picked;
-                    this.save_config(cx);
-                });
-            })
-    })
+    build_string_field_select(
+        entries,
+        &config.terminal.cursor_style,
+        None,
+        false,
+        cx,
+        |this| this.config.terminal.cursor_style.as_str(),
+        |this, v| this.config.terminal.cursor_style = v,
+    )
 }
 
 /// Fresh `Select<UiLanguage>` for the interface language (System / Français /
@@ -1593,7 +1604,7 @@ fn build_ui_font_family_select(
         "JetBrains Mono",
         "Fira Code",
     ];
-    let options: Vec<SelectOption<SharedString>> = fonts
+    let entries: Vec<(SharedString, SharedString)> = fonts
         .iter()
         .map(|name| {
             let label: SharedString = if *name == "System Default" {
@@ -1601,28 +1612,16 @@ fn build_ui_font_family_select(
             } else {
                 SharedString::from(*name)
             };
-            SelectOption::new(SharedString::from(*name), label)
+            (SharedString::from(*name), label)
         })
         .collect();
-    let selected = fonts
-        .iter()
-        .position(|f| *f == config.general.ui_font_family.as_str());
-    let parent = cx.entity();
-    cx.new(move |select_cx| {
-        Select::new(select_cx)
-            .options(options)
-            .selected_index(selected)
-            .placeholder(system_default_label.clone())
-            .searchable(true)
-            .on_change(move |value, _window, cx| {
-                let picked = value.to_string();
-                parent.update(cx, |this, cx| {
-                    if this.config.general.ui_font_family == picked {
-                        return;
-                    }
-                    this.config.general.ui_font_family = picked;
-                    this.save_config(cx);
-                });
-            })
-    })
+    build_string_field_select(
+        entries,
+        &config.general.ui_font_family,
+        Some(system_default_label),
+        true,
+        cx,
+        |this| this.config.general.ui_font_family.as_str(),
+        |this, v| this.config.general.ui_font_family = v,
+    )
 }

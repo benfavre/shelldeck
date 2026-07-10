@@ -52,9 +52,14 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 
 ## Medium — dette / smell
 
-- [ ] **`settings.rs:1443-1611`** — 6 `build_*_select` quasi-identiques
+- [/] **`settings.rs:1443-1611`** — 6 `build_*_select` quasi-identiques
   (~150 lignes). Extraire un helper générique
   `bind_select<T>(cx, options, current_idx, apply)`.
+  (4/6 : `build_string_field_select` couvre editor_font, terminal_font,
+  terminal_cursor_style, ui_font — les 3 font selects passent de ~30 à
+  ~15 lignes chacun. `build_editor_tab_size_select` (Select<usize>) et
+  `build_general_language_select` (Select<UiLanguage> + `select_ui_language`
+  custom on-change) restent : types/comportements différents.)
 - [x] **`settings.rs:770-825`** — 6 blocs `Toggle::new(...)` copy-paste
   alors que `bind_toggle` (défini ligne 350) est le helper prévu et
   déjà utilisé dans `render_general_settings`. À réécrire pour appeler
