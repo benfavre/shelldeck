@@ -261,38 +261,36 @@ pub struct IssueListFilter {
     pub since: String,
 }
 
+/// Append `&key=percent_encoded(value)` to `query` when `value` is non-empty.
+/// Skips the pair silently when the value is empty — the server treats a
+/// missing filter as "no filter", so callers can push everything the user
+/// might have populated.
+fn push_query_kv(query: &mut String, key: &str, value: &str) {
+    if !value.is_empty() {
+        query.push_str(&format!(
+            "&{key}={}",
+            crate::config::cloud_account::percent_encode(value)
+        ));
+    }
+}
+
 /// List issues in the token's scope with the supplied filter. Empty fields
 /// are omitted from the query string.
 pub fn list_issues(base_url: &str, token: &str, filter: &IssueListFilter) -> Result<IssueList> {
-    let enc = crate::config::cloud_account::percent_encode;
     let mut query = String::from("?action=list");
-    if !filter.status.is_empty() {
-        query.push_str(&format!("&status={}", enc(&filter.status)));
-    }
-    if !filter.q.is_empty() {
-        query.push_str(&format!("&q={}", enc(&filter.q)));
-    }
-    if !filter.priority.is_empty() {
-        query.push_str(&format!("&priority={}", enc(&filter.priority)));
-    }
-    if !filter.source.is_empty() {
-        query.push_str(&format!("&source={}", enc(&filter.source)));
-    }
-    if !filter.assignee.is_empty() {
-        query.push_str(&format!("&assignee={}", enc(&filter.assignee)));
-    }
+    push_query_kv(&mut query, "status", &filter.status);
+    push_query_kv(&mut query, "q", &filter.q);
+    push_query_kv(&mut query, "priority", &filter.priority);
+    push_query_kv(&mut query, "source", &filter.source);
+    push_query_kv(&mut query, "assignee", &filter.assignee);
     if filter.mine {
         query.push_str("&mine=1");
     }
-    if !filter.tenant_id.is_empty() {
-        query.push_str(&format!("&tenant_id={}", enc(&filter.tenant_id)));
-    }
+    push_query_kv(&mut query, "tenant_id", &filter.tenant_id);
     if let Some(gh) = filter.has_github {
         query.push_str(if gh { "&has_github=1" } else { "&has_github=0" });
     }
-    if !filter.since.is_empty() {
-        query.push_str(&format!("&since={}", enc(&filter.since)));
-    }
+    push_query_kv(&mut query, "since", &filter.since);
     get_json(base_url, token, &query)
 }
 

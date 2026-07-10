@@ -156,11 +156,13 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   - `support_view.rs:2955-2960` (« Chat-style bubble … »)
   - `settings.rs:268` (contexte historique du padding)
   Garder le *why*, retirer la narration diff.
-- [ ] **`core/config/issues.rs:262-296` (`list_issues`)** — 9 branches
+- [x] **`core/config/issues.rs:262-296` (`list_issues`)** — 9 branches
   copy-paste `if !x.is_empty() { push!("&x={}", enc(...)) }`. Petit
   helper local `push_kv(&mut q, "status", &filter.status)` — ou éventuel
   `config::query::Builder` partagé avec `manage_sites::manage_area_url`
   et `cloud_account::browser_connect_url` qui font la même danse.
+  (Extrait `push_query_kv(&mut String, &str, &str)` local — les autres
+  callers pourront le reprendre s'ils bougent.)
 
 ## Non-findings (vérifiés, RAS)
 
