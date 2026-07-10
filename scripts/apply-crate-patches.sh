@@ -15,8 +15,9 @@ apply_zed_xim() {
         exit 1
     fi
 
-    # Pull zed-xim into the registry if needed (transitive via adabraka-gpui).
-    (cd "$ROOT" && cargo fetch -p adabraka-gpui >/dev/null 2>&1) || true
+    # Pull transitive deps (incl. zed-xim via adabraka-gpui) into the registry.
+    # `cargo fetch` has no `-p` flag — a bare workspace fetch is required.
+    (cd "$ROOT" && cargo fetch >/dev/null 2>&1)
 
     dir="$(find "$REGISTRY" -maxdepth 2 -type d -name 'zed-xim-0.4.0-zed' 2>/dev/null | head -1)"
     if [[ -z "$dir" ]]; then
