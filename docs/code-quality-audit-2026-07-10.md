@@ -84,10 +84,13 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   `ShellDeckColors::error().opacity(0.4)` (violation
   `.agents/theming.md` rule 3). Le badge PDF (:3574-3575) est laissé —
   couleur sémantique pour "fichier PDF", pas un état d'erreur.
-- [ ] **`workspace/mod.rs`** — mutations issues (`create/comment/delete/
+- [x] **`workspace/mod.rs`** — mutations issues (`create/comment/delete/
   staff_action`) qui ré-appellent `refresh_issues` alors que la mutation
   a déjà retourné l'issue muté. Round-trip HTTP redondant à chaque
   écriture. Splicer par id dans la liste locale et sauter le refetch.
+  (Helpers `upsert_issue_in_list` / `remove_issue_from_list` — les 4
+  mutations passent par eux au lieu de `refresh_issues`. Le poll 15 s
+  attrape toujours la dérive sur d'autres lignes.)
 - [x] **`workspace/mod.rs:2241` (`select_support_ticket`)** — appelle
   `refresh_support` immédiatement après `set_detail`, alors que le poll
   30 s couvre déjà les unread flags. Deux round-trips par sélection.
