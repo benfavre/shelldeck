@@ -3630,22 +3630,22 @@ impl FileEditorView {
 
         // Info rows
         card = card.child(Self::info_row(
-            &t!("file_editor.info.pages").to_string(),
+            t!("file_editor.info.pages").as_ref(),
             &page_count.to_string(),
         ));
         card = card.child(Self::info_row(
-            &t!("file_editor.info.size").to_string(),
+            t!("file_editor.info.size").as_ref(),
             &format_file_size(file_size),
         ));
         if let Some(t) = title {
             if !t.is_empty() {
-                card = card.child(Self::info_row(&t!("file_editor.info.title").to_string(), t));
+                card = card.child(Self::info_row(t!("file_editor.info.title").as_ref(), t));
             }
         }
         if let Some(a) = author {
             if !a.is_empty() {
                 card = card.child(Self::info_row(
-                    &t!("file_editor.info.author").to_string(),
+                    t!("file_editor.info.author").as_ref(),
                     a,
                 ));
             }
@@ -3653,7 +3653,7 @@ impl FileEditorView {
         if let Some(c) = creator {
             if !c.is_empty() {
                 card = card.child(Self::info_row(
-                    &t!("file_editor.info.creator").to_string(),
+                    t!("file_editor.info.creator").as_ref(),
                     c,
                 ));
             }
@@ -3747,12 +3747,12 @@ impl FileEditorView {
 
         // Info
         card = card.child(Self::info_row(
-            &t!("file_editor.info.size").to_string(),
+            t!("file_editor.info.size").as_ref(),
             &format_file_size(file_size),
         ));
         if let Some(p) = path {
             card = card.child(Self::info_row(
-                &t!("file_editor.info.path").to_string(),
+                t!("file_editor.info.path").as_ref(),
                 &p.to_string_lossy(),
             ));
         }

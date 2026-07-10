@@ -6439,6 +6439,7 @@ impl Workspace {
     ///
     /// `dismissing = true` plays the exit animation (slide back off-screen
     /// right + fade out); `false` plays the enter animation.
+    #[allow(clippy::too_many_arguments)]
     fn render_user_sheet<C: IntoElement + 'static>(
         &self,
         id: &'static str,

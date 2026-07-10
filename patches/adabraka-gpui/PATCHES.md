@@ -45,21 +45,29 @@ only, out of the src/-scoped marker convention.)
   same function.
 - **Upstream status**: pairs with SDPATCH-101 in the same PR.
 
-### SDPATCH-103 — macOS `core-graphics` version bump
+### SDPATCH-103 — macOS `core-graphics` / `core-text` alignment
 
 - **Files / symbols**:
   - `Cargo.toml` — `[target.'cfg(target_os = "macos")'.dependencies.core-graphics]`
     entry (bumps `version = "0.24"` to `"0.25"`)
+  - `Cargo.toml` — `[target.'cfg(target_os = "macos")'.dependencies.core-text]`
+    entry (relaxes `version = "=21.0.0"` to `"22"`)
 - **Markers**: none — `Cargo.toml` is outside the `patches/<crate>/src/`
-  marker scope. The entry exists so the sync knows to re-apply the bump
+  marker scope. The entries exist so the sync knows to re-apply them
   after each overlay.
-- **Why**: `core-text 21` (which upstream pins at `=21.0.0` in
-  `Cargo.toml`) pulls in `core-graphics 0.25`, and pinning gpui's
-  `core-graphics` at `0.24` causes type mismatches inside the
-  `core_text` font loader on macOS release builds. Bumping to `0.25`
-  unifies the dependency tree with no effect on Linux/Windows.
-- **Upstream status**: not filed yet — genuine bug, worth an upstream PR.
-  If upstream ever pins `0.25` on its own, retire this entry.
+- **Why**: `core-text 21.0.0` (what upstream's `=21.0.0` pin resolves
+  to) pulls in `core-graphics 0.24`, so gpui's own `core-graphics 0.25`
+  code cross-calls into `core_text::font::*` signatures typed with the
+  wrong `CGFont`, producing 7× E0308 mismatches on macOS release builds.
+  `core-text 21.1.0` was upstream's intended fix (uses `core-graphics
+  0.25`) but has since been **yanked** from crates.io, so pinning `"21"`
+  silently falls back to 21.0.0 and reintroduces the bug. Bumping to
+  `core-text = "22"` (uses `core-graphics 0.25`, not yanked) is the
+  stable path. `zed-font-kit` fork carries the same bump — both sides
+  need it for cargo to unify. No effect on Linux/Windows.
+- **Upstream status**: not filed yet — worth an upstream PR once the
+  yank/reissue situation on `core-text` settles. If upstream ever pins
+  a compatible `core-text` on its own, retire this entry.
 
 ### SDPATCH-104 — WGSL alignment padding for `Quad` and `Shadow`
 

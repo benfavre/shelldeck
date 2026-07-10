@@ -103,6 +103,7 @@ jobs:
             libxcb-xfixes0-dev \
             libxcb1-dev \
             libxkbcommon-x11-dev \
+            libdbus-1-dev \
             libfuse2
 
       # macOS dependencies
