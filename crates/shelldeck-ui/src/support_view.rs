@@ -3255,24 +3255,71 @@ impl SupportView {
         let id = iss.id.clone();
         let mut items = Vec::new();
 
-        // Staff-only triage ops (status/priority/assign/dispatch/GitHub).
         if self.issues_staff {
+            let include_dispatch = !self.issue_instances.is_empty();
+            items.extend(Self::staff_triage_items(
+                iss,
+                &id,
+                include_dispatch,
+                &entity,
+            ));
+        }
+
+        // Delete: staff can delete any in-scope request; a non-staff caller
+        // only sees the entry on requests they filed themselves. The server
+        // enforces the same rule on the wire — this is UX politeness, not
+        // security.
+        if self.issues_staff || self.is_my_issue(iss) {
+            let did = id.clone();
             items.push(
-                PopoverMenuItem::new("iss-menu-status", t!("support.menu.status").to_string())
-                    .icon("filter")
+                PopoverMenuItem::new("iss-menu-delete", t!("support.menu.delete").to_string())
+                    .icon("trash-2")
                     .on_click({
                         let entity = entity.clone();
                         move |_, cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_issue_popover_menu(cx);
-                                this.issue_status_menu = true;
-                                this.issue_priority_menu_open = false;
-                                this.issue_dispatch_menu = false;
+                                this.confirm_issue_delete = Some(did.clone());
                                 cx.notify();
                             });
                         }
                     }),
             );
+        }
+
+        items
+    }
+
+    /// Staff-only triage entries (status / priority / assign-me / dispatch /
+    /// GitHub sync-or-push) for the issue kebab. Split out so the guard is
+    /// unambiguous — inlined, the closing `}` of the `if self.issues_staff`
+    /// block was easy to misread as unconditional code.
+    ///
+    /// `include_dispatch` is a caller-side gate on `issue_instances` (only
+    /// staff with at least one reachable runtime can dispatch).
+    fn staff_triage_items(
+        iss: &Issue,
+        id: &str,
+        include_dispatch: bool,
+        entity: &Entity<SupportView>,
+    ) -> Vec<PopoverMenuItem> {
+        let mut items = Vec::new();
+        items.push(
+            PopoverMenuItem::new("iss-menu-status", t!("support.menu.status").to_string())
+                .icon("filter")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_issue_popover_menu(cx);
+                            this.issue_status_menu = true;
+                            this.issue_priority_menu_open = false;
+                            this.issue_dispatch_menu = false;
+                            cx.notify();
+                        });
+                    }
+                }),
+        );
         items.push(
             PopoverMenuItem::new("iss-menu-priority", t!("support.menu.priority").to_string())
                 .icon("flag")
@@ -3290,7 +3337,7 @@ impl SupportView {
                 }),
         );
 
-        let aid = id.clone();
+        let aid = id.to_string();
         items.push(
             PopoverMenuItem::new("iss-menu-assign", t!("support.menu.assign_me").to_string())
                 .icon("user-check")
@@ -3308,7 +3355,7 @@ impl SupportView {
                 }),
         );
 
-        if !self.issue_instances.is_empty() {
+        if include_dispatch {
             items.push(
                 PopoverMenuItem::new("iss-menu-dispatch", t!("support.menu.dispatch").to_string())
                     .icon("server")
@@ -3327,7 +3374,7 @@ impl SupportView {
             );
         }
 
-        let gid = id.clone();
+        let gid = id.to_string();
         if iss.github.is_some() {
             items.push(
                 PopoverMenuItem::new("iss-menu-gh", t!("support.menu.github_sync").to_string())
@@ -3358,31 +3405,6 @@ impl SupportView {
                         });
                     }
                 }),
-            );
-        }
-
-        // End of staff-only triage ops block.
-        }
-
-        // Delete: staff can delete any in-scope request; a non-staff caller
-        // only sees the entry on requests they filed themselves. The server
-        // enforces the same rule on the wire — this is UX politeness, not
-        // security.
-        if self.issues_staff || self.is_my_issue(iss) {
-            let did = id.clone();
-            items.push(
-                PopoverMenuItem::new("iss-menu-delete", t!("support.menu.delete").to_string())
-                    .icon("trash-2")
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_issue_popover_menu(cx);
-                                this.confirm_issue_delete = Some(did.clone());
-                                cx.notify();
-                            });
-                        }
-                    }),
             );
         }
 

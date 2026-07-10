@@ -14,11 +14,14 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   main grid paint loop must keep using `shape_line`; the `paint_glyph` fast
   path silently fails to render »). L'agent efficiency a peut-être mal lu la
   règle. Vérifier si la régression est réelle avant d'agir.
-- [ ] **`workspace/mod.rs:3775` (`refresh_bext_cloud`)** — 4 appels HTTP
+- [x] **`workspace/mod.rs:3775` (`refresh_bext_cloud`)** — 4 appels HTTP
   (whoami, list_sites, dashboard, list_instances) séquentiels dans un même
   bg spawn. Paralléliser (`try_join!` ou 4 threads scatter/gather).
   Impact : ~4× la latence à chaque poll 15 s tant que la vue Bext est
   visible.
+  (Fan-out sur 3 `std::thread` pour whoami/sites/dashboard ; instances
+  reste sériel après whoami car super-admin seulement. Client bext est
+  reqwest-blocking donc pas de futures::join possible sans refonte.)
 - [ ] **`workspace/mod.rs:3405` + `support_view.rs:290`** —
   `SupportView` cache `account_name` / `account_email` alors que
   `AppConfig.account` est l'unique source. Violation directe de
@@ -79,11 +82,14 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
 - [ ] **`file_editor/view.rs:1837` (`paint_editor`)** — 17 paramètres
   positionnels + une prépaint tuple monstrueuse (~1770-1810). Bundler
   dans un `struct PaintCtx { … }`.
-- [ ] **`support_view.rs:3068-3200`** — `render_issue_popover_items`
+- [x] **`support_view.rs:3068-3200`** — `render_issue_popover_items`
   avec un `if issues_staff` non-indenté à l'intérieur ⇒ les `items.push`
   staff-only ressemblent visuellement à du code inconditionnel. Extraire
   `staff_triage_items(...) -> Vec<PopoverMenuItem>` et
   `items.extend(...)` dans le guard.
+  (Extrait en `Self::staff_triage_items(iss, id, include_dispatch,
+  entity)` — la gate `!issue_instances.is_empty()` reste côté appelant
+  car le helper n'a pas `&self`.)
 - [ ] **`support_view.rs:2828+`** — `is_my_issue` +
   `render_issue_comment` re-trim + re-lowercase le nom et l'email du
   compte à chaque issue/comment pendant le render (list de 50 issues ×

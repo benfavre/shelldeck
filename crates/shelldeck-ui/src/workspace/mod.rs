@@ -3784,10 +3784,21 @@ impl Workspace {
             let bundle = cx
                 .background_executor()
                 .spawn(async move {
-                    let who = bext_cloud::whoami(&cfg);
+                    // Fan out whoami / sites / dashboard onto three OS
+                    // threads — the bext_cloud client is reqwest-blocking,
+                    // so the previous serial chain cost ~3× round-trip.
+                    // Instances stays serial after whoami since it's only
+                    // fetched for super-admin.
+                    let cfg_w = cfg.clone();
+                    let cfg_s = cfg.clone();
+                    let cfg_d = cfg.clone();
+                    let who_h = std::thread::spawn(move || bext_cloud::whoami(&cfg_w));
+                    let sites_h = std::thread::spawn(move || bext_cloud::list_sites(&cfg_s));
+                    let dash_h = std::thread::spawn(move || bext_cloud::dashboard(&cfg_d));
+                    let who = who_h.join().expect("bext whoami thread panicked");
+                    let sites = sites_h.join().expect("bext list_sites thread panicked");
+                    let dash = dash_h.join().expect("bext dashboard thread panicked");
                     let is_super = who.as_ref().map(|u| u.is_super_admin).unwrap_or(false);
-                    let sites = bext_cloud::list_sites(&cfg);
-                    let dash = bext_cloud::dashboard(&cfg);
                     let instances = if is_super {
                         bext_cloud::list_instances(&cfg).ok()
                     } else {
