@@ -5,6 +5,7 @@ use shelldeck_ssh::client::SshClient;
 use shelldeck_terminal::session::TerminalSession;
 use uuid::Uuid;
 
+use crate::t;
 use crate::terminal_view::SplitDirection;
 use crate::toast::ToastLevel;
 
@@ -80,8 +81,9 @@ impl Workspace {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        let _ = status_tx
-                            .send(Err(format!("Failed to create async runtime: {}", e)));
+                        let _ = status_tx.send(Err(
+                            t!("toast.ssh.runtime_failed", error = e.to_string()).to_string(),
+                        ));
                         return;
                     }
                 };
@@ -91,7 +93,12 @@ impl Workspace {
                     let ssh_session = match client.connect(&conn).await {
                         Ok(s) => s,
                         Err(e) => {
-                            let msg = format!("SSH connection failed for {}: {}", conn.display_name(), e);
+                            let msg = t!(
+                                "toast.ssh.connection_failed",
+                                name = conn.display_name(),
+                                error = e.to_string()
+                            )
+                            .to_string();
                             tracing::error!("{}", msg);
                             let _ = status_tx.send(Err(msg));
                             return;
@@ -102,7 +109,12 @@ impl Workspace {
                     let channel = match ssh_session.open_shell(rows as u32, cols as u32).await {
                         Ok(ch) => ch,
                         Err(e) => {
-                            let msg = format!("Failed to open SSH shell for {}: {}", conn.display_name(), e);
+                            let msg = t!(
+                                "toast.ssh.shell_failed",
+                                name = conn.display_name(),
+                                error = e.to_string()
+                            )
+                            .to_string();
                             tracing::error!("{}", msg);
                             let _ = status_tx.send(Err(msg));
                             return;
@@ -171,11 +183,18 @@ impl Workspace {
             tracing::error!("Failed to spawn SSH thread: {}", e);
             self.set_connection_status(
                 conn_id,
-                ConnectionStatus::Error(format!("Failed to start SSH thread: {}", e)),
+                ConnectionStatus::Error(
+                    t!("toast.ssh.thread_start_failed", error = e.to_string()).to_string(),
+                ),
                 cx,
             );
             self.show_toast(
-                format!("Failed to connect to {}: {}", title, e),
+                t!(
+                    "toast.ssh.connect_failed",
+                    name = title.as_str(),
+                    error = e.to_string()
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -197,7 +216,7 @@ impl Workspace {
                         Ok(()) => {
                             ws.set_connection_status(conn_id, ConnectionStatus::Connected, cx);
                             ws.show_toast(
-                                format!("Connected to {}", title),
+                                t!("toast.ssh.connected", name = title.as_str()).to_string(),
                                 ToastLevel::Success,
                                 cx,
                             );
@@ -226,7 +245,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let title = format!("{} (split)", connection.display_name());
-        let conn_id = connection.id;
+        let _conn_id = connection.id;
 
         let (rows, cols) = self.terminal.read(cx).grid_size();
         let attach_tmux = self.app_config.general.auto_attach_tmux;
@@ -343,7 +362,12 @@ impl Workspace {
         if let Err(e) = spawn_result {
             tracing::error!("Failed to spawn SSH split thread: {}", e);
             self.show_toast(
-                format!("Failed to connect split to {}: {}", conn_id, e),
+                t!(
+                    "toast.ssh.split_connect_failed",
+                    name = title.as_str(),
+                    error = e.to_string()
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -351,7 +375,7 @@ impl Workspace {
         }
 
         self.show_toast(
-            format!("Connecting split to {}", conn_id),
+            t!("toast.ssh.split_connecting", name = title.as_str()).to_string(),
             ToastLevel::Info,
             cx,
         );

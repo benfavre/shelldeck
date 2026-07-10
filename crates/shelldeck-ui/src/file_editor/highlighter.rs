@@ -218,6 +218,11 @@ impl SyntaxHighlighter {
             EditorLanguage::Yaml => Some(tree_sitter_yaml::LANGUAGE.into()),
             EditorLanguage::Html => Some(tree_sitter_html::LANGUAGE.into()),
             EditorLanguage::Css => Some(tree_sitter_css::LANGUAGE.into()),
+            // Markdown ships two grammars (block + inline); we wire the block
+            // grammar only for now — it already covers headings, code blocks,
+            // list markers, block quotes, links. Inline emphasis/strong is a
+            // follow-up (needs the injection tree).
+            EditorLanguage::Markdown => Some(tree_sitter_md::LANGUAGE.into()),
             EditorLanguage::Sql | EditorLanguage::PlainText => None,
         }
     }
@@ -235,6 +240,7 @@ impl SyntaxHighlighter {
             EditorLanguage::Yaml => include_str!("queries/yaml.scm"),
             EditorLanguage::Html => include_str!("queries/html.scm"),
             EditorLanguage::Css => include_str!("queries/css.scm"),
+            EditorLanguage::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
             EditorLanguage::Sql | EditorLanguage::PlainText => return None,
         };
 
@@ -250,9 +256,25 @@ impl SyntaxHighlighter {
 
 /// Map tree-sitter capture names to editor colors.
 fn highlight_name_to_style(name: &str) -> (Hsla, bool, bool) {
-    // name may be dotted like "keyword.control" — match on the first segment
-    let base = name.split('.').next().unwrap_or(name);
+    // Capture names can be dotted (`keyword.control`, `text.title`, …). We
+    // route the multi-word `text.*` family first so Markdown / nvim-treesitter
+    // queries render sensibly, then fall back to the base-segment table.
+    match name {
+        // Markdown headings — bold + keyword accent.
+        "text.title" => return (ShellDeckColors::syntax_keyword(), true, false),
+        // Code blocks / fenced code content — string tint.
+        "text.literal" => return (ShellDeckColors::syntax_string(), false, false),
+        // URLs — variable tint, italicised to feel like a link.
+        "text.uri" => return (ShellDeckColors::syntax_variable(), false, true),
+        // Link labels / references.
+        "text.reference" => return (ShellDeckColors::syntax_variable(), false, false),
+        // Inline emphasis / strong (surface when the inline tree gets wired).
+        "text.emphasis" => return (ShellDeckColors::text_primary(), false, true),
+        "text.strong" => return (ShellDeckColors::text_primary(), true, false),
+        _ => {}
+    }
 
+    let base = name.split('.').next().unwrap_or(name);
     match base {
         "keyword" | "conditional" | "repeat" | "include" | "exception" => {
             (ShellDeckColors::syntax_keyword(), true, false)

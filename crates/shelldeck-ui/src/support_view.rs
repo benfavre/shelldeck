@@ -5,7 +5,7 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
-use crate::icons::lucide_icon;
+use crate::icons::{lucide_icon, lucide_path};
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -237,6 +237,15 @@ pub enum SupportViewEvent {
     },
     IssueGithubPush(String),
     IssueGithubRefresh(String),
+    /// Soft-delete a request (staff only — confirmed via a dialog first).
+    IssueDelete(String),
+    /// Any filter changed — simple bar (status chip / search) or advanced
+    /// modal apply. Carries the full filter payload so the Workspace stores
+    /// one canonical value; empty strings / `None` fields mean "no filter
+    /// on that leg" and get omitted from the request.
+    IssuesFilterChanged {
+        filter: shelldeck_core::config::issues::IssueListFilter,
+    },
 }
 
 impl EventEmitter<SupportViewEvent> for SupportView {}
@@ -282,6 +291,20 @@ pub struct SupportView {
     section: SupportSection,
     issues: Vec<Issue>,
     issues_staff: bool,
+    /// Signed-in account identity — used to gate the delete action on
+    /// requests the current user filed themselves (non-staff path). Kept
+    /// in sync with `AppConfig.account` via `set_account`.
+    account_name: String,
+    account_email: String,
+    /// Applied filter — mirrors `Workspace::issues_filter` so the chips /
+    /// input reflect the state the server was actually queried with. The
+    /// modal draft below is only populated while the "Filtres" modal is
+    /// open (opened via `open_issues_filter_modal`, applied on OK, dropped
+    /// on Reset / close).
+    issues_filter: shelldeck_core::config::issues::IssueListFilter,
+    issues_filter_draft: shelldeck_core::config::issues::IssueListFilter,
+    issues_filter_modal_open: bool,
+    issues_search_state: Entity<InputState>,
     issue_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
@@ -289,8 +312,12 @@ pub struct SupportView {
     issue_assign_menu: bool,
     issue_dispatch_menu: bool,
     issue_priority_menu_open: bool,
-    /// Header kebab menu for the open issue detail pane.
-    issue_popover_menu: Option<Point<Pixels>>,
+    /// Kebab menu anchor for a request. Carries the issue id + click position
+    /// so both the list-row kebab (works without opening the detail) and the
+    /// detail-header kebab share the same popover machinery.
+    issue_popover_menu: Option<(String, Point<Pixels>)>,
+    /// Request id pending a confirmed soft-delete (drives the confirm modal).
+    confirm_issue_delete: Option<String>,
     issues_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     /// Scroll handle for the messages pane. `set_detail` calls
@@ -338,6 +365,12 @@ impl SupportView {
             section: SupportSection::Tickets,
             issues: Vec::new(),
             issues_staff: false,
+            account_name: String::new(),
+            account_email: String::new(),
+            issues_filter: shelldeck_core::config::issues::IssueListFilter::default(),
+            issues_filter_draft: shelldeck_core::config::issues::IssueListFilter::default(),
+            issues_filter_modal_open: false,
+            issues_search_state: cx.new(InputState::new),
             issue_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
@@ -346,6 +379,7 @@ impl SupportView {
             issue_dispatch_menu: false,
             issue_priority_menu_open: false,
             issue_popover_menu: None,
+            confirm_issue_delete: None,
             issues_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             messages_scroll: ScrollHandle::new(),
@@ -361,6 +395,302 @@ impl SupportView {
         self.issues = issues;
         self.issues_staff = staff;
         self.issue_instances = instances;
+    }
+
+    /// Update the signed-in account identity used by `is_my_issue`. Called
+    /// from `Workspace::push_issues_to_support` alongside `set_issues` so the
+    /// two never drift.
+    pub fn set_account(&mut self, name: String, email: String) {
+        self.account_name = name;
+        self.account_email = email;
+    }
+
+
+    /// Count of *advanced* filters currently active (everything except the
+    /// simple bar's `status` + `q`). Drives the badge on the "Filtres"
+    /// button so the user knows a hidden filter is narrowing their list.
+    fn advanced_filter_count(&self) -> usize {
+        let f = &self.issues_filter;
+        let mut n = 0;
+        if !f.priority.is_empty() {
+            n += 1;
+        }
+        if !f.source.is_empty() {
+            n += 1;
+        }
+        if !f.assignee.is_empty() {
+            n += 1;
+        }
+        if f.mine {
+            n += 1;
+        }
+        if !f.tenant_id.is_empty() {
+            n += 1;
+        }
+        if f.has_github.is_some() {
+            n += 1;
+        }
+        if !f.since.is_empty() {
+            n += 1;
+        }
+        n
+    }
+
+    fn open_issues_filter_modal(&mut self, cx: &mut Context<Self>) {
+        self.issues_filter_draft = self.issues_filter.clone();
+        self.issues_filter_modal_open = true;
+        cx.notify();
+    }
+
+    fn close_issues_filter_modal(&mut self, cx: &mut Context<Self>) {
+        self.issues_filter_modal_open = false;
+        cx.notify();
+    }
+
+    fn reset_issues_filter_draft(&mut self, cx: &mut Context<Self>) {
+        // Preserve status + q (simple bar) — Reset here only clears the
+        // *advanced* fields, matching the badge scope.
+        let status = self.issues_filter_draft.status.clone();
+        let q = self.issues_filter_draft.q.clone();
+        self.issues_filter_draft = shelldeck_core::config::issues::IssueListFilter {
+            status,
+            q,
+            ..Default::default()
+        };
+        cx.notify();
+    }
+
+    fn apply_issues_filter_draft(&mut self, cx: &mut Context<Self>) {
+        self.issues_filter = self.issues_filter_draft.clone();
+        self.issues_filter_modal_open = false;
+        let filter = self.issues_filter.clone();
+        cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+        cx.notify();
+    }
+
+    /// One-line summary label for the "since" ISO bound — approximated from
+    /// the delta between the stored ISO and now. Chips only ever set 24h/7d/30d
+    /// so the buckets match the picker.
+    fn since_bucket_label(iso: &str) -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        // Cheap ISO → epoch: (yyyy, mm, dd, hh, mm, ss) → days via Hinnant.
+        let bytes = iso.as_bytes();
+        if bytes.len() < 19 {
+            return t!("support.issues.since.h24").to_string();
+        }
+        let n = |s: usize, e: usize| -> i64 {
+            iso[s..e].parse::<i64>().unwrap_or(0)
+        };
+        let (y, mo, d, h, mi, s) = (n(0, 4), n(5, 7), n(8, 10), n(11, 13), n(14, 16), n(17, 19));
+        let (yy, mm) = if mo <= 2 { (y - 1, mo + 12) } else { (y, mo) };
+        let era = yy.div_euclid(400);
+        let yoe = yy - era * 400;
+        let doy = (153 * (mm - 3) + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        let then = days * 86_400 + h * 3600 + mi * 60 + s;
+        let delta_h = (now - then) / 3600;
+        if delta_h <= 25 {
+            t!("support.issues.since.h24").to_string()
+        } else if delta_h <= 24 * 8 {
+            t!("support.issues.since.d7").to_string()
+        } else {
+            t!("support.issues.since.d30").to_string()
+        }
+    }
+
+    /// Applied filter chips row — one chip per active advanced field, each
+    /// removable via a trailing X. Reuses the tickets' `render_applied_filter_chip`
+    /// helper (icon + Outline Badge + Ghost X IconButton) so the two surfaces
+    /// share the same visual language. Rendered only when `advanced_filter_count > 0`.
+    fn render_applied_issues_filter_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(4.0))
+            .px(px(10.0))
+            .pb(px(6.0));
+
+        let f = self.issues_filter.clone();
+
+        if !f.priority.is_empty() {
+            row = row.child(self.render_applied_filter_chip_with_badge(
+                "iss-applied-pri".to_string(),
+                "flag",
+                priority_badge(&f.priority),
+                cx,
+                |this, cx| {
+                    this.issues_filter.priority.clear();
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if !f.source.is_empty() {
+            let key = format!("support.issues.source.{}", f.source);
+            let label = t!(&key).to_string();
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-src".to_string(),
+                "tag",
+                label,
+                cx,
+                |this, cx| {
+                    this.issues_filter.source.clear();
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if !f.assignee.is_empty() {
+            let label = match f.assignee.as_str() {
+                "me" => t!("support.issues.assignee.me").to_string(),
+                "unassigned" => t!("support.issues.assignee.unassigned").to_string(),
+                other => other.to_string(),
+            };
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-as".to_string(),
+                "user-check",
+                label,
+                cx,
+                |this, cx| {
+                    this.issues_filter.assignee.clear();
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if let Some(gh) = f.has_github {
+            let label = if gh {
+                t!("support.issues.github.linked").to_string()
+            } else {
+                t!("support.issues.github.unlinked").to_string()
+            };
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-gh".to_string(),
+                "upload",
+                label,
+                cx,
+                |this, cx| {
+                    this.issues_filter.has_github = None;
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if !f.since.is_empty() {
+            let label = Self::since_bucket_label(&f.since);
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-sc".to_string(),
+                "clock",
+                label,
+                cx,
+                |this, cx| {
+                    this.issues_filter.since.clear();
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if f.mine {
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-mine".to_string(),
+                "user",
+                t!("support.issues.mine").to_string(),
+                cx,
+                |this, cx| {
+                    this.issues_filter.mine = false;
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        if !f.tenant_id.is_empty() {
+            row = row.child(self.render_applied_filter_chip(
+                "iss-applied-tn".to_string(),
+                "users",
+                f.tenant_id.clone(),
+                cx,
+                |this, cx| {
+                    this.issues_filter.tenant_id.clear();
+                    let filter = this.issues_filter.clone();
+                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                    cx.notify();
+                },
+            ));
+        }
+        row
+    }
+
+    /// The "Filtres" trigger — same shape as the tickets bar: an
+    /// `IconButton` (`filter` glyph) whose variant flips to `Default` when
+    /// ≥1 advanced field is active, with a `Badge` next to it showing the
+    /// count. Kept identical to `render_filters` so the two surfaces don't
+    /// drift (see `.agents/ui-components.md` § harmonization).
+    fn render_issues_filter_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.advanced_filter_count();
+        let entity = cx.entity();
+        let filter_btn = IconButton::new("filter")
+            .variant(if count > 0 {
+                ButtonVariant::Default
+            } else {
+                ButtonVariant::Outline
+            })
+            .size(gpui::px(28.0))
+            .icon_size(gpui::px(12.0))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| this.open_issues_filter_modal(cx));
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child(filter_btn)
+            .when(count > 0, |el| {
+                el.child(Badge::new(count.to_string()).variant(BadgeVariant::Default))
+            })
+    }
+
+    /// Trimmed + case-insensitive check that the signed-in account is the
+    /// filer of `iss`. Mirrors the server's owner gate
+    /// (`requested_by === actor || user_name || user_email`).
+    fn is_my_issue(&self, iss: &Issue) -> bool {
+        let rb = iss.requested_by.trim().to_ascii_lowercase();
+        if rb.is_empty() {
+            return false;
+        }
+        let name = self.account_name.trim().to_ascii_lowercase();
+        let email = self.account_email.trim().to_ascii_lowercase();
+        (!name.is_empty() && rb == name) || (!email.is_empty() && rb == email)
+    }
+
+    /// Reset every "which row is open" bit so the Support surface returns to
+    /// its list view. Called by the Workspace on mode switch so a ticket or a
+    /// request opened in Support doesn't visually leak into User mode (its
+    /// selection state was driving the User-mode sheet render).
+    pub fn clear_selection(&mut self) {
+        self.selected_id = None;
+        self.detail = None;
+        self.issue_selected = None;
+        self.issue_detail = None;
+        self.popover_menu = None;
+        self.priority_menu_open = false;
+        self.assign_menu_open = false;
+        self.issue_popover_menu = None;
+        self.issue_status_menu = false;
+        self.issue_assign_menu = false;
+        self.issue_dispatch_menu = false;
+        self.issue_priority_menu_open = false;
+        self.confirm_issue_delete = None;
     }
 
     pub fn set_issue_detail(&mut self, detail: Option<Issue>) {
@@ -993,6 +1323,27 @@ impl SupportView {
         cx: &mut Context<Self>,
         on_clear: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
+        self.render_applied_filter_chip_with_badge(
+            id,
+            icon,
+            Badge::new(label).variant(BadgeVariant::Outline),
+            cx,
+            on_clear,
+        )
+    }
+
+    /// Same shape as `render_applied_filter_chip` but the caller supplies a
+    /// pre-built `Badge` so we can inject the colored `priority_badge` (or
+    /// `issue_status_badge`, …) instead of the default Outline label. Kept
+    /// private to preserve the harmonized icon + gap + IconButton geometry.
+    fn render_applied_filter_chip_with_badge(
+        &self,
+        id: String,
+        icon: &str,
+        badge: Badge,
+        cx: &mut Context<Self>,
+        on_clear: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
         let entity = cx.entity();
         div()
             .id(ElementId::from(SharedString::from(id.clone())))
@@ -1005,7 +1356,7 @@ impl SupportView {
                     .items_center()
                     .gap(px(4.0))
                     .child(lucide_icon(icon, 11.0, ShellDeckColors::primary()))
-                    .child(Badge::new(label).variant(BadgeVariant::Outline)),
+                    .child(badge),
             )
             .child(
                 IconButton::new("x")
@@ -2468,13 +2819,116 @@ impl SupportView {
                     })),
             );
 
+        // Simple filter bar — mirrors `render_filters` (tickets) exactly:
+        // a search row (input + IconButton "filter" + optional count badge)
+        // followed by a chips row (`compact_filter_button` with `selected`).
+        // See `.agents/ui-components.md` § harmonization — the two surfaces
+        // should never drift.
+        let search_row = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .pt(px(8.0))
+            .pb(px(6.0))
+            .child(
+                div().flex_1().child(
+                    Input::new(&self.issues_search_state)
+                        .size(InputSize::Sm)
+                        .placeholder(t!("support.issues.search").to_string())
+                        .prefix(lucide_icon(
+                            "search",
+                            12.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .on_enter({
+                            let entity = cx.entity();
+                            move |value, cx| {
+                                let q = value.to_string();
+                                entity.update(cx, |this, cx| {
+                                    this.issues_filter.q = q;
+                                    let filter = this.issues_filter.clone();
+                                    cx.emit(SupportViewEvent::IssuesFilterChanged {
+                                        filter,
+                                    });
+                                });
+                            }
+                        }),
+                ),
+            )
+            .child(self.render_issues_filter_button(cx));
+
+        let mut chips_row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(10.0))
+            .pb(px(6.0));
+        let entries: &[(&str, &str)] = &[
+            ("", "support.issues.filter.all"),
+            ("open", "support.issues.filter.open"),
+            ("in_progress", "support.issues.filter.in_progress"),
+            ("done", "support.issues.filter.done"),
+        ];
+        for (value, label_key) in entries {
+            let active = self.issues_filter.status == *value;
+            let value_owned: String = (*value).to_string();
+            let entity = cx.entity();
+            chips_row = chips_row.child(
+                Self::compact_filter_button(
+                    ElementId::from(SharedString::from(format!(
+                        "iss-sf-{}",
+                        if value.is_empty() { "all" } else { value }
+                    ))),
+                    t!(*label_key).to_string(),
+                )
+                .variant(ButtonVariant::Outline)
+                .selected(active)
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        let value = value_owned.clone();
+                        entity.update(cx, |this, cx| {
+                            let q = this.issues_search_state.read(cx).content().to_string();
+                            this.issues_filter.status = value;
+                            this.issues_filter.q = q;
+                            let filter = this.issues_filter.clone();
+                            cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
+                            cx.notify();
+                        });
+                    }
+                }),
+            );
+        }
+
+        let mut filter_bar = div()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(search_row)
+            .child(chips_row);
+        if self.advanced_filter_count() > 0 {
+            filter_bar = filter_bar.child(self.render_applied_issues_filter_chips(cx));
+        }
+
         let mut list = div()
             .id("sup-issues-list")
             .flex_1()
             .overflow_y_scroll()
             .flex()
             .flex_col();
-        if self.issues.is_empty() {
+        // Staff (super-admin) sees every in-scope request the server hands
+        // back; a non-staff caller only ever files their own, but we still
+        // filter defensively to `is_my_issue` in case tenant scope surfaces
+        // a peer's request through Support.
+        let visible: Vec<&Issue> = if self.issues_staff {
+            self.issues.iter().collect()
+        } else {
+            self.issues.iter().filter(|i| self.is_my_issue(i)).collect()
+        };
+        if visible.is_empty() {
             list = list.child(
                 div()
                     .p(px(16.0))
@@ -2483,7 +2937,7 @@ impl SupportView {
                     .child(t!("support.empty.requests").to_string()),
             );
         } else {
-            for iss in &self.issues {
+            for iss in visible.iter().copied() {
                 list = list.child(self.render_issue_row(iss, cx));
             }
         }
@@ -2497,6 +2951,7 @@ impl SupportView {
             .border_r_1()
             .border_color(ShellDeckColors::border())
             .child(header)
+            .child(filter_bar)
             .child(list);
 
         div()
@@ -2516,12 +2971,14 @@ impl SupportView {
             iss.title.clone()
         };
         let when = rel_time(iss.updated_at);
+        let group_name = SharedString::from(format!("iss-row-{}", iss.id));
 
         let mut row = div()
             .id(ElementId::from(SharedString::from(format!(
                 "iss-{}",
                 iss.id
             ))))
+            .group(group_name.clone())
             .flex()
             .flex_col()
             .gap(px(2.0))
@@ -2584,6 +3041,47 @@ impl SupportView {
                                 .text_color(ShellDeckColors::text_muted())
                                 .child(when),
                         )
+                    })
+                    // Per-row kebab. Hand-rolled (matches sidebar's
+                    // per-connection kebab) because adabraka `IconButton`
+                    // derives its element id from the icon name and would
+                    // collide across rows. `group_hover` shows it only on
+                    // row hover; `stop_propagation` keeps the click from
+                    // opening the detail behind the popover.
+                    .child({
+                        let iid = iss.id.clone();
+                        div()
+                            .id(ElementId::from(SharedString::from(format!(
+                                "iss-kebab-{}",
+                                iss.id
+                            ))))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(22.0))
+                            .h(px(22.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .text_color(ShellDeckColors::text_muted())
+                            .opacity(0.0)
+                            .group_hover(group_name.clone(), |el| el.opacity(1.0))
+                            .hover(|el| {
+                                el.bg(ShellDeckColors::hover_bg())
+                                    .text_color(ShellDeckColors::text_primary())
+                            })
+                            .child(
+                                svg()
+                                    .path(lucide_path("ellipsis-vertical"))
+                                    .size(px(14.0))
+                                    .text_color(ShellDeckColors::text_muted()),
+                            )
+                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.issue_popover_menu =
+                                    Some((iid.clone(), event.position()));
+                                cx.notify();
+                            }))
                     }),
             )
             .child(
@@ -2630,10 +3128,27 @@ impl SupportView {
             )
     }
 
-    fn render_issue_comment(c: &shelldeck_core::config::issues::IssueComment) -> impl IntoElement {
-        let (bg, label, icon) = if c.is_note() {
+    /// Chat-style bubble for one request comment. Mirrors the ticket bubble
+    /// (`render_message`): per-line `max_w` on the body so long lines wrap
+    /// with a Definite width (GPUI doesn't wrap otherwise), and the author's
+    /// side of the thread — mine right, others left, notes flush left with a
+    /// warning tint. Same containment fixes an earlier overlap where a wall
+    /// of dashes in a description would bleed past the bubble border.
+    fn render_issue_comment(
+        &self,
+        c: &shelldeck_core::config::issues::IssueComment,
+    ) -> impl IntoElement {
+        let is_note = c.is_note();
+        let author_matches_me = !c.author.trim().is_empty() && {
+            let a = c.author.trim().to_ascii_lowercase();
+            let n = self.account_name.trim().to_ascii_lowercase();
+            let e = self.account_email.trim().to_ascii_lowercase();
+            (!n.is_empty() && a == n) || (!e.is_empty() && a == e)
+        };
+        let (bg, align_end, label, icon) = if is_note {
             (
                 ShellDeckColors::warning().opacity(0.12),
+                false,
                 if c.kind.is_empty() {
                     t!("support.issue.system").to_string()
                 } else {
@@ -2641,9 +3156,10 @@ impl SupportView {
                 },
                 "info",
             )
-        } else {
+        } else if author_matches_me {
             (
                 ShellDeckColors::primary().opacity(0.12),
+                true,
                 if c.author.trim().is_empty() {
                     t!("support.issue.comment").to_string()
                 } else {
@@ -2651,8 +3167,19 @@ impl SupportView {
                 },
                 "reply",
             )
+        } else {
+            (
+                ShellDeckColors::bg_surface(),
+                false,
+                if c.author.trim().is_empty() {
+                    t!("support.issue.comment").to_string()
+                } else {
+                    c.author.clone()
+                },
+                "user",
+            )
         };
-        div()
+        let bubble = div()
             .max_w(px(560.0))
             .rounded(px(8.0))
             .bg(bg)
@@ -2691,12 +3218,27 @@ impl SupportView {
                             .child(rel_time(c.at)),
                     ),
             )
-            .child(
-                div()
+            .child({
+                let mut body = div()
+                    .flex()
+                    .flex_col()
                     .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(c.body.clone()),
-            )
+                    .text_color(ShellDeckColors::text_primary());
+                for line in c.body.split('\n') {
+                    let display: SharedString = if line.is_empty() {
+                        " ".into()
+                    } else {
+                        line.to_string().into()
+                    };
+                    body = body.child(div().max_w(px(540.0)).child(display));
+                }
+                body
+            });
+        let mut wrap = div().w_full().flex();
+        if align_end {
+            wrap = wrap.justify_end();
+        }
+        wrap.child(bubble)
     }
 
     fn close_issue_popover_menu(&mut self, cx: &mut Context<Self>) {
@@ -2709,28 +3251,27 @@ impl SupportView {
         iss: &Issue,
         entity: Entity<SupportView>,
     ) -> Vec<PopoverMenuItem> {
-        if !self.issues_staff {
-            return vec![];
-        }
         let id = iss.id.clone();
         let mut items = Vec::new();
 
-        items.push(
-            PopoverMenuItem::new("iss-menu-status", t!("support.menu.status").to_string())
-                .icon("filter")
-                .on_click({
-                    let entity = entity.clone();
-                    move |_, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.close_issue_popover_menu(cx);
-                            this.issue_status_menu = true;
-                            this.issue_priority_menu_open = false;
-                            this.issue_dispatch_menu = false;
-                            cx.notify();
-                        });
-                    }
-                }),
-        );
+        // Staff-only triage ops (status/priority/assign/dispatch/GitHub).
+        if self.issues_staff {
+            items.push(
+                PopoverMenuItem::new("iss-menu-status", t!("support.menu.status").to_string())
+                    .icon("filter")
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.close_issue_popover_menu(cx);
+                                this.issue_status_menu = true;
+                                this.issue_priority_menu_open = false;
+                                this.issue_dispatch_menu = false;
+                                cx.notify();
+                            });
+                        }
+                    }),
+            );
         items.push(
             PopoverMenuItem::new("iss-menu-priority", t!("support.menu.priority").to_string())
                 .icon("flag")
@@ -2819,7 +3360,478 @@ impl SupportView {
             );
         }
 
+        // End of staff-only triage ops block.
+        }
+
+        // Delete: staff can delete any in-scope request; a non-staff caller
+        // only sees the entry on requests they filed themselves. The server
+        // enforces the same rule on the wire — this is UX politeness, not
+        // security.
+        if self.issues_staff || self.is_my_issue(iss) {
+            let did = id.clone();
+            items.push(
+                PopoverMenuItem::new("iss-menu-delete", t!("support.menu.delete").to_string())
+                    .icon("trash-2")
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.close_issue_popover_menu(cx);
+                                this.confirm_issue_delete = Some(did.clone());
+                                cx.notify();
+                            });
+                        }
+                    }),
+            );
+        }
+
         items
+    }
+
+    fn close_delete_issue_modal(&mut self, cx: &mut Context<Self>) {
+        self.confirm_issue_delete = None;
+        cx.notify();
+    }
+
+    /// Small chip helper used inside the advanced filter modal. Wraps
+    /// `compact_filter_button` (the same building block the tickets modal
+    /// uses via `render_pick_button`) with `selected(active)` + optional
+    /// leading icon — same visual language across both surfaces per
+    /// `.agents/ui-components.md` § harmonization.
+    fn render_filter_chip<F>(
+        &self,
+        id: SharedString,
+        icon: Option<&'static str>,
+        label: String,
+        is_active: bool,
+        cx: &mut Context<Self>,
+        on_pick: F,
+    ) -> impl IntoElement
+    where
+        F: Fn(&mut Self) + 'static,
+    {
+        let entity = cx.entity();
+        let mut btn = Self::compact_filter_button(ElementId::from(id), label)
+            .variant(ButtonVariant::Outline)
+            .selected(is_active);
+        if let Some(slug) = icon {
+            btn = btn.icon(IconSource::from(slug));
+        }
+        btn.on_click(move |_, _, cx| {
+            entity.update(cx, |this, cx| {
+                on_pick(this);
+                cx.notify();
+            });
+        })
+    }
+
+    fn render_issues_filter_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let d = &self.issues_filter_draft;
+
+        // Priority — colored chips (Destructive / Warning / Secondary /
+        // Outline via `priority_badge`) wrapped in a bordered pill that
+        // highlights on active. Mirrors the tickets modal priority row so
+        // the visual language of "priority" is identical across surfaces.
+        let priority_entries: &[(&str, &str)] = &[
+            ("", "support.issues.filter.all"),
+            ("low", "support.issues.priority.low"),
+            ("normal", "support.issues.priority.normal"),
+            ("high", "support.issues.priority.high"),
+            ("urgent", "support.issues.priority.urgent"),
+        ];
+        let mut priority_row = div().flex().items_center().gap(px(6.0)).flex_wrap();
+        for (value, key) in priority_entries {
+            let value: String = (*value).to_string();
+            let active = d.priority == value;
+            let entity = cx.entity();
+            let value_click = value.clone();
+            let mut chip = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "iss-adv-pri-{}",
+                    if value.is_empty() { "all" } else { &value }
+                ))))
+                .p(px(2.0))
+                .rounded_full()
+                .cursor_pointer()
+                .border_2()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.issues_filter_draft.priority = value_click.clone();
+                        cx.notify();
+                    });
+                });
+            chip = if value.is_empty() {
+                chip.child(Badge::new(t!(*key).to_string()).variant(BadgeVariant::Outline))
+            } else {
+                chip.child(priority_badge(&value))
+            };
+            chip = if active {
+                chip.border_color(ShellDeckColors::primary())
+            } else {
+                chip.border_color(gpui::transparent_black()).opacity(0.55)
+            };
+            priority_row = priority_row.child(chip);
+        }
+
+        // Source
+        let source_entries: &[(&str, &str, &'static str)] = &[
+            ("", "support.issues.filter.all", "ellipsis"),
+            ("user", "support.issues.source.user", "user"),
+            ("support", "support.issues.source.support", "reply"),
+        ];
+        let mut source_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+        for (value, key, icon) in source_entries {
+            let value: String = (*value).to_string();
+            let active = d.source == value;
+            source_row = source_row.child(self.render_filter_chip(
+                SharedString::from(format!(
+                    "iss-adv-src-{}",
+                    if value.is_empty() { "all" } else { &value }
+                )),
+                Some(icon),
+                t!(*key).to_string(),
+                active,
+                cx,
+                move |this| this.issues_filter_draft.source = value.clone(),
+            ));
+        }
+
+        // Assignee (special values only for v1)
+        let assignee_entries: &[(&str, &str, &'static str)] = &[
+            ("", "support.issues.filter.all", "users"),
+            ("me", "support.issues.assignee.me", "user-check"),
+            ("unassigned", "support.issues.assignee.unassigned", "user"),
+        ];
+        let mut assignee_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+        for (value, key, icon) in assignee_entries {
+            let value: String = (*value).to_string();
+            let active = d.assignee == value;
+            assignee_row = assignee_row.child(self.render_filter_chip(
+                SharedString::from(format!(
+                    "iss-adv-as-{}",
+                    if value.is_empty() { "all" } else { &value }
+                )),
+                Some(icon),
+                t!(*key).to_string(),
+                active,
+                cx,
+                move |this| this.issues_filter_draft.assignee = value.clone(),
+            ));
+        }
+
+        // GitHub linkage — 3 chips (all / linked / not linked)
+        let github_entries: &[(Option<bool>, &str, &str, &'static str)] = &[
+            (None, "all", "support.issues.filter.all", "ellipsis"),
+            (Some(true), "linked", "support.issues.github.linked", "upload"),
+            (Some(false), "unlinked", "support.issues.github.unlinked", "eye-off"),
+        ];
+        let mut github_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+        for (value, tag, key, icon) in github_entries {
+            let value_c = *value;
+            let active = d.has_github == value_c;
+            github_row = github_row.child(self.render_filter_chip(
+                SharedString::from(format!("iss-adv-gh-{}", tag)),
+                Some(icon),
+                t!(*key).to_string(),
+                active,
+                cx,
+                move |this| this.issues_filter_draft.has_github = value_c,
+            ));
+        }
+
+        // Since — 4 chips: all / 24h / 7d / 30d. We stamp an ISO instant at
+        // pick time (chrono-free — the server does lexicographic compare
+        // and the timestamps are ISO too, so `now - offset` in local time
+        // formatted as `%Y-%m-%dT%H:%M:%SZ` is enough).
+        use std::time::{SystemTime, UNIX_EPOCH};
+        fn iso_since(hours: i64) -> String {
+            let secs_now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let then = secs_now - hours * 3600;
+            // Poor-man's UTC ISO — no chrono dep. Not exact to the second
+            // in the case of leap seconds; good enough for the "since"
+            // gate the server does.
+            let d = time_of_epoch(then);
+            format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                d.0, d.1, d.2, d.3, d.4, d.5
+            )
+        }
+        // (year, month, day, hour, min, sec)
+        fn time_of_epoch(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
+            let days_since_epoch = secs.div_euclid(86_400);
+            let secs_of_day = secs.rem_euclid(86_400) as u32;
+            let hour = secs_of_day / 3600;
+            let min = (secs_of_day % 3600) / 60;
+            let sec = secs_of_day % 60;
+            // Days-to-date via a proleptic Gregorian algo (Howard Hinnant).
+            let z = days_since_epoch + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z.rem_euclid(146_097) as u32;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+            let y = yoe as i64 + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            let y = if m <= 2 { y + 1 } else { y };
+            (y as i32, m, d, hour, min, sec)
+        }
+        let since_entries: &[(&str, &str, Option<i64>, &'static str)] = &[
+            ("all", "support.issues.since.all", None, "ellipsis"),
+            ("24h", "support.issues.since.h24", Some(24), "clock"),
+            ("7d", "support.issues.since.d7", Some(24 * 7), "clock"),
+            ("30d", "support.issues.since.d30", Some(24 * 30), "calendar"),
+        ];
+        let mut since_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
+        for (tag, key, hours, icon) in since_entries {
+            let hours = *hours;
+            let active = match hours {
+                None => d.since.is_empty(),
+                Some(_) => !d.since.is_empty(),
+            };
+            since_row = since_row.child(self.render_filter_chip(
+                SharedString::from(format!("iss-adv-sc-{}", tag)),
+                Some(icon),
+                t!(*key).to_string(),
+                active,
+                cx,
+                move |this| {
+                    this.issues_filter_draft.since = match hours {
+                        None => String::new(),
+                        Some(h) => iso_since(h),
+                    };
+                },
+            ));
+        }
+
+        let mine_toggle = Checkbox::new("iss-adv-mine")
+            .checked(d.mine)
+            .label(t!("support.issues.mine").to_string())
+            .on_click({
+                let entity = entity.clone();
+                move |checked, _, cx| {
+                    let val = *checked;
+                    entity.update(cx, |this, cx| {
+                        this.issues_filter_draft.mine = val;
+                        cx.notify();
+                    });
+                }
+            });
+
+        UiDialog::new()
+            .width(gpui::px(420.0))
+            .on_backdrop_click({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |this, cx| this.close_issues_filter_modal(cx));
+                }
+            })
+            .header(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(lucide_icon("filter", 14.0, ShellDeckColors::text_primary()))
+                            .child(
+                                div()
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("support.filters.title").to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Self::compact_filter_button(
+                                    "iss-filter-reset",
+                                    t!("support.filters.reset").to_string(),
+                                )
+                                .variant(ButtonVariant::Ghost)
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.reset_issues_filter_draft(cx);
+                                        });
+                                    }
+                                }),
+                            )
+                            .child(
+                                IconButton::new("x")
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(gpui::px(28.0))
+                                    .icon_size(gpui::px(12.0))
+                                    .on_click({
+                                        let entity = entity.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.close_issues_filter_modal(cx);
+                                            });
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
+            .content(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .child(Label::new(t!("support.issues.priority.title").to_string()))
+                    .child(priority_row)
+                    .child(Label::new(t!("support.issues.source.title").to_string()))
+                    .child(source_row)
+                    .child(Label::new(t!("support.issues.assignee.title").to_string()))
+                    .child(assignee_row)
+                    .child(Label::new(t!("support.issues.github.title").to_string()))
+                    .child(github_row)
+                    .child(Label::new(t!("support.issues.since.title").to_string()))
+                    .child(since_row)
+                    .child(mine_toggle),
+            )
+            .footer(
+                div()
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .border_t_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        Self::compact_filter_button(
+                            "iss-filter-apply",
+                            t!("support.filters.apply").to_string(),
+                        )
+                        .variant(ButtonVariant::Default)
+                        .icon(IconSource::from("check"))
+                        .w_full()
+                        .on_click({
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.apply_issues_filter_draft(cx));
+                            }
+                        }),
+                    ),
+            )
+    }
+
+    /// Destructive confirm modal for a request soft-delete (staff only).
+    fn render_delete_issue_modal(&self, id: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let title = self
+            .issue_detail
+            .as_ref()
+            .filter(|i| i.id == id)
+            .map(|i| i.title.clone())
+            .or_else(|| {
+                self.issues
+                    .iter()
+                    .find(|i| i.id == id)
+                    .map(|i| i.title.clone())
+            })
+            .unwrap_or_default();
+
+        UiDialog::new()
+            .width(gpui::px(400.0))
+            .on_backdrop_click({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |this, cx| this.close_delete_issue_modal(cx));
+                }
+            })
+            .header(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(14.0))
+                    .child(lucide_icon("trash-2", 16.0, ShellDeckColors::error()))
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("support.delete.title").to_string()),
+                    ),
+            )
+            .content(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(16.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(if title.trim().is_empty() {
+                                t!("support.delete.body_generic").to_string()
+                            } else {
+                                t!("support.delete.body", title = title.clone()).to_string()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("support.delete.irreversible").to_string()),
+                    ),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .child(
+                        Button::new("iss-del-cancel", t!("support.delete.cancel").to_string())
+                            .variant(ButtonVariant::Ghost)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| this.close_delete_issue_modal(cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("iss-del-confirm", t!("support.delete.confirm").to_string())
+                            .variant(ButtonVariant::Destructive)
+                            .icon(IconSource::from("trash-2"))
+                            .on_click({
+                                let entity = entity.clone();
+                                let id = id.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_issue_delete = None;
+                                        cx.emit(SupportViewEvent::IssueDelete(id.clone()));
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    ),
+            )
     }
 
     fn render_issue_popover(
@@ -3020,23 +4032,24 @@ impl SupportView {
                             .text_color(ShellDeckColors::text_primary())
                             .child(iss.title.clone()),
                     )
-                    .when(self.issues_staff, |el| {
-                        el.child({
-                            let entity = cx.entity();
-                            IconButton::new("ellipsis-vertical")
-                                .variant(ButtonVariant::Ghost)
-                                .size(gpui::px(28.0))
-                                .icon_size(gpui::px(14.0))
-                                .on_click({
-                                    move |event, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.issue_popover_menu = Some(event.position());
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                        })
-                    }),
+                    .child({
+                        let entity = cx.entity();
+                        let iid = iss.id.clone();
+                        IconButton::new("ellipsis-vertical")
+                            .variant(ButtonVariant::Ghost)
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(14.0))
+                            .on_click({
+                                move |event, _, cx| {
+                                    let iid = iid.clone();
+                                    entity.update(cx, |this, cx| {
+                                        this.issue_popover_menu =
+                                            Some((iid, event.position()));
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                    })
             )
             .child(meta_row)
             .child(self.render_issue_header_subpanels(&iss, cx));
@@ -3104,12 +4117,26 @@ impl SupportView {
                                     .child(rel_time(iss.created_at)),
                             ),
                     )
-                    .child(
-                        div()
+                    .child({
+                        // Per-line max_w to force wrap — same containment as
+                        // `render_issue_comment` / `render_message`. Without
+                        // it, walls of dashes in a description bleed past
+                        // the bubble border.
+                        let mut body = div()
+                            .flex()
+                            .flex_col()
                             .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(iss.body.clone()),
-                    ),
+                            .text_color(ShellDeckColors::text_primary());
+                        for line in iss.body.split('\n') {
+                            let display: SharedString = if line.is_empty() {
+                                " ".into()
+                            } else {
+                                line.to_string().into()
+                            };
+                            body = body.child(div().max_w(px(540.0)).child(display));
+                        }
+                        body
+                    }),
             );
         } else if iss.comments.is_empty() {
             thread = thread.child(
@@ -3120,7 +4147,7 @@ impl SupportView {
             );
         }
         for c in &iss.comments {
-            thread = thread.child(Self::render_issue_comment(c));
+            thread = thread.child(self.render_issue_comment(c));
         }
 
         div()
@@ -3306,9 +4333,27 @@ impl Render for SupportView {
             root = root.child(self.render_ticket_popover(kind, pos, cx));
         }
 
+        if self.section == SupportSection::Requests && self.issues_filter_modal_open {
+            root = root.child(self.render_issues_filter_modal(cx));
+        }
+
         if self.section == SupportSection::Requests {
-            if let (Some(pos), Some(iss)) = (self.issue_popover_menu, self.issue_detail.clone()) {
-                root = root.child(self.render_issue_popover(&iss, pos, cx));
+            if let Some((iid, pos)) = self.issue_popover_menu.clone() {
+                // Prefer the open detail (may have fresher fields than the
+                // list slim) — fall back to the list row (for row kebabs
+                // fired without opening the detail).
+                let iss = self
+                    .issue_detail
+                    .as_ref()
+                    .filter(|d| d.id == iid)
+                    .cloned()
+                    .or_else(|| self.issues.iter().find(|i| i.id == iid).cloned());
+                if let Some(iss) = iss {
+                    root = root.child(self.render_issue_popover(&iss, pos, cx));
+                }
+            }
+            if let Some(id) = self.confirm_issue_delete.clone() {
+                root = root.child(self.render_delete_issue_modal(id, cx));
             }
         }
 

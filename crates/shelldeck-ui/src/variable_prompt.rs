@@ -7,6 +7,7 @@ use gpui::*;
 
 use shelldeck_core::models::script::{Script, ScriptVariable};
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -158,10 +159,7 @@ impl Render for VariablePrompt {
                 div()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(format!(
-                        "Tab to switch fields ({}) | Enter to run | Esc to cancel",
-                        field_count
-                    )),
+                    .child(t!("variable_prompt.hint", count = field_count).to_string()),
             )
             .child(
                 div()
@@ -182,7 +180,7 @@ impl Render for VariablePrompt {
                             .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                 cx.emit(VariablePromptEvent::Cancel);
                             }))
-                            .child("Cancel"),
+                            .child(t!("variable_prompt.cancel").to_string()),
                     )
                     .child(
                         div()
@@ -199,7 +197,7 @@ impl Render for VariablePrompt {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.submit(cx);
                             }))
-                            .child("Run"),
+                            .child(t!("variable_prompt.run").to_string()),
                     ),
             );
 
@@ -247,7 +245,13 @@ impl Render for VariablePrompt {
                                     .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(format!("Run: {}", self.script.name)),
+                                    .child(
+                                        t!(
+                                            "variable_prompt.title",
+                                            name = self.script.name.as_str()
+                                        )
+                                        .to_string(),
+                                    ),
                             )
                             .child(
                                 div()
@@ -261,7 +265,12 @@ impl Render for VariablePrompt {
                                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                         cx.emit(VariablePromptEvent::Cancel);
                                     }))
-                                    .child(svg().path("icons/lucide/x.svg").size(px(14.0)).text_color(ShellDeckColors::text_muted())),
+                                    .child(
+                                        svg()
+                                            .path("icons/lucide/x.svg")
+                                            .size(px(14.0))
+                                            .text_color(ShellDeckColors::text_muted()),
+                                    ),
                             ),
                     )
                     // Body with fields
@@ -279,7 +288,7 @@ impl Render for VariablePrompt {
                                     .text_size(px(12.0))
                                     .text_color(ShellDeckColors::text_muted())
                                     .pb(px(12.0))
-                                    .child("Fill in the template variables before running this script."),
+                                    .child(t!("variable_prompt.description").to_string()),
                             )
                             .child(fields),
                     )

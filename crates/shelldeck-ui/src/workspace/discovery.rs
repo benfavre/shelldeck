@@ -6,6 +6,7 @@ use shelldeck_ssh::client::SshClient;
 
 use crate::server_sync_view::PanelSide;
 use crate::sites_view::SitesEvent;
+use crate::t;
 use crate::toast::ToastLevel;
 
 use super::{ActiveView, Workspace};
@@ -132,7 +133,8 @@ impl Workspace {
                             if let Err(e) = spawn_result {
                                 tracing::error!("Failed to spawn status-check thread: {}", e);
                                 self.show_toast(
-                                    format!("Failed to check site status: {}", e),
+                                    t!("toast.discovery.site_status_failed", error = e.to_string())
+                                        .to_string(),
                                     ToastLevel::Error,
                                     cx,
                                 );
@@ -235,7 +237,7 @@ impl Workspace {
                 cx.notify();
             });
             self.show_toast(
-                format!("Failed to discover local services: {}", e),
+                t!("toast.discovery.local_failed", error = e.to_string()).to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -380,7 +382,7 @@ impl Workspace {
                 cx.notify();
             });
             self.show_toast(
-                format!("Failed to discover remote services: {}", e),
+                t!("toast.discovery.remote_failed", error = e.to_string()).to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -601,7 +603,7 @@ impl Workspace {
         if let Err(e) = spawn_result {
             tracing::error!("Failed to spawn sites-discover thread: {}", e);
             self.show_toast(
-                format!("Failed to discover sites: {}", e),
+                t!("toast.discovery.sites_failed", error = e.to_string()).to_string(),
                 ToastLevel::Error,
                 cx,
             );

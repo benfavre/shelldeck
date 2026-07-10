@@ -35,6 +35,7 @@ macro_rules! lucide_assets {
 }
 
 lucide_assets!(
+    "activity",
     "arrow-down",
     "arrow-up",
     "arrow-left-right",
@@ -66,6 +67,7 @@ lucide_assets!(
     "inbox",
     "info",
     "key",
+    "keyboard",
     "lock",
     "mail",
     "maximize-2",
@@ -92,6 +94,7 @@ lucide_assets!(
     "user-check",
     "users",
     "x",
+    "zap",
 );
 
 /// Embed Simple Icons SVGs at `icons/simple/{name}.svg` (brand / tech marks).

@@ -13,6 +13,7 @@ use gpui::*;
 
 use shelldeck_core::config::jeanclaude::{JeanMemory, JeanState, JeanTargets, JeanTicket};
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,7 +231,7 @@ impl JeanView {
         &self,
         submit_field: Field,
         state: &Entity<InputState>,
-        placeholder: &'static str,
+        placeholder: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         Input::new(state)
@@ -345,9 +346,9 @@ impl JeanView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
                     .child(if connected {
-                        "JeanClaude connecté".to_string()
+                        t!("jean.status.connected").to_string()
                     } else {
-                        "JeanClaude hors ligne".to_string()
+                        t!("jean.status.offline").to_string()
                     }),
             )
             .child(
@@ -374,7 +375,7 @@ impl JeanView {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Parallélisme"),
+                            .child(t!("jean.parallelism").to_string()),
                     )
                     .child(Self::btn("jean-conc-dec", "−", cx, move |_t, cx| {
                         cx.emit(JeanViewEvent::SetConcurrency((max - 1).max(1)))
@@ -392,9 +393,12 @@ impl JeanView {
                         cx.emit(JeanViewEvent::SetConcurrency(max + 1))
                     })),
             )
-            .child(Self::btn("jean-refresh", "↻ Actualiser", cx, |_t, cx| {
-                cx.emit(JeanViewEvent::Refresh)
-            }))
+            .child(Self::btn(
+                "jean-refresh",
+                t!("jean.refresh").as_ref(),
+                cx,
+                |_t, cx| cx.emit(JeanViewEvent::Refresh),
+            ))
     }
 
     fn render_say(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -407,7 +411,7 @@ impl JeanView {
             .child(div().flex_1().child(self.input_box(
                 Field::Say,
                 &self.say_state,
-                "Dire dans #jean…",
+                t!("jean.say.placeholder").to_string(),
                 cx,
             )))
             .child(
@@ -421,7 +425,7 @@ impl JeanView {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(white())
                     .cursor_pointer()
-                    .child("Envoyer")
+                    .child(t!("support.send").to_string())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit_say(cx))),
             )
     }
@@ -443,11 +447,12 @@ impl JeanView {
             .map(|s| s.pending.clone())
             .unwrap_or_default();
         col = col.child(Self::section_title(&format!(
-            "Confirmations en attente ({})",
+            "{} ({})",
+            t!("jean.pending.title"),
             pending.len()
         )));
         if pending.is_empty() {
-            col = col.child(Self::muted("Aucune confirmation en attente."));
+            col = col.child(Self::muted(t!("jean.pending.empty").as_ref()));
         } else {
             for p in &pending {
                 let thread = p.thread_ts.clone();
@@ -497,7 +502,7 @@ impl JeanView {
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(white())
                                         .cursor_pointer()
-                                        .child("✅ Confirmer")
+                                        .child(t!("jean.pending.confirm").to_string())
                                         .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
                                             cx.emit(JeanViewEvent::Confirm(thread.clone()))
                                         })),
@@ -516,7 +521,7 @@ impl JeanView {
                                         .text_color(ShellDeckColors::error())
                                         .cursor_pointer()
                                         .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                        .child("❌ Rejeter")
+                                        .child(t!("jean.pending.reject").to_string())
                                         .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
                                             cx.emit(JeanViewEvent::Reject(thread2.clone()))
                                         })),
@@ -537,11 +542,12 @@ impl JeanView {
             .filter(|t| t.is_running() || t.is_queued())
             .collect();
         col = col.child(Self::section_title(&format!(
-            "Tickets actifs ({})",
+            "{} ({})",
+            t!("jean.active.title"),
             active.len()
         )));
         if active.is_empty() {
-            col = col.child(Self::muted("Aucun ticket en cours."));
+            col = col.child(Self::muted(t!("jean.active.empty").as_ref()));
         } else {
             let now = now_ms();
             for t in active {
@@ -613,9 +619,12 @@ impl JeanView {
                                         ),
                                 ),
                         )
-                        .child(Self::btn("jean-cancel", "Annuler", cx, move |_t, cx| {
-                            cx.emit(JeanViewEvent::Cancel(id.clone()))
-                        })),
+                        .child(Self::btn(
+                            "jean-cancel",
+                            t!("jean.cancel").as_ref(),
+                            cx,
+                            move |_t, cx| cx.emit(JeanViewEvent::Cancel(id.clone())),
+                        )),
                 );
             }
         }
@@ -628,17 +637,21 @@ impl JeanView {
         let mut filters = div().flex().flex_wrap().gap(px(4.0)).mb(px(8.0));
         for s in statuses {
             let active = self.history_status == s;
-            let label = if s.is_empty() { "tous" } else { s };
+            let label = if s.is_empty() {
+                t!("jean.history.filter.all").to_string()
+            } else {
+                s.to_string()
+            };
             let sval = s.to_string();
             let mut chip = div()
-                .id(ElementId::from(SharedString::from(format!("jhs-{label}"))))
+                .id(ElementId::from(SharedString::from(format!("jhs-{s}"))))
                 .px(px(8.0))
                 .py(px(3.0))
                 .rounded(px(6.0))
                 .text_size(px(11.0))
                 .cursor_pointer()
                 .hover(|x| x.bg(ShellDeckColors::hover_bg()))
-                .child(label.to_string())
+                .child(label)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.history_status = sval.clone();
                     let q = Self::field_value(&this.history_search_state, cx)
@@ -662,7 +675,7 @@ impl JeanView {
 
         let mut list = div().flex().flex_col();
         if self.history.is_empty() {
-            list = list.child(Self::muted("Aucun ticket."));
+            list = list.child(Self::muted(t!("jean.history.empty").as_ref()));
         } else {
             for t in &self.history {
                 let id = t.id.clone();
@@ -717,7 +730,7 @@ impl JeanView {
             .child(self.input_box(
                 Field::HistorySearch,
                 &self.history_search_state,
-                "Rechercher (Entrée)…",
+                t!("jean.history.search_placeholder").to_string(),
                 cx,
             ))
             .child(div().h(px(8.0)))
@@ -747,7 +760,7 @@ impl JeanView {
                 .justify_center()
                 .text_size(px(13.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child("Sélectionnez un ticket");
+                .child(t!("jean.detail.select_ticket").to_string());
         };
         let id_force = t.id.clone();
         let id_cancel = t.id.clone();
@@ -762,7 +775,7 @@ impl JeanView {
             .gap(px(4.0))
             .p(px(14.0));
         if t.actions.is_empty() {
-            actions = actions.child(Self::muted("Aucune action enregistrée."));
+            actions = actions.child(Self::muted(t!("jean.detail.no_actions").as_ref()));
         } else {
             for a in &t.actions {
                 actions = actions.child(
@@ -794,14 +807,14 @@ impl JeanView {
             .border_color(ShellDeckColors::border());
         bar = bar.child(Self::btn(
             "jean-force",
-            "Forcer (ticket)",
+            t!("jean.detail.force").as_ref(),
             cx,
             move |_t, cx| cx.emit(JeanViewEvent::Force(id_force.clone())),
         ));
         if can_cancel {
             bar = bar.child(Self::btn(
                 "jean-detail-cancel",
-                "Annuler",
+                t!("jean.cancel").as_ref(),
                 cx,
                 move |_t, cx| cx.emit(JeanViewEvent::Cancel(id_cancel.clone())),
             ));
@@ -881,19 +894,19 @@ impl JeanView {
                     .child(div().flex_1().child(self.input_box(
                         Field::Target,
                         &self.t_domain_state,
-                        "domaine",
+                        "domaine".to_string(),
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
                         Field::Target,
                         &self.t_host_state,
-                        "serveur ssh",
+                        "serveur ssh".to_string(),
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
                         Field::Target,
                         &self.t_note_state,
-                        "note (option)",
+                        "note (option)".to_string(),
                         cx,
                     )))
                     .child(Self::btn("jean-tgt-add", "Ajouter", cx, |this, cx| {
@@ -993,13 +1006,13 @@ impl JeanView {
                     .child(div().w(px(140.0)).child(self.input_box(
                         Field::Memory,
                         &self.mem_match_state,
-                        "match (mot-clé)",
+                        "match (mot-clé)".to_string(),
                         cx,
                     )))
                     .child(div().flex_1().child(self.input_box(
                         Field::Memory,
                         &self.mem_text_state,
-                        "texte",
+                        "texte".to_string(),
                         cx,
                     )))
                     .child(Self::btn("jean-mem-add", "Ajouter", cx, |this, cx| {
@@ -1034,10 +1047,10 @@ impl Render for JeanView {
             .py(px(6.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            .child(self.tab_button(JeanTab::Overview, "Aperçu", cx))
-            .child(self.tab_button(JeanTab::History, "Historique", cx))
-            .child(self.tab_button(JeanTab::Targets, "Cibles", cx))
-            .child(self.tab_button(JeanTab::Memory, "Mémoire", cx));
+            .child(self.tab_button(JeanTab::Overview, t!("jean.tab.overview").as_ref(), cx))
+            .child(self.tab_button(JeanTab::History, t!("jean.tab.history").as_ref(), cx))
+            .child(self.tab_button(JeanTab::Targets, t!("jean.tab.targets").as_ref(), cx))
+            .child(self.tab_button(JeanTab::Memory, t!("jean.tab.memory").as_ref(), cx));
 
         let body = match self.tab {
             JeanTab::Overview => self.render_overview(cx).into_any_element(),

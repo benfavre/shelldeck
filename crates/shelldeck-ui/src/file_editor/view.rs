@@ -10,6 +10,7 @@ use super::file_browser::FileBrowserPanel;
 use super::highlighter::{HighlightSpan, SyntaxHighlighter};
 use super::{EditorLanguage, FileKind};
 use crate::glyph_cache::GlyphCache;
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 // ---------------------------------------------------------------------------
@@ -62,48 +63,50 @@ pub enum ContextMenuAction {
 }
 
 struct ContextMenuItem {
-    label: &'static str,
+    label: String,
     shortcut: &'static str,
     action: ContextMenuAction,
 }
 
-const CONTEXT_MENU_ITEMS: &[ContextMenuItem] = &[
-    ContextMenuItem {
-        label: "Undo",
-        shortcut: "Ctrl+Z",
-        action: ContextMenuAction::Undo,
-    },
-    ContextMenuItem {
-        label: "Redo",
-        shortcut: "Ctrl+Y",
-        action: ContextMenuAction::Redo,
-    },
-    ContextMenuItem {
-        label: "Cut",
-        shortcut: "Ctrl+X",
-        action: ContextMenuAction::Cut,
-    },
-    ContextMenuItem {
-        label: "Copy",
-        shortcut: "Ctrl+C",
-        action: ContextMenuAction::Copy,
-    },
-    ContextMenuItem {
-        label: "Paste",
-        shortcut: "Ctrl+V",
-        action: ContextMenuAction::Paste,
-    },
-    ContextMenuItem {
-        label: "Select All",
-        shortcut: "Ctrl+A",
-        action: ContextMenuAction::SelectAll,
-    },
-    ContextMenuItem {
-        label: "Toggle Comment",
-        shortcut: "Ctrl+/",
-        action: ContextMenuAction::ToggleComment,
-    },
-];
+fn context_menu_items() -> Vec<ContextMenuItem> {
+    vec![
+        ContextMenuItem {
+            label: t!("file_editor.context.undo").to_string(),
+            shortcut: "Ctrl+Z",
+            action: ContextMenuAction::Undo,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.redo").to_string(),
+            shortcut: "Ctrl+Y",
+            action: ContextMenuAction::Redo,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.cut").to_string(),
+            shortcut: "Ctrl+X",
+            action: ContextMenuAction::Cut,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.copy").to_string(),
+            shortcut: "Ctrl+C",
+            action: ContextMenuAction::Copy,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.paste").to_string(),
+            shortcut: "Ctrl+V",
+            action: ContextMenuAction::Paste,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.select_all").to_string(),
+            shortcut: "Ctrl+A",
+            action: ContextMenuAction::SelectAll,
+        },
+        ContextMenuItem {
+            label: t!("file_editor.context.toggle_comment").to_string(),
+            shortcut: "Ctrl+/",
+            action: ContextMenuAction::ToggleComment,
+        },
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // Events
@@ -159,6 +162,11 @@ pub struct EditorTab {
     pub filename: String,
     pub content: TabContent,
     pub scroll_offset: f32,
+    /// Horizontal scroll offset in *visual columns* (monospace cells). Floats
+    /// so trackpad / pixel-precise scrolls accumulate without stair-stepping.
+    /// Clamped to `[0.0, max_col - visible_cols + margin]` on each scroll or
+    /// cursor movement.
+    pub h_scroll_offset: f32,
 }
 
 impl EditorTab {
@@ -176,6 +184,7 @@ impl EditorTab {
                 language,
             },
             scroll_offset: 0.0,
+            h_scroll_offset: 0.0,
         }
     }
 
@@ -199,6 +208,7 @@ impl EditorTab {
                 language,
             },
             scroll_offset: 0.0,
+            h_scroll_offset: 0.0,
         }
     }
 
@@ -214,6 +224,7 @@ impl EditorTab {
             filename,
             content: TabContent::Image { image_path: path },
             scroll_offset: 0.0,
+            h_scroll_offset: 0.0,
         }
     }
 
@@ -229,6 +240,7 @@ impl EditorTab {
             filename,
             content: TabContent::Pdf { info },
             scroll_offset: 0.0,
+            h_scroll_offset: 0.0,
         }
     }
 
@@ -244,6 +256,7 @@ impl EditorTab {
             filename,
             content: TabContent::Binary { info },
             scroll_offset: 0.0,
+            h_scroll_offset: 0.0,
         }
     }
 
@@ -363,6 +376,20 @@ pub struct FileEditorView {
     pub(crate) font_size: f32,
     /// Per-editor zoom offset added to the base size (Ctrl +/-/0), in px.
     pub(crate) zoom: f32,
+    /// Editor preferences mirroring `AppConfig.editor`. Kept as flat fields so
+    /// the paint loop and input handlers read them without cloning a struct.
+    /// Updated in bulk via `apply_editor_config`.
+    pub(crate) show_line_numbers: bool,
+    pub(crate) show_whitespace: bool,
+    pub(crate) word_wrap: bool,
+    pub(crate) word_wrap_column: usize,
+    pub(crate) cursor_blink_enabled: bool,
+    pub(crate) insert_spaces: bool,
+    pub(crate) editor_tab_size: usize,
+    /// Line-height multiplier applied to `font_size` to compute cell height.
+    /// VS Code / Zed default is ~1.5 — feels aired-out. 1.4 is our previous
+    /// hardcoded value (tighter). Persisted via `EditorConfig.line_height`.
+    pub(crate) line_height: f32,
     // Canvas bounds origin (set during prepaint, used by mouse handlers)
     pub(crate) canvas_origin: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // Canvas height in pixels (set during prepaint, used for scroll_lines_per_page)
@@ -424,6 +451,14 @@ impl FileEditorView {
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
             zoom: 0.0,
+            show_line_numbers: true,
+            show_whitespace: false,
+            word_wrap: false,
+            word_wrap_column: 120,
+            cursor_blink_enabled: true,
+            insert_spaces: true,
+            editor_tab_size: 4,
+            line_height: 1.5,
             fif_visible: false,
             fif_query: String::new(),
             fif_last_query: String::new(),
@@ -588,18 +623,29 @@ impl FileEditorView {
 
     fn ensure_glyph_cache(&mut self, window: &Window) {
         let fs = self.effective_font_size();
-        // Rebuild when the cache is missing or was built at a different size
-        // (covers both the app font-size setting and per-editor zoom).
+        let lh = self.line_height;
+        // Rebuild when the cache is missing, was built at a different size,
+        // or was built at a different line-height (covers font size, per-tab
+        // zoom, and the persisted line-height slider).
         let stale = self
             .glyph_cache
             .as_ref()
-            .map(|c| (c.font_size.to_f64() as f32 - fs).abs() > 0.01)
+            .map(|c| {
+                let font_matches = (c.font_size.to_f64() as f32 - fs).abs() < 0.01;
+                // cell_height = font_size * clamped_line_height — reverse to
+                // check whether the current multiplier matches the cached one.
+                let cached_lh =
+                    c.cell_height.to_f64() as f32 / (c.font_size.to_f64() as f32).max(1.0);
+                let lh_matches = (cached_lh - lh.clamp(1.0, 3.0)).abs() < 0.01;
+                !(font_matches && lh_matches)
+            })
             .unwrap_or(true);
         if stale {
             self.glyph_cache = Some(Arc::new(GlyphCache::build(
                 window.text_system(),
                 &self.font_family,
                 fs,
+                lh,
             )));
         }
     }
@@ -781,11 +827,80 @@ impl FileEditorView {
         }
     }
 
+    /// Total gutter width, in pixels, for a monospace `cell_w` and a buffer
+    /// with `total_lines` lines. Kept in one place so `paint_editor` and the
+    /// mouse hit-testers can never disagree — a mismatch here silently breaks
+    /// fold-toggle-on-gutter-click.
+    ///
+    /// Layout (see `.agents/spacing.md`):
+    /// `[breakpoint(1)][number(digits+1 pad)][fold(1.5)][code_left_pad(0.5)]`.
+    pub(crate) fn compute_gutter_w(&self, cell_w: f32, total_lines: usize) -> f32 {
+        let digits = if total_lines == 0 {
+            1
+        } else {
+            (total_lines as f64).log10().floor() as usize + 1
+        };
+        let breakpoint_col_w = cell_w;
+        let fold_col_w = cell_w * 1.5;
+        let code_left_pad = cell_w * 0.5;
+        if self.show_line_numbers {
+            breakpoint_col_w + (digits as f32 + 1.0) * cell_w + fold_col_w + code_left_pad
+        } else {
+            breakpoint_col_w + fold_col_w + code_left_pad
+        }
+    }
+
+    /// Sync the whole `EditorConfig` slice into the editor. Called on app
+    /// startup (main.rs) and whenever Settings emits `ConfigChanged` — the
+    /// workspace forwards the editor slice only (session-state.md rule).
+    pub fn apply_editor_config(
+        &mut self,
+        cfg: &shelldeck_core::config::app_config::EditorConfig,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_font_family(cfg.font_family.clone());
+        self.set_font_size(cfg.font_size);
+        if (self.line_height - cfg.line_height).abs() > f32::EPSILON {
+            self.line_height = cfg.line_height;
+            // Invalidate the cache so `ensure_glyph_cache` rebuilds with the
+            // new cell height on the next render.
+            self.glyph_cache = None;
+        }
+        self.show_line_numbers = cfg.show_line_numbers;
+        self.show_whitespace = cfg.show_whitespace;
+        self.word_wrap = cfg.word_wrap;
+        self.word_wrap_column = cfg.word_wrap_column;
+        self.insert_spaces = cfg.insert_spaces;
+        self.editor_tab_size = cfg.tab_size;
+        // Propagate tab_size to every open buffer so indent/paint agree.
+        for tab in &mut self.tabs {
+            if let TabContent::Text { buffer, .. } = &mut tab.content {
+                buffer.set_tab_size(cfg.tab_size);
+            }
+        }
+        // Cursor blink: honor the toggle without leaving a stale task alive.
+        let was_enabled = self.cursor_blink_enabled;
+        self.cursor_blink_enabled = cfg.cursor_blink;
+        if !cfg.cursor_blink {
+            self.cursor_blink_task = None;
+            self.cursor_blink_on = true;
+        } else if !was_enabled {
+            self.start_cursor_blink(cx);
+        }
+        cx.notify();
+    }
+
     // -----------------------------------------------------------------------
     // Cursor blink
     // -----------------------------------------------------------------------
 
     fn start_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        // Honor the persisted "cursor blink" toggle: solid cursor when off.
+        if !self.cursor_blink_enabled {
+            self.cursor_blink_on = true;
+            self.cursor_blink_task = None;
+            return;
+        }
         self.cursor_blink_on = true;
         let handle = cx.entity().downgrade();
         self.cursor_blink_task = Some(cx.spawn(async move |_, cx| loop {
@@ -1182,7 +1297,7 @@ impl FileEditorView {
             .child(
                 div()
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Find:"),
+                    .child(t!("file_editor.search.find").to_string()),
             )
             .child(
                 div()
@@ -1195,7 +1310,7 @@ impl FileEditorView {
                     .bg(ShellDeckColors::bg_primary())
                     .text_color(ShellDeckColors::text_primary())
                     .child(if self.search_query.is_empty() {
-                        "Type to search...".to_string()
+                        t!("file_editor.search.placeholder").to_string()
                     } else {
                         self.search_query.clone()
                     }),
@@ -1238,7 +1353,7 @@ impl FileEditorView {
             .child(
                 div()
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Replace:"),
+                    .child(t!("file_editor.replace.label").to_string()),
             )
             .child(
                 div()
@@ -1251,7 +1366,7 @@ impl FileEditorView {
                     .bg(ShellDeckColors::bg_primary())
                     .text_color(ShellDeckColors::text_primary())
                     .child(if self.replace_query.is_empty() {
-                        "Replace with...".to_string()
+                        t!("file_editor.replace.placeholder").to_string()
                     } else {
                         self.replace_query.clone()
                     }),
@@ -1269,7 +1384,7 @@ impl FileEditorView {
                         s.bg(ShellDeckColors::hover_bg())
                             .text_color(ShellDeckColors::text_primary())
                     })
-                    .child("Replace")
+                    .child(t!("file_editor.replace.action").to_string())
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h_next.upgrade() {
                             view.update(cx, |this, cx| {
@@ -1291,7 +1406,7 @@ impl FileEditorView {
                         s.bg(ShellDeckColors::hover_bg())
                             .text_color(ShellDeckColors::text_primary())
                     })
-                    .child("All")
+                    .child(t!("file_editor.replace.all").to_string())
                     .on_click(move |_event, _window, cx| {
                         if let Some(view) = h_all.upgrade() {
                             view.update(cx, |this, cx| {
@@ -1322,7 +1437,7 @@ impl FileEditorView {
             .child(
                 div()
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Go to Line:"),
+                    .child(t!("file_editor.goto_line.label").to_string()),
             )
             .child(
                 div()
@@ -1333,7 +1448,7 @@ impl FileEditorView {
                     .bg(ShellDeckColors::bg_primary())
                     .text_color(ShellDeckColors::text_primary())
                     .child(if self.goto_line_query.is_empty() {
-                        "Line number...".to_string()
+                        t!("file_editor.goto_line.placeholder").to_string()
                     } else {
                         self.goto_line_query.clone()
                     }),
@@ -1358,6 +1473,7 @@ impl FileEditorView {
         let tab_idx = self.active_tab_index;
         let scroll_lines_per_page = self.scroll_lines_per_page;
         let cursor_blink_on = self.cursor_blink_on;
+        let show_line_numbers = self.show_line_numbers;
         let has_focus = self.focus_handle.is_focused(window);
 
         let tab = match self.tabs.get_mut(tab_idx) {
@@ -1397,6 +1513,10 @@ impl FileEditorView {
         let first_visible = (tab.scroll_offset as usize).min(visible_count.saturating_sub(1));
         let last_visible = (first_visible + scroll_lines_per_page + 1).min(visible.len());
         let window: Vec<usize> = visible[first_visible..last_visible].to_vec();
+        // Horizontal scroll — visual columns. Snapped to int in paint so all
+        // col-based math stays clean; the float storage is kept only for
+        // trackpad accumulation.
+        let h_scroll = tab.h_scroll_offset.max(0.0) as usize;
 
         // Highlights for the buffer span covering the window, picked per visible line.
         let (hl_start, hl_end) = if window.is_empty() {
@@ -1441,7 +1561,15 @@ impl FileEditorView {
             .collect();
         let selection = buffer.selection().cloned();
 
-        // Compute gutter width inline to avoid borrowing self
+        // Gutter layout — VS Code / Zed pattern, left → right:
+        //
+        //   [ breakpoint col ][ line numbers ][ fold col ][ code ]
+        //         1 cell         digits + 1        1 cell
+        //
+        // TODO(breakpoints): the leftmost column is reserved for a future
+        // breakpoint / debug marker gutter. It's rendered empty for now — the
+        // reserved cell keeps the layout stable so shipping breakpoints later
+        // doesn't shift line numbers under the user's mouse.
         let line_count = total_lines;
         let digits = if line_count == 0 {
             1
@@ -1449,7 +1577,23 @@ impl FileEditorView {
             (line_count as f64).log10().floor() as usize + 1
         };
         let char_width = cache.cell_width.to_f64() as f32;
-        let gutter_w = (digits as f32 + 2.0) * char_width;
+        let breakpoint_col_w = char_width; // reserved for future breakpoints
+                                           // Fold column is 1.5 cells so the chevron has ~half-cell padding on
+                                           // its right and doesn't butt against the gutter/code rail.
+        let fold_col_w = char_width * 1.5;
+        // Breathing room between the vertical rail and the first code column
+        // — matches the padding the chevron gets on its side (see
+        // `.agents/spacing.md`). Baked into `gutter_w` so every col-based
+        // paint (numbers, cursor, selection, indent guides…) picks it up
+        // without individual offsets.
+        let code_left_pad = char_width * 0.5;
+        let gutter_w = if self.show_line_numbers {
+            breakpoint_col_w + (digits as f32 + 1.0) * char_width + fold_col_w + code_left_pad
+        } else {
+            // Line numbers off: still keep the breakpoint reservation + fold
+            // column so future toggles don't reshuffle the layout.
+            breakpoint_col_w + fold_col_w + code_left_pad
+        };
 
         // Bracket match (converted to visual-row space)
         let bracket_match: Option<(usize, usize)> = buffer
@@ -1519,7 +1663,7 @@ impl FileEditorView {
         let h_right = handle.clone();
         let h_move = handle.clone();
         let h_up = handle.clone();
-        let h_scroll = handle.clone();
+        let h_wheel = handle.clone();
         let focus_down = focus.clone();
 
         div()
@@ -1571,7 +1715,7 @@ impl FileEditorView {
                 },
             )
             .on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
-                if let Some(view) = h_scroll.upgrade() {
+                if let Some(view) = h_wheel.upgrade() {
                     view.update(cx, |this, cx| {
                         this.handle_scroll(event, cx);
                     });
@@ -1599,6 +1743,7 @@ impl FileEditorView {
                             cursor_col,
                             sel_coords,
                             gutter_w,
+                            show_line_numbers,
                             cursor_blink_on,
                             has_focus,
                             search_match_coords,
@@ -1607,6 +1752,7 @@ impl FileEditorView {
                             bracket_match,
                             word_highlight_coords,
                             extra_cursor_coords,
+                            h_scroll,
                         )
                     },
                     move |bounds,
@@ -1622,6 +1768,7 @@ impl FileEditorView {
                         cursor_col,
                         sel_coords,
                         gutter_w,
+                        show_line_numbers,
                         cursor_blink_on,
                         has_focus,
                         search_match_coords,
@@ -1630,6 +1777,7 @@ impl FileEditorView {
                         bracket_match,
                         word_highlight_coords,
                         extra_cursor_coords,
+                        h_scroll,
                     ),
                           window,
                           cx| {
@@ -1646,6 +1794,7 @@ impl FileEditorView {
                             cursor_col,
                             sel_coords,
                             gutter_w,
+                            show_line_numbers,
                             cursor_blink_on,
                             has_focus,
                             &search_match_coords,
@@ -1654,6 +1803,7 @@ impl FileEditorView {
                             bracket_match,
                             &word_highlight_coords,
                             &extra_cursor_coords,
+                            h_scroll,
                             window,
                             cx,
                         );
@@ -1681,6 +1831,7 @@ impl FileEditorView {
         cursor_col: usize,
         sel_coords: Option<(usize, usize, usize, usize)>,
         gutter_w: f32,
+        show_line_numbers: bool,
         cursor_blink_on: bool,
         has_focus: bool,
         search_match_coords: &[(usize, usize, usize, usize)],
@@ -1689,10 +1840,16 @@ impl FileEditorView {
         bracket_match: Option<(usize, usize)>,
         word_highlight_coords: &[(usize, usize, usize, usize)],
         extra_cursors: &[(usize, usize)],
+        h_scroll: usize,
         window: &mut Window,
         cx: &mut App,
     ) {
         let cell_w = cache.cell_width;
+        // Text starts at `bounds.origin.x + gutter_px` for column 0 in a
+        // non-scrolled view; when `h_scroll > 0` we back-off by that many
+        // cells so painted text (and the col-based math for cursor /
+        // selection / highlights) all shift left together.
+        let h_scroll_px = cell_w * h_scroll as f32;
         let cell_h = cache.cell_height;
         let fs = cache.font_size;
         let gutter_px = px(gutter_w);
@@ -1704,10 +1861,30 @@ impl FileEditorView {
         // they track theme changes instead of being a fixed blue/grey).
         let word_highlight_color = ShellDeckColors::primary().opacity(0.18);
 
-        // Paint gutter background
+        // Rail x-position — cached so the gutter background can stop right
+        // before it, leaving the `code_left_pad` slot to inherit the code
+        // panel's own background (see `.agents/spacing.md`).
+        let rail_x = bounds.origin.x + gutter_px - cache.cell_width * 0.5 - px(1.0);
+        let gutter_bg_w = rail_x - bounds.origin.x;
+
+        // Paint gutter background — only up to the rail. Everything right of
+        // the rail (rail itself + code_left_pad + code) keeps the code
+        // panel's `bg_primary`, so the padding reads as air, not as an
+        // orphan strip of gutter tint.
         window.paint_quad(fill(
-            Bounds::new(bounds.origin, size(gutter_px, bounds.size.height)),
+            Bounds::new(bounds.origin, size(gutter_bg_w, bounds.size.height)),
             ShellDeckColors::line_number_bg(),
+        ));
+
+        // Thin vertical rail at the gutter / code boundary — mirrors VS Code
+        // and Zed. Uses the theme border tint so it stays subtle on every
+        // palette and never fights with syntax coloring.
+        window.paint_quad(fill(
+            Bounds::new(
+                point(rail_x, bounds.origin.y),
+                size(px(1.0), bounds.size.height),
+            ),
+            ShellDeckColors::border(),
         ));
 
         // Compute digit count for line numbers
@@ -1768,7 +1945,8 @@ impl FileEditorView {
                 };
 
                 for level in 1..=indent_levels {
-                    let guide_x = bounds.origin.x + gutter_px + tab_w * level as f32 - tab_w;
+                    let guide_x =
+                        bounds.origin.x + gutter_px - h_scroll_px + tab_w * level as f32 - tab_w;
                     let color = if cursor_indent_level == Some(level.saturating_sub(1)) {
                         indent_guide_active_color
                     } else {
@@ -1811,7 +1989,7 @@ impl FileEditorView {
                     line_visual_len
                 };
                 if sc < ec {
-                    let sx = bounds.origin.x + gutter_px + cell_w * sc as f32;
+                    let sx = bounds.origin.x + gutter_px - h_scroll_px + cell_w * sc as f32;
                     let sw = cell_w * (ec - sc) as f32;
                     window.paint_quad(fill(
                         Bounds::new(point(sx, y), size(sw, cell_h)),
@@ -1838,7 +2016,7 @@ impl FileEditorView {
                     line_visual_len
                 };
                 if sc < ec {
-                    let sx = bounds.origin.x + gutter_px + cell_w * sc as f32;
+                    let sx = bounds.origin.x + gutter_px - h_scroll_px + cell_w * sc as f32;
                     let sw = cell_w * (ec - sc) as f32;
                     window.paint_quad(fill(Bounds::new(point(sx, y), size(sw, cell_h)), color));
                 }
@@ -1859,7 +2037,8 @@ impl FileEditorView {
                         line_visual_len + 1
                     };
                     if start_col < end_col {
-                        let sel_x = bounds.origin.x + gutter_px + cell_w * start_col as f32;
+                        let sel_x =
+                            bounds.origin.x + gutter_px - h_scroll_px + cell_w * start_col as f32;
                         let sel_w = cell_w * (end_col - start_col) as f32;
                         window.paint_quad(fill(
                             Bounds::new(point(sel_x, y), size(sel_w, cell_h)),
@@ -1869,37 +2048,49 @@ impl FileEditorView {
                 }
             }
 
-            // Line number (real buffer line, not the visual row)
-            let real_line = line_numbers.get(ri).copied().unwrap_or(abs_line);
-            let line_num = format!("{:>width$}", real_line + 1, width = digits);
-            let num_color = if abs_line == cursor_line {
-                ShellDeckColors::text_primary()
-            } else {
-                ShellDeckColors::line_number_fg()
-            };
-            let num_str: SharedString = line_num.into();
-            let num_len = num_str.len();
-            let shaped_num = window.text_system().shape_line(
-                num_str,
-                fs,
-                &[TextRun {
-                    len: num_len,
-                    font: cache.base_font.clone(),
-                    color: num_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            );
-            let num_x =
-                bounds.origin.x + px(gutter_w - (digits as f32 + 1.0) * cell_w.to_f64() as f32);
-            let _ = shaped_num.paint(point(num_x, y), cell_h, window, cx);
+            // Line number, right-aligned inside its column. The number column
+            // starts right after the reserved breakpoint cell.
+            if show_line_numbers {
+                let real_line = line_numbers.get(ri).copied().unwrap_or(abs_line);
+                let line_num = format!("{:>width$}", real_line + 1, width = digits);
+                let num_color = if abs_line == cursor_line {
+                    ShellDeckColors::text_primary()
+                } else {
+                    ShellDeckColors::line_number_fg()
+                };
+                let num_str: SharedString = line_num.into();
+                let num_len = num_str.len();
+                let shaped_num = window.text_system().shape_line(
+                    num_str,
+                    fs,
+                    &[TextRun {
+                        len: num_len,
+                        font: cache.base_font.clone(),
+                        color: num_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
+                // Gutter columns are all `cell_w` wide:
+                // [breakpoint(1)][number(digits)][padding(1)][fold(1)]
+                // Number column starts at breakpoint (1 cell) + right-align
+                // inside `digits` cells (numbers are already zero-padded via
+                // the `{:>width$}` format spec above).
+                let num_x = bounds.origin.x + cell_w;
+                let _ = shaped_num.paint(point(num_x, y), cell_h, window, cx);
+            }
 
-            // Fold marker (▾ foldable / ▸ folded), drawn at the gutter's left edge.
+            // Fold chevron sits in its own column — right before the
+            // gutter/code rail. VS Code / Zed layout: number → chevron → code.
+            // `⌄` (u2304) / `›` (u203A) match the sharp chevron look the
+            // maintainer targets. Column is 1.5 cells wide with the chevron
+            // in the LEFT half so it doesn't butt against the vertical rail
+            // (see `.agents/spacing.md`).
             if let Some(&fm) = fold_markers.get(ri) {
                 if fm != 0 {
-                    let marker = if fm == 2 { "▸" } else { "▾" };
+                    let marker = if fm == 2 { "›" } else { "⌄" };
                     let ms: SharedString = marker.into();
                     let shaped_m = window.text_system().shape_line(
                         ms,
@@ -1914,7 +2105,10 @@ impl FileEditorView {
                         }],
                         None,
                     );
-                    let mx = bounds.origin.x + px(2.0);
+                    // Fold column is 1.5 cells + `code_left_pad` after the
+                    // rail; chevron sits in the LEFT cell of the fold column
+                    // so it has ~half-cell of air before the rail.
+                    let mx = bounds.origin.x + px(gutter_w) - cell_w * 2.0;
                     let _ = shaped_m.paint(point(mx, y), cell_h, window, cx);
                 }
             }
@@ -1923,7 +2117,7 @@ impl FileEditorView {
         // Pass 2: Paint text characters on top of backgrounds
         for (ri, line_text) in line_texts.iter().enumerate() {
             let y = bounds.origin.y + cell_h * ri as f32;
-            let text_x = bounds.origin.x + gutter_px;
+            let text_x = bounds.origin.x + gutter_px - h_scroll_px;
             let line_highlights = highlights.get(ri);
 
             let mut col = 0usize;
@@ -1938,32 +2132,31 @@ impl FileEditorView {
                 };
 
                 if ch != ' ' && ch != '\t' {
+                    // Always shape through the text system — the paint_glyph
+                    // fast-path silently drops bold/italic runs on some GPUI
+                    // builds (same rule the terminal follows: see
+                    // AGENTS.md “Critical Rules”).
                     let f = match (bold, italic) {
                         (true, true) => cache.base_font.clone().bold().italic(),
                         (true, false) => cache.base_font.clone().bold(),
                         (false, true) => cache.base_font.clone().italic(),
                         _ => cache.base_font.clone(),
                     };
-
-                    if let Some((font_id, glyph_id)) = cache.lookup(ch, bold, italic) {
-                        let _ = window.paint_glyph(point(x, y), font_id, glyph_id, fs, fg_color);
-                    } else {
-                        let s: SharedString = ch.to_string().into();
-                        let shaped = window.text_system().shape_line(
-                            s,
-                            fs,
-                            &[TextRun {
-                                len: ch.len_utf8(),
-                                font: f,
-                                color: fg_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            }],
-                            None,
-                        );
-                        let _ = shaped.paint(point(x, y), cell_h, window, cx);
-                    }
+                    let s: SharedString = ch.to_string().into();
+                    let shaped = window.text_system().shape_line(
+                        s,
+                        fs,
+                        &[TextRun {
+                            len: ch.len_utf8(),
+                            font: f,
+                            color: fg_color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    );
+                    let _ = shaped.paint(point(x, y), cell_h, window, cx);
                 }
 
                 if ch == '\t' {
@@ -1978,7 +2171,8 @@ impl FileEditorView {
         if has_focus && cursor_blink_on {
             let cursor_visible_line = cursor_line.saturating_sub(first_visible);
             if cursor_line >= first_visible && cursor_line < first_visible + line_texts.len() {
-                let cursor_x = bounds.origin.x + gutter_px + cell_w * cursor_col as f32;
+                let cursor_x =
+                    bounds.origin.x + gutter_px - h_scroll_px + cell_w * cursor_col as f32;
                 let cursor_y = bounds.origin.y + cell_h * cursor_visible_line as f32;
                 window.paint_quad(fill(
                     Bounds::new(point(cursor_x, cursor_y), size(px(2.0), cell_h)),
@@ -1993,7 +2187,7 @@ impl FileEditorView {
             for &(el, ec) in extra_cursors {
                 if el >= first_visible && el < first_visible + line_texts.len() {
                     let vis = el - first_visible;
-                    let ex = bounds.origin.x + gutter_px + cell_w * ec as f32;
+                    let ex = bounds.origin.x + gutter_px - h_scroll_px + cell_w * ec as f32;
                     let ey = bounds.origin.y + cell_h * vis as f32;
                     window.paint_quad(fill(
                         Bounds::new(point(ex, ey), size(px(2.0), cell_h)),
@@ -2007,7 +2201,7 @@ impl FileEditorView {
         if let Some((match_line, match_vcol)) = bracket_match {
             if match_line >= first_visible && match_line < first_visible + line_texts.len() {
                 let vis_row = match_line - first_visible;
-                let bx = bounds.origin.x + gutter_px + cell_w * match_vcol as f32;
+                let bx = bounds.origin.x + gutter_px - h_scroll_px + cell_w * match_vcol as f32;
                 let by = bounds.origin.y + cell_h * vis_row as f32;
                 let bracket_bg = ShellDeckColors::primary().opacity(0.3);
                 window.paint_quad(fill(
@@ -2133,12 +2327,7 @@ impl FileEditorView {
         let cell_h = cache.cell_height.to_f64() as f32;
 
         let total_lines = self.tabs[tab_idx].buffer().unwrap().len_lines();
-        let digits = if total_lines == 0 {
-            1
-        } else {
-            (total_lines as f64).log10().floor() as usize + 1
-        };
-        let gutter_w = (digits as f32 + 2.0) * cell_w;
+        let gutter_w = self.compute_gutter_w(cell_w, total_lines);
 
         let pos = event.position;
         let (canvas_ox, canvas_oy) = self.canvas_origin_xy();
@@ -2193,7 +2382,11 @@ impl FileEditorView {
             return;
         }
 
-        let visual_col = (text_x / cell_w) as usize;
+        let h_scroll = self.tabs[tab_idx].h_scroll_offset.max(0.0) as usize;
+        // `text_x` is the visual x inside the code area — the paint offsets
+        // it left by `h_scroll * cell_w`, so we add the same offset back to
+        // land on the correct character after a sideways scroll.
+        let visual_col = (text_x / cell_w) as usize + h_scroll;
         let char_col = self.tabs[tab_idx]
             .buffer()
             .unwrap()
@@ -2300,18 +2493,16 @@ impl FileEditorView {
         let cell_h = cache.cell_height.to_f64() as f32;
 
         let total_lines = self.tabs[tab_idx].buffer().map_or(0, |b| b.len_lines());
-        let digits = if total_lines == 0 {
-            1
-        } else {
-            (total_lines as f64).log10().floor() as usize + 1
-        };
-        let gutter_w = (digits as f32 + 2.0) * cell_w;
+        let gutter_w = self.compute_gutter_w(cell_w, total_lines);
+        let h_scroll = self.tabs[tab_idx].h_scroll_offset.max(0.0) as usize;
 
         let (canvas_ox, canvas_oy) = self.canvas_origin_xy();
         let rel_x = (event.position.x.to_f64() as f32 - canvas_ox - gutter_w).max(0.0);
         let rel_y = (event.position.y.to_f64() as f32 - canvas_oy).max(0.0);
 
-        let visual_col = (rel_x / cell_w) as usize;
+        // Add h_scroll back so drag-selection lands on the right character
+        // once the code area has been scrolled sideways.
+        let visual_col = (rel_x / cell_w) as usize + h_scroll;
         let row = (rel_y / cell_h) as usize;
         let scroll = self.tabs[tab_idx].scroll_offset as usize;
         let visible = self.tabs[tab_idx].buffer().unwrap().visible_lines();
@@ -2331,20 +2522,25 @@ impl FileEditorView {
     }
 
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let delta = match event.delta {
-            ScrollDelta::Lines(d) => -d.y * 3.0,
-            ScrollDelta::Pixels(d) => {
-                let cell_h = self
-                    .glyph_cache
-                    .as_ref()
-                    .map(|c| c.cell_height.to_f64() as f32)
-                    .unwrap_or(20.0);
-                -d.y.to_f64() as f32 / cell_h
-            }
+        let (cell_w, cell_h) = self
+            .glyph_cache
+            .as_ref()
+            .map(|c| (c.cell_width.to_f64() as f32, c.cell_height.to_f64() as f32))
+            .unwrap_or((8.0, 20.0));
+        let (dy, dx) = match event.delta {
+            ScrollDelta::Lines(d) => (-d.y * 3.0, -d.x * 3.0),
+            ScrollDelta::Pixels(d) => (
+                -d.y.to_f64() as f32 / cell_h.max(1.0),
+                -d.x.to_f64() as f32 / cell_w.max(1.0),
+            ),
         };
 
         if let Some(tab) = self.active_tab_mut() {
-            tab.scroll_offset += delta;
+            tab.scroll_offset += dy;
+            // Horizontal: trackpad horizontal / shift+wheel_y-mapped-to-x.
+            // Clamped to >= 0; the paint layer skips out-of-view chars, so a
+            // large positive offset just parks the view past the last char.
+            tab.h_scroll_offset = (tab.h_scroll_offset + dx).max(0.0);
         }
         self.clamp_scroll();
         cx.notify();
@@ -2623,85 +2819,84 @@ impl Render for FileEditorView {
             let h_discard = cx.entity().downgrade();
             let h_cancel = cx.entity().downgrade();
 
-            let warning_bar = div()
-                .flex()
-                .items_center()
-                .w_full()
-                .h(px(32.0))
-                .bg(hsla(0.08, 0.7, 0.5, 0.2))
-                .border_b_1()
-                .border_color(hsla(0.08, 0.7, 0.5, 0.4))
-                .px(px(10.0))
-                .gap(px(8.0))
-                .text_size(px(12.0))
-                .child(
-                    div()
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(format!("\"{}\" has unsaved changes.", tab_name)),
-                )
-                .child(div().flex_grow())
-                .child(
-                    div()
-                        .id("save-close-btn")
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(3.0))
-                        .bg(ShellDeckColors::primary())
-                        .text_color(ShellDeckColors::bg_primary())
-                        .text_size(px(11.0))
-                        .cursor_pointer()
-                        .child("Save & Close")
-                        .on_click(move |_event, _window, cx| {
-                            if let Some(view) = h_save.upgrade() {
-                                view.update(cx, |this, cx| {
-                                    if let Some(idx) = this.pending_close_tab {
-                                        this.save_and_close_tab(idx, cx);
-                                    }
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    div()
-                        .id("discard-btn")
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(3.0))
-                        .text_color(hsla(0.0, 0.7, 0.6, 1.0))
-                        .text_size(px(11.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                        .child("Discard")
-                        .on_click(move |_event, _window, cx| {
-                            if let Some(view) = h_discard.upgrade() {
-                                view.update(cx, |this, cx| {
-                                    if let Some(idx) = this.pending_close_tab {
-                                        this.force_close_tab(idx, cx);
-                                    }
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    div()
-                        .id("cancel-close-btn")
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(3.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .text_size(px(11.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                        .child("Cancel")
-                        .on_click(move |_event, _window, cx| {
-                            if let Some(view) = h_cancel.upgrade() {
-                                view.update(cx, |this, cx| {
-                                    this.pending_close_tab = None;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                );
+            let warning_bar =
+                div()
+                    .flex()
+                    .items_center()
+                    .w_full()
+                    .h(px(32.0))
+                    .bg(hsla(0.08, 0.7, 0.5, 0.2))
+                    .border_b_1()
+                    .border_color(hsla(0.08, 0.7, 0.5, 0.4))
+                    .px(px(10.0))
+                    .gap(px(8.0))
+                    .text_size(px(12.0))
+                    .child(div().text_color(ShellDeckColors::text_primary()).child(
+                        t!("file_editor.unsaved_changes", name = tab_name.as_str()).to_string(),
+                    ))
+                    .child(div().flex_grow())
+                    .child(
+                        div()
+                            .id("save-close-btn")
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_color(ShellDeckColors::bg_primary())
+                            .text_size(px(11.0))
+                            .cursor_pointer()
+                            .child(t!("file_editor.unsaved.save_close").to_string())
+                            .on_click(move |_event, _window, cx| {
+                                if let Some(view) = h_save.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(idx) = this.pending_close_tab {
+                                            this.save_and_close_tab(idx, cx);
+                                        }
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("discard-btn")
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .text_color(hsla(0.0, 0.7, 0.6, 1.0))
+                            .text_size(px(11.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                            .child(t!("file_editor.unsaved.discard").to_string())
+                            .on_click(move |_event, _window, cx| {
+                                if let Some(view) = h_discard.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(idx) = this.pending_close_tab {
+                                            this.force_close_tab(idx, cx);
+                                        }
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("cancel-close-btn")
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .text_size(px(11.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                            .child(t!("file_editor.unsaved.cancel").to_string())
+                            .on_click(move |_event, _window, cx| {
+                                if let Some(view) = h_cancel.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        this.pending_close_tab = None;
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    );
             container = container.child(warning_bar);
         }
 
@@ -2767,7 +2962,7 @@ impl Render for FileEditorView {
                 .text_size(s(11.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(ShellDeckColors::text_muted())
-                .child("FILES");
+                .child(t!("file_editor.browser.files").to_string());
 
             browser_panel = browser_panel.child(browser_header);
 
@@ -2802,9 +2997,9 @@ impl Render for FileEditorView {
 
                 let icon = if is_dir {
                     if is_expanded {
-                        "▾ "
+                        "⌄ "
                     } else {
-                        "▸ "
+                        "› "
                     }
                 } else {
                     "  "
@@ -2840,13 +3035,20 @@ impl Render for FileEditorView {
             browser_panel = browser_panel.child(file_list);
             editor_area = editor_area.child(browser_panel);
 
-            // Resize drag handle (mouse_move/up handled on editor_area container)
+            // Resize drag handle (mouse_move/up handled on editor_area
+            // container). Default bg matches the sidebar so the 4px slot
+            // reads as one continuous surface with the file browser on the
+            // left and the gutter on the right — otherwise the transparent
+            // handle leaks the code panel's `bg_primary` through and prints
+            // a foreign-colored strip between the two sidebar-toned zones
+            // (see `.agents/spacing.md`).
             let h_resize_down = cx.entity().downgrade();
             let drag_handle = div()
                 .id("file-browser-resize-handle")
                 .w(px(DRAG_HANDLE_WIDTH))
                 .h_full()
                 .flex_shrink_0()
+                .bg(ShellDeckColors::bg_sidebar())
                 .cursor_col_resize()
                 .hover(|s| s.bg(ShellDeckColors::primary()))
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
@@ -2942,7 +3144,7 @@ impl FileEditorView {
 
         // Query row (input is captured via keystrokes; shown inline).
         let query_text = if self.fif_query.is_empty() {
-            "type to search the workspace…".to_string()
+            t!("file_editor.find_in_files.placeholder").to_string()
         } else {
             self.fif_query.clone()
         };
@@ -2964,7 +3166,7 @@ impl FileEditorView {
                     .text_size(px(11.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ShellDeckColors::text_muted())
-                    .child("FIND IN FILES"),
+                    .child(t!("file_editor.find_in_files.title").to_string()),
             )
             .child(
                 div()
@@ -2984,9 +3186,13 @@ impl FileEditorView {
                         ShellDeckColors::text_muted()
                     })
                     .child(if self.fif_searching {
-                        "Searching…".to_string()
+                        t!("file_editor.find_in_files.searching").to_string()
                     } else {
-                        format!("{} results", self.fif_results.len())
+                        t!(
+                            "file_editor.find_in_files.results",
+                            count = self.fif_results.len()
+                        )
+                        .to_string()
                     }),
             );
 
@@ -3009,7 +3215,7 @@ impl FileEditorView {
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No matches"),
+                    .child(t!("file_editor.find_in_files.no_matches").to_string()),
             );
         }
 
@@ -3116,7 +3322,8 @@ impl FileEditorView {
             .py(px(4.0))
             .text_size(px(12.0));
 
-        for (i, item) in CONTEXT_MENU_ITEMS.iter().enumerate() {
+        let menu_items = context_menu_items();
+        for (i, item) in menu_items.iter().enumerate() {
             let h = handle.clone();
             let action = item.action;
 
@@ -3133,7 +3340,7 @@ impl FileEditorView {
                 .child(
                     div()
                         .text_color(ShellDeckColors::text_primary())
-                        .child(item.label),
+                        .child(item.label.clone()),
                 )
                 .child(
                     div()
@@ -3265,7 +3472,7 @@ impl FileEditorView {
 
         let type_name = tab
             .map(|t| t.content_type_name().to_string())
-            .unwrap_or_else(|| "Plain Text".to_string());
+            .unwrap_or_else(|| t!("file_editor.status.plain_text").to_string());
 
         let mut bar = div()
             .flex()
@@ -3297,15 +3504,15 @@ impl FileEditorView {
 
             let tab_info = tab
                 .and_then(|t| t.buffer())
-                .map(|b| format!("Spaces: {}", b.tab_size()))
+                .map(|b| t!("file_editor.status.spaces", count = b.tab_size()).to_string())
                 .unwrap_or_default();
 
             bar = bar
-                .child(format!("Ln {}, Col {}", line, col))
+                .child(t!("file_editor.status.line_col", line = line, col = col).to_string())
                 .child(div().flex_grow())
                 .child(tab_info)
                 .child(type_name)
-                .child(format!("{} lines", total_lines));
+                .child(t!("file_editor.status.lines", count = total_lines).to_string());
         } else {
             bar = bar.child(type_name).child(div().flex_grow());
         }
@@ -3368,7 +3575,7 @@ impl FileEditorView {
                 .text_color(hsla(0.0, 0.7, 0.55, 1.0))
                 .text_size(px(13.0))
                 .font_weight(FontWeight::BOLD)
-                .child("PDF"),
+                .child(t!("file_editor.pdf.badge").to_string()),
         );
 
         // Filename
@@ -3381,21 +3588,33 @@ impl FileEditorView {
         );
 
         // Info rows
-        card = card.child(Self::info_row("Pages", &page_count.to_string()));
-        card = card.child(Self::info_row("Size", &format_file_size(file_size)));
+        card = card.child(Self::info_row(
+            &t!("file_editor.info.pages").to_string(),
+            &page_count.to_string(),
+        ));
+        card = card.child(Self::info_row(
+            &t!("file_editor.info.size").to_string(),
+            &format_file_size(file_size),
+        ));
         if let Some(t) = title {
             if !t.is_empty() {
-                card = card.child(Self::info_row("Title", t));
+                card = card.child(Self::info_row(&t!("file_editor.info.title").to_string(), t));
             }
         }
         if let Some(a) = author {
             if !a.is_empty() {
-                card = card.child(Self::info_row("Author", a));
+                card = card.child(Self::info_row(
+                    &t!("file_editor.info.author").to_string(),
+                    a,
+                ));
             }
         }
         if let Some(c) = creator {
             if !c.is_empty() {
-                card = card.child(Self::info_row("Creator", c));
+                card = card.child(Self::info_row(
+                    &t!("file_editor.info.creator").to_string(),
+                    c,
+                ));
             }
         }
 
@@ -3414,7 +3633,7 @@ impl FileEditorView {
                     .text_size(px(12.0))
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
-                    .child("Open in External Viewer")
+                    .child(t!("file_editor.pdf.open_external").to_string())
                     .on_click(move |_event, _window, _cx| {
                         let _ = open::that(&path_owned);
                     }),
@@ -3482,13 +3701,19 @@ impl FileEditorView {
             div()
                 .text_size(px(12.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child("This file cannot be displayed as text."),
+                .child(t!("file_editor.binary.not_text").to_string()),
         );
 
         // Info
-        card = card.child(Self::info_row("Size", &format_file_size(file_size)));
+        card = card.child(Self::info_row(
+            &t!("file_editor.info.size").to_string(),
+            &format_file_size(file_size),
+        ));
         if let Some(p) = path {
-            card = card.child(Self::info_row("Path", &p.to_string_lossy()));
+            card = card.child(Self::info_row(
+                &t!("file_editor.info.path").to_string(),
+                &p.to_string_lossy(),
+            ));
         }
 
         // Open externally button
@@ -3506,7 +3731,7 @@ impl FileEditorView {
                     .text_size(px(12.0))
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
-                    .child("Open with System Application")
+                    .child(t!("file_editor.binary.open_external").to_string())
                     .on_click(move |_event, _window, _cx| {
                         let _ = open::that(&path_owned);
                     }),

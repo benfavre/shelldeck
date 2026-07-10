@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::dashboard::ActivityType;
 use crate::script_editor::ScriptEvent;
 use crate::script_form::{ScriptForm, ScriptFormEvent};
+use crate::t;
 use crate::template_browser::{TemplateBrowser, TemplateBrowserEvent};
 use crate::terminal_view::PinnedScript;
 use crate::toast::ToastLevel;
@@ -23,7 +24,11 @@ impl Workspace {
             ScriptEvent::RunScript(script) => {
                 // Guard: don't start if already running
                 if self.scripts.read(cx).is_running() {
-                    self.show_toast("A script is already running", ToastLevel::Warning, cx);
+                    self.show_toast(
+                        t!("toast.script.already_running").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
                     return;
                 }
 
@@ -82,12 +87,12 @@ impl Workspace {
                 }
 
                 self.add_activity(
-                    format!("Running script: {}", script_name),
+                    t!("activity.script.running", name = script_name.as_str()).to_string(),
                     ActivityType::Script,
                     cx,
                 );
                 self.show_toast(
-                    format!("Running script: {}", script_name),
+                    t!("toast.script.running", name = script_name.as_str()).to_string(),
                     ToastLevel::Info,
                     cx,
                 );
@@ -121,7 +126,11 @@ impl Workspace {
                                     .push(format!("Error: Connection {} not found", connection_id));
                                 cx.notify();
                             });
-                            self.show_toast("Remote connection not found", ToastLevel::Error, cx);
+                            self.show_toast(
+                                t!("toast.script.remote_not_found").to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
                             self.update_dashboard_stats(cx);
                         }
                     }
@@ -161,7 +170,11 @@ impl Workspace {
                         cx.notify();
                     });
 
-                    self.show_toast("Script cancelled", ToastLevel::Info, cx);
+                    self.show_toast(
+                        t!("toast.script.cancelled").to_string(),
+                        ToastLevel::Info,
+                        cx,
+                    );
                     self.update_dashboard_stats(cx);
                     cx.notify();
                 }
@@ -190,7 +203,7 @@ impl Workspace {
                         if let Err(e) = self.store.add_script(script.clone()) {
                             tracing::error!("Failed to save script: {}", e);
                             self.show_toast(
-                                format!("Failed to save script: {}", e),
+                                t!("toast.script.save_failed", error = e.to_string()).to_string(),
                                 ToastLevel::Error,
                                 cx,
                             );
@@ -199,7 +212,7 @@ impl Workspace {
                     Err(e) => {
                         tracing::error!("Failed to update script: {}", e);
                         self.show_toast(
-                            format!("Failed to update script: {}", e),
+                            t!("toast.script.update_failed", error = e.to_string()).to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -212,12 +225,12 @@ impl Workspace {
                     }
                 });
                 self.add_activity(
-                    format!("Updated script: {}", script.name),
+                    t!("activity.script.updated", name = script.name.as_str()).to_string(),
                     ActivityType::Script,
                     cx,
                 );
                 self.show_toast(
-                    format!("Script updated: {}", script.name),
+                    t!("toast.script.updated", name = script.name.as_str()).to_string(),
                     ToastLevel::Success,
                     cx,
                 );
@@ -281,7 +294,11 @@ impl Workspace {
                 });
                 let _ = self.store.remove_script(id);
                 if let Some(name) = name {
-                    self.show_toast(format!("Deleted script: {}", name), ToastLevel::Info, cx);
+                    self.show_toast(
+                        t!("toast.script.deleted", name = name.as_str()).to_string(),
+                        ToastLevel::Info,
+                        cx,
+                    );
                 }
                 self.sync_scripts_to_terminal_toolbar(cx);
                 cx.notify();
@@ -296,7 +313,7 @@ impl Workspace {
                     });
                     let _ = self.store.add_script(script);
                     self.show_toast(
-                        format!("Imported template: {}", name),
+                        t!("toast.script.imported_template", name = name.as_str()).to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -444,7 +461,7 @@ impl Workspace {
             Err(e) => {
                 tracing::error!("Failed to spawn local script thread: {}", e);
                 self.show_toast(
-                    format!("Failed to start script: {}", e),
+                    t!("toast.script.start_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -510,27 +527,34 @@ impl Workspace {
                             match exit_code {
                                 Some(0) => {
                                     ws.show_toast(
-                                        format!(
-                                            "Script '{}' completed successfully",
-                                            script_name_done
-                                        ),
+                                        t!(
+                                            "toast.script.completed",
+                                            name = script_name_done.as_str()
+                                        )
+                                        .to_string(),
                                         ToastLevel::Success,
                                         cx,
                                     );
                                 }
                                 Some(code) => {
                                     ws.show_toast(
-                                        format!(
-                                            "Script '{}' exited with code {}",
-                                            script_name_done, code
-                                        ),
+                                        t!(
+                                            "toast.script.exited_with_code",
+                                            name = script_name_done.as_str(),
+                                            code = code
+                                        )
+                                        .to_string(),
                                         ToastLevel::Error,
                                         cx,
                                     );
                                 }
                                 None => {
                                     ws.show_toast(
-                                        format!("Script '{}' failed to execute", script_name_done),
+                                        t!(
+                                            "toast.script.failed_to_execute",
+                                            name = script_name_done.as_str()
+                                        )
+                                        .to_string(),
                                         ToastLevel::Error,
                                         cx,
                                     );
@@ -646,7 +670,7 @@ impl Workspace {
             Err(e) => {
                 tracing::error!("Failed to spawn remote script thread: {}", e);
                 self.show_toast(
-                    format!("Failed to start remote script: {}", e),
+                    t!("toast.script.start_remote_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -710,20 +734,25 @@ impl Workspace {
                             match exit_code {
                                 Some(0) | None => {
                                     ws.show_toast(
-                                        format!(
-                                            "Script '{}' completed on {}",
-                                            script_name_done, host_display
-                                        ),
+                                        t!(
+                                            "toast.script.completed_on",
+                                            name = script_name_done.as_str(),
+                                            host = host_display.as_str()
+                                        )
+                                        .to_string(),
                                         ToastLevel::Success,
                                         cx,
                                     );
                                 }
                                 Some(code) => {
                                     ws.show_toast(
-                                        format!(
-                                            "Script '{}' exited with code {} on {}",
-                                            script_name_done, code, host_display
-                                        ),
+                                        t!(
+                                            "toast.script.exited_on",
+                                            name = script_name_done.as_str(),
+                                            code = code,
+                                            host = host_display.as_str()
+                                        )
+                                        .to_string(),
                                         ToastLevel::Error,
                                         cx,
                                     );
@@ -804,7 +833,7 @@ impl Workspace {
                     });
                     let _ = this.store.add_script(script.clone());
                     this.show_toast(
-                        format!("Imported template: {}", name),
+                        t!("toast.script.imported_template", name = name.as_str()).to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -912,12 +941,12 @@ impl Workspace {
         }
 
         self.add_activity(
-            format!("Running script: {}", script_name),
+            t!("activity.script.running", name = script_name.as_str()).to_string(),
             ActivityType::Script,
             cx,
         );
         self.show_toast(
-            format!("Running script: {}", script_name),
+            t!("toast.script.running", name = script_name.as_str()).to_string(),
             ToastLevel::Info,
             cx,
         );
@@ -947,7 +976,11 @@ impl Workspace {
                             .push(format!("Error: Connection {} not found", connection_id));
                         cx.notify();
                     });
-                    self.show_toast("Remote connection not found", ToastLevel::Error, cx);
+                    self.show_toast(
+                        t!("toast.script.remote_not_found").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
                     self.update_dashboard_stats(cx);
                 }
             }
@@ -984,7 +1017,7 @@ impl Workspace {
                     if let Err(e) = this.store.add_script(script.clone()) {
                         tracing::error!("Failed to save script: {}", e);
                         this.show_toast(
-                            format!("Failed to save script: {}", e),
+                            t!("toast.script.save_failed", error = e.to_string()).to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -994,12 +1027,12 @@ impl Workspace {
                         editor.add_script(script.clone());
                     });
                     this.add_activity(
-                        format!("Added script: {}", script.name),
+                        t!("activity.script.added", name = script.name.as_str()).to_string(),
                         ActivityType::Script,
                         cx,
                     );
                     this.show_toast(
-                        format!("Script created: {}", script.name),
+                        t!("toast.script.created", name = script.name.as_str()).to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -1047,7 +1080,8 @@ impl Workspace {
                             if let Err(e) = this.store.add_script(script.clone()) {
                                 tracing::error!("Failed to save script: {}", e);
                                 this.show_toast(
-                                    format!("Failed to save script: {}", e),
+                                    t!("toast.script.save_failed", error = e.to_string())
+                                        .to_string(),
                                     ToastLevel::Error,
                                     cx,
                                 );
@@ -1056,7 +1090,7 @@ impl Workspace {
                         Err(e) => {
                             tracing::error!("Failed to update script: {}", e);
                             this.show_toast(
-                                format!("Failed to update script: {}", e),
+                                t!("toast.script.update_failed", error = e.to_string()).to_string(),
                                 ToastLevel::Error,
                                 cx,
                             );
@@ -1071,12 +1105,12 @@ impl Workspace {
                         }
                     });
                     this.add_activity(
-                        format!("Updated script: {}", script.name),
+                        t!("activity.script.updated", name = script.name.as_str()).to_string(),
                         ActivityType::Script,
                         cx,
                     );
                     this.show_toast(
-                        format!("Script updated: {}", script.name),
+                        t!("toast.script.updated", name = script.name.as_str()).to_string(),
                         ToastLevel::Success,
                         cx,
                     );

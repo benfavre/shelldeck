@@ -235,13 +235,64 @@ fn post_issue(base_url: &str, token: &str, body: serde_json::Value) -> Result<Is
 
 // ── reads ────────────────────────────────────────────────────────────────
 
-/// List issues in the token's scope (`status`/`q` optional filters).
-pub fn list_issues(base_url: &str, token: &str, status: &str, q: &str) -> Result<IssueList> {
-    let query = format!(
-        "?action=list&status={}&q={}",
-        crate::config::cloud_account::percent_encode(status),
-        crate::config::cloud_account::percent_encode(q),
-    );
+/// Server-side filter payload for `list_issues`. Any empty string / `None`
+/// value is omitted from the query (server treats missing = "no filter").
+/// The server ships the filters in two waves — `status`/`q` were the
+/// original v1 pair, the rest ship in a bext PR (`feat/issues-soft-delete`);
+/// the client can send them regardless because unknown query params are
+/// silently ignored on the older server build.
+#[derive(Debug, Clone, Default)]
+pub struct IssueListFilter {
+    pub status: String,
+    pub q: String,
+    pub priority: String,
+    pub source: String,
+    /// `""` = no filter, `"me"` / `"unassigned"` = special values, otherwise
+    /// exact-match on `assignee` (email or name).
+    pub assignee: String,
+    /// Only requests filed by the caller (`requested_by === actor`).
+    pub mine: bool,
+    /// Staff-only tenant narrowing. Non-staff clients pass empty.
+    pub tenant_id: String,
+    /// `Some(true)` → only GitHub-linked, `Some(false)` → only non-linked,
+    /// `None` → no filter.
+    pub has_github: Option<bool>,
+    /// ISO-8601 lower bound on `updated_at` (`""` = no bound).
+    pub since: String,
+}
+
+/// List issues in the token's scope with the supplied filter. Empty fields
+/// are omitted from the query string.
+pub fn list_issues(base_url: &str, token: &str, filter: &IssueListFilter) -> Result<IssueList> {
+    let enc = crate::config::cloud_account::percent_encode;
+    let mut query = String::from("?action=list");
+    if !filter.status.is_empty() {
+        query.push_str(&format!("&status={}", enc(&filter.status)));
+    }
+    if !filter.q.is_empty() {
+        query.push_str(&format!("&q={}", enc(&filter.q)));
+    }
+    if !filter.priority.is_empty() {
+        query.push_str(&format!("&priority={}", enc(&filter.priority)));
+    }
+    if !filter.source.is_empty() {
+        query.push_str(&format!("&source={}", enc(&filter.source)));
+    }
+    if !filter.assignee.is_empty() {
+        query.push_str(&format!("&assignee={}", enc(&filter.assignee)));
+    }
+    if filter.mine {
+        query.push_str("&mine=1");
+    }
+    if !filter.tenant_id.is_empty() {
+        query.push_str(&format!("&tenant_id={}", enc(&filter.tenant_id)));
+    }
+    if let Some(gh) = filter.has_github {
+        query.push_str(if gh { "&has_github=1" } else { "&has_github=0" });
+    }
+    if !filter.since.is_empty() {
+        query.push_str(&format!("&since={}", enc(&filter.since)));
+    }
     get_json(base_url, token, &query)
 }
 
@@ -350,6 +401,17 @@ pub fn github_refresh(base_url: &str, token: &str, id: &str) -> Result<Issue> {
     )
 }
 
+/// Soft-delete a request (owner-or-staff — 403 otherwise). The server
+/// stamps `deleted_at` and hides it from every read path; the row is
+/// retained for audit. Returns the tombstoned issue.
+pub fn delete_issue(base_url: &str, token: &str, id: &str) -> Result<Issue> {
+    post_issue(
+        base_url,
+        token,
+        serde_json::json!({ "action": "delete", "id": id }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +494,7 @@ mod tests {
                         ),
                         // staff-only actions → 403 for this (non-staff) fixture path
                         "status" | "assign" | "priority" | "dispatch" | "github-push"
-                        | "github-refresh" => {
+                        | "github-refresh" | "delete" => {
                             (403, r#"{"ok":false,"error":"forbidden"}"#.into())
                         }
                         _ => (200, r#"{"ok":true,"issue":{"id":"iss_1"}}"#.into()),
@@ -495,7 +557,7 @@ mod tests {
     fn parse_list() {
         let m = start_mock();
         let (b, t) = cfg(&m);
-        let l = list_issues(&b, &t, "", "").expect("list");
+        let l = list_issues(&b, &t, &IssueListFilter::default()).expect("list");
         assert!(l.ok && l.staff);
         assert_eq!(l.issues.len(), 2);
         assert_eq!(l.issues[0].title, "Bug hero");
@@ -546,7 +608,7 @@ mod tests {
     #[test]
     fn missing_bearer_surfaces_401() {
         let m = start_mock();
-        let err = list_issues(&m.url, "", "", "").unwrap_err();
+        let err = list_issues(&m.url, "", &IssueListFilter::default()).unwrap_err();
         assert!(err.to_string().contains("401"), "got {}", err);
     }
 
@@ -615,5 +677,46 @@ mod tests {
             Some("support"),
             "source=support must land as a JSON string, got: {b_}",
         );
+    }
+
+    // SDTEST-301 — `delete_issue` is an owner-or-staff soft delete. The
+    // server allows: staff (super-admin) for any in-scope request, or the
+    // original filer (`requested_by` matches token identity). Non-owner
+    // non-staff tokens surface 403 — the mock below models that path.
+    // The POST body must carry exactly `{action:"delete", id}` — no stray
+    // fields, and the action name is `delete` (a rename to "remove"/"destroy"
+    // would silently 400 in prod). Deletion is never exercised live (it
+    // would tombstone a real KV row), so the mock-recorded shape assertion
+    // is the primary wire guard; the owner-allow path is a server-side
+    // gate covered by the server's own integration tests.
+    #[test]
+    fn delete_issue_is_staff_gated_and_body_carries_action_and_id() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+        let err = delete_issue(&b, &t, "iss_42").unwrap_err();
+        assert!(err.to_string().contains("403"), "non-staff ⇒ 403: {err}");
+
+        let posts = m.posts.lock().unwrap();
+        let del = posts
+            .iter()
+            .find(|p| p.contains("\"action\":\"delete\""))
+            .expect("delete body recorded");
+        let v: serde_json::Value = serde_json::from_str(del).unwrap();
+        assert_eq!(v["action"], "delete");
+        assert_eq!(v["id"], "iss_42");
+        // no accidental extra keys beyond action + id
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            2,
+            "delete body must be exactly {{action, id}}, got: {v}",
+        );
+    }
+
+    // The 401 path also covers `delete` (auth checked before action).
+    #[test]
+    fn delete_issue_missing_bearer_surfaces_401() {
+        let m = start_mock();
+        let err = delete_issue(&m.url, "", "iss_1").unwrap_err();
+        assert!(err.to_string().contains("401"), "got {}", err);
     }
 }

@@ -698,7 +698,14 @@ pub fn adabraka_theme_from_palette() -> adabraka_ui::prelude::Theme {
     t.card_foreground = ShellDeckColors::text_primary();
     t.popover = ShellDeckColors::bg_surface();
     t.popover_foreground = ShellDeckColors::text_primary();
-    t.muted = ShellDeckColors::hint_bg();
+    // shadcn/ui `muted` is meant as a *visible* mid-tone surface (control
+    // tracks, disabled fills, muted cards). Our `hint_bg` (semi-transparent
+    // 15% grey) collapses into the background on any dark palette — the
+    // adabraka `Toggle` OFF state was rendering as an invisible track under
+    // an invisible knob on Catppuccin Mocha, Dracula, One Dark… Point at
+    // `selected_bg` instead: it's already tuned per palette to stay visible
+    // on both light and dark bases (see `.agents/theming.md`).
+    t.muted = ShellDeckColors::selected_bg();
     t.muted_foreground = ShellDeckColors::text_muted();
     // Subtle list-row highlight — not full primary fill (unreadable with dark text).
     t.accent = ShellDeckColors::primary().opacity(if ShellDeckColors::is_dark() {

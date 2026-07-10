@@ -17,6 +17,7 @@ use uuid::Uuid;
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::glyph_cache::GlyphCache;
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 // ---------------------------------------------------------------------------
@@ -1918,6 +1919,8 @@ impl TerminalView {
     }
 
     /// Ensure the glyph cache is populated for the current font + zoom level.
+    /// Terminal cells stay at the historical `1.4` multiplier — the editor
+    /// gets its own airy multiplier via `EditorConfig.line_height`.
     fn ensure_glyph_cache(&mut self, window: &Window) {
         if self.glyph_cache.is_none() {
             let fs = self.effective_font_size();
@@ -1925,6 +1928,7 @@ impl TerminalView {
                 window.text_system(),
                 &self.font_family,
                 fs,
+                1.4,
             )));
         }
     }
@@ -2180,6 +2184,19 @@ impl TerminalView {
             .active_session()
             .is_some_and(|s| s.grid.lock().selected_text().is_some());
 
+        let lbl_search = t!("terminal.toolbar.search");
+        let lbl_copy = t!("terminal.toolbar.copy");
+        let lbl_paste = t!("terminal.toolbar.paste");
+        let lbl_claude = t!("terminal.toolbar.claude");
+        let lbl_rotate = t!("terminal.toolbar.rotate");
+        let lbl_close_split = t!("terminal.toolbar.close_split");
+        let lbl_split_h = t!("terminal.toolbar.split_h");
+        let lbl_split_v = t!("terminal.toolbar.split_v");
+        let lbl_scripts = t!("terminal.toolbar.scripts");
+        let lbl_clear = t!("terminal.toolbar.clear");
+        let lbl_favorites = t!("terminal.toolbar.favorites");
+        let lbl_recent = t!("terminal.toolbar.recent");
+
         let toolbar_btn = |id: &str, label: &str, hint: &str| {
             let mut btn = div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
@@ -2275,7 +2292,7 @@ impl TerminalView {
                     .cursor_pointer()
                     .hover(|el| el.bg(Self::claude_orange().opacity(0.2)))
                     .child(Self::claude_logo(18.0))
-                    .child("Claude")
+                    .child(lbl_claude.to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.launch_claude(cx);
                     })),
@@ -2291,7 +2308,7 @@ impl TerminalView {
         // Left group: search, copy, paste
         toolbar = toolbar
             .child(
-                toolbar_btn("tb-search", "Search", &format!("{}F", secondary)).on_click(
+                toolbar_btn("tb-search", lbl_search.as_ref(), &format!("{}F", secondary)).on_click(
                     cx.listener(|this, _, _, cx| {
                         this.toggle_search();
                         cx.notify();
@@ -2299,7 +2316,8 @@ impl TerminalView {
                 ),
             )
             .child({
-                let mut btn = toolbar_btn("tb-copy", "Copy", &format!("{}{}C", ctrl, shift));
+                let mut btn =
+                    toolbar_btn("tb-copy", lbl_copy.as_ref(), &format!("{}{}C", ctrl, shift));
                 if !has_selection {
                     btn = btn.opacity(0.45).cursor_default();
                 } else {
@@ -2311,12 +2329,15 @@ impl TerminalView {
                 btn
             })
             .child(
-                toolbar_btn("tb-paste", "Paste", &format!("{}{}V", ctrl, shift)).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.paste_clipboard(cx);
-                        cx.notify();
-                    }),
-                ),
+                toolbar_btn(
+                    "tb-paste",
+                    lbl_paste.as_ref(),
+                    &format!("{}{}V", ctrl, shift),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.paste_clipboard(cx);
+                    cx.notify();
+                })),
             );
 
         // Separator
@@ -2332,7 +2353,7 @@ impl TerminalView {
         if self.layout.is_split() {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-rotate-split", "Rotate", "").on_click(cx.listener(
+                    toolbar_btn("tb-rotate-split", lbl_rotate.as_ref(), "").on_click(cx.listener(
                         |this, _, window, cx| {
                             this.toggle_split_direction();
                             this.resize_if_needed(window);
@@ -2341,24 +2362,27 @@ impl TerminalView {
                     )),
                 )
                 .child(
-                    toolbar_btn("tb-close-split", "Close Split", "").on_click(cx.listener(
-                        |this, _, _, cx| {
+                    toolbar_btn("tb-close-split", lbl_close_split.as_ref(), "").on_click(
+                        cx.listener(|this, _, _, cx| {
                             this.close_split();
                             cx.notify();
-                        },
-                    )),
+                        }),
+                    ),
                 );
         } else {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-split-h", "Split H", &format!("{}{}D", ctrl, shift)).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.split_horizontal(cx);
-                        }),
-                    ),
+                    toolbar_btn(
+                        "tb-split-h",
+                        lbl_split_h.as_ref(),
+                        &format!("{}{}D", ctrl, shift),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.split_horizontal(cx);
+                    })),
                 )
                 .child(
-                    toolbar_btn("tb-split-v", "Split V", "").on_click(cx.listener(
+                    toolbar_btn("tb-split-v", lbl_split_v.as_ref(), "").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.split_vertical(cx);
                         },
@@ -2429,17 +2453,14 @@ impl TerminalView {
 
             // Scripts dropdown button + panel
             let is_open = self.script_dropdown_open;
-            let mut scripts_wrapper =
-                div()
-                    .relative()
-                    .child(
-                        toolbar_btn("tb-scripts", "Scripts", "").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.script_dropdown_open = !this.script_dropdown_open;
-                                cx.notify();
-                            },
-                        )),
-                    );
+            let mut scripts_wrapper = div().relative().child(
+                toolbar_btn("tb-scripts", lbl_scripts.as_ref(), "").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.script_dropdown_open = !this.script_dropdown_open;
+                        cx.notify();
+                    },
+                )),
+            );
 
             if is_open {
                 let mut dropdown = div()
@@ -2467,7 +2488,7 @@ impl TerminalView {
                             .text_size(px(10.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
-                            .child("FAVORITES"),
+                            .child(lbl_favorites.to_string()),
                     );
                     for (id, name, lang_badge) in &self.favorite_scripts {
                         let script_id = *id;
@@ -2572,7 +2593,7 @@ impl TerminalView {
                             .text_size(px(10.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
-                            .child("RECENT"),
+                            .child(lbl_recent.to_string()),
                     );
                     for (id, name, lang_badge) in &self.recent_scripts {
                         let script_id = *id;
@@ -2724,16 +2745,16 @@ impl TerminalView {
 
         // Right-aligned: clear terminal
         toolbar = toolbar.child(
-            toolbar_btn("tb-clear", "Clear", &format!("{}L", secondary)).on_click(cx.listener(
-                |this, _, _, cx| {
+            toolbar_btn("tb-clear", lbl_clear.as_ref(), &format!("{}L", secondary)).on_click(
+                cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
                         let mut grid = session.grid.lock();
                         grid.erase_display(2);
                         grid.cursor_to(0, 0);
                     }
                     cx.notify();
-                },
-            )),
+                }),
+            ),
         );
 
         toolbar
@@ -3957,11 +3978,16 @@ impl TerminalView {
             if self.search_query.is_empty() {
                 String::new()
             } else {
-                "No matches".to_string()
+                t!("terminal.search.no_matches").to_string()
             }
         } else {
             let current = self.search_current_idx.map(|i| i + 1).unwrap_or(0);
-            format!("{} of {}", current, self.search_matches.len())
+            t!(
+                "terminal.search.match_count",
+                current = current,
+                total = self.search_matches.len()
+            )
+            .to_string()
         };
 
         div()
@@ -3982,7 +4008,7 @@ impl TerminalView {
                 if self.search_query.is_empty() {
                     div()
                         .text_color(ShellDeckColors::text_muted())
-                        .child("Search...")
+                        .child(t!("terminal.search.placeholder").to_string())
                 } else {
                     div()
                         .text_color(ShellDeckColors::text_primary())
@@ -4104,20 +4130,30 @@ impl TerminalView {
                 .child(label.to_string())
         };
 
+        let ctx_copy = t!("terminal.ctx.copy");
+        let ctx_paste = t!("terminal.ctx.paste");
+        let ctx_search = t!("terminal.ctx.search");
+        let ctx_select_all = t!("terminal.ctx.select_all");
+        let ctx_clear_terminal = t!("terminal.ctx.clear_terminal");
+        let ctx_open_link = t!("terminal.ctx.open_link");
+        let ctx_copy_link = t!("terminal.ctx.copy_link");
+
         menu = menu
             .child(
-                menu_item("ctx-copy", "Copy").on_click(cx.listener(|this, _, _, cx| {
+                menu_item("ctx-copy", ctx_copy.as_ref()).on_click(cx.listener(|this, _, _, cx| {
                     this.copy_selection(cx);
                     this.context_menu = None;
                     cx.notify();
                 })),
             )
             .child(
-                menu_item("ctx-paste", "Paste").on_click(cx.listener(|this, _, _, cx| {
-                    this.paste_clipboard(cx);
-                    this.context_menu = None;
-                    cx.notify();
-                })),
+                menu_item("ctx-paste", ctx_paste.as_ref()).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.paste_clipboard(cx);
+                        this.context_menu = None;
+                        cx.notify();
+                    },
+                )),
             )
             .child(
                 div()
@@ -4127,7 +4163,7 @@ impl TerminalView {
                     .bg(ShellDeckColors::border()),
             )
             .child(
-                menu_item("ctx-select-all", "Select All").on_click(cx.listener(
+                menu_item("ctx-select-all", ctx_select_all.as_ref()).on_click(cx.listener(
                     |this, _, _, cx| {
                         if let Some(session) = this.active_session() {
                             let mut grid = session.grid.lock();
@@ -4143,15 +4179,17 @@ impl TerminalView {
                 )),
             )
             .child(
-                menu_item("ctx-clear", "Clear Terminal").on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(session) = this.active_session() {
-                        let mut grid = session.grid.lock();
-                        grid.erase_display(2);
-                        grid.cursor_to(0, 0);
-                    }
-                    this.context_menu = None;
-                    cx.notify();
-                })),
+                menu_item("ctx-clear", ctx_clear_terminal.as_ref()).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        if let Some(session) = this.active_session() {
+                            let mut grid = session.grid.lock();
+                            grid.erase_display(2);
+                            grid.cursor_to(0, 0);
+                        }
+                        this.context_menu = None;
+                        cx.notify();
+                    },
+                )),
             )
             .child(
                 div()
@@ -4161,11 +4199,13 @@ impl TerminalView {
                     .bg(ShellDeckColors::border()),
             )
             .child(
-                menu_item("ctx-search", "Search").on_click(cx.listener(|this, _, _, cx| {
-                    this.search_visible = true;
-                    this.context_menu = None;
-                    cx.notify();
-                })),
+                menu_item("ctx-search", ctx_search.as_ref()).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.search_visible = true;
+                        this.context_menu = None;
+                        cx.notify();
+                    },
+                )),
             );
 
         // URL actions if applicable
@@ -4181,7 +4221,7 @@ impl TerminalView {
                         .bg(ShellDeckColors::border()),
                 )
                 .child(
-                    menu_item("ctx-open-link", "Open Link").on_click(cx.listener(
+                    menu_item("ctx-open-link", ctx_open_link.as_ref()).on_click(cx.listener(
                         move |this, _, _, cx| {
                             let _ = open::that(&url_clone);
                             this.context_menu = None;
@@ -4190,7 +4230,7 @@ impl TerminalView {
                     )),
                 )
                 .child(
-                    menu_item("ctx-copy-link", "Copy Link").on_click(cx.listener(
+                    menu_item("ctx-copy-link", ctx_copy_link.as_ref()).on_click(cx.listener(
                         move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(url_copy.clone()));
                             this.context_menu = None;
@@ -4214,6 +4254,12 @@ impl TerminalView {
         let tab_id = state.tab_id;
         let has_left = self.tab_has_left(tab_id);
         let has_right = self.tab_has_right(tab_id);
+
+        let tab_new = t!("terminal.tab.new");
+        let tab_duplicate = t!("terminal.tab.duplicate");
+        let tab_close = t!("terminal.tab.close");
+        let tab_close_left = t!("terminal.tab.close_left");
+        let tab_close_right = t!("terminal.tab.close_right");
 
         // Convert the window-relative click x into terminal-view-local x
         // (the view starts just right of the sidebar). The menu drops down
@@ -4267,7 +4313,7 @@ impl TerminalView {
             .on_mouse_down(MouseButton::Right, |_, _, _| {});
 
         menu = menu
-            .child(item("tab-ctx-new", "New Terminal").on_click(cx.listener(
+            .child(item("tab-ctx-new", tab_new.as_ref()).on_click(cx.listener(
                 |this, _, window, cx| {
                     this.tab_context_menu = None;
                     this.spawn_local_terminal(cx);
@@ -4276,26 +4322,30 @@ impl TerminalView {
                     cx.notify();
                 },
             )))
-            .child(item("tab-ctx-duplicate", "Duplicate").on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.tab_context_menu = None;
-                    this.duplicate_tab(tab_id, cx);
-                    cx.notify();
-                },
-            )))
+            .child(
+                item("tab-ctx-duplicate", tab_duplicate.as_ref()).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.duplicate_tab(tab_id, cx);
+                        cx.notify();
+                    },
+                )),
+            )
             .child(separator())
-            .child(item("tab-ctx-close", "Close Tab").on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.tab_context_menu = None;
-                    this.close_tab(tab_id);
-                    cx.emit(TerminalEvent::TabClosed(tab_id));
-                    cx.notify();
-                },
-            )));
+            .child(
+                item("tab-ctx-close", tab_close.as_ref()).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.tab_context_menu = None;
+                        this.close_tab(tab_id);
+                        cx.emit(TerminalEvent::TabClosed(tab_id));
+                        cx.notify();
+                    },
+                )),
+            );
 
         if has_left {
             menu = menu.child(
-                item("tab-ctx-close-left", "Close Tabs to the Left").on_click(cx.listener(
+                item("tab-ctx-close-left", tab_close_left.as_ref()).on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.tab_context_menu = None;
                         this.close_tabs_to_left(tab_id);
@@ -4305,12 +4355,12 @@ impl TerminalView {
                 )),
             );
         } else {
-            menu = menu.child(disabled_item("Close Tabs to the Left"));
+            menu = menu.child(disabled_item(tab_close_left.as_ref()));
         }
 
         if has_right {
             menu = menu.child(
-                item("tab-ctx-close-right", "Close Tabs to the Right").on_click(cx.listener(
+                item("tab-ctx-close-right", tab_close_right.as_ref()).on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.tab_context_menu = None;
                         this.close_tabs_to_right(tab_id);
@@ -4320,7 +4370,7 @@ impl TerminalView {
                 )),
             );
         } else {
-            menu = menu.child(disabled_item("Close Tabs to the Right"));
+            menu = menu.child(disabled_item(tab_close_right.as_ref()));
         }
 
         // Transparent backdrop captures outside clicks to dismiss the menu.
@@ -4654,7 +4704,7 @@ impl TerminalView {
             "Shift+"
         };
 
-        let shortcut_row = |keys: String, desc: &str| {
+        let shortcut_row = |keys: String, desc: String| {
             div()
                 .flex()
                 .items_center()
@@ -4679,7 +4729,7 @@ impl TerminalView {
                     div()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(desc.to_string()),
+                        .child(desc),
                 )
         };
 
@@ -4708,16 +4758,13 @@ impl TerminalView {
                         div()
                             .text_size(px(16.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("No terminal sessions"),
+                            .child(t!("terminal.empty.title").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(13.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(format!(
-                                "Press {}T to open a new terminal or click a connection",
-                                cmd
-                            )),
+                            .child(t!("terminal.empty.hint", cmd = cmd).to_string()),
                     ),
             )
             // Primary call to action: launch Claude Code
@@ -4745,13 +4792,13 @@ impl TerminalView {
                                     .text_size(px(14.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(gpui::white())
-                                    .child("Launch Claude Code"),
+                                    .child(t!("terminal.empty.launch_claude").to_string()),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(gpui::white().opacity(0.85))
-                                    .child("claude --dangerously-skip-permissions"),
+                                    .child(t!("terminal.empty.launch_claude_cmd").to_string()),
                             ),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -4776,30 +4823,48 @@ impl TerminalView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .mb(px(8.0))
-                            .child("Keyboard Shortcuts"),
+                            .child(t!("terminal.empty.shortcuts_title").to_string()),
                     )
-                    .child(shortcut_row(format!("{}T", cmd), "New terminal"))
+                    .child(shortcut_row(
+                        format!("{}T", cmd),
+                        t!("terminal.shortcut.new_terminal").to_string(),
+                    ))
                     .child(shortcut_row(
                         format!("{}{}P", cmd, shift),
-                        "Command palette",
+                        t!("terminal.shortcut.command_palette").to_string(),
                     ))
-                    .child(shortcut_row(format!("{}F", cmd), "Search in terminal"))
-                    .child(shortcut_row(format!("{}B", cmd), "Toggle sidebar"))
-                    .child(shortcut_row(format!("{}{}D", ctrl, shift), "Split pane"))
+                    .child(shortcut_row(
+                        format!("{}F", cmd),
+                        t!("terminal.shortcut.search").to_string(),
+                    ))
+                    .child(shortcut_row(
+                        format!("{}B", cmd),
+                        t!("terminal.shortcut.toggle_sidebar").to_string(),
+                    ))
+                    .child(shortcut_row(
+                        format!("{}{}D", ctrl, shift),
+                        t!("terminal.shortcut.split").to_string(),
+                    ))
                     .child(shortcut_row(
                         format!("{}{}C", ctrl, shift),
-                        "Copy selection",
+                        t!("terminal.shortcut.copy").to_string(),
                     ))
                     .child(shortcut_row(
                         format!("{}{}V", ctrl, shift),
-                        "Paste clipboard",
+                        t!("terminal.shortcut.paste").to_string(),
                     ))
                     .child(shortcut_row(
                         format!("{}= / {}-", cmd, cmd),
-                        "Zoom in / out",
+                        t!("terminal.shortcut.zoom").to_string(),
                     ))
-                    .child(shortcut_row(format!("{},", cmd), "Settings"))
-                    .child(shortcut_row("Ctrl+Tab".to_string(), "Next tab")),
+                    .child(shortcut_row(
+                        format!("{},", cmd),
+                        t!("terminal.shortcut.settings").to_string(),
+                    ))
+                    .child(shortcut_row(
+                        "Ctrl+Tab".to_string(),
+                        t!("terminal.shortcut.next_tab").to_string(),
+                    )),
             )
     }
 }

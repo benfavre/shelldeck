@@ -11,6 +11,11 @@ pub struct AppConfig {
     pub theme: ThemePreference,
     pub terminal: TerminalConfig,
     pub general: GeneralConfig,
+    /// `[editor]` — code editor preferences (font, indent, wrap, gutter…).
+    /// `#[serde(default)]` keeps existing `shelldeck.toml` files without an
+    /// `[editor]` section parsing cleanly.
+    #[serde(default)]
+    pub editor: EditorConfig,
     /// Cloud Sync (Inklura Manage). `#[serde(default)]` keeps existing
     /// `shelldeck.toml` files without a `[cloud_sync]` section parsing cleanly.
     #[serde(default)]
@@ -154,6 +159,53 @@ pub struct GeneralConfig {
     pub ui_font_family: String,
     /// Base font size in pixels for the application UI.
     pub ui_font_size: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// Editor font family (must be monospace — the paint loop assumes fixed
+    /// cell width). "System Default" falls back to the app's UI font family.
+    pub font_family: String,
+    /// Editor base font size in pixels. Per-tab zoom stacks on top and is
+    /// not persisted here.
+    pub font_size: f32,
+    /// Line-height multiplier applied to the font size (1.4 ≈ VS Code default).
+    pub line_height: f32,
+    /// Visible width of a tab, in columns.
+    pub tab_size: usize,
+    /// When true, pressing Tab inserts spaces; when false, a real `\t`.
+    pub insert_spaces: bool,
+    /// Show the gutter with line numbers.
+    pub show_line_numbers: bool,
+    /// Render whitespace glyphs (space dots, tab arrows).
+    pub show_whitespace: bool,
+    /// Soft-wrap long lines at `word_wrap_column`.
+    pub word_wrap: bool,
+    /// Wrap column when `word_wrap` is on.
+    pub word_wrap_column: usize,
+    /// Blink the primary cursor.
+    pub cursor_blink: bool,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            font_family: "JetBrains Mono".to_string(),
+            font_size: 14.0,
+            // VS Code / Zed default — feels aired-out, matches the reference
+            // look the maintainer targets. Tighter values (1.2..1.4) work but
+            // start to feel cramped past 15px.
+            line_height: 1.5,
+            tab_size: 4,
+            insert_spaces: true,
+            show_line_numbers: true,
+            show_whitespace: false,
+            word_wrap: false,
+            word_wrap_column: 120,
+            cursor_blink: true,
+        }
+    }
 }
 
 impl Default for TerminalConfig {
@@ -454,6 +506,40 @@ ui_font_size = 14.0
         assert!(loaded.cloud_sync.token.is_empty());
         assert!(loaded.cloud_sync.sync_on_startup);
         assert!(loaded.account.is_none());
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn editor_config_round_trips_and_defaults_apply() {
+        // Defaults are applied when the section is absent, and a round-trip
+        // preserves every field. Keeps the wire format stable for older
+        // shelldeck.toml files that predate `[editor]`.
+        let path = temp_path("config.toml");
+        AppConfig::default().save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert_eq!(loaded.editor.font_family, "JetBrains Mono");
+        assert!((loaded.editor.font_size - 14.0).abs() < f32::EPSILON);
+        assert_eq!(loaded.editor.tab_size, 4);
+        assert!(loaded.editor.insert_spaces);
+        assert!(loaded.editor.show_line_numbers);
+        assert!(!loaded.editor.word_wrap);
+
+        // Round-trip a customised editor block.
+        let mut cfg = AppConfig::default();
+        cfg.editor.font_family = "Fira Code".to_string();
+        cfg.editor.font_size = 16.0;
+        cfg.editor.tab_size = 2;
+        cfg.editor.insert_spaces = false;
+        cfg.editor.word_wrap = true;
+        cfg.editor.word_wrap_column = 80;
+        cfg.save_to(&path).expect("save");
+        let loaded = AppConfig::load_from(&path).expect("load");
+        assert_eq!(loaded.editor.font_family, "Fira Code");
+        assert_eq!(loaded.editor.tab_size, 2);
+        assert!(!loaded.editor.insert_spaces);
+        assert!(loaded.editor.word_wrap);
+        assert_eq!(loaded.editor.word_wrap_column, 80);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

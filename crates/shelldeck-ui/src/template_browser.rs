@@ -7,6 +7,7 @@ use shelldeck_core::models::script::{Script, ScriptCategory};
 use shelldeck_core::models::templates::{all_templates, ScriptTemplate};
 
 use crate::syntax::highlight::render_code_block_with_language;
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -134,7 +135,7 @@ impl Render for TemplateBrowser {
                 .text_color(ShellDeckColors::text_muted())
                 .hover(|el| el.bg(ShellDeckColors::hover_bg()));
         }
-        tabs = tabs.child(all_tab.child("All"));
+        tabs = tabs.child(all_tab.child(t!("template_browser.all").to_string()));
 
         for cat in ScriptCategory::ALL {
             if *cat == ScriptCategory::Uncategorized || *cat == ScriptCategory::Custom {
@@ -174,7 +175,7 @@ impl Render for TemplateBrowser {
         // Real `Input` search bar. Enter imports the selected template.
         let search_bar = Input::new(&self.search_state)
             .size(InputSize::Sm)
-            .placeholder("Search templates...")
+            .placeholder(t!("template_browser.search_placeholder").to_string())
             .clearable(true)
             .prefix(
                 svg()
@@ -218,7 +219,7 @@ impl Render for TemplateBrowser {
                     .py(px(24.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("No matching templates"),
+                    .child(t!("template_browser.no_matches").to_string()),
             );
         }
 
@@ -363,7 +364,7 @@ impl Render for TemplateBrowser {
                                     cx.emit(TemplateBrowserEvent::Import(t.to_script()));
                                 }
                             }))
-                            .child("Add to My Scripts"),
+                            .child(t!("template_browser.add_to_scripts").to_string()),
                     ),
             );
 
@@ -398,7 +399,7 @@ impl Render for TemplateBrowser {
                     .flex_grow()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Select a template to preview"),
+                    .child(t!("template_browser.select_to_preview").to_string()),
             );
         }
 
@@ -446,7 +447,7 @@ impl Render for TemplateBrowser {
                                     .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child("Script Templates"),
+                                    .child(t!("template_browser.title").to_string()),
                             )
                             .child(
                                 div()

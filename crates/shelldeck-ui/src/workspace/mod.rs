@@ -1,7 +1,10 @@
 use adabraka_ui::components::input::{Input, InputSize, InputState};
-use adabraka_ui::prelude::{install_theme, scrollable_vertical};
+use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
+use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::prelude::{install_theme, scrollable_vertical, Button, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
+use crate::icons::{lucide_icon, lucide_path};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
@@ -284,9 +287,17 @@ pub struct Workspace {
     /// Hosted issue-management (requests) cache — shared by User + Support.
     issues_list: Vec<Issue>,
     issues_staff: bool,
+    /// Server-side filter state passed to `issues::list_issues` on every
+    /// refresh. Fed by `SupportViewEvent::IssuesFilterChanged` — the
+    /// SupportView owns the UI state, we cache the values here so the
+    /// 15s poll re-uses the current filter instead of resetting to "all".
+    issues_filter: issues::IssueListFilter,
     issues_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
+    /// Request id pending a confirmed soft-delete from the User-mode detail
+    /// sheet (drives a confirm modal — owner-or-staff may delete).
+    confirm_issue_delete: Option<String>,
     _issues_poll: Option<gpui::Task<()>>,
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
@@ -379,10 +390,12 @@ impl Workspace {
             view
         });
         let file_editor = cx.new(FileEditorView::new);
-        // The editor scales with the app font size, like the rest of the UI.
-        file_editor.update(cx, |ed, _| {
-            ed.set_font_size(config.general.ui_font_size);
-            ed.set_font_family(config.general.ui_font_family.clone());
+        // Apply the persisted `[editor]` preferences to the freshly-created
+        // editor so they take effect on launch (not just after a later
+        // ConfigChanged event from Settings).
+        let editor_cfg = config.editor.clone();
+        file_editor.update(cx, |ed, cx| {
+            ed.apply_editor_config(&editor_cfg, cx);
         });
         let auto_update_enabled = config.general.auto_update;
         let ui_font_family = config.general.ui_font_family.clone();
@@ -411,7 +424,7 @@ impl Workspace {
         }
 
         let app_config = config.clone();
-        let settings = cx.new(|_| SettingsView::new(config));
+        let settings = cx.new(|settings_cx| SettingsView::new(config, settings_cx));
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
@@ -429,7 +442,10 @@ impl Workspace {
         // Create command palette with registered actions
         let command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
-            palette.set_actions(Self::base_palette_actions());
+            // Initial palette build — no account state yet, so no mode
+            // switcher. `refresh_command_palette` will rebuild with the
+            // right gating on login / whoami.
+            palette.set_actions(Self::base_palette_actions(false));
             palette
         });
 
@@ -655,9 +671,11 @@ impl Workspace {
             _runtime_loop: None,
             issues_list: Vec::new(),
             issues_staff: false,
+            issues_filter: issues::IssueListFilter::default(),
             issues_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
+            confirm_issue_delete: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
@@ -738,7 +756,7 @@ impl Workspace {
                     let title = conn.display_name().to_string();
                     self.connect_ssh(conn.clone(), cx);
                     self.add_activity(
-                        format!("Connecting to {}", title),
+                        t!("activity.connecting_to", name = title.as_str()).to_string(),
                         ActivityType::Connection,
                         cx,
                     );
@@ -783,7 +801,8 @@ impl Workspace {
                             Err(e) => {
                                 tracing::error!("Failed to delete connection: {}", e);
                                 self.show_toast(
-                                    format!("Failed to delete: {}", e),
+                                    t!("toast.connection.delete_failed", error = e.to_string())
+                                        .to_string(),
                                     ToastLevel::Error,
                                     cx,
                                 );
@@ -798,12 +817,12 @@ impl Workspace {
                             pf.forwards.retain(|f| f.connection_id != id);
                         });
                         self.add_activity(
-                            format!("Deleted connection: {}", name),
+                            t!("activity.connection_deleted", name = name.as_str()).to_string(),
                             ActivityType::Connection,
                             cx,
                         );
                         self.show_toast(
-                            format!("Deleted connection: {}", name),
+                            t!("toast.connection.deleted", name = name.as_str()).to_string(),
                             ToastLevel::Info,
                             cx,
                         );
@@ -815,7 +834,7 @@ impl Workspace {
                         let name = conn.display_name().to_string();
                         self.pending_delete = Some(id);
                         self.show_toast(
-                            format!("Click delete again to confirm removing \"{}\"", name),
+                            t!("toast.connection.delete_confirm", name = name.as_str()).to_string(),
                             ToastLevel::Warning,
                             cx,
                         );
@@ -983,6 +1002,7 @@ impl Workspace {
                 // Merge settings-owned slices only — see `.agents/session-state.md`.
                 self.app_config.general = config.general.clone();
                 self.app_config.terminal = config.terminal.clone();
+                self.app_config.editor = config.editor.clone();
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
@@ -1002,13 +1022,13 @@ impl Workspace {
                 // Apply application UI font (cascades to all child views on re-render)
                 self.ui_font_family = self.app_config.general.ui_font_family.clone();
                 self.ui_font_size = self.app_config.general.ui_font_size;
-                // The file editor's text scales with the app font size too.
-                let ed_size = self.app_config.general.ui_font_size;
-                let ed_family = self.app_config.general.ui_font_family.clone();
+                // The file editor now has its own persisted preferences
+                // (font, tab size, line numbers, wrap, blink…). Apply the full
+                // slice — the editor merges its own view state and rebuilds
+                // the glyph cache lazily.
+                let editor_cfg = self.app_config.editor.clone();
                 self.file_editor.update(cx, |ed, cx| {
-                    ed.set_font_size(ed_size);
-                    ed.set_font_family(ed_family);
-                    cx.notify();
+                    ed.apply_editor_config(&editor_cfg, cx);
                 });
                 // Apply auto-update preference
                 let auto_update = self.app_config.general.auto_update;
@@ -1132,7 +1152,11 @@ impl Workspace {
         self.settings.update(cx, |settings, cx| {
             settings.select_terminal_theme(name, cx);
         });
-        self.show_toast(format!("Terminal theme: {}", name), ToastLevel::Info, cx);
+        self.show_toast(
+            t!("toast.terminal_theme", name = name).to_string(),
+            ToastLevel::Info,
+            cx,
+        );
     }
 
     fn handle_dashboard_event(&mut self, event: &DashboardEvent, cx: &mut Context<Self>) {
@@ -1148,7 +1172,7 @@ impl Workspace {
                     let title = conn.display_name().to_string();
                     self.connect_ssh(conn, cx);
                     self.add_activity(
-                        format!("Quick connecting to {}", title),
+                        t!("activity.quick_connecting_to", name = title.as_str()).to_string(),
                         ActivityType::Connection,
                         cx,
                     );
@@ -1156,7 +1180,7 @@ impl Workspace {
                     cx.notify();
                 } else {
                     self.show_toast(
-                        format!("Connection '{}' not found", alias),
+                        t!("toast.connection.not_found", alias = alias.as_str()).to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
@@ -1188,7 +1212,7 @@ impl Workspace {
                     if let Err(e) = this.store.add_connection(conn.clone()) {
                         tracing::error!("Failed to save connection store: {}", e);
                         this.show_toast(
-                            format!("Failed to save connection: {}", e),
+                            t!("toast.connection.save_failed", error = e.to_string()).to_string(),
                             ToastLevel::Error,
                             cx,
                         );
@@ -1198,12 +1222,20 @@ impl Workspace {
                         sidebar.set_connections(this.connections.clone());
                     });
                     this.add_activity(
-                        format!("Added connection: {}", conn.display_name()),
+                        t!(
+                            "activity.connection_added",
+                            name = conn.display_name().to_string()
+                        )
+                        .to_string(),
                         ActivityType::Connection,
                         cx,
                     );
                     this.show_toast(
-                        format!("Connection saved: {}", conn.display_name()),
+                        t!(
+                            "toast.connection.saved",
+                            name = conn.display_name().to_string()
+                        )
+                        .to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -1268,15 +1300,18 @@ impl Workspace {
         let cfg = self.app_config.cloud_sync.clone();
         if !cfg.is_configured() {
             self.show_toast(
-                "Cloud Sync isn't configured. Enable it and add a token in the [cloud_sync] \
-                 section of shelldeck.toml (get a token at manage.inklura.fr/manage/shelldeck).",
+                t!("toast.cloud_sync.not_configured").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
             return;
         }
 
-        self.show_toast("Cloud Sync started…", ToastLevel::Info, cx);
+        self.show_toast(
+            t!("toast.cloud_sync.started").to_string(),
+            ToastLevel::Info,
+            cx,
+        );
         let version = shelldeck_core::VERSION;
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
@@ -1289,16 +1324,23 @@ impl Workspace {
                 Ok(stats) => {
                     ws.reload_connections_after_sync(cx);
                     ws.show_toast(
-                        format!(
-                            "Cloud Sync: {} added, {} updated, {} removed",
-                            stats.added, stats.updated, stats.removed
-                        ),
+                        t!(
+                            "toast.cloud_sync.done",
+                            added = stats.added,
+                            updated = stats.updated,
+                            removed = stats.removed
+                        )
+                        .to_string(),
                         ToastLevel::Success,
                         cx,
                     );
                 }
                 Err(e) => {
-                    ws.show_toast(format!("Cloud Sync failed: {}", e), ToastLevel::Error, cx);
+                    ws.show_toast(
+                        t!("toast.cloud_sync.failed", error = e.to_string()).to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
                 }
             });
         })
@@ -1396,7 +1438,7 @@ impl Workspace {
                         ws.invalidate_cloud_session(cx);
                         ws.account_status = AccountStatus::Rejected;
                         ws.show_toast(
-                            "Session Inklura expirée — reconnectez-vous depuis le menu compte.",
+                            t!("toast.session.expired").to_string(),
                             ToastLevel::Warning,
                             cx,
                         );
@@ -1485,7 +1527,7 @@ impl Workspace {
             Ok(l) => l,
             Err(e) => {
                 self.show_toast(
-                    format!("Impossible d'ouvrir un port local : {}", e),
+                    t!("toast.local_port_open_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -1496,7 +1538,7 @@ impl Workspace {
             Ok(a) => a.port(),
             Err(e) => {
                 self.show_toast(
-                    format!("Impossible de lire le port local : {}", e),
+                    t!("toast.local_port_read_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -1510,10 +1552,11 @@ impl Workspace {
 
         if let Err(e) = cloud_account::open_in_browser(&url) {
             self.show_toast(
-                format!(
-                    "Impossible d'ouvrir le navigateur : {}",
-                    cloud_account::user_message(&e)
-                ),
+                t!(
+                    "toast.open_browser_failed",
+                    error = cloud_account::user_message(&e)
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             );
@@ -1525,7 +1568,7 @@ impl Workspace {
         self.login_form = None;
         self._login_form_sub = None;
         self.show_toast(
-            "En attente d'autorisation dans le navigateur…",
+            t!("toast.browser_auth_waiting").to_string(),
             ToastLevel::Info,
             cx,
         );
@@ -1551,10 +1594,11 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match outcome {
                 Ok((token, account)) => ws.apply_login(token, account, cx),
                 Err(e) => ws.show_toast(
-                    format!(
-                        "Connexion navigateur échouée : {}",
-                        cloud_account::user_message(&e)
-                    ),
+                    t!(
+                        "toast.browser_login_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -1602,18 +1646,19 @@ impl Workspace {
                         .filter(|c| c.source == ConnectionSource::CloudSync)
                         .count();
                     ws.show_toast(
-                        format!("Connecté en tant que {} — {} profils synchronisés", name, n),
+                        t!("toast.login_synced", name = name.as_str(), count = n).to_string(),
                         ToastLevel::Success,
                         cx,
                     );
                 }
                 Err(e) => {
                     ws.show_toast(
-                        format!(
-                            "Connecté en tant que {}. Synchronisation échouée : {}",
-                            name,
-                            cloud_account::user_message(&e)
-                        ),
+                        t!(
+                            "toast.login_sync_failed",
+                            name = name.as_str(),
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
@@ -1632,6 +1677,10 @@ impl Workspace {
         let snapshot = self.app_config.clone();
         self.settings.update(cx, |settings, cx| {
             settings.config = snapshot;
+            // The Editor tab's Select entities cache the last `selected_index`;
+            // rebuild them so an externally-changed editor slice doesn't
+            // silently drift out of sync with the shown value.
+            settings.sync_selects(cx);
             cx.notify();
         });
     }
@@ -1674,7 +1723,7 @@ impl Workspace {
         }
 
         self.invalidate_cloud_session(cx);
-        self.show_toast("Déconnecté d'Inklura Manage.", ToastLevel::Info, cx);
+        self.show_toast(t!("toast.logged_out").to_string(), ToastLevel::Info, cx);
         cx.notify();
     }
 
@@ -1753,7 +1802,7 @@ impl Workspace {
             Some(s) => s,
             None => {
                 self.show_toast(
-                    "Sélectionnez d'abord un site actif pour ouvrir Manage.",
+                    t!("toast.select_active_site_first").to_string(),
                     ToastLevel::Warning,
                     cx,
                 );
@@ -1769,12 +1818,17 @@ impl Workspace {
         let url = manage_sites::manage_area_url(&origin, &site, &area_path);
         self.site_menu_open = false;
         match cloud_account::open_in_browser(&url) {
-            Ok(_) => self.show_toast("Ouverture dans le navigateur…", ToastLevel::Info, cx),
+            Ok(_) => self.show_toast(
+                t!("toast.opening_browser").to_string(),
+                ToastLevel::Info,
+                cx,
+            ),
             Err(e) => self.show_toast(
-                format!(
-                    "Impossible d'ouvrir le navigateur : {}",
-                    cloud_account::user_message(&e)
-                ),
+                t!(
+                    "toast.open_browser_failed",
+                    error = cloud_account::user_message(&e)
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             ),
@@ -1786,7 +1840,7 @@ impl Workspace {
     pub fn open_site_switcher(&mut self, cx: &mut Context<Self>) {
         if self.site_directory.is_none() {
             self.show_toast(
-                "Connectez-vous à Inklura Manage pour changer de site.",
+                t!("toast.login_required_site_switch").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -1800,7 +1854,11 @@ impl Workspace {
 
     /// The fixed command-palette entries (everything except the runtime-dependent
     /// manage-area entries, which [`refresh_command_palette`] appends).
-    fn base_palette_actions() -> Vec<PaletteAction> {
+    ///
+    /// `can_switch_mode` gates the "Mode : …" rows per SDUC-152 / SDTEST-1057
+    /// — non-super-admins never see them in the palette, so no dispatched
+    /// `SetAppMode` action can silently no-op on their end.
+    fn base_palette_actions(can_switch_mode: bool) -> Vec<PaletteAction> {
         let mut actions = vec![
             PaletteAction::new(
                 t!("palette.new_terminal").to_string(),
@@ -1941,13 +1999,19 @@ impl Workspace {
                 Box::new(OpenBextCloud),
             ),
         ];
-        for m in AppMode::all() {
-            actions.push(PaletteAction::new(
-                t!("palette.mode", mode = m.label()).to_string(),
-                None,
-                "shield",
-                Box::new(SetAppMode { mode: m }),
-            ));
+        // Mode switcher entries — super-admins only, per SDUC-152 (leaks
+        // to a non-super-admin would show an action that then no-ops on
+        // dispatch; SDTEST-1057 gates it at construction so nothing leaks
+        // to the UI in the first place).
+        if can_switch_mode {
+            for m in AppMode::all() {
+                actions.push(PaletteAction::new(
+                    t!("palette.mode", mode = m.label()).to_string(),
+                    None,
+                    "shield",
+                    Box::new(SetAppMode { mode: m }),
+                ));
+            }
         }
         for pref in ThemePreference::all() {
             actions.push(PaletteAction::new(
@@ -1972,7 +2036,7 @@ impl Workspace {
     /// the active site's manage areas. Called when the site directory loads or
     /// the active site changes.
     fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
-        let mut actions = Self::base_palette_actions();
+        let mut actions = Self::base_palette_actions(self.can_switch_mode());
         if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
             let label = site.display_label();
             for area in &dir.areas {
@@ -2013,20 +2077,20 @@ impl Workspace {
 
     /// Only signed-in super-admins may switch modes.
     pub fn can_switch_mode(&self) -> bool {
-        self.signed_in() && self.is_superadmin()
+        AppMode::can_switch(self.signed_in(), self.is_superadmin())
     }
 
     /// The surface to present: logged-out → classic Dev; super-admin →
     /// persisted mode (default Dev); non-super-admin → forced User.
+    ///
+    /// Delegates to `AppMode::resolve_effective` for the truth table; that
+    /// pure fn is the one under test in `SDTEST-1052`.
     pub fn effective_mode(&self) -> AppMode {
-        if !self.signed_in() {
-            return AppMode::Dev;
-        }
-        if self.is_superadmin() {
-            self.app_config.cloud_sync.mode
-        } else {
-            AppMode::User
-        }
+        AppMode::resolve_effective(
+            self.signed_in(),
+            self.is_superadmin(),
+            self.app_config.cloud_sync.mode,
+        )
     }
 
     /// Switch the app mode (super-admins only). Dev surfaces are hidden, not
@@ -2042,6 +2106,24 @@ impl Workspace {
         self.theme_menu_open = false;
         self.account_menu_open = false;
         self.site_menu_open = false;
+
+        // Cross-mode selection carry-over: opening a request in Support then
+        // switching to User made the User-mode detail sheet auto-open on top
+        // of the (unrelated) User list, because both surfaces share
+        // `issue_selected`/`issue_detail`. Reset every "which row is open"
+        // bit — Workspace side and SupportView side — so mode changes always
+        // land on a clean list.
+        self.issue_selected = None;
+        self.issue_detail = None;
+        self.user_new_request_sheet_open = false;
+        self.user_new_request_sheet_dismissing = false;
+        self.user_issue_detail_dismissing = false;
+        self.confirm_issue_delete = None;
+        self.support.update(cx, |v, cx| {
+            v.clear_selection();
+            cx.notify();
+        });
+
         self.activate_current_mode(cx);
         cx.notify();
     }
@@ -2230,6 +2312,11 @@ impl Workspace {
             SupportViewEvent::IssueGithubRefresh(id) => {
                 self.issue_staff_action(cx, move |b, t| issues::github_refresh(&b, &t, &id))
             }
+            SupportViewEvent::IssueDelete(id) => self.delete_issue_now(id, cx),
+            SupportViewEvent::IssuesFilterChanged { filter } => {
+                self.issues_filter = filter;
+                self.refresh_issues(cx);
+            }
         }
     }
 
@@ -2280,16 +2367,15 @@ impl Workspace {
 
     /// The effective Jean config: a local `[jeanclaude]` override wins, else the
     /// server-delivered config (super-admin only). `None` = feature unavailable.
+    ///
+    /// Delegates to `JeanConfig::resolve_effective` (the pure fn under test in
+    /// SDTEST-1054).
     fn effective_jean_config(&self) -> Option<JeanConfig> {
-        if let Some(local) = &self.app_config.jeanclaude {
-            if local.is_set() {
-                return Some(local.clone());
-            }
-        }
-        self.site_directory
+        let server = self
+            .site_directory
             .as_ref()
-            .and_then(|s| s.jeanclaude.clone())
-            .filter(|c| c.is_set())
+            .and_then(|s| s.jeanclaude.as_ref());
+        JeanConfig::resolve_effective(self.app_config.jeanclaude.as_ref(), server)
     }
 
     pub fn has_jean(&self) -> bool {
@@ -2452,7 +2538,7 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 if let Err(e) = result {
                     ws.show_toast(
-                        format!("JeanClaude : {}", cloud_account::user_message(&e)),
+                        t!("toast.jean.error", error = cloud_account::user_message(&e)).to_string(),
                         ToastLevel::Error,
                         cx,
                     );
@@ -2474,9 +2560,11 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| {
                 match result {
-                    Ok(_) => ws.show_toast("Envoyé à #jean.", ToastLevel::Success, cx),
+                    Ok(_) => {
+                        ws.show_toast(t!("toast.jean.sent").to_string(), ToastLevel::Success, cx)
+                    }
                     Err(e) => ws.show_toast(
-                        format!("JeanClaude : {}", cloud_account::user_message(&e)),
+                        t!("toast.jean.error", error = cloud_account::user_message(&e)).to_string(),
                         ToastLevel::Error,
                         cx,
                     ),
@@ -2757,7 +2845,7 @@ impl Workspace {
     pub fn toggle_jean_runtime(&mut self, cx: &mut Context<Self>) {
         if self.fleet_base_token().is_none() {
             self.show_toast(
-                "Connectez-vous à Inklura Manage pour héberger un runtime Jean.",
+                t!("toast.jean.login_required_runtime").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -2770,7 +2858,7 @@ impl Workspace {
         }
         if now {
             self.show_toast(
-                "Runtime Jean activé sur cette machine.",
+                t!("toast.jean.runtime_on").to_string(),
                 ToastLevel::Success,
                 cx,
             );
@@ -2795,7 +2883,11 @@ impl Workspace {
             self.runtime_instance = None;
             self.runtime_awaiting.clear();
             self.runtime_busy = false;
-            self.show_toast("Runtime Jean désactivé.", ToastLevel::Info, cx);
+            self.show_toast(
+                t!("toast.jean.runtime_off").to_string(),
+                ToastLevel::Info,
+                cx,
+            );
         }
         self.sync_runtime_loop(cx);
         self.push_runtime_status_to_fleet(cx);
@@ -2911,10 +3003,13 @@ impl Workspace {
             }
             Err(e) => {
                 self.fleet_view.update(cx, |v, cx| {
-                    v.set_error(format!(
-                        "Enregistrement du runtime échoué : {}",
-                        cloud_account::user_message(&e)
-                    ));
+                    v.set_error(
+                        t!(
+                            "toast.jean.register_failed",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
+                    );
                     cx.notify();
                 });
             }
@@ -2934,7 +3029,7 @@ impl Workspace {
                     }
                     self.runtime_busy = true;
                     self.show_toast(
-                        "Un ticket Jean attend votre validation (vue Fleet).",
+                        t!("toast.jean.ticket_awaiting").to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
@@ -2967,7 +3062,11 @@ impl Workspace {
         self.runtime_awaiting.retain(|j| j.id != job_id);
         // busy stays true through execution.
         self.push_runtime_status_to_fleet(cx);
-        self.show_toast("Exécution du ticket Jean…", ToastLevel::Info, cx);
+        self.show_toast(
+            t!("toast.jean.ticket_running").to_string(),
+            ToastLevel::Info,
+            cx,
+        );
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let r = cx
                 .background_executor()
@@ -2986,12 +3085,20 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 if let Err(e) = r {
                     ws.show_toast(
-                        format!("Ticket Jean échoué : {}", cloud_account::user_message(&e)),
+                        t!(
+                            "toast.jean.ticket_failed",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     );
                 } else {
-                    ws.show_toast("Ticket Jean terminé.", ToastLevel::Success, cx);
+                    ws.show_toast(
+                        t!("toast.jean.ticket_done").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
                 }
                 ws.runtime_busy = false; // free for the next claim
                 ws.push_runtime_status_to_fleet(cx);
@@ -3029,7 +3136,7 @@ impl Workspace {
     pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
         if self.fleet_base_token().is_none() {
             self.show_toast(
-                "Connectez-vous à Inklura Manage pour voir la flotte.",
+                t!("toast.jean.login_required_fleet").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -3049,7 +3156,7 @@ impl Workspace {
     pub fn open_new_request(&mut self, cx: &mut Context<Self>) {
         if !self.app_config.cloud_sync.is_configured() {
             self.show_toast(
-                "Connectez-vous pour créer une demande.",
+                t!("toast.issue.login_required_create").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -3127,7 +3234,7 @@ impl Workspace {
     pub fn open_support_requests(&mut self, cx: &mut Context<Self>) {
         if !self.app_config.cloud_sync.is_configured() {
             self.show_toast(
-                "Connectez-vous pour voir les demandes.",
+                t!("toast.issue.login_required_list").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -3154,10 +3261,11 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
+        let filter = self.issues_filter.clone();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { issues::list_issues(&base, &token, "", "") })
+                .spawn(async move { issues::list_issues(&base, &token, &filter) })
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(list) => {
@@ -3168,7 +3276,11 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
-                    format!("Demandes : {}", cloud_account::user_message(&e)),
+                    t!(
+                        "toast.issue.list_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3182,7 +3294,14 @@ impl Workspace {
         let staff = self.issues_staff;
         let instances = self.issues_instances.clone();
         let detail = self.issue_detail.clone();
+        let (acc_name, acc_email) = self
+            .app_config
+            .account
+            .as_ref()
+            .map(|a| (a.name.clone(), a.email.clone()))
+            .unwrap_or_default();
         self.support.update(cx, |v, cx| {
+            v.set_account(acc_name, acc_email);
             v.set_issues(issues, staff, instances);
             v.set_issue_detail(detail);
             cx.notify();
@@ -3235,7 +3354,11 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
-                    format!("Demande : {}", cloud_account::user_message(&e)),
+                    t!(
+                        "toast.issue.detail_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3269,7 +3392,11 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
-                    ws.show_toast("Demande créée.", ToastLevel::Success, cx);
+                    ws.show_toast(
+                        t!("toast.issue.created").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
                     // Success: close the composer sheet, clear its buffers,
                     // and pop the detail sheet on the newly-created request.
                     ws.user_new_request_sheet_open = false;
@@ -3281,7 +3408,11 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
-                    format!("Création échouée : {}", cloud_account::user_message(&e)),
+                    t!(
+                        "toast.issue.create_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3312,7 +3443,11 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
-                    format!("Commentaire : {}", cloud_account::user_message(&e)),
+                    t!(
+                        "toast.issue.comment_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3343,13 +3478,183 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
-                    format!("Demande : {}", cloud_account::user_message(&e)),
+                    t!(
+                        "toast.issue.staff_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
             });
         })
         .detach();
+    }
+
+    /// Soft-delete a request (owner-or-staff). On success the detail pane is
+    /// closed (the issue is gone) and the list refreshed; failures toast.
+    fn delete_issue_now(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        let deleted_id = id.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { issues::delete_issue(&base, &token, &id) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(_) => {
+                    if ws.issue_selected.as_deref() == Some(deleted_id.as_str()) {
+                        ws.issue_selected = None;
+                        ws.issue_detail = None;
+                    }
+                    ws.push_issues_to_support(cx);
+                    ws.refresh_issues(cx);
+                    ws.show_toast(
+                        t!("toast.issue.deleted").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(e) => ws.show_toast(
+                    t!(
+                        "toast.issue.staff_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Whether the given issue was filed by the currently signed-in user
+    /// (matching `requested_by` against the account name or email — the
+    /// server stores `actor = user_name || user_email` so we accept either).
+    /// Comparison is trimmed + case-insensitive to tolerate cosmetic drift
+    /// between the token payload and whoami.
+    fn is_my_issue(&self, iss: &Issue) -> bool {
+        let Some(a) = self.app_config.account.as_ref() else {
+            return false;
+        };
+        let rb = iss.requested_by.trim().to_ascii_lowercase();
+        if rb.is_empty() {
+            return false;
+        }
+        let name = a.name.trim().to_ascii_lowercase();
+        let email = a.email.trim().to_ascii_lowercase();
+        (!name.is_empty() && rb == name) || (!email.is_empty() && rb == email)
+    }
+
+    /// Destructive confirm modal for soft-deleting a request from User mode.
+    fn render_delete_issue_modal(&self, id: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let title = self
+            .issue_detail
+            .as_ref()
+            .filter(|i| i.id == id)
+            .map(|i| i.title.clone())
+            .or_else(|| {
+                self.issues_list
+                    .iter()
+                    .find(|i| i.id == id)
+                    .map(|i| i.title.clone())
+            })
+            .unwrap_or_default();
+
+        let body = if title.trim().is_empty() {
+            div().child(t!("support.delete.body_generic").to_string())
+        } else {
+            div().child(t!("support.delete.body", title = title.clone()).to_string())
+        };
+
+        UiDialog::new()
+            .width(gpui::px(400.0))
+            .on_backdrop_click({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.confirm_issue_delete = None;
+                        cx.notify();
+                    });
+                }
+            })
+            .header(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(14.0))
+                    .child(lucide_icon("trash-2", 16.0, ShellDeckColors::error()))
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("support.delete.title").to_string()),
+                    ),
+            )
+            .content(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(16.0))
+                    .child(body)
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("support.delete.irreversible").to_string()),
+                    ),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .child(
+                        Button::new("ws-iss-del-cancel", t!("support.delete.cancel").to_string())
+                            .variant(ButtonVariant::Ghost)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_issue_delete = None;
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new(
+                            "ws-iss-del-confirm",
+                            t!("support.delete.confirm").to_string(),
+                        )
+                        .variant(ButtonVariant::Destructive)
+                        .icon(IconSource::from("trash-2"))
+                        .on_click({
+                            let entity = entity.clone();
+                            let id = id.clone();
+                            move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.confirm_issue_delete = None;
+                                    this.delete_issue_now(id.clone(), cx);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                    ),
+            )
     }
 
     /// Submit the "Nouvelle demande" composer sheet: read the Input states,
@@ -3417,7 +3722,7 @@ impl Workspace {
             cx.notify();
         });
         self.show_toast(
-            "Gestion de l'instance bext locale (127.0.0.1). La gestion d'un serveur distant via tunnel arrivera bientôt.",
+            t!("toast.bext.local_instance").to_string(),
             ToastLevel::Info,
             cx,
         );
@@ -3536,7 +3841,7 @@ impl Workspace {
             Ok(l) => l,
             Err(e) => {
                 self.show_toast(
-                    format!("Impossible d'ouvrir un port local : {}", e),
+                    t!("toast.local_port_open_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -3547,7 +3852,7 @@ impl Workspace {
             Ok(a) => a.port(),
             Err(e) => {
                 self.show_toast(
-                    format!("Port local illisible : {}", e),
+                    t!("toast.local_port_read_failed", error = e.to_string()).to_string(),
                     ToastLevel::Error,
                     cx,
                 );
@@ -3557,17 +3862,18 @@ impl Workspace {
         let url = bext_cloud::cli_login_url(&base, port);
         if let Err(e) = cloud_account::open_in_browser(&url) {
             self.show_toast(
-                format!(
-                    "Impossible d'ouvrir le navigateur : {}",
-                    cloud_account::user_message(&e)
-                ),
+                t!(
+                    "toast.open_browser_failed",
+                    error = cloud_account::user_message(&e)
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             );
             return;
         }
         self.show_toast(
-            "Connectez-vous à bext Cloud dans le navigateur…",
+            t!("toast.bext.connect_waiting").to_string(),
             ToastLevel::Info,
             cx,
         );
@@ -3590,17 +3896,22 @@ impl Workspace {
                         tracing::error!("Failed to save bext_cloud config: {}", e);
                     }
                     ws.show_toast(
-                        format!("bext Cloud connecté : {}", ws.app_config.bext_cloud.email),
+                        t!(
+                            "toast.bext.connected",
+                            email = ws.app_config.bext_cloud.email.as_str()
+                        )
+                        .to_string(),
                         ToastLevel::Success,
                         cx,
                     );
                     ws.refresh_bext_cloud(cx);
                 }
                 Err(e) => ws.show_toast(
-                    format!(
-                        "Connexion cloud échouée : {}",
-                        cloud_account::user_message(&e)
-                    ),
+                    t!(
+                        "toast.bext.connect_failed",
+                        error = cloud_account::user_message(&e)
+                    )
+                    .to_string(),
                     ToastLevel::Error,
                     cx,
                 ),
@@ -3621,7 +3932,11 @@ impl Workspace {
             v.set_connection(false, None);
             cx.notify();
         });
-        self.show_toast("Déconnecté du bext Cloud.", ToastLevel::Info, cx);
+        self.show_toast(
+            t!("toast.bext.disconnected").to_string(),
+            ToastLevel::Info,
+            cx,
+        );
         cx.notify();
     }
 
@@ -3637,9 +3952,13 @@ impl Workspace {
             let r = cx.background_executor().spawn(async move { f(cfg) }).await;
             let _ = this.update(cx, |ws, cx| {
                 match r {
-                    Ok(_) => ws.show_toast("Action bext effectuée.", ToastLevel::Success, cx),
+                    Ok(_) => ws.show_toast(
+                        t!("toast.bext.action_ok").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    ),
                     Err(e) => ws.show_toast(
-                        format!("bext Cloud : {}", cloud_account::user_message(&e)),
+                        t!("toast.bext.error", error = cloud_account::user_message(&e)).to_string(),
                         ToastLevel::Error,
                         cx,
                     ),
@@ -3698,9 +4017,17 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| {
                 match r {
-                    Ok(_) => ws.show_toast("Action instance effectuée.", ToastLevel::Success, cx),
+                    Ok(_) => ws.show_toast(
+                        t!("toast.bext.instance_action_ok").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    ),
                     Err(e) => ws.show_toast(
-                        format!("Instance bext : {}", cloud_account::user_message(&e)),
+                        t!(
+                            "toast.bext.instance_error",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     ),
@@ -3739,7 +4066,11 @@ impl Workspace {
                 };
                 if let Err(e) = cloud_account::open_in_browser(&url) {
                     self.show_toast(
-                        format!("Impossible d'ouvrir : {}", cloud_account::user_message(&e)),
+                        t!(
+                            "toast.open_failed_generic",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     );
@@ -3911,7 +4242,7 @@ impl Workspace {
     pub fn open_jean_console(&mut self, cx: &mut Context<Self>) {
         if !self.has_jean() {
             self.show_toast(
-                "JeanClaude n'est pas configuré (compte super-admin ou [jeanclaude] requis).",
+                t!("toast.jean.not_configured").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -3969,7 +4300,7 @@ impl Workspace {
             .as_ref()
             .map(|a| a.display_name())
             .unwrap_or_default();
-        let full = format!("[via ShellDeck — {}] {}", name, text);
+        let full = shelldeck_core::config::jeanclaude::format_via_shelldeck(&name, &text);
         self.jean_ask_input.clear();
         self.jean_say(full, cx);
         cx.notify();
@@ -4188,6 +4519,22 @@ impl Workspace {
             }
         })
     }
+}
+
+/// Lucide slug for a Manage area key. Kept in one place so the User-home
+/// site cards and any future palette entries share the same visual vocab.
+/// Return `None` for area keys we ship with no dedicated icon — the chip
+/// then renders label-only.
+fn manage_area_icon(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "dashboard" => "activity",
+        "cms" => "scroll-text",
+        "helpdesk" => "mail",
+        "ecommerce" => "box",
+        "settings" => "settings",
+        "shelldeck" => "terminal",
+        _ => return None,
+    })
 }
 
 fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {
@@ -4870,7 +5217,7 @@ impl Workspace {
                 AccountStatus::Offline => "Hors ligne",
                 AccountStatus::Unknown => "Vérification…",
             };
-            let info_row = |label: &str, value: String| {
+            let info_row = |label: String, value: String| {
                 div()
                     .flex()
                     .items_center()
@@ -4880,7 +5227,7 @@ impl Workspace {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(label.to_string()),
+                            .child(label),
                     )
                     .child(
                         div()
@@ -4892,20 +5239,26 @@ impl Workspace {
                     )
             };
             panel = panel
-                .child(info_row("Serveur", self.account_base_url()))
-                .child(info_row("Appareil", cloud_account::device_name()))
+                .child(info_row("Serveur".to_string(), self.account_base_url()))
                 .child(info_row(
-                    "Site actif",
+                    "Appareil".to_string(),
+                    cloud_account::device_name(),
+                ))
+                .child(info_row(
+                    t!("user.sites.active").to_string(),
                     self.app_config
                         .cloud_sync
                         .active_site_label
                         .clone()
                         .unwrap_or_else(|| "Tous les sites".to_string()),
                 ))
-                .child(info_row("Statut", status_label.to_string()));
+                .child(info_row(
+                    t!("settings.cloud_sync.status.label").to_string(),
+                    status_label.to_string(),
+                ));
 
             panel = panel.child(
-                secondary_btn("account-sync", "Synchroniser".to_string()).on_click(cx.listener(
+                secondary_btn("account-sync", t!("user.sync").to_string()).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {
                         this.account_menu_open = false;
                         this.cloud_sync_now(cx);
@@ -4913,7 +5266,7 @@ impl Workspace {
                 )),
             );
             panel = panel.child(
-                secondary_btn("account-logout", "Se déconnecter".to_string())
+                secondary_btn("account-logout", t!("user.account.logout").to_string())
                     .text_color(ShellDeckColors::error())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.logout_account(cx);
@@ -4927,13 +5280,13 @@ impl Workspace {
                         .text_size(px(13.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child("Compte Inklura Manage"),
+                        .child(t!("user.account.title").to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("Connectez-vous pour synchroniser vos connexions SSH."),
+                        .child(t!("user.account.hint").to_string()),
                 );
 
             // Primary: open the password + OIDC login modal.
@@ -4969,20 +5322,18 @@ impl Workspace {
                         div()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("ou en un clic"),
+                            .child(t!("user.account.or_one_click").to_string()),
                     )
                     .child(div().flex_1().h(px(1.0)).bg(ShellDeckColors::border())),
             );
 
             panel = panel
                 .child(
-                    secondary_btn(
-                        "account-oidc-sso",
-                        "Continuer avec SSO 1clic.pro".to_string(),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.start_oidc_login(Some("sso".to_string()), cx);
-                    })),
+                    secondary_btn("account-oidc-sso", t!("login.oidc_sso").to_string()).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.start_oidc_login(Some("sso".to_string()), cx);
+                        }),
+                    ),
                 )
                 .child(
                     div()
@@ -5454,12 +5805,17 @@ impl Workspace {
             .unwrap_or_else(|| self.account_base_url());
         let url = manage_sites::manage_area_url(&origin, &site, &area_path);
         match cloud_account::open_in_browser(&url) {
-            Ok(_) => self.show_toast("Ouverture dans le navigateur…", ToastLevel::Info, cx),
+            Ok(_) => self.show_toast(
+                t!("toast.opening_browser").to_string(),
+                ToastLevel::Info,
+                cx,
+            ),
             Err(e) => self.show_toast(
-                format!(
-                    "Impossible d'ouvrir le navigateur : {}",
-                    cloud_account::user_message(&e)
-                ),
+                t!(
+                    "toast.open_browser_failed",
+                    error = cloud_account::user_message(&e)
+                )
+                .to_string(),
                 ToastLevel::Error,
                 cx,
             ),
@@ -5545,6 +5901,9 @@ impl Workspace {
                     .child(
                         div()
                             .id("uh-open-manage")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
                             .px(px(12.0))
                             .py(px(8.0))
                             .rounded(px(8.0))
@@ -5553,7 +5912,13 @@ impl Workspace {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(white())
                             .cursor_pointer()
-                            .child("Ouvrir Manage")
+                            .child(
+                                svg()
+                                    .path(lucide_path("external-link"))
+                                    .size(px(12.0))
+                                    .text_color(white()),
+                            )
+                            .child(t!("user.open_manage").to_string())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.open_manage_area("/manage".to_string(), cx);
                             })),
@@ -5561,6 +5926,9 @@ impl Workspace {
                     .child(
                         div()
                             .id("uh-sync")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
                             .px(px(12.0))
                             .py(px(8.0))
                             .rounded(px(8.0))
@@ -5571,7 +5939,12 @@ impl Workspace {
                             .text_color(ShellDeckColors::text_primary())
                             .cursor_pointer()
                             .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                            .child("Synchroniser")
+                            .child(lucide_icon(
+                                "refresh-cw",
+                                12.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .child(t!("user.sync").to_string())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cloud_sync_now(cx);
                             })),
@@ -5635,13 +6008,13 @@ impl Workspace {
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ShellDeckColors::text_primary())
-                        .child("Aucun site pour l'instant"),
+                        .child(t!("user.sites.empty.title").to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child("Ouvrez Manage pour créer un site ou synchronisez si vous venez d'en ajouter un."),
+                        .child(t!("user.sites.empty.hint").to_string()),
                 )
                 .child(
                     div()
@@ -5652,6 +6025,9 @@ impl Workspace {
                         .child(
                             div()
                                 .id("uh-empty-open-manage")
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
                                 .px(px(14.0))
                                 .py(px(8.0))
                                 .rounded(px(8.0))
@@ -5660,7 +6036,13 @@ impl Workspace {
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(white())
                                 .cursor_pointer()
-                                .child("Ouvrir Manage")
+                                .child(
+                                    svg()
+                                        .path(lucide_path("external-link"))
+                                        .size(px(12.0))
+                                        .text_color(white()),
+                                )
+                                .child(t!("user.open_manage").to_string())
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.open_manage_area("/manage".to_string(), cx);
                                 })),
@@ -5668,6 +6050,9 @@ impl Workspace {
                         .child(
                             div()
                                 .id("uh-empty-sync")
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
                                 .px(px(14.0))
                                 .py(px(8.0))
                                 .rounded(px(8.0))
@@ -5678,7 +6063,12 @@ impl Workspace {
                                 .text_color(ShellDeckColors::text_primary())
                                 .cursor_pointer()
                                 .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                .child("Synchroniser")
+                                .child(lucide_icon(
+                                    "refresh-cw",
+                                    12.0,
+                                    ShellDeckColors::text_muted(),
+                                ))
+                                .child(t!("user.sync").to_string())
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.cloud_sync_now(cx);
                                 })),
@@ -5707,7 +6097,11 @@ impl Workspace {
                 .bg(ShellDeckColors::bg_sidebar());
 
             // Row 1: identity + Activer.
-            let activate_label = if is_active { "Site actif" } else { "Activer" };
+            let activate_label = if is_active {
+                t!("user.sites.active").to_string()
+            } else {
+                t!("user.sites.activate").to_string()
+            };
             let sid_for_click = sid.clone();
             let label_for_click = label.clone();
             card = card.child(
@@ -5756,7 +6150,7 @@ impl Workspace {
                             btn = btn
                                 .bg(ShellDeckColors::primary().opacity(0.15))
                                 .text_color(ShellDeckColors::primary())
-                                .child(activate_label.to_string());
+                                .child(activate_label.clone());
                         } else {
                             btn = btn
                                 .border_1()
@@ -5765,7 +6159,7 @@ impl Workspace {
                                 .text_color(ShellDeckColors::text_primary())
                                 .cursor_pointer()
                                 .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                .child(activate_label.to_string())
+                                .child(activate_label.clone())
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     this.select_site(
                                         Some(sid_for_click.clone()),
@@ -5783,29 +6177,41 @@ impl Workspace {
             for area in &area_buttons {
                 let site_clone = site.clone();
                 let path = area.path.clone();
+                let mut chip = div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "uh-area-{}-{}",
+                        sid, area.key
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .bg(ShellDeckColors::bg_primary())
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(ShellDeckColors::hover_bg())
+                            .text_color(ShellDeckColors::text_primary())
+                    });
+                if let Some(slug) = manage_area_icon(&area.key) {
+                    chip = chip.child(
+                        svg()
+                            .path(lucide_path(slug))
+                            .size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    );
+                }
                 areas_row = areas_row.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "uh-area-{}-{}",
-                            sid, area.key
-                        ))))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(ShellDeckColors::border())
-                        .bg(ShellDeckColors::bg_primary())
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .cursor_pointer()
-                        .hover(|s| {
-                            s.bg(ShellDeckColors::hover_bg())
-                                .text_color(ShellDeckColors::text_primary())
-                        })
-                        .child(area.label.clone())
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    chip.child(area.label.clone()).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
                             this.open_area_for_site(site_clone.clone(), path.clone(), cx);
-                        })),
+                        },
+                    )),
                 );
             }
             card = card.child(areas_row);
@@ -5823,13 +6229,20 @@ impl Workspace {
             .child(header)
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
                     .px(px(16.0))
                     .pt(px(8.0))
                     .pb(px(6.0))
-                    .text_size(px(18.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child("Mes sites"),
+                    .child(lucide_icon("globe", 16.0, ShellDeckColors::text_muted()))
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("user.sites.title").to_string()),
+                    ),
             )
             .child(list)
             .children(if self.has_jean() {
@@ -5853,26 +6266,37 @@ impl Workspace {
     /// Both live at the workspace root — they slide over the list without
     /// pushing it down (the pre-sheet layout used to append them inline).
     fn render_user_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Issue list.
+        // Issue list. User mode is the "as-a-normal-user" surface — even for
+        // a super-admin viewing it, we only surface requests *they* filed.
+        // (The server hands staff every in-scope request without a
+        // `requested_by` filter — cf. `issuesInScope` in the manage repo — so
+        // the "Mes demandes" label would otherwise be misleading.)
+        let mine: Vec<&Issue> = self
+            .issues_list
+            .iter()
+            .filter(|i| self.is_my_issue(i))
+            .collect();
         let mut list = div().flex().flex_col().gap(px(4.0)).mt(px(8.0));
-        if self.issues_list.is_empty() {
+        if mine.is_empty() {
             list = list.child(
                 div()
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucune demande pour l'instant."),
+                    .child(t!("user.requests.empty").to_string()),
             );
         }
-        for iss in &self.issues_list {
+        for iss in mine.iter().copied() {
             let id = iss.id.clone();
             let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
+            let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
             let mut row =
                 div()
                     .id(ElementId::from(SharedString::from(format!(
                         "uiss-{}",
                         iss.id
                     ))))
+                    .group(group_name.clone())
                     .flex()
                     .items_center()
                     .gap(px(8.0))
@@ -5887,9 +6311,12 @@ impl Workspace {
                     })
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.select_issue(id.clone(), cx)
-                    }))
+                    .on_click({
+                        let id = id.clone();
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.select_issue(id.clone(), cx)
+                        })
+                    })
                     .child(issue_status_badge(&iss.status))
                     .child(
                         div()
@@ -5907,9 +6334,46 @@ impl Workspace {
                         .flex_shrink_0()
                         .text_size(px(10.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(format!("GH #{}", g.number)),
+                        .child(t!("user.github_issue", number = g.number).to_string()),
                 );
             }
+            // Quick action: destructive delete surfaced on row hover — spares
+            // the user opening the sheet just to remove a demande. `is_my_issue`
+            // already gates the whole `mine` list, so no per-row gate needed.
+            // Hand-rolled (matches sidebar's per-row kebab pattern) because
+            // adabraka `IconButton` derives its ElementId from the icon name
+            // and would collide across rows.
+            let del_id = iss.id.clone();
+            row = row.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "uiss-del-{}",
+                        iss.id
+                    ))))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_color(ShellDeckColors::error())
+                    .opacity(0.0)
+                    .group_hover(group_name.clone(), |el| el.opacity(1.0))
+                    .hover(|el| el.bg(ShellDeckColors::error().opacity(0.15)))
+                    .child(
+                        svg()
+                            .path(lucide_path("trash-2"))
+                            .size(px(13.0))
+                            .text_color(ShellDeckColors::error()),
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.confirm_issue_delete = Some(del_id.clone());
+                        cx.notify();
+                    })),
+            );
             list = list.child(row);
         }
 
@@ -5921,10 +6385,17 @@ impl Workspace {
             .mb(px(4.0))
             .child(
                 div()
-                    .text_size(px(18.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child("Mes demandes"),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(lucide_icon("tag", 16.0, ShellDeckColors::text_muted()))
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("user.requests.title").to_string()),
+                    ),
             )
             .child(
                 div()
@@ -5946,7 +6417,7 @@ impl Workspace {
                             .size(px(11.0))
                             .text_color(white()),
                     )
-                    .child("Nouvelle demande")
+                    .child(t!("user.requests.new").to_string())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.open_new_request(cx);
                     })),
@@ -5971,7 +6442,8 @@ impl Workspace {
     fn render_user_sheet<C: IntoElement + 'static>(
         &self,
         id: &'static str,
-        title: &'static str,
+        title: String,
+        icon: Option<&'static str>,
         dismissing: bool,
         inner: C,
         on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
@@ -6025,13 +6497,26 @@ impl Workspace {
                             .py(px(14.0))
                             .border_b_1()
                             .border_color(ShellDeckColors::border())
-                            .child(
-                                div()
-                                    .text_size(px(16.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(title),
-                            )
+                            .child({
+                                let mut row = div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0));
+                                if let Some(slug) = icon {
+                                    row = row.child(lucide_icon(
+                                        slug,
+                                        16.0,
+                                        ShellDeckColors::primary(),
+                                    ));
+                                }
+                                row.child(
+                                    div()
+                                        .text_size(px(16.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(title.clone()),
+                                )
+                            })
                             .child({
                                 let close = on_close.clone();
                                 div()
@@ -6132,7 +6617,7 @@ impl Workspace {
         // the fake-input divs used before the migration.
         let title_input = Input::new(&self.issue_title_state)
             .size(InputSize::Sm)
-            .placeholder("Titre de la demande")
+            .placeholder(t!("user.requests.title_placeholder").to_string())
             .on_enter({
                 let entity = cx.entity();
                 move |_value, cx| {
@@ -6141,7 +6626,7 @@ impl Workspace {
             });
         let body_input = Input::new(&self.issue_body_state)
             .size(InputSize::Sm)
-            .placeholder("Détails (facultatif)")
+            .placeholder(t!("user.requests.body_placeholder").to_string())
             .multi_line(true)
             .min_rows(4);
 
@@ -6169,7 +6654,7 @@ impl Workspace {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(white())
                             .cursor_pointer()
-                            .child("Créer")
+                            .child(t!("user.requests.create").to_string())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.submit_new_request(cx);
                             })),
@@ -6178,7 +6663,8 @@ impl Workspace {
 
         self.render_user_sheet(
             "user-new-request-sheet",
-            "Nouvelle demande",
+            t!("user.requests.new").to_string(),
+            Some("plus"),
             self.user_new_request_sheet_dismissing,
             inner,
             |this, cx| this.close_new_request_sheet(cx),
@@ -6195,7 +6681,8 @@ impl Workspace {
         let inner = self.render_user_issue_detail(&iss, cx);
         self.render_user_sheet(
             "user-issue-detail-sheet",
-            "Détail de la demande",
+            t!("user.requests.detail_title").to_string(),
+            Some("tag"),
             self.user_issue_detail_dismissing,
             inner,
             |this, cx| this.close_user_issue_detail(cx),
@@ -6251,16 +6738,14 @@ impl Workspace {
             );
         }
 
+        // Detail content flows directly inside the sheet chrome — no inner box
+        // (bg / border / rounded) so the sheet reads as a single surface, not
+        // "a card inside a card".
         div()
             .flex()
             .flex_col()
             .gap(px(8.0))
             .mt(px(10.0))
-            .p(px(12.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_sidebar())
             .child(
                 div()
                     .flex()
@@ -6281,7 +6766,7 @@ impl Workspace {
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::primary())
                             .cursor_pointer()
-                            .child(format!("GitHub #{}", g.number))
+                            .child(t!("user.github_issue", number = g.number).to_string())
                             .on_click({
                                 let url = g.url.clone();
                                 cx.listener(move |_t, _: &ClickEvent, _, _cx| {
@@ -6300,7 +6785,7 @@ impl Workspace {
                         div().flex_1().child(
                             Input::new(&self.issue_comment_state)
                                 .size(InputSize::Sm)
-                                .placeholder("Ajouter un commentaire…")
+                                .placeholder(t!("user.requests.comment_placeholder").to_string())
                                 .on_enter({
                                     let entity = cx.entity();
                                     move |_value, cx| {
@@ -6312,6 +6797,9 @@ impl Workspace {
                     .child(
                         div()
                             .id("uiss-comment-send")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
                             .px(px(12.0))
                             .py(px(7.0))
                             .rounded(px(6.0))
@@ -6320,12 +6808,38 @@ impl Workspace {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(white())
                             .cursor_pointer()
-                            .child("Envoyer")
+                            .child(
+                                svg()
+                                    .path(lucide_path("send"))
+                                    .size(px(11.0))
+                                    .text_color(white()),
+                            )
+                            .child(t!("user.requests.send").to_string())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.submit_issue_comment(cx);
                             })),
                     ),
             )
+            .when(self.is_my_issue(iss), |el| {
+                el.child(
+                    div()
+                        .mt(px(8.0))
+                        .flex()
+                        .justify_end()
+                        .child(
+                            Button::new("uiss-delete", t!("support.menu.delete").to_string())
+                                .variant(ButtonVariant::Destructive)
+                                .icon(IconSource::from("trash-2"))
+                                .on_click({
+                                    let id = iss.id.clone();
+                                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.confirm_issue_delete = Some(id.clone());
+                                        cx.notify();
+                                    })
+                                }),
+                        ),
+                )
+            })
     }
 
     /// User-mode "Demander à JeanClaude" card: a composer that files a request
@@ -6334,7 +6848,7 @@ impl Workspace {
         let input_display = if self.jean_ask_input.is_empty() {
             div()
                 .text_color(ShellDeckColors::text_muted())
-                .child("Décrivez votre demande… (Entrée pour envoyer)")
+                .child(t!("user.jean.ask_placeholder").to_string())
         } else {
             div()
                 .text_color(ShellDeckColors::text_primary())
@@ -6385,10 +6899,17 @@ impl Workspace {
             .gap(px(8.0))
             .child(
                 div()
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child("Demander à JeanClaude"),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(lucide_icon("zap", 15.0, ShellDeckColors::primary()))
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("user.jean.ask_title").to_string()),
+                    ),
             )
             .child(
                 div()
@@ -6420,11 +6941,14 @@ impl Workspace {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child("Un confirmateur doit approuver dans #jean."),
+                            .child(t!("user.jean.confirm_hint").to_string()),
                     )
                     .child(
                         div()
                             .id("jean-ask-send")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
                             .px(px(12.0))
                             .py(px(7.0))
                             .rounded(px(6.0))
@@ -6433,7 +6957,13 @@ impl Workspace {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(white())
                             .cursor_pointer()
-                            .child("Envoyer")
+                            .child(
+                                svg()
+                                    .path(lucide_path("send"))
+                                    .size(px(12.0))
+                                    .text_color(white()),
+                            )
+                            .child(t!("user.requests.send").to_string())
                             .on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| this.submit_jean_ask(cx)),
                             ),
@@ -6445,7 +6975,7 @@ impl Workspace {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_muted())
                     .mt(px(4.0))
-                    .child("Activité récente"),
+                    .child(t!("user.jean.recent_activity").to_string()),
             )
             .child(activity)
     }
@@ -6990,6 +7520,12 @@ impl Render for Workspace {
             }
 
             root = root.child(modal_layer);
+        }
+
+        // User-mode delete-issue confirm modal (surfaces outside modal_backdrop
+        // since UiDialog provides its own backdrop + occlude).
+        if let Some(id) = self.confirm_issue_delete.clone() {
+            root = root.child(self.render_delete_issue_modal(id, _cx));
         }
 
         root

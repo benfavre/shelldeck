@@ -12,6 +12,7 @@ use gpui::*;
 
 use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
 
+use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
@@ -41,7 +42,7 @@ impl FleetView {
             snapshot: FleetSnapshot::default(),
             my_id: None,
             runtime_enabled: false,
-            my_status: "désactivé".to_string(),
+            my_status: t!("fleet.runtime.disabled").to_string(),
             awaiting: Vec::new(),
             loading: false,
             error: None,
@@ -72,9 +73,15 @@ impl FleetView {
     fn render_runtime_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.runtime_enabled;
         let (toggle_bg, toggle_label) = if enabled {
-            (ShellDeckColors::error(), "Désactiver ce runtime")
+            (
+                ShellDeckColors::error(),
+                t!("fleet.runtime.disable").to_string(),
+            )
         } else {
-            (ShellDeckColors::primary(), "Activer ce runtime")
+            (
+                ShellDeckColors::primary(),
+                t!("fleet.runtime.enable").to_string(),
+            )
         };
 
         div()
@@ -101,7 +108,7 @@ impl FleetView {
                             .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Runtime Jean sur cette machine"),
+                            .child(t!("fleet.runtime.title").to_string()),
                     )
                     .child(
                         div()
@@ -125,12 +132,7 @@ impl FleetView {
                 div()
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::warning())
-                    .child(
-                        "⚠ ShellDeck exécutera des tickets Claude Code sur cette machine \
-                         (accès fichiers / édition / commandes dans le dossier de travail). \
-                         Les instances « confirm » exigent une validation par ticket ; \
-                         « auto » exécute immédiatement.",
-                    ),
+                    .child(t!("fleet.runtime.warning").to_string()),
             )
             .child(
                 div()
@@ -164,7 +166,7 @@ impl FleetView {
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ShellDeckColors::warning())
-                .child("TICKETS EN ATTENTE DE VALIDATION (cette machine)"),
+                .child(t!("fleet.awaiting.title").to_string()),
         );
         for job in &self.awaiting {
             let id_ok = job.id.clone();
@@ -189,7 +191,14 @@ impl FleetView {
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(format!("source : {} · {}", job.source, job.requested_by)),
+                            .child(
+                                t!(
+                                    "fleet.awaiting.source",
+                                    source = job.source.as_str(),
+                                    requested_by = job.requested_by.as_str()
+                                )
+                                .to_string(),
+                            ),
                     )
                     .child(
                         div()
@@ -208,7 +217,7 @@ impl FleetView {
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(white())
                                     .cursor_pointer()
-                                    .child("Exécuter")
+                                    .child(t!("fleet.awaiting.execute").to_string())
                                     .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
                                         cx.emit(FleetViewEvent::ApproveJob(id_ok.clone()))
                                     })),
@@ -227,7 +236,7 @@ impl FleetView {
                                     .text_color(ShellDeckColors::error())
                                     .cursor_pointer()
                                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                    .child("Rejeter")
+                                    .child(t!("fleet.awaiting.reject").to_string())
                                     .on_click(cx.listener(move |_t, _: &ClickEvent, _, cx| {
                                         cx.emit(FleetViewEvent::RejectJob(id_no.clone()))
                                     })),
@@ -254,7 +263,7 @@ impl FleetView {
         let hb = if inst.last_seen_at > 0.0 {
             rel_time(inst.last_seen_at)
         } else {
-            "jamais vu".to_string()
+            t!("fleet.instance.never_seen").to_string()
         };
 
         div()
@@ -301,7 +310,7 @@ impl FleetView {
                                         .bg(ShellDeckColors::primary().opacity(0.18))
                                         .text_size(px(9.0))
                                         .text_color(ShellDeckColors::primary())
-                                        .child("cette machine"),
+                                        .child(t!("fleet.instance.this_machine").to_string()),
                                 )
                             } else {
                                 None
@@ -357,7 +366,7 @@ impl FleetView {
             )
     }
 
-    fn section(label: &str) -> impl IntoElement {
+    fn section(label: String) -> impl IntoElement {
         div()
             .px(px(16.0))
             .pt(px(10.0))
@@ -365,7 +374,7 @@ impl FleetView {
             .text_size(px(11.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(ShellDeckColors::text_muted())
-            .child(label.to_string())
+            .child(label)
     }
 }
 
@@ -391,19 +400,23 @@ impl Render for FleetView {
                             .text_size(px(16.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child("Flotte Jean"),
+                            .child(t!("fleet.title").to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::text_muted())
                             .child(if self.loading {
-                                "chargement…".to_string()
+                                t!("fleet.loading").to_string()
                             } else {
-                                format!(
-                                    "{} en ligne / {} · {} en attente · {} en cours",
-                                    stats.online, stats.total, stats.pending, stats.running
+                                t!(
+                                    "fleet.stats",
+                                    online = stats.online,
+                                    total = stats.total,
+                                    pending = stats.pending,
+                                    running = stats.running
                                 )
+                                .to_string()
                             }),
                     ),
             )
@@ -417,7 +430,7 @@ impl Render for FleetView {
                     .text_color(ShellDeckColors::text_muted())
                     .cursor_pointer()
                     .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child("↻ Actualiser")
+                    .child(t!("fleet.refresh").to_string())
                     .on_click(
                         cx.listener(|_t, _: &ClickEvent, _, cx| cx.emit(FleetViewEvent::Refresh)),
                     ),
@@ -431,7 +444,7 @@ impl Render for FleetView {
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucune instance."),
+                    .child(t!("fleet.instances.empty").to_string()),
             );
         } else {
             for inst in &self.snapshot.instances {
@@ -447,7 +460,7 @@ impl Render for FleetView {
                     .py(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child("Aucun ticket récent."),
+                    .child(t!("fleet.jobs.empty").to_string()),
             );
         } else {
             for job in self.snapshot.jobs.iter().take(40) {
@@ -463,9 +476,9 @@ impl Render for FleetView {
             .flex_col()
             .child(self.render_runtime_card(cx))
             .child(self.render_awaiting(cx))
-            .child(Self::section("Instances"))
+            .child(Self::section(t!("fleet.instances.section").to_string()))
             .child(instances)
-            .child(Self::section("Tickets récents"))
+            .child(Self::section(t!("fleet.jobs.section").to_string()))
             .child(jobs);
 
         let mut root = div()
