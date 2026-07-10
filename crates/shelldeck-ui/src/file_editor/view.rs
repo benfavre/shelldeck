@@ -3644,18 +3644,12 @@ impl FileEditorView {
         }
         if let Some(a) = author {
             if !a.is_empty() {
-                card = card.child(Self::info_row(
-                    t!("file_editor.info.author").as_ref(),
-                    a,
-                ));
+                card = card.child(Self::info_row(t!("file_editor.info.author").as_ref(), a));
             }
         }
         if let Some(c) = creator {
             if !c.is_empty() {
-                card = card.child(Self::info_row(
-                    t!("file_editor.info.creator").as_ref(),
-                    c,
-                ));
+                card = card.child(Self::info_row(t!("file_editor.info.creator").as_ref(), c));
             }
         }
 

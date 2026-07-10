@@ -188,7 +188,9 @@ impl AssetSource for Assets {
                 include_bytes!("../assets/images/brand/png/themes/monolith-solarized-light-128.png")
             }
             "images/brand/png/themes/monolith-catppuccin-mocha-128.png" => {
-                include_bytes!("../assets/images/brand/png/themes/monolith-catppuccin-mocha-128.png")
+                include_bytes!(
+                    "../assets/images/brand/png/themes/monolith-catppuccin-mocha-128.png"
+                )
             }
             "images/brand/png/themes/monolith-one-dark-128.png" => {
                 include_bytes!("../assets/images/brand/png/themes/monolith-one-dark-128.png")

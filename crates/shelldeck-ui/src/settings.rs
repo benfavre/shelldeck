@@ -1541,7 +1541,9 @@ fn build_terminal_cursor_style_select(
     let entries: Vec<(SharedString, SharedString)> = vec![
         (
             "block".into(),
-            t!("settings.terminal.cursor_style.block").to_string().into(),
+            t!("settings.terminal.cursor_style.block")
+                .to_string()
+                .into(),
         ),
         (
             "underline".into(),
@@ -1608,8 +1610,9 @@ fn build_ui_font_family_select(
     // "System Default" is a stable sentinel value persisted in config
     // (see `AppConfig::default().general.ui_font_family`); only the display
     // label is translated.
-    let system_default_label: SharedString =
-        t!("settings.general.font.system_default").to_string().into();
+    let system_default_label: SharedString = t!("settings.general.font.system_default")
+        .to_string()
+        .into();
     let fonts: &[&str] = &[
         "System Default",
         "Inter",

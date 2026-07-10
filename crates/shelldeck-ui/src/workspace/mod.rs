@@ -1,9 +1,9 @@
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use crate::icons::{lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::prelude::{install_theme, scrollable_vertical, Button, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
-use crate::icons::{lucide_icon, lucide_path};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
@@ -6200,13 +6200,11 @@ impl Workspace {
                             .text_color(ShellDeckColors::text_muted()),
                     );
                 }
-                areas_row = areas_row.child(
-                    chip.child(area.label.clone()).on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.open_area_for_site(site_clone.clone(), path.clone(), cx);
-                        },
-                    )),
-                );
+                areas_row = areas_row.child(chip.child(area.label.clone()).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.open_area_for_site(site_clone.clone(), path.clone(), cx);
+                    },
+                )));
             }
             card = card.child(areas_row);
             list = list.child(card);
@@ -6260,11 +6258,7 @@ impl Workspace {
     /// sidebar's per-row action pattern) because adabraka `IconButton`
     /// derives its ElementId from the icon name and would collide across
     /// rows.
-    fn render_user_request_row(
-        &self,
-        iss: &Issue,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_user_request_row(&self, iss: &Issue, cx: &mut Context<Self>) -> impl IntoElement {
         let id = iss.id.clone();
         let selected = self.issue_selected.as_deref() == Some(iss.id.as_str());
         let group_name = SharedString::from(format!("uiss-row-{}", iss.id));
@@ -6290,9 +6284,7 @@ impl Workspace {
             .hover(|s| s.bg(ShellDeckColors::hover_bg()))
             .on_click({
                 let id = id.clone();
-                cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.select_issue(id.clone(), cx)
-                })
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.select_issue(id.clone(), cx))
             })
             .child(issue_status_badge(&iss.status))
             .child(
@@ -6499,10 +6491,7 @@ impl Workspace {
                             .border_b_1()
                             .border_color(ShellDeckColors::border())
                             .child({
-                                let mut row = div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0));
+                                let mut row = div().flex().items_center().gap(px(8.0));
                                 if let Some(slug) = icon {
                                     row = row.child(lucide_icon(
                                         slug,
@@ -6823,22 +6812,18 @@ impl Workspace {
             )
             .when(self.is_my_issue(iss), |el| {
                 el.child(
-                    div()
-                        .mt(px(8.0))
-                        .flex()
-                        .justify_end()
-                        .child(
-                            Button::new("uiss-delete", t!("support.menu.delete").to_string())
-                                .variant(ButtonVariant::Destructive)
-                                .icon(IconSource::from("trash-2"))
-                                .on_click({
-                                    let id = iss.id.clone();
-                                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                        this.confirm_issue_delete = Some(id.clone());
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
+                    div().mt(px(8.0)).flex().justify_end().child(
+                        Button::new("uiss-delete", t!("support.menu.delete").to_string())
+                            .variant(ButtonVariant::Destructive)
+                            .icon(IconSource::from("trash-2"))
+                            .on_click({
+                                let id = iss.id.clone();
+                                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.confirm_issue_delete = Some(id.clone());
+                                    cx.notify();
+                                })
+                            }),
+                    ),
                 )
             })
     }

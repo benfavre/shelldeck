@@ -417,7 +417,6 @@ impl SupportView {
         self.account_email_lc = email.trim().to_ascii_lowercase();
     }
 
-
     /// Count of *advanced* filters currently active (everything except the
     /// simple bar's `status` + `q`). Drives the badge on the "Filtres"
     /// button so the user knows a hidden filter is narrowing their list.
@@ -494,9 +493,7 @@ impl SupportView {
         if bytes.len() < 19 {
             return t!("support.issues.since.h24").to_string();
         }
-        let n = |s: usize, e: usize| -> i64 {
-            iso[s..e].parse::<i64>().unwrap_or(0)
-        };
+        let n = |s: usize, e: usize| -> i64 { iso[s..e].parse::<i64>().unwrap_or(0) };
         let (y, mo, d, h, mi, s) = (n(0, 4), n(5, 7), n(8, 10), n(11, 13), n(14, 16), n(17, 19));
         let (yy, mm) = if mo <= 2 { (y - 1, mo + 12) } else { (y, mo) };
         let era = yy.div_euclid(400);
@@ -2847,11 +2844,7 @@ impl SupportView {
                     Input::new(&self.issues_search_state)
                         .size(InputSize::Sm)
                         .placeholder(t!("support.issues.search").to_string())
-                        .prefix(lucide_icon(
-                            "search",
-                            12.0,
-                            ShellDeckColors::text_muted(),
-                        ))
+                        .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
                         .on_enter({
                             let entity = cx.entity();
                             move |value, cx| {
@@ -2859,9 +2852,7 @@ impl SupportView {
                                 entity.update(cx, |this, cx| {
                                     this.issues_filter.q = q;
                                     let filter = this.issues_filter.clone();
-                                    cx.emit(SupportViewEvent::IssuesFilterChanged {
-                                        filter,
-                                    });
+                                    cx.emit(SupportViewEvent::IssuesFilterChanged { filter });
                                 });
                             }
                         }),
@@ -3089,8 +3080,7 @@ impl SupportView {
                             )
                             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                this.issue_popover_menu =
-                                    Some((iid.clone(), event.position()));
+                                this.issue_popover_menu = Some((iid.clone(), event.position()));
                                 cx.notify();
                             }))
                     }),
@@ -3555,8 +3545,18 @@ impl SupportView {
         // GitHub linkage — 3 chips (all / linked / not linked)
         let github_entries: &[(Option<bool>, &str, &str, &'static str)] = &[
             (None, "all", "support.issues.filter.all", "ellipsis"),
-            (Some(true), "linked", "support.issues.github.linked", "upload"),
-            (Some(false), "unlinked", "support.issues.github.unlinked", "eye-off"),
+            (
+                Some(true),
+                "linked",
+                "support.issues.github.linked",
+                "upload",
+            ),
+            (
+                Some(false),
+                "unlinked",
+                "support.issues.github.unlinked",
+                "eye-off",
+            ),
         ];
         let mut github_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
         for (value, tag, key, icon) in github_entries {
@@ -3979,13 +3979,12 @@ impl SupportView {
                                 move |event, _, cx| {
                                     let iid = iid.clone();
                                     entity.update(cx, |this, cx| {
-                                        this.issue_popover_menu =
-                                            Some((iid, event.position()));
+                                        this.issue_popover_menu = Some((iid, event.position()));
                                         cx.notify();
                                     });
                                 }
                             })
-                    })
+                    }),
             )
             .child(meta_row)
             .child(self.render_issue_header_subpanels(&iss, cx));
