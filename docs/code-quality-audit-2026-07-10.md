@@ -64,12 +64,15 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   quand seul le thème ou `cloud_sync` a changé. Ferme les popovers
   ouverts. Ne rebuild que le Select dont le champ backing a réellement
   changé (comparer old vs new snapshot).
-- [ ] **`file_editor/view.rs`** — menu contextuel hand-rolled au lieu
+- [/] **`file_editor/view.rs`** — menu contextuel hand-rolled au lieu
   d'`adabraka_ui::overlays::ContextMenu` (violation
   `.agents/ui-components.md`) + raccourcis `"Ctrl+..."` hardcodés cassés
   sur macOS (violation `.agents/cross-platform.md`). Réutiliser le
   helper de switch modifier déjà présent dans `terminal_view.rs:2254`
   (à extraire dans `crate::platform` — le pattern se duplique).
+  (Modificateur → helper local `primary_modifier()` (⌘ sur macOS, Ctrl+
+  ailleurs) ; à promouvoir vers `crate::platform` si un 3ᵉ caller
+  arrive. Migration adabraka `ContextMenu` reste ouverte.)
 - [x] **`settings.rs:1545` + :1191** — `"Bloc" / "Souligné" / "Barre"`
   et `"System Default"` hardcodés au lieu de `t!` (violation
   `.agents/i18n.md`). Ajouter les clés

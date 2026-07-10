@@ -64,45 +64,57 @@ pub enum ContextMenuAction {
 
 struct ContextMenuItem {
     label: String,
-    shortcut: &'static str,
+    shortcut: String,
     action: ContextMenuAction,
 }
 
+/// Modifier prefix for the primary shortcut key — Command (⌘) on macOS,
+/// Ctrl+ elsewhere. Terminal has an inline `cfg!` for the same swap; if a
+/// third caller shows up, promote to a shared `crate::platform` helper.
+fn primary_modifier() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "\u{2318}"
+    } else {
+        "Ctrl+"
+    }
+}
+
 fn context_menu_items() -> Vec<ContextMenuItem> {
+    let m = primary_modifier();
     vec![
         ContextMenuItem {
             label: t!("file_editor.context.undo").to_string(),
-            shortcut: "Ctrl+Z",
+            shortcut: format!("{m}Z"),
             action: ContextMenuAction::Undo,
         },
         ContextMenuItem {
             label: t!("file_editor.context.redo").to_string(),
-            shortcut: "Ctrl+Y",
+            shortcut: format!("{m}Y"),
             action: ContextMenuAction::Redo,
         },
         ContextMenuItem {
             label: t!("file_editor.context.cut").to_string(),
-            shortcut: "Ctrl+X",
+            shortcut: format!("{m}X"),
             action: ContextMenuAction::Cut,
         },
         ContextMenuItem {
             label: t!("file_editor.context.copy").to_string(),
-            shortcut: "Ctrl+C",
+            shortcut: format!("{m}C"),
             action: ContextMenuAction::Copy,
         },
         ContextMenuItem {
             label: t!("file_editor.context.paste").to_string(),
-            shortcut: "Ctrl+V",
+            shortcut: format!("{m}V"),
             action: ContextMenuAction::Paste,
         },
         ContextMenuItem {
             label: t!("file_editor.context.select_all").to_string(),
-            shortcut: "Ctrl+A",
+            shortcut: format!("{m}A"),
             action: ContextMenuAction::SelectAll,
         },
         ContextMenuItem {
             label: t!("file_editor.context.toggle_comment").to_string(),
-            shortcut: "Ctrl+/",
+            shortcut: format!("{m}/"),
             action: ContextMenuAction::ToggleComment,
         },
     ]
@@ -3346,7 +3358,7 @@ impl FileEditorView {
                     div()
                         .text_color(ShellDeckColors::text_muted())
                         .text_size(px(10.0))
-                        .child(item.shortcut),
+                        .child(item.shortcut.clone()),
                 )
                 .on_click(move |_event, _window, cx| {
                     if let Some(view) = h.upgrade() {
