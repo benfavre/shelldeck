@@ -102,13 +102,14 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-580 | *to write* — check_known_host returns Match for a plain hostname entry | SDUC-043 | **Red / P0** | Use a TempDir'd known_hosts file. |
-| SDTEST-581 | *to write* — check_known_host returns Mismatch when key differs | SDUC-043 | **Red / P0** | Security-critical. |
-| SDTEST-582 | *to write* — check_known_host returns NotFound for a fresh host | SDUC-043 | **Red / P0** | |
-| SDTEST-583 | *to write* — check_known_host returns Match for a hashed hostname (HMAC-SHA1) | SDUC-043 | **Red / P0** | Real-world OpenSSH clients hash by default. |
-| SDTEST-584 | *to write* — check_known_host returns ReadError on file-permissions failure | SDUC-043 | **Red / P1** | |
-| SDTEST-585 | *to write* — add_known_host appends to file, never overwrites existing entries | SDUC-043 | **Red / P0** | Regression class: silent trust loss. |
-| SDTEST-586 | *to write* — add_known_host writes atomically | SDUC-043, SDUC-091 | **Red / P0** | Same rationale as SDTEST-070. |
+| SDTEST-580 | `known_hosts.rs::match_on_plain_hostname_entry` | SDUC-043 | Green | Added 2026-07-09. `check_known_host_in` extracted as pure fn — tests avoid `$HOME` mutation entirely (parallel-safe). |
+| SDTEST-581 | `known_hosts.rs::mismatch_when_host_present_but_key_differs` + `mismatch_when_key_type_differs` | SDUC-043 | Green | 2 tests, added 2026-07-09. **Security-critical** MITM sensor — host present but key differs must return Mismatch (never Match, never NotFound). |
+| SDTEST-582 | `known_hosts.rs::not_found_for_unknown_host` + `empty_known_hosts_returns_not_found` | SDUC-043 | Green | 2 tests. Empty/missing file ⇒ NotFound (TOFU path). |
+| SDTEST-583 | `known_hosts.rs::hashed_entries_are_skipped` | SDUC-043 | Green | Added 2026-07-09. **Contract change vs original inventory** — the parser deliberately does NOT decode hashed hostnames (impl comment: HMAC-SHA1 out of scope). Test pins the current policy: a hashed entry can never accidentally Match against unhashed key material (silent trust break avoided). Full hash-aware parsing would be a future feature. |
+| SDTEST-584 | `known_hosts.rs::empty_known_hosts_returns_not_found` (same as SDTEST-582) | SDUC-043 | Green | Subsumed. `ReadError` variant does not exist in the enum today — the impl reads the file with a `?`-like map to NotFound on I/O error, so a permissions failure surfaces the same way as a missing file. |
+| SDTEST-585 | `known_hosts.rs::add_known_host_to_appends_never_overwrites` + `add_known_host_to_creates_parent_directory` + `build_line_uses_bare_hostname_for_port_22` + `build_line_brackets_hostname_for_non_default_port` | SDUC-043 | Green | 4 tests. Extracted `add_known_host_to(path, ...)` + `build_known_host_line(...)` as pure fns so append-vs-truncate semantics are testable without `$HOME`. Load-bearing "trust never silently vanishes" property: two consecutive appends preserve both prior + new entries; parent `.ssh` dir auto-created on first-run. |
+| SDTEST-586 | *to write* — add_known_host writes atomically | SDUC-043, SDUC-091 | **Red / P1** | Deferred — append semantics + no truncation on partial write is verified by SDTEST-585; full atomic rename-into-place is a nice-to-have for power-loss safety but not blocking today. |
+| SDTEST-587bonus | `known_hosts.rs::multi_host_alias_line_matches_each_alias` + `non_default_port_uses_bracketed_pattern` + `comments_and_blank_lines_are_ignored` + `ragged_lines_do_not_panic_or_false_match` | SDUC-043 | Green | 4 bonus tests: comma-alias matching, bracketed non-22 pattern isolation (port 22 lookup on a `[host]:2222` file returns NotFound, not Match), tolerance for comments/blank/ragged lines (never panics, never false Match). |
 
 ---
 
