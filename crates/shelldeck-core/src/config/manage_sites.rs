@@ -27,6 +27,20 @@ pub struct ManagedSiteInfo {
     /// Combined "Tenant — Site" label for the picker.
     #[serde(default)]
     pub label: String,
+    /// Optional metadata sourced from `sitemeta:<tenant_id>` server-side.
+    /// Populated when the manage console has probed the site; `None` for
+    /// unprobed sites (User mode falls back to a generic card).
+    #[serde(default)]
+    pub favicon: Option<String>,
+    /// Brand accent as `#rrggbb`.
+    #[serde(default)]
+    pub brand_color: Option<String>,
+    #[serde(default)]
+    pub is_wordpress: Option<bool>,
+    /// Absolute wp-admin URL when the site is WordPress; enables the
+    /// "Ouvrir wp-admin" chip on User-mode site cards.
+    #[serde(default)]
+    pub wp_admin_url: Option<String>,
 }
 
 impl ManagedSiteInfo {
@@ -137,6 +151,10 @@ mod tests {
             tenant_name: "Inklura".to_string(),
             host: "dashboard.inklura.fr".to_string(),
             label: "Inklura — Dashboard".to_string(),
+            favicon: None,
+            brand_color: None,
+            is_wordpress: None,
+            wp_admin_url: None,
         }
     }
 
@@ -195,6 +213,10 @@ mod tests {
             tenant_name: String::new(),
             host: String::new(),
             label: String::new(),
+            favicon: None,
+            brand_color: None,
+            is_wordpress: None,
+            wp_admin_url: None,
         };
         assert_eq!(s.display_label(), "the-id");
     }

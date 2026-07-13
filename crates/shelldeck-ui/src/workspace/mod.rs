@@ -4531,6 +4531,23 @@ fn manage_area_icon(key: &str) -> Option<&'static str> {
     })
 }
 
+/// Parse a `#rrggbb` (or `rrggbb`) string into an opaque `Hsla`. Returns
+/// `None` on any malformed input — the site card falls back to the neutral
+/// border colour in that case.
+fn parse_brand_hex(hex: &Option<String>) -> Option<Hsla> {
+    let raw = hex.as_ref()?.trim();
+    let raw = raw.trim_start_matches('#');
+    if raw.len() != 6 || !raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&raw[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&raw[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&raw[4..6], 16).ok()?;
+    Some(Hsla::from(rgba(
+        (r as u32) << 24 | (g as u32) << 16 | (b as u32) << 8 | 0xFF,
+    )))
+}
+
 fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {
     if pos.y < border && pos.x < border {
         Some(ResizeEdge::TopLeft)
@@ -6075,6 +6092,17 @@ impl Workspace {
             let is_active = active_id.as_deref() == Some(site.site_id.as_str());
             let sid = site.site_id.clone();
             let label = site.display_label();
+            let brand = parse_brand_hex(&site.brand_color);
+
+            // Border: active > brand tint > neutral. Brand tint is 45% opacity
+            // so it reads as an accent without shouting.
+            let border_color = if is_active {
+                ShellDeckColors::primary()
+            } else if let Some(c) = brand {
+                c.opacity(0.45)
+            } else {
+                ShellDeckColors::border()
+            };
 
             let mut card = div()
                 .flex()
@@ -6083,11 +6111,7 @@ impl Workspace {
                 .p(px(12.0))
                 .rounded(px(10.0))
                 .border_1()
-                .border_color(if is_active {
-                    ShellDeckColors::primary()
-                } else {
-                    ShellDeckColors::border()
-                })
+                .border_color(border_color)
                 .bg(ShellDeckColors::bg_sidebar());
 
             // Row 1: identity + Activer.
@@ -6104,30 +6128,44 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .child(
+                    .child({
+                        let mut identity = div().flex().flex_col().min_w(px(0.0)).overflow_hidden();
+                        // Label row = title + optional WP badge (when the
+                        // site was flagged as WordPress by the manage probe).
+                        let mut label_row = div().flex().items_center().gap(px(6.0)).child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .truncate()
+                                .child(label.clone()),
+                        );
+                        if site.is_wordpress == Some(true) {
+                            label_row = label_row.child(
                                 div()
-                                    .text_size(px(14.0))
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(4.0))
+                                    .bg(ShellDeckColors::primary().opacity(0.12))
+                                    .text_size(px(10.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(if site.host.is_empty() {
-                                        site.tenant_name.clone()
-                                    } else {
-                                        site.host.clone()
-                                    }),
-                            ),
-                    )
+                                    .text_color(ShellDeckColors::primary())
+                                    .flex_shrink_0()
+                                    .child("WP"),
+                            );
+                        }
+                        identity = identity.child(label_row).child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(if site.host.is_empty() {
+                                    site.tenant_name.clone()
+                                } else {
+                                    site.host.clone()
+                                }),
+                        );
+                        identity
+                    })
                     .child({
                         let mut btn = div()
                             .id(ElementId::from(SharedString::from(format!(
@@ -6166,8 +6204,43 @@ impl Workspace {
                     }),
             );
 
-            // Row 2: area deep-link buttons.
+            // Row 2: area deep-link buttons (+ optional wp-admin shortcut
+            // when the site has a wp_admin_url from the manage probe).
             let mut areas_row = div().flex().flex_wrap().gap(px(6.0));
+            if let Some(wp_url) = site.wp_admin_url.as_ref().filter(|u| !u.is_empty()) {
+                let wp_url_owned = wp_url.clone();
+                areas_row = areas_row.child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "uh-wp-{}",
+                            sid
+                        ))))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(ShellDeckColors::primary().opacity(0.35))
+                        .bg(ShellDeckColors::primary().opacity(0.08))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::primary())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ShellDeckColors::primary().opacity(0.14)))
+                        .child(lucide_icon(
+                            "external-link",
+                            11.0,
+                            ShellDeckColors::primary(),
+                        ))
+                        .child("wp-admin")
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, _cx| {
+                            let _ = shelldeck_core::config::cloud_account::open_in_browser(
+                                &wp_url_owned,
+                            );
+                        })),
+                );
+            }
             for area in &area_buttons {
                 let site_clone = site.clone();
                 let path = area.path.clone();
