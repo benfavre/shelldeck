@@ -20,7 +20,7 @@ use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
 use shelldeck_ssh::tunnel::TunnelHandle;
 use std::collections::HashMap;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
@@ -309,6 +309,12 @@ pub struct Workspace {
     issue_body_state: Entity<InputState>,
     issue_comment_state: Entity<InputState>,
     issue_new_priority: String,
+    /// User-home "Mes sites" search — filters the compact rows client-side
+    /// by label + host + tenant_name. The query is read live from the input
+    /// state at render time (same pattern as `SupportView::search_query` —
+    /// adabraka `on_change` only fires on programmatic `set_value`, not on
+    /// user keystrokes).
+    user_sites_search_state: Entity<InputState>,
     /// User-mode: "Nouvelle demande" sheet visibility. The composer used to be
     /// always-visible at the top of `render_user_requests`; it now lives in a
     /// right-side sheet, toggled by the "Nouvelle demande" button in the list
@@ -684,6 +690,7 @@ impl Workspace {
             issue_title_state: cx.new(InputState::new),
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_comment_state: cx.new(InputState::new),
+            user_sites_search_state: cx.new(InputState::new),
             issue_new_priority: "normal".to_string(),
             bext_view,
             _bext_sub: bext_sub,
@@ -4515,6 +4522,13 @@ impl Workspace {
     }
 }
 
+/// Uniform slot height for the User-home compact site rows. Includes the
+/// visible card (~56px) + 4px padding top/bottom, which reads as an 8px
+/// gap between adjacent rows without breaking `uniform_list`'s
+/// uniform-height contract. Any change here must also update the
+/// `others_count * SITE_ROW_H` calc in `render_user_home`.
+const SITE_ROW_H: f32 = 64.0;
+
 /// Lucide slug for a Manage area key. Kept in one place so the User-home
 /// site cards and any future palette entries share the same visual vocab.
 /// Return `None` for area keys we ship with no dedicated icon — the chip
@@ -5833,12 +5847,326 @@ impl Workspace {
         }
     }
 
+    /// Split the site directory into `(active, others)` — the active site
+    /// as a full "rich" card, everyone else as compact virtualised rows.
+    /// Applies the live search query, then sorts (active pinned, then
+    /// connection-bearing, then alpha) so the compact list has a stable
+    /// order. The active site is only returned when it *also* passes the
+    /// filter — a filter that hides the current active means the top card
+    /// disappears (the sidebar filter itself stays untouched).
+    fn partition_user_sites(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> (
+        Option<manage_sites::ManagedSiteInfo>,
+        Vec<manage_sites::ManagedSiteInfo>,
+    ) {
+        let payload = self.site_directory.clone().unwrap_or_default();
+        let active_id = self.app_config.cloud_sync.active_site_id.clone();
+        let conn_site_ids: std::collections::HashSet<String> = self
+            .connections
+            .iter()
+            .filter_map(|c| c.site_id.map(|id| id.to_string()))
+            .collect();
+        let q = self
+            .user_sites_search_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
+        let mut sites: Vec<manage_sites::ManagedSiteInfo> = payload
+            .sites
+            .iter()
+            .filter(|s| {
+                q.is_empty()
+                    || s.display_label().to_lowercase().contains(&q)
+                    || s.host.to_lowercase().contains(&q)
+                    || s.tenant_name.to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect();
+        sites.sort_by(|a, b| {
+            let a_conn = conn_site_ids.contains(&a.site_id);
+            let b_conn = conn_site_ids.contains(&b.site_id);
+            b_conn.cmp(&a_conn).then(
+                a.display_label()
+                    .to_lowercase()
+                    .cmp(&b.display_label().to_lowercase()),
+            )
+        });
+        let active = active_id
+            .as_deref()
+            .and_then(|id| sites.iter().position(|s| s.site_id == id))
+            .map(|idx| sites.remove(idx));
+        (active, sites)
+    }
+
+    /// Full "rich" site card — reserved for the currently-active site. This
+    /// is the only place areas + wp-admin chip render (the compact rows keep
+    /// paint budget low by omitting them). Extracted from the pre-virt loop
+    /// verbatim; only the `is_active = true` branch stays here (the compact
+    /// row handles inactive sites now).
+    fn render_active_site_card(
+        &self,
+        site: &manage_sites::ManagedSiteInfo,
+        area_buttons: &[manage_sites::ManageArea],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let sid = site.site_id.clone();
+        let label = site.display_label();
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(12.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(ShellDeckColors::primary())
+            .bg(ShellDeckColors::bg_sidebar());
+
+        // Row 1: identity + "Site actif" pill.
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.0))
+                .child({
+                    let mut identity = div().flex().flex_col().min_w(px(0.0)).overflow_hidden();
+                    let mut label_row = div().flex().items_center().gap(px(6.0)).child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .truncate()
+                            .child(label.clone()),
+                    );
+                    if site.is_wordpress == Some(true) {
+                        label_row = label_row.child(
+                            div()
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .bg(ShellDeckColors::primary().opacity(0.12))
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::primary())
+                                .flex_shrink_0()
+                                .child("WP"),
+                        );
+                    }
+                    identity = identity.child(label_row).child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(if site.host.is_empty() {
+                                site.tenant_name.clone()
+                            } else {
+                                site.host.clone()
+                            }),
+                    );
+                    identity
+                })
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(6.0))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .flex_shrink_0()
+                        .bg(ShellDeckColors::primary().opacity(0.15))
+                        .text_color(ShellDeckColors::primary())
+                        .child(t!("user.sites.active").to_string()),
+                ),
+        );
+
+        // Row 2: wp-admin shortcut (if any) + area deep-links.
+        let mut areas_row = div().flex().flex_wrap().gap(px(6.0));
+        if let Some(wp_url) = site.wp_admin_url.as_ref().filter(|u| !u.is_empty()) {
+            let wp_url_owned = wp_url.clone();
+            areas_row = areas_row.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "uh-wp-{}",
+                        sid
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::primary().opacity(0.35))
+                    .bg(ShellDeckColors::primary().opacity(0.08))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::primary())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::primary().opacity(0.14)))
+                    .child(lucide_icon(
+                        "external-link",
+                        11.0,
+                        ShellDeckColors::primary(),
+                    ))
+                    .child("wp-admin")
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, _cx| {
+                        let _ = shelldeck_core::config::cloud_account::open_in_browser(
+                            &wp_url_owned,
+                        );
+                    })),
+            );
+        }
+        for area in area_buttons {
+            let site_clone = site.clone();
+            let path = area.path.clone();
+            let mut chip = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "uh-area-{}-{}",
+                    sid, area.key
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_primary())
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .cursor_pointer()
+                .hover(|s| {
+                    s.bg(ShellDeckColors::hover_bg())
+                        .text_color(ShellDeckColors::text_primary())
+                });
+            if let Some(slug) = manage_area_icon(&area.key) {
+                chip = chip.child(
+                    svg()
+                        .path(lucide_path(slug))
+                        .size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                );
+            }
+            areas_row = areas_row.child(chip.child(area.label.clone()).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.open_area_for_site(site_clone.clone(), path.clone(), cx);
+                },
+            )));
+        }
+        card.child(areas_row)
+    }
+
+    /// Fixed-height compact row for a non-active site. The full slot
+    /// (`SITE_ROW_H = 64px`) contains an inner card that's ~56px tall with
+    /// 4px padding top/bottom, giving an 8px visual gap between adjacent
+    /// rows without breaking `uniform_list`'s uniform-height contract.
+    /// Width fills the parent (`w_full`) so rows land on the same right
+    /// edge as the active card above. Areas + wp-admin chip are dropped
+    /// here on purpose — activation promotes the site to the top card.
+    fn render_compact_site_row(
+        &self,
+        site: &manage_sites::ManagedSiteInfo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let sid = site.site_id.clone();
+        let label = site.display_label();
+        let brand = parse_brand_hex(&site.brand_color);
+        let border_color = brand
+            .map(|c| c.opacity(0.45))
+            .unwrap_or(ShellDeckColors::border());
+        let sid_for_click = sid.clone();
+        let label_for_click = label.clone();
+
+        div()
+            .w_full()
+            .h(px(SITE_ROW_H))
+            .py(px(4.0))
+            .child(
+                div()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(12.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(border_color)
+                    .bg(ShellDeckColors::bg_sidebar())
+            .child({
+                let mut identity = div().flex().flex_col().flex_1().min_w(px(0.0)).overflow_hidden();
+                let mut label_row = div().flex().items_center().gap(px(6.0)).child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .truncate()
+                        .child(label.clone()),
+                );
+                if site.is_wordpress == Some(true) {
+                    label_row = label_row.child(
+                        div()
+                            .px(px(5.0))
+                            .py(px(1.0))
+                            .rounded(px(4.0))
+                            .bg(ShellDeckColors::primary().opacity(0.12))
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::primary())
+                            .flex_shrink_0()
+                            .child("WP"),
+                    );
+                }
+                identity = identity.child(label_row).child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .truncate()
+                        .child(if site.host.is_empty() {
+                            site.tenant_name.clone()
+                        } else {
+                            site.host.clone()
+                        }),
+                );
+                identity
+            })
+            .child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "uh-act-{}",
+                        sid
+                    ))))
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .flex_shrink_0()
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .bg(ShellDeckColors::bg_primary())
+                    .text_color(ShellDeckColors::text_primary())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                    .child(t!("user.sites.activate").to_string())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.select_site(
+                            Some(sid_for_click.clone()),
+                            Some(label_for_click.clone()),
+                            cx,
+                        );
+                    })),
+            ),
+            )
+    }
+
     /// User mode: a manage-centric home — account header + "Mes sites" list with
     /// per-site Activer + area deep links.
     fn render_user_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
         let server = self.account_base_url();
-        let active_id = self.app_config.cloud_sync.active_site_id.clone();
         let payload = self.site_directory.clone().unwrap_or_default();
 
         // Preferred area buttons for each site row (subset of the directory).
@@ -5962,24 +6290,12 @@ impl Workspace {
                     ),
             );
 
-        // Sites list (sorted: active pinned, connection-bearing next, then label).
-        let conn_site_ids: std::collections::HashSet<String> = self
-            .connections
-            .iter()
-            .filter_map(|c| c.site_id.map(|id| id.to_string()))
-            .collect();
-        let mut sites: Vec<manage_sites::ManagedSiteInfo> = payload.sites.clone();
-        sites.sort_by(|a, b| {
-            let a_active = active_id.as_deref() == Some(a.site_id.as_str());
-            let b_active = active_id.as_deref() == Some(b.site_id.as_str());
-            let a_conn = conn_site_ids.contains(&a.site_id);
-            let b_conn = conn_site_ids.contains(&b.site_id);
-            b_active.cmp(&a_active).then(b_conn.cmp(&a_conn)).then(
-                a.display_label()
-                    .to_lowercase()
-                    .cmp(&b.display_label().to_lowercase()),
-            )
-        });
+        // Sites: filter by search, sort (conn-bearing first, then alpha),
+        // split into (active-card, others-for-virt-list). Recomputed inside
+        // the `uniform_list` processor as well — cheap enough on 300 sites
+        // (< 1ms) and keeps the model authoritative.
+        let (active_site, others_sites) = self.partition_user_sites(cx);
+        let others_count = others_sites.len();
 
         let mut list = div()
             .id("user-home-sites")
@@ -5988,7 +6304,7 @@ impl Workspace {
             .gap(px(8.0))
             .px(px(16.0));
 
-        if sites.is_empty() {
+        if active_site.is_none() && others_count == 0 {
             // Centered CTA card instead of a passive mumble line — makes it
             // clear the next action is to open Manage (or Synchroniser if the
             // sites were just created).
@@ -6088,199 +6404,48 @@ impl Workspace {
             list = list.child(empty_card);
         }
 
-        for site in &sites {
-            let is_active = active_id.as_deref() == Some(site.site_id.as_str());
-            let sid = site.site_id.clone();
-            let label = site.display_label();
-            let brand = parse_brand_hex(&site.brand_color);
+        // Active site sits at the top as a full "rich" card (identity +
+        // wp-admin shortcut + all six area deep-links). It's the only card
+        // that owns the areas — Activer on any other row promotes that
+        // site here.
+        if let Some(site) = active_site.as_ref() {
+            list = list.child(self.render_active_site_card(site, &area_buttons, cx));
+        }
 
-            // Border: active > brand tint > neutral. Brand tint is 45% opacity
-            // so it reads as an accent without shouting.
-            let border_color = if is_active {
-                ShellDeckColors::primary()
-            } else if let Some(c) = brand {
-                c.opacity(0.45)
-            } else {
-                ShellDeckColors::border()
-            };
-
-            let mut card = div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .p(px(12.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(border_color)
-                .bg(ShellDeckColors::bg_sidebar());
-
-            // Row 1: identity + Activer.
-            let activate_label = if is_active {
-                t!("user.sites.active").to_string()
-            } else {
-                t!("user.sites.activate").to_string()
-            };
-            let sid_for_click = sid.clone();
-            let label_for_click = label.clone();
-            card = card.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(10.0))
-                    .child({
-                        let mut identity = div().flex().flex_col().min_w(px(0.0)).overflow_hidden();
-                        // Label row = title + optional WP badge (when the
-                        // site was flagged as WordPress by the manage probe).
-                        let mut label_row = div().flex().items_center().gap(px(6.0)).child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(ShellDeckColors::text_primary())
-                                .truncate()
-                                .child(label.clone()),
-                        );
-                        if site.is_wordpress == Some(true) {
-                            label_row = label_row.child(
-                                div()
-                                    .px(px(5.0))
-                                    .py(px(1.0))
-                                    .rounded(px(4.0))
-                                    .bg(ShellDeckColors::primary().opacity(0.12))
-                                    .text_size(px(10.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::primary())
-                                    .flex_shrink_0()
-                                    .child("WP"),
-                            );
-                        }
-                        identity = identity.child(label_row).child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(if site.host.is_empty() {
-                                    site.tenant_name.clone()
-                                } else {
-                                    site.host.clone()
-                                }),
-                        );
-                        identity
-                    })
-                    .child({
-                        let mut btn = div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "uh-act-{}",
-                                sid
-                            ))))
-                            .px(px(10.0))
-                            .py(px(5.0))
-                            .rounded(px(6.0))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .flex_shrink_0();
-                        if is_active {
-                            btn = btn
-                                .bg(ShellDeckColors::primary().opacity(0.15))
-                                .text_color(ShellDeckColors::primary())
-                                .child(activate_label.clone());
-                        } else {
-                            btn = btn
-                                .border_1()
-                                .border_color(ShellDeckColors::border())
-                                .bg(ShellDeckColors::bg_primary())
-                                .text_color(ShellDeckColors::text_primary())
-                                .cursor_pointer()
-                                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                                .child(activate_label.clone())
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.select_site(
-                                        Some(sid_for_click.clone()),
-                                        Some(label_for_click.clone()),
-                                        cx,
+        // Everyone else is a fixed-height compact row inside a virtualised
+        // `uniform_list`. Height per row is deliberately uniform so GPUI's
+        // virtualiser knows how many rows fit the viewport without probing
+        // each one — that's the whole point of this refactor: paint budget
+        // becomes O(visible) instead of O(sites).
+        if others_count > 0 {
+            const MAX_LIST_H: f32 = 600.0;
+            const MIN_LIST_H: f32 = 120.0;
+            let visible_h = (others_count as f32 * SITE_ROW_H)
+                .min(MAX_LIST_H)
+                .max(MIN_LIST_H);
+            list = list.child(
+                div().w_full().h(px(visible_h)).child(
+                    uniform_list(
+                        "user-home-sites-virt",
+                        others_count,
+                        cx.processor(|this, range: Range<usize>, _window, cx| {
+                            let (_, others) = this.partition_user_sites(cx);
+                            let mut items: Vec<AnyElement> = Vec::new();
+                            for i in range {
+                                if let Some(site) = others.get(i) {
+                                    items.push(
+                                        this.render_compact_site_row(site, cx)
+                                            .into_any_element(),
                                     );
-                                }));
-                        }
-                        btn
-                    }),
+                                }
+                            }
+                            items
+                        }),
+                    )
+                    .w_full()
+                    .h_full(),
+                ),
             );
-
-            // Row 2: area deep-link buttons (+ optional wp-admin shortcut
-            // when the site has a wp_admin_url from the manage probe).
-            let mut areas_row = div().flex().flex_wrap().gap(px(6.0));
-            if let Some(wp_url) = site.wp_admin_url.as_ref().filter(|u| !u.is_empty()) {
-                let wp_url_owned = wp_url.clone();
-                areas_row = areas_row.child(
-                    div()
-                        .id(ElementId::from(SharedString::from(format!(
-                            "uh-wp-{}",
-                            sid
-                        ))))
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(ShellDeckColors::primary().opacity(0.35))
-                        .bg(ShellDeckColors::primary().opacity(0.08))
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::primary())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ShellDeckColors::primary().opacity(0.14)))
-                        .child(lucide_icon(
-                            "external-link",
-                            11.0,
-                            ShellDeckColors::primary(),
-                        ))
-                        .child("wp-admin")
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, _cx| {
-                            let _ = shelldeck_core::config::cloud_account::open_in_browser(
-                                &wp_url_owned,
-                            );
-                        })),
-                );
-            }
-            for area in &area_buttons {
-                let site_clone = site.clone();
-                let path = area.path.clone();
-                let mut chip = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "uh-area-{}-{}",
-                        sid, area.key
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .bg(ShellDeckColors::bg_primary())
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|s| {
-                        s.bg(ShellDeckColors::hover_bg())
-                            .text_color(ShellDeckColors::text_primary())
-                    });
-                if let Some(slug) = manage_area_icon(&area.key) {
-                    chip = chip.child(
-                        svg()
-                            .path(lucide_path(slug))
-                            .size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted()),
-                    );
-                }
-                areas_row = areas_row.child(chip.child(area.label.clone()).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
-                        this.open_area_for_site(site_clone.clone(), path.clone(), cx);
-                    },
-                )));
-            }
-            card = card.child(areas_row);
-            list = list.child(card);
         }
 
         // Page body: account header, "Mes sites" section, optional Jean card,
@@ -6292,23 +6457,59 @@ impl Workspace {
             .flex_col()
             .pb(px(24.0))
             .child(header)
-            .child(
-                div()
+            .child({
+                // Section header: title on the left, live search on the right
+                // (only when there are enough sites to make it worth it —
+                // small tenants keep the row uncluttered).
+                let mut row = div()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .gap(px(8.0))
                     .px(px(16.0))
                     .pt(px(8.0))
                     .pb(px(6.0))
-                    .child(lucide_icon("globe", 16.0, ShellDeckColors::text_muted()))
                     .child(
                         div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("user.sites.title").to_string()),
-                    ),
-            )
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(lucide_icon("globe", 16.0, ShellDeckColors::text_muted()))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.sites.title").to_string()),
+                            ),
+                    );
+                if payload.sites.len() > 5 {
+                    let entity = cx.entity();
+                    row = row.child(
+                        div().w(px(260.0)).child(
+                            Input::new(&self.user_sites_search_state)
+                                .size(InputSize::Sm)
+                                .placeholder(t!("user.sites.search").to_string())
+                                .prefix(lucide_icon(
+                                    "search",
+                                    12.0,
+                                    ShellDeckColors::text_muted(),
+                                ))
+                                // Just notify — the outer render already
+                                // reads the input state live, so notify
+                                // triggers a refilter. `on_change` fires on
+                                // programmatic set_value, not on typing,
+                                // but the input state itself notifies on
+                                // every keystroke and our `.read(cx)`
+                                // above makes this view a subscriber.
+                                .on_change(move |_, cx| {
+                                    entity.update(cx, |_, cx| cx.notify());
+                                }),
+                        ),
+                    );
+                }
+                row
+            })
             .child(list)
             .children(if self.has_jean() {
                 Some(self.render_jean_ask_card(cx))
