@@ -426,6 +426,8 @@ mod tests {
             email: "ben@webdesign29.net".to_string(),
             name: "Ben Favre".to_string(),
             is_superadmin: true,
+            is_admin: true,
+            roles: vec!["superadmin".to_string()],
         });
         logged_in.save_to(&path).expect("save_to");
         let loaded = AppConfig::load_from(&path).expect("load_from");

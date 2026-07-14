@@ -311,6 +311,13 @@ pub struct SupportView {
     issues_filter: shelldeck_core::config::issues::IssueListFilter,
     issues_filter_draft: shelldeck_core::config::issues::IssueListFilter,
     issues_filter_modal_open: bool,
+    /// Nested picker modal for the issues advanced filter — opened when
+    /// the user clicks the assignee button inside the filter modal. Uses
+    /// a full modal (with search) rather than a Select dropdown because
+    /// agent lists can grow, and a searchable overlay is cleaner than a
+    /// cramped popover.
+    issues_assignee_modal_open: bool,
+    issues_assignee_search_state: Entity<InputState>,
     issues_search_state: Entity<InputState>,
     issue_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
@@ -337,7 +344,8 @@ pub struct SupportView {
 impl SupportView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let parent = cx.entity();
-        let assignee_draft_select = Self::build_assignee_draft_select(None, &[], parent, cx);
+        let assignee_draft_select =
+            Self::build_assignee_draft_select(None, &[], parent.clone(), cx);
         Self {
             tickets: Vec::new(),
             counts: SupportCounts::default(),
@@ -377,6 +385,8 @@ impl SupportView {
             issues_filter: shelldeck_core::config::issues::IssueListFilter::default(),
             issues_filter_draft: shelldeck_core::config::issues::IssueListFilter::default(),
             issues_filter_modal_open: false,
+            issues_assignee_modal_open: false,
+            issues_assignee_search_state: cx.new(InputState::new),
             issues_search_state: cx.new(InputState::new),
             issue_instances: Vec::new(),
             issue_detail: None,
@@ -968,6 +978,50 @@ impl SupportView {
             parent,
             cx,
         );
+    }
+
+    /// Human label for the current draft assignee — used as the button
+    /// text inside the filter modal's assignee row + the empty-state
+    /// label of the picker. Recognises the special sentinels ("", "me",
+    /// "unassigned") and otherwise resolves the raw email to the agent's
+    /// display name.
+    fn issues_assignee_label(&self, assignee: &str) -> String {
+        match assignee {
+            "" => t!("support.issues.assignee.all").to_string(),
+            "me" => t!("support.issues.assignee.me").to_string(),
+            "unassigned" => t!("support.issues.assignee.unassigned").to_string(),
+            email => self
+                .agents
+                .iter()
+                .find(|a| a.email == email)
+                .map(|a| {
+                    if a.name.trim().is_empty() {
+                        a.email.clone()
+                    } else {
+                        a.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| email.to_string()),
+        }
+    }
+
+    fn open_issues_assignee_modal(&mut self, cx: &mut Context<Self>) {
+        // Reset the search input each open so the picker doesn't remember
+        // a stale query from a prior session.
+        self.issues_assignee_search_state = cx.new(InputState::new);
+        self.issues_assignee_modal_open = true;
+        cx.notify();
+    }
+
+    fn close_issues_assignee_modal(&mut self, cx: &mut Context<Self>) {
+        self.issues_assignee_modal_open = false;
+        cx.notify();
+    }
+
+    fn pick_issues_assignee(&mut self, value: String, cx: &mut Context<Self>) {
+        self.issues_filter_draft.assignee = value;
+        self.issues_assignee_modal_open = false;
+        cx.notify();
     }
 
     fn apply_filter_draft(&mut self, cx: &mut Context<Self>) {
@@ -3519,28 +3573,52 @@ impl SupportView {
             ));
         }
 
-        // Assignee (special values only for v1)
-        let assignee_entries: &[(&str, &str, &'static str)] = &[
-            ("", "support.issues.filter.all", "users"),
-            ("me", "support.issues.assignee.me", "user-check"),
-            ("unassigned", "support.issues.assignee.unassigned", "user"),
-        ];
-        let mut assignee_row = div().flex().items_center().gap(px(4.0)).flex_wrap();
-        for (value, key, icon) in assignee_entries {
-            let value: String = (*value).to_string();
-            let active = d.assignee == value;
-            assignee_row = assignee_row.child(self.render_filter_chip(
-                SharedString::from(format!(
-                    "iss-adv-as-{}",
-                    if value.is_empty() { "all" } else { &value }
-                )),
-                Some(icon),
-                t!(*key).to_string(),
-                active,
-                cx,
-                move |this| this.issues_filter_draft.assignee = value.clone(),
-            ));
-        }
+        // Assignee — a click-to-open button that pops a full modal picker
+        // (search + scrollable list). Selects work fine for small option
+        // sets but agents can grow, and the picker overlay reads better
+        // than a cramped popover — matches the pattern the sidebar / site
+        // switcher use for "search then pick".
+        let assignee_label = self.issues_assignee_label(&d.assignee);
+        let assignee_row = {
+            let entity = cx.entity();
+            div()
+                .id("iss-adv-as-open")
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .w_full()
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_primary())
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_primary())
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(lucide_icon(
+                            "user-check",
+                            12.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .child(assignee_label),
+                )
+                .child(lucide_icon(
+                    "chevron-down",
+                    12.0,
+                    ShellDeckColors::text_muted(),
+                ))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| this.open_issues_assignee_modal(cx));
+                })
+        };
 
         // GitHub linkage — 3 chips (all / linked / not linked)
         let github_entries: &[(Option<bool>, &str, &str, &'static str)] = &[
@@ -3728,6 +3806,249 @@ impl SupportView {
                                 entity.update(cx, |this, cx| this.apply_issues_filter_draft(cx));
                             }
                         }),
+                    ),
+            )
+    }
+
+    /// Full-modal assignee picker for the issues advanced filter — opens
+    /// on top of the filter modal. Search input + scrollable list of
+    /// three specials + the shared agent roster (`self.agents`). Reads
+    /// the search query live from the input state at render time — same
+    /// pattern as the sites-search input in the User home (adabraka
+    /// `on_change` doesn't fire on typing, only programmatic set_value).
+    fn render_issues_assignee_picker_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let current = self.issues_filter_draft.assignee.clone();
+        let query = self
+            .issues_assignee_search_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
+
+        // Build the option list: specials always first (never filtered),
+        // then agents matching the search.
+        struct Option {
+            value: String,
+            label: String,
+            subtitle: String,
+            icon: &'static str,
+        }
+        let mut options: Vec<Option> = Vec::new();
+        options.push(Option {
+            value: String::new(),
+            label: t!("support.issues.assignee.all").to_string(),
+            subtitle: t!("support.issues.assignee.hint.all").to_string(),
+            icon: "users",
+        });
+        options.push(Option {
+            value: "me".to_string(),
+            label: t!("support.issues.assignee.me").to_string(),
+            subtitle: t!("support.issues.assignee.hint.me").to_string(),
+            icon: "user-check",
+        });
+        options.push(Option {
+            value: "unassigned".to_string(),
+            label: t!("support.issues.assignee.unassigned").to_string(),
+            subtitle: t!("support.issues.assignee.hint.unassigned").to_string(),
+            icon: "user",
+        });
+        for agent in &self.agents {
+            let label = if agent.name.trim().is_empty() {
+                agent.email.clone()
+            } else {
+                agent.name.clone()
+            };
+            let subtitle = agent.email.clone();
+            let matches = query.is_empty()
+                || label.to_lowercase().contains(&query)
+                || subtitle.to_lowercase().contains(&query);
+            if !matches {
+                continue;
+            }
+            options.push(Option {
+                value: agent.email.clone(),
+                label,
+                subtitle,
+                icon: "user-check",
+            });
+        }
+        let has_agents_match = options.iter().skip(3).next().is_some();
+
+        // List body — one row per option, click applies + closes.
+        let mut list = div().flex().flex_col().gap(px(2.0));
+        for opt in options {
+            let is_active = opt.value == current;
+            let value = opt.value.clone();
+            let row = div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "iss-as-pick-{}",
+                    if value.is_empty() {
+                        "all".to_string()
+                    } else {
+                        value.clone()
+                    }
+                ))))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(ShellDeckColors::hover_bg()));
+            let row = if is_active {
+                row.bg(ShellDeckColors::primary().opacity(0.10))
+            } else {
+                row
+            };
+            list = list.child(
+                row.child(lucide_icon(
+                    opt.icon,
+                    14.0,
+                    if is_active {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::text_muted()
+                    },
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(ShellDeckColors::text_primary())
+                                .truncate()
+                                .child(opt.label.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .truncate()
+                                .child(opt.subtitle.clone()),
+                        ),
+                )
+                .when(is_active, |el| {
+                    el.child(lucide_icon(
+                        "check",
+                        14.0,
+                        ShellDeckColors::primary(),
+                    ))
+                })
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        let value = value.clone();
+                        entity.update(cx, |this, cx| this.pick_issues_assignee(value, cx));
+                    }
+                }),
+            );
+        }
+
+        // Empty state if the search filters everything out (specials
+        // always show, but if there are no agents matching we say so).
+        if !has_agents_match && !query.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("support.issues.assignee.no_match").to_string()),
+            );
+        }
+
+        UiDialog::new()
+            .width(gpui::px(420.0))
+            .on_backdrop_click({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |this, cx| this.close_issues_assignee_modal(cx));
+                }
+            })
+            .header(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(lucide_icon(
+                                "user-check",
+                                14.0,
+                                ShellDeckColors::text_primary(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("support.issues.assignee.picker.title").to_string()),
+                            ),
+                    )
+                    .child(
+                        IconButton::new("x")
+                            .variant(ButtonVariant::Ghost)
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(12.0))
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.close_issues_assignee_modal(cx);
+                                    });
+                                }
+                            }),
+                    ),
+            )
+            .content(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .child(
+                        Input::new(&self.issues_assignee_search_state)
+                            .size(InputSize::Sm)
+                            .placeholder(
+                                t!("support.issues.assignee.picker.search").to_string(),
+                            )
+                            .prefix(lucide_icon(
+                                "search",
+                                12.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .on_change({
+                                let entity = entity.clone();
+                                move |_, cx| {
+                                    entity.update(cx, |_, cx| cx.notify());
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .max_h(px(340.0))
+                            .id("iss-as-pick-list")
+                            .overflow_y_scroll()
+                            .child(list),
                     ),
             )
     }
@@ -4270,6 +4591,9 @@ impl Render for SupportView {
 
         if self.section == SupportSection::Requests && self.issues_filter_modal_open {
             root = root.child(self.render_issues_filter_modal(cx));
+        }
+        if self.section == SupportSection::Requests && self.issues_assignee_modal_open {
+            root = root.child(self.render_issues_assignee_picker_modal(cx));
         }
 
         if self.section == SupportSection::Requests {

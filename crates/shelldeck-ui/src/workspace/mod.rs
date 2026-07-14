@@ -83,6 +83,24 @@ impl AccountStatus {
     }
 }
 
+/// The three tabs of the User-mode home. `Sites` is the default (matches
+/// the pre-tabs layout), `Demandes` migrates the previous inline list into
+/// its own surface, and `Infos` is the new "quel compte / quel device"
+/// summary — surfaces every field the `/whoami` payload returns so the
+/// user can see exactly what ShellDeck knows about them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserHomeTab {
+    Sites,
+    Requests,
+    Infos,
+}
+
+impl Default for UserHomeTab {
+    fn default() -> Self {
+        UserHomeTab::Sites
+    }
+}
+
 /// Duration (ms) of the User-mode sheet enter/exit animation. The close
 /// handlers use it to keep the sheet mounted while the exit tween plays,
 /// then clear the backing state.
@@ -247,6 +265,14 @@ pub struct Workspace {
     account_status: AccountStatus,
     /// Kept alive while the login modal is open.
     _login_form_sub: Option<Subscription>,
+    /// Cached full whoami response — kept in memory so the User-mode
+    /// "Mes informations" tab can surface every field the server sends
+    /// (device label, created_at, last_seen_at, …), not just the three
+    /// bits `AccountInfo` persists. Refreshed by `check_account_on_startup`
+    /// and set on login. Cleared on logout.
+    last_whoami: Option<cloud_account::WhoamiInfo>,
+    /// Which User-mode home tab is showing (Sites / Demandes / Infos).
+    user_home_tab: UserHomeTab,
     /// Cached Inklura Manage sites directory + areas (fetched after sign-in).
     site_directory: Option<SitesPayload>,
     /// Whether the titlebar site-switcher dropdown is open.
@@ -656,6 +682,8 @@ impl Workspace {
             account_menu_open: false,
             account_status: AccountStatus::Unknown,
             _login_form_sub: None,
+            last_whoami: None,
+            user_home_tab: UserHomeTab::Sites,
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,
@@ -1437,6 +1465,10 @@ impl Workspace {
                             ws.app_config.account = Some(refreshed);
                             let _ = ws.app_config.save();
                         }
+                        // Stash the full whoami — the User "Mes informations"
+                        // tab renders every field (device label, created_at,
+                        // last_seen_at, …) that `AccountInfo` doesn't persist.
+                        ws.last_whoami = Some(info);
                         // Token is valid → load the sites directory + activate
                         // the persisted mode (starts the support poll if needed).
                         ws.refresh_sites(cx);
@@ -1459,6 +1491,43 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Open the Manage sign-up page in the system browser. Wired to the
+    /// welcome landing's secondary CTA — ShellDeck requires an account to
+    /// launch (no guest mode), so the "Créer un compte" button funnels
+    /// prospects to Manage rather than dropping them into an unusable
+    /// classic Dev workspace.
+    pub fn open_signup(&mut self, cx: &mut Context<Self>) {
+        let url = format!(
+            "{}/register",
+            self.account_base_url().trim_end_matches('/')
+        );
+        match cloud_account::open_in_browser(&url) {
+            Ok(_) => self.show_toast(
+                t!("toast.opening_browser").to_string(),
+                ToastLevel::Info,
+                cx,
+            ),
+            Err(e) => self.show_toast(
+                t!(
+                    "toast.open_browser_failed",
+                    error = cloud_account::user_message(&e)
+                )
+                .to_string(),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
+    }
+
+    /// Whether the pre-login welcome landing should intercept the render.
+    /// True whenever the user is not signed in — there is no guest path;
+    /// every launch of a fresh install lands here, and every logout brings
+    /// the user back. Sign-in (or account creation via `open_signup`) is
+    /// the only way past.
+    fn show_welcome(&self) -> bool {
+        !self.signed_in()
     }
 
     /// Open the password + OIDC login modal.
@@ -1636,6 +1705,10 @@ impl Workspace {
         self.refresh_sites(cx);
         // Non-super-admins are forced to User mode; activate whatever mode applies.
         self.activate_current_mode(cx);
+        // Kick a whoami to populate `last_whoami` (device label, created_at,
+        // last_seen_at) — the login response only carries the AccountInfo
+        // subset, but "Mes informations" needs the richer payload.
+        self.check_account_on_startup(cx);
 
         let cfg = self.app_config.cloud_sync.clone();
         let name = account.display_name();
@@ -1708,6 +1781,8 @@ impl Workspace {
         self.push_account_to_support(cx);
         self.account_status = AccountStatus::Unknown;
         self.account_menu_open = false;
+        self.last_whoami = None;
+        self.user_home_tab = UserHomeTab::Sites;
         self.site_directory = None;
         self.site_menu_open = false;
         self._support_poll_task = None;
@@ -2085,19 +2160,33 @@ impl Workspace {
             .unwrap_or(false)
     }
 
-    /// Only signed-in super-admins may switch modes.
-    pub fn can_switch_mode(&self) -> bool {
-        AppMode::can_switch(self.signed_in(), self.is_superadmin())
+    /// True when the account passes `isManageAdmin` server-side (inclusive
+    /// of super-admin). Unlocks Support mode; see `.agents/roles.md`.
+    fn is_admin(&self) -> bool {
+        self.app_config
+            .account
+            .as_ref()
+            .map(|a| a.is_admin || a.is_superadmin)
+            .unwrap_or(false)
     }
 
-    /// The surface to present: logged-out → classic Dev; super-admin →
-    /// persisted mode (default Dev); non-super-admin → forced User.
+    /// Signed-in admins OR super-admins may switch modes. Regular users see
+    /// no switcher at all — they're forced to User.
+    pub fn can_switch_mode(&self) -> bool {
+        AppMode::can_switch(self.signed_in(), self.is_admin(), self.is_superadmin())
+    }
+
+    /// The surface to present. Logged-out → the welcome landing intercepts
+    /// the render before this hits; the User fallback is defensive. Signed-
+    /// in super-admin → persisted mode; admin → persisted clamped to
+    /// {User, Support}; regular → User.
     ///
-    /// Delegates to `AppMode::resolve_effective` for the truth table; that
-    /// pure fn is the one under test in `SDTEST-1052`.
+    /// Delegates to `AppMode::resolve_effective`; that pure fn is under
+    /// test in `SDTEST-1052`.
     pub fn effective_mode(&self) -> AppMode {
         AppMode::resolve_effective(
             self.signed_in(),
+            self.is_admin(),
             self.is_superadmin(),
             self.app_config.cloud_sync.mode,
         )
@@ -6162,8 +6251,605 @@ impl Workspace {
             )
     }
 
+    /// Tab bar for the User-mode home. Three tabs (Sites / Demandes /
+    /// Infos), same visual shape as `SupportView::render_section_tabs`
+    /// (compact_filter_button + icon, `Default` variant when active).
+    fn render_user_home_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = |label: String,
+                   icon: &'static str,
+                   target: UserHomeTab,
+                   this_tab: UserHomeTab,
+                   cx: &mut Context<Self>| {
+            let active = this_tab == target;
+            let entity = cx.entity();
+            adabraka_ui::components::button::Button::new(
+                ElementId::from(SharedString::from(format!("uh-tab-{target:?}"))),
+                label,
+            )
+            .size(adabraka_ui::components::button::ButtonSize::Sm)
+            .h(gpui::px(26.0))
+            .px(gpui::px(10.0))
+            .variant(if active {
+                ButtonVariant::Default
+            } else {
+                ButtonVariant::Outline
+            })
+            .icon(IconSource::from(icon))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.user_home_tab = target;
+                    cx.notify();
+                });
+            })
+        };
+        let current = self.user_home_tab;
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(16.0))
+            .pt(px(4.0))
+            .pb(px(8.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(tab(
+                t!("user.tabs.sites").to_string(),
+                "globe",
+                UserHomeTab::Sites,
+                current,
+                cx,
+            ))
+            .child(tab(
+                t!("user.tabs.requests").to_string(),
+                "tag",
+                UserHomeTab::Requests,
+                current,
+                cx,
+            ))
+            .child(tab(
+                t!("user.tabs.infos").to_string(),
+                "user",
+                UserHomeTab::Infos,
+                current,
+                cx,
+            ))
+    }
+
+    /// User-mode "Mes informations" tab — surfaces every field the
+    /// `/whoami` payload returned (device label, created_at, last_seen_at,
+    /// role) plus the account bits and directory stats. Deliberately
+    /// read-only so it can't accidentally mutate credentials.
+    fn render_user_infos_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let account = self.app_config.account.clone().unwrap_or_default();
+        let server = self.account_base_url();
+        let payload = self.site_directory.clone().unwrap_or_default();
+        let whoami = self.last_whoami.clone().unwrap_or_default();
+
+        // Small helper: one "field row" (label muted small, value primary
+        // wrapping). Copies the shape of the ticket detail meta rows so
+        // the visual language stays the same across surfaces.
+        let field = |label: String, value: String, icon: &'static str| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(10.0))
+                .py(px(8.0))
+                .child(
+                    div()
+                        .size(px(28.0))
+                        .rounded(px(6.0))
+                        .bg(ShellDeckColors::primary().opacity(0.10))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .child(lucide_icon(icon, 13.0, ShellDeckColors::primary())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(label.to_uppercase()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(if value.trim().is_empty() {
+                                    t!("user.infos.unknown").to_string()
+                                } else {
+                                    value
+                                }),
+                        ),
+                )
+        };
+
+        // Section chrome — same p/rounded/border/bg as other User-mode cards.
+        let section = |title: String, icon: &'static str, body: gpui::Div| {
+            div()
+                .flex()
+                .flex_col()
+                .m(px(16.0))
+                .mb(px(0.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_sidebar())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .border_b_1()
+                        .border_color(ShellDeckColors::border())
+                        .child(lucide_icon(icon, 15.0, ShellDeckColors::primary()))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(title),
+                        ),
+                )
+                .child(div().flex().flex_col().px(px(16.0)).py(px(4.0)).child(body))
+        };
+
+        let role_label = if account.is_superadmin {
+            t!("user.infos.role.superadmin").to_string()
+        } else if account.is_admin {
+            t!("user.infos.role.admin").to_string()
+        } else {
+            t!("user.infos.role.user").to_string()
+        };
+
+        // Session — device + role + timestamps returned by whoami.
+        let session_body = div()
+            .flex()
+            .flex_col()
+            .child(field(
+                t!("user.infos.field.device").to_string(),
+                whoami.label.clone().unwrap_or_default(),
+                "keyboard",
+            ))
+            .child(field(
+                t!("user.infos.field.role").to_string(),
+                role_label,
+                "shield",
+            ))
+            .child(field(
+                t!("user.infos.field.since").to_string(),
+                whoami.created_at.clone().unwrap_or_default(),
+                "calendar",
+            ))
+            .child(field(
+                t!("user.infos.field.last_seen").to_string(),
+                whoami.last_seen_at.clone().unwrap_or_default(),
+                "clock",
+            ));
+
+        // Account — identity + Manage server.
+        let account_body = div()
+            .flex()
+            .flex_col()
+            .child(field(
+                t!("user.infos.field.name").to_string(),
+                account.display_name(),
+                "user",
+            ))
+            .child(field(
+                t!("user.infos.field.email").to_string(),
+                account.email.clone(),
+                "mail",
+            ))
+            .child(field(
+                t!("user.infos.field.server").to_string(),
+                server,
+                "globe",
+            ));
+
+        // Scope — tenant + sites the server exposed to us.
+        let tenant_name = payload
+            .sites
+            .first()
+            .map(|s| s.tenant_name.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_default();
+        let sites_count = payload.sites.len();
+        let scope_body = div()
+            .flex()
+            .flex_col()
+            .child(field(
+                t!("user.infos.field.tenant").to_string(),
+                tenant_name,
+                "users",
+            ))
+            .child(field(
+                t!(
+                    "user.infos.field.sites_available",
+                    count = sites_count
+                )
+                .to_string(),
+                t!("user.infos.field.sites_count", count = sites_count).to_string(),
+                "globe",
+            ));
+
+        // Roles — one badge per entry in the CM role bag. Surfaces every
+        // custom role (`content_editor`, `customer_service`, …) the tenant
+        // admin defined in Manage, not just the hardcoded super-admin /
+        // admin tiers the mode gate uses. See `.agents/roles.md` for the
+        // "bag is the truth, predicates are shortcuts" rule.
+        let roles_body = {
+            let mut container = div().flex().flex_col().py(px(4.0));
+            if account.roles.is_empty() {
+                container = container.child(
+                    div()
+                        .py(px(8.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("user.infos.roles.empty").to_string()),
+                );
+            } else {
+                let mut row = div().flex().flex_wrap().gap(px(6.0)).py(px(8.0));
+                for role in &account.roles {
+                    row = row.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .px(px(8.0))
+                            .py(px(3.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary().opacity(0.12))
+                            .border_1()
+                            .border_color(ShellDeckColors::primary().opacity(0.35))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::primary())
+                            .child(lucide_icon(
+                                "shield",
+                                10.0,
+                                ShellDeckColors::primary(),
+                            ))
+                            .child(role.clone()),
+                    );
+                }
+                container = container.child(row);
+            }
+            container
+        };
+
+        let _ = cx; // no listeners here — the tab is read-only.
+        div()
+            .id("user-infos-tab")
+            .flex()
+            .flex_col()
+            .pb(px(16.0))
+            .child(section(
+                t!("user.infos.section.session").to_string(),
+                "shield",
+                session_body,
+            ))
+            .child(section(
+                t!("user.infos.section.roles").to_string(),
+                "shield",
+                roles_body,
+            ))
+            .child(section(
+                t!("user.infos.section.account").to_string(),
+                "user",
+                account_body,
+            ))
+            .child(section(
+                t!("user.infos.section.scope").to_string(),
+                "users",
+                scope_body,
+            ))
+    }
+
     /// User mode: a manage-centric home — account header + "Mes sites" list with
     /// per-site Activer + area deep links.
+    /// Pre-login welcome landing — intercepts the render whenever the user
+    /// is not signed in (there is no guest path). Two-part layout:
+    ///
+    /// 1. **Hero** — ShellDeck brand icon + title + tagline + two CTAs
+    ///    (sign in / create account).
+    /// 2. **Inklura marketing** — the Inklura brand block + value props
+    ///    lifted from inklura.fr, so a first-time visitor understands
+    ///    what they're being invited into before creating an account.
+    ///
+    /// Kept inside a `scrollable_vertical` because on small windows the
+    /// marketing block would push the CTAs offscreen.
+    fn render_welcome_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Small helper for the four Inklura value-prop cards — same shape
+        // so the row reads as a set.
+        fn stat_card(icon: &'static str, value: String, label: String) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.0))
+                .w(px(150.0))
+                .px(px(12.0))
+                .py(px(14.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_sidebar())
+                .child(lucide_icon(icon, 22.0, ShellDeckColors::primary()))
+                .child(
+                    div()
+                        .text_size(px(18.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(value),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(label),
+                )
+        }
+
+        let entity = cx.entity();
+
+        // Hero — brand + CTAs.
+        let hero = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(16.0))
+            .pt(px(48.0))
+            .pb(px(32.0))
+            .child(
+                // ShellDeck brand mark — PNG (not SVG) because GPUI renders
+                // SVGs in currentColor and the mark's multi-fill palette
+                // (teal frame + dark inner + light glyph) would collapse
+                // to a single tint. The PNG raster preserves every colour.
+                img("images/shelldeck-icon.png")
+                    .w(px(72.0))
+                    .h(px(72.0)),
+            )
+            .child(
+                div()
+                    .text_size(px(24.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("welcome.title").to_string()),
+            )
+            .child(
+                div()
+                    .max_w(px(460.0))
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("welcome.tagline").to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
+                    .mt(px(8.0))
+                    .child(
+                        // Primary CTA — funnels to the existing LoginForm modal.
+                        div()
+                            .id("welcome-sign-in")
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(20.0))
+                            .py(px(10.0))
+                            .rounded(px(10.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child(
+                                svg()
+                                    .path(lucide_path("external-link"))
+                                    .size(px(14.0))
+                                    .text_color(white()),
+                            )
+                            .child(t!("welcome.sign_in").to_string())
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| this.show_login_form(cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        // Secondary CTA — opens Manage signup in the browser.
+                        div()
+                            .id("welcome-signup")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(14.0))
+                            .py(px(6.0))
+                            .rounded(px(8.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_muted())
+                            .cursor_pointer()
+                            .hover(|s| {
+                                s.bg(ShellDeckColors::hover_bg())
+                                    .text_color(ShellDeckColors::text_primary())
+                            })
+                            .child(lucide_icon(
+                                "external-link",
+                                11.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .child(t!("welcome.create_account").to_string())
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| this.open_signup(cx));
+                                }
+                            }),
+                    ),
+            );
+
+        // Inklura marketing block — content lifted from inklura.fr so the
+        // messaging stays in sync with the marketing site. Not a full
+        // marketing page; just enough for a first-time visitor to know
+        // what they're being invited into.
+        let inklura = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(14.0))
+            .mt(px(8.0))
+            .pt(px(24.0))
+            .pb(px(48.0))
+            .px(px(32.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                // Inklura brand square — same 28×42 mark on #146BFF ground
+                // as the login modal, for visual consistency across the
+                // pre-auth surfaces.
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(28.0))
+                    .h(px(42.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x146BFF))
+                    .child(
+                        svg()
+                            .path("images/logo-inklura.svg")
+                            .w(px(28.0))
+                            .h(px(42.0))
+                            .text_color(gpui::white()),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(20.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("welcome.inklura.title").to_string()),
+            )
+            .child(
+                div()
+                    .max_w(px(560.0))
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("welcome.inklura.subtitle").to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.0))
+                    .mt(px(6.0))
+                    .child(stat_card(
+                        "zap",
+                        t!("welcome.inklura.stat.savings.value").to_string(),
+                        t!("welcome.inklura.stat.savings.label").to_string(),
+                    ))
+                    .child(stat_card(
+                        "clock",
+                        t!("welcome.inklura.stat.time.value").to_string(),
+                        t!("welcome.inklura.stat.time.label").to_string(),
+                    ))
+                    .child(stat_card(
+                        "shield",
+                        t!("welcome.inklura.stat.uptime.value").to_string(),
+                        t!("welcome.inklura.stat.uptime.label").to_string(),
+                    ))
+                    .child(stat_card(
+                        "users",
+                        t!("welcome.inklura.stat.clients.value").to_string(),
+                        t!("welcome.inklura.stat.clients.label").to_string(),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .mt(px(8.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(lucide_icon(
+                        "check",
+                        11.0,
+                        ShellDeckColors::success(),
+                    ))
+                    .child(t!("welcome.inklura.trust").to_string()),
+            );
+
+        // "Réalisé par WD29" footer — same shape as the Settings > About
+        // signature so a first-time visitor sees the same attribution
+        // whether they land here or hit About after signing in.
+        const LOGO_H: f32 = 20.0;
+        let made_by = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .py(px(20.0))
+            .text_color(ShellDeckColors::text_muted())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(LOGO_H))
+                    .text_size(px(11.0))
+                    .line_height(px(LOGO_H))
+                    .child(t!("settings.about.made_by").to_string()),
+            )
+            .child(
+                div().flex().items_center().h(px(LOGO_H)).child(
+                    svg()
+                        .path("images/wd29-logo.svg")
+                        .w(px(56.0))
+                        .h(px(LOGO_H))
+                        .flex_shrink_0()
+                        .text_color(ShellDeckColors::text_muted()),
+                ),
+            );
+
+        // Full page — scrolls if the three blocks don't fit the window.
+        div()
+            .size_full()
+            .bg(ShellDeckColors::bg_primary())
+            .child(scrollable_vertical(
+                div()
+                    .id("welcome-body")
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .w_full()
+                            .child(hero)
+                            .child(inklura)
+                            .child(made_by),
+                    ),
+            ))
+    }
+
     fn render_user_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
         let server = self.account_base_url();
@@ -6213,24 +6899,57 @@ impl Workspace {
                             .text_color(ShellDeckColors::primary())
                             .child(account.initial()),
                     )
-                    .child(
-                        div()
+                    .child({
+                        let mut name_row = div()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap(px(8.0))
                             .child(
                                 div()
                                     .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::text_primary())
                                     .child(account.display_name()),
-                            )
+                            );
+                        // Super-admin badge (`shield` + label, primary tint)
+                        // — surfaces the role the token was minted with so
+                        // the user knows why they see Support/Dev options.
+                        if account.is_superadmin {
+                            name_row = name_row.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .px(px(6.0))
+                                    .py(px(1.0))
+                                    .rounded(px(6.0))
+                                    .bg(ShellDeckColors::primary().opacity(0.14))
+                                    .border_1()
+                                    .border_color(
+                                        ShellDeckColors::primary().opacity(0.35),
+                                    )
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::primary())
+                                    .child(lucide_icon(
+                                        "shield",
+                                        10.0,
+                                        ShellDeckColors::primary(),
+                                    ))
+                                    .child(t!("user.badge.super_admin").to_string()),
+                            );
+                        }
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(name_row)
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(ShellDeckColors::text_muted())
                                     .child(format!("{} · {}", account.email, server)),
-                            ),
-                    ),
+                            )
+                    }),
             )
             .child(
                 div()
@@ -6451,72 +7170,91 @@ impl Workspace {
         // Page body: account header, "Mes sites" section, optional Jean card,
         // "Mes demandes" section. Everything stacks at natural height; the
         // whole page scrolls if the content overflows.
-        let body = div()
+        let tab = self.user_home_tab;
+        let tab_bar = self.render_user_home_tab_bar(cx);
+
+        // Body composition: header (persistent) + tab bar + tab content.
+        // Each tab owns its own inner scroll. Previously the whole page
+        // scrolled as one; splitting kept the header visible while the
+        // active tab scrolls, and let the Sites tab embed a virtualised
+        // list without competing with an outer scroll.
+        let mut body = div()
             .id("user-home-body")
             .flex()
             .flex_col()
             .pb(px(24.0))
             .child(header)
-            .child({
-                // Section header: title on the left, live search on the right
-                // (only when there are enough sites to make it worth it —
-                // small tenants keep the row uncluttered).
-                let mut row = div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .px(px(16.0))
-                    .pt(px(8.0))
-                    .pb(px(6.0))
-                    .child(
-                        div()
+            .child(tab_bar);
+        match tab {
+            UserHomeTab::Sites => {
+                body = body
+                    .child({
+                        // Section header: title on the left, live search on
+                        // the right (only when there are enough sites to
+                        // make it worth it — small tenants keep the row
+                        // uncluttered).
+                        let mut row = div()
                             .flex()
                             .items_center()
+                            .justify_between()
                             .gap(px(8.0))
-                            .child(lucide_icon("globe", 16.0, ShellDeckColors::text_muted()))
+                            .px(px(16.0))
+                            .pt(px(8.0))
+                            .pb(px(6.0))
                             .child(
                                 div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(t!("user.sites.title").to_string()),
-                            ),
-                    );
-                if payload.sites.len() > 5 {
-                    let entity = cx.entity();
-                    row = row.child(
-                        div().w(px(260.0)).child(
-                            Input::new(&self.user_sites_search_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("user.sites.search").to_string())
-                                .prefix(lucide_icon(
-                                    "search",
-                                    12.0,
-                                    ShellDeckColors::text_muted(),
-                                ))
-                                // Just notify — the outer render already
-                                // reads the input state live, so notify
-                                // triggers a refilter. `on_change` fires on
-                                // programmatic set_value, not on typing,
-                                // but the input state itself notifies on
-                                // every keystroke and our `.read(cx)`
-                                // above makes this view a subscriber.
-                                .on_change(move |_, cx| {
-                                    entity.update(cx, |_, cx| cx.notify());
-                                }),
-                        ),
-                    );
-                }
-                row
-            })
-            .child(list)
-            .children(if self.has_jean() {
-                Some(self.render_jean_ask_card(cx))
-            } else {
-                None
-            })
-            .child(self.render_user_requests(cx));
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(lucide_icon(
+                                        "globe",
+                                        16.0,
+                                        ShellDeckColors::text_muted(),
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(ShellDeckColors::text_primary())
+                                            .child(t!("user.sites.title").to_string()),
+                                    ),
+                            );
+                        if payload.sites.len() > 5 {
+                            let entity = cx.entity();
+                            row = row.child(
+                                div().w(px(260.0)).child(
+                                    Input::new(&self.user_sites_search_state)
+                                        .size(InputSize::Sm)
+                                        .placeholder(
+                                            t!("user.sites.search").to_string(),
+                                        )
+                                        .prefix(lucide_icon(
+                                            "search",
+                                            12.0,
+                                            ShellDeckColors::text_muted(),
+                                        ))
+                                        .on_change(move |_, cx| {
+                                            entity.update(cx, |_, cx| cx.notify());
+                                        }),
+                                ),
+                            );
+                        }
+                        row
+                    })
+                    .child(list)
+                    .children(if self.has_jean() {
+                        Some(self.render_jean_ask_card(cx))
+                    } else {
+                        None
+                    });
+            }
+            UserHomeTab::Requests => {
+                body = body.child(self.render_user_requests(cx));
+            }
+            UserHomeTab::Infos => {
+                body = body.child(self.render_user_infos_tab(cx));
+            }
+        }
 
         div()
             .size_full()
@@ -7278,6 +8016,15 @@ impl Render for Workspace {
         // Build main content area — flex_grow fills between titlebar and status bar
         let mut main_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
+        // Pre-login landing: intercepts before `effective_mode()` gets a say.
+        // Only shown on a fresh install (or after an explicit config wipe) —
+        // once the user picks "Se connecter" (logs in) or "Continuer en
+        // local" (`welcome_bypass = true`), we never come back here.
+        if self.show_welcome() {
+            main_area = main_area.child(self.render_welcome_screen(_cx));
+            // Fall through to render titlebar + status bar chrome around
+            // the welcome — no sidebar, no mode-specific children.
+        } else {
         // The app mode selects the whole surface. User/Support are full-pane
         // manage surfaces (no sidebar); Dev is the classic terminal workspace.
         // Dev views (terminal sessions etc.) are hidden, never destroyed.
@@ -7315,6 +8062,7 @@ impl Render for Workspace {
                 main_area = main_area.child(content);
             }
         }
+        } // end of `else` (not-welcome branch)
 
         let h1 = handle.clone();
         let h2 = handle.clone();
