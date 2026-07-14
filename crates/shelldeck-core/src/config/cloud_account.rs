@@ -33,10 +33,20 @@ pub struct AccountInfo {
     pub is_superadmin: bool,
     /// Whether this account passes `isManageAdmin` on the server (admin,
     /// owner, administrator, tenant_admin — inclusive of super-admin).
-    /// Unlocks Support mode without super-admin privileges. `false` on
-    /// legacy tokens (they'll be treated as regular users → User only).
+    /// **No longer gates ShellDeck modes** — kept only so other consumers
+    /// (settings display, potential future admin-only surfaces) can read
+    /// it. The Support-mode gate is `is_inklura_support`. `false` on legacy
+    /// tokens.
     #[serde(default)]
     pub is_admin: bool,
+    /// Whether this account passes `isInkluraSupport` on the server —
+    /// dedicated `inklura_support` role, inclusive of super-admin.
+    /// **Unlocks Support mode** — the only correct gate; `is_admin`
+    /// includes client tenant-admins (customers) and would leak the
+    /// support surface to the people it exists to help. `false` on
+    /// legacy tokens (pre-#38 server) which fall back to User only.
+    #[serde(default)]
+    pub is_inklura_support: bool,
     /// Full CM role bag captured server-side at mint time (whoami/login).
     /// Displayed as badges in the User → "Mes informations" tab; every
     /// entry the tenant admin set up in CM's role-permissions matrix lands
@@ -72,25 +82,28 @@ impl AppMode {
     }
 
     /// Pure predicate: whether the caller may switch the app mode. Signed-in
-    /// **admins or super-admins** — regular users see no switcher at all
-    /// (they're forced to User anyway). Per `.agents/roles.md`, admins
-    /// unlock the User⇄Support toggle; super-admins unlock the full
-    /// User/Support/Dev range.
+    /// **Inklura support staff or super-admins** — regular users AND client
+    /// tenant admins see no switcher at all (they're forced to User).
+    ///
+    /// The Support gate is `is_inklura_support`, **not** `is_admin`: the
+    /// latter includes `tenant_admin` (a customer role) and would leak
+    /// Support to the very users it exists to help. See `.agents/roles.md`.
     ///
     /// Callers gate the *presentation* (switcher chrome, palette rows) on
     /// this; the actual guard against a hand-edited action lives on the
     /// server + `resolve_effective` below.
-    pub fn can_switch(signed_in: bool, is_admin: bool, is_superadmin: bool) -> bool {
-        signed_in && (is_admin || is_superadmin)
+    pub fn can_switch(signed_in: bool, is_inklura_support: bool, is_superadmin: bool) -> bool {
+        signed_in && (is_inklura_support || is_superadmin)
     }
 
     /// Which modes a caller may actually pick from — used by the switcher
-    /// + palette to only surface reachable modes. Regular users see nothing
-    /// (they can't switch); admins see User + Support; super-admins see all.
-    pub fn allowed_modes(is_admin: bool, is_superadmin: bool) -> &'static [AppMode] {
+    /// + palette to only surface reachable modes. Regular users AND client
+    /// admins see nothing (only User); inklura_support sees User + Support;
+    /// super-admins see all three.
+    pub fn allowed_modes(is_inklura_support: bool, is_superadmin: bool) -> &'static [AppMode] {
         if is_superadmin {
             &[AppMode::User, AppMode::Support, AppMode::Dev]
-        } else if is_admin {
+        } else if is_inklura_support {
             &[AppMode::User, AppMode::Support]
         } else {
             &[AppMode::User]
@@ -105,19 +118,20 @@ impl AppMode {
     ///   path may reach Dev without an authenticated super-admin session.
     /// - `signed_in = true` + `is_superadmin = true` → the **persisted**
     ///   mode (User/Support/Dev — full range).
-    /// - `signed_in = true` + `is_admin = true` (not super) → the persisted
-    ///   mode clamped to {User, Support}. A hand-edited `shelldeck.toml`
-    ///   that says `Dev` degrades silently to `User` — Dev is super-admin
-    ///   only, full stop.
-    /// - `signed_in = true` + neither flag → **forced User**, regardless of
-    ///   the persisted value.
+    /// - `signed_in = true` + `is_inklura_support = true` (not super) →
+    ///   the persisted mode clamped to {User, Support}. A hand-edited
+    ///   `shelldeck.toml` that says `Dev` degrades silently to `User` —
+    ///   Dev is super-admin only, full stop.
+    /// - `signed_in = true` + neither flag → **forced User**, regardless
+    ///   of the persisted value. Includes CM admins / tenant_admins —
+    ///   they are customers, not Inklura staff.
     ///
     /// This is the pure-logic port of `Workspace::effective_mode`; the
     /// method delegates. Extracted so the truth table is testable without
     /// a GPUI `Context` (per `.agents/testing.md`).
     pub fn resolve_effective(
         signed_in: bool,
-        is_admin: bool,
+        is_inklura_support: bool,
         is_superadmin: bool,
         persisted: AppMode,
     ) -> AppMode {
@@ -127,8 +141,8 @@ impl AppMode {
         if is_superadmin {
             return persisted;
         }
-        if is_admin {
-            // Admin gets User + Support only; Dev clamps down.
+        if is_inklura_support {
+            // Inklura support gets User + Support only; Dev clamps down.
             return match persisted {
                 AppMode::Dev => AppMode::User,
                 other => other,
@@ -193,9 +207,16 @@ pub struct WhoamiInfo {
     pub is_superadmin: bool,
     /// `isManageAdmin(user)` at token-mint time. Included in the whoami
     /// response by the "roles surfacing" server PR; defaults to `false`
-    /// on legacy tokens so the mode gate falls back to regular-user.
+    /// on legacy tokens. **No longer used** for ShellDeck mode gating —
+    /// see `is_inklura_support`.
     #[serde(default)]
     pub is_admin: bool,
+    /// `isInkluraSupport(user)` at token-mint time — the true Support-mode
+    /// gate. Added by bext PR #38. Inclusive of super-admin. Defaults to
+    /// `false` on legacy tokens (pre-#38 server), which correctly falls
+    /// back to User-only for all non-super-admins.
+    #[serde(default)]
+    pub is_inklura_support: bool,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -230,6 +251,11 @@ impl WhoamiInfo {
             // `isManageAdmin`) — keep that invariant client-side so a
             // super-admin never fails an "am I at least an admin?" check.
             is_admin: self.is_admin || self.is_superadmin,
+            // Same widen for `is_inklura_support`: super-admin is
+            // inclusive server-side (see PR #38), keep the same
+            // guarantee client-side. Legacy servers (pre-#38) don't
+            // send the field → false → non-super-admins land on User.
+            is_inklura_support: self.is_inklura_support || self.is_superadmin,
             roles,
         }
     }
@@ -247,6 +273,8 @@ struct LoginResponse {
     is_superadmin: bool,
     #[serde(default)]
     is_admin: bool,
+    #[serde(default)]
+    is_inklura_support: bool,
     #[serde(default)]
     error: Option<String>,
 }
@@ -331,11 +359,11 @@ pub fn login_password(
         if let Some(p) = &parsed {
             if p.ok {
                 if let Some(token) = p.token.clone().filter(|t| !t.is_empty()) {
-                    // `is_admin` on the wire is exclusive-of-super-admin
-                    // upstream, but we widen it to *inclusive* so `is_admin`
-                    // client-side always answers "at least an admin?" —
-                    // super-admins pass every admin check without ceremony.
+                    // Widen both flags to be inclusive of super-admin,
+                    // matching the server-side invariant (isManageAdmin +
+                    // isInkluraSupport both short-circuit on isSuperAdmin).
                     let is_admin = p.is_admin || p.is_superadmin;
+                    let is_inklura_support = p.is_inklura_support || p.is_superadmin;
                     let roles = p
                         .user
                         .as_ref()
@@ -349,6 +377,7 @@ pub fn login_password(
                             name: u.name.clone().unwrap_or_default(),
                             is_superadmin: p.is_superadmin,
                             is_admin,
+                            is_inklura_support,
                             roles: roles.clone(),
                         })
                         .unwrap_or_else(|| AccountInfo {
@@ -356,6 +385,7 @@ pub fn login_password(
                             name: String::new(),
                             is_superadmin: p.is_superadmin,
                             is_admin,
+                            is_inklura_support,
                             roles,
                         });
                     return Ok((token, account));
@@ -648,6 +678,7 @@ mod tests {
             name: "Ben Favre".into(),
             is_superadmin: true,
             is_admin: true,
+            is_inklura_support: true,
             roles: vec!["superadmin".into()],
         };
         assert_eq!(a.initial(), "B");
@@ -658,6 +689,7 @@ mod tests {
             name: String::new(),
             is_superadmin: false,
             is_admin: false,
+            is_inklura_support: false,
             roles: Vec::new(),
         };
         assert_eq!(only_email.initial(), "A");
@@ -841,10 +873,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_effective_mode_admin_clamps_dev_to_user() {
-        // Admin (not super-admin) sees User + Support only. A persisted
-        // Dev must clamp to User — a compromised or hand-edited
-        // shelldeck.toml must not let an admin sneak into the Dev surface.
+    fn resolve_effective_mode_inklura_support_clamps_dev_to_user() {
+        // Inklura support (not super-admin) sees User + Support only. A
+        // persisted Dev must clamp to User — a compromised or hand-edited
+        // shelldeck.toml must not let a support agent sneak into Dev.
         assert_eq!(
             AppMode::resolve_effective(true, true, false, AppMode::User),
             AppMode::User,
@@ -856,46 +888,47 @@ mod tests {
         assert_eq!(
             AppMode::resolve_effective(true, true, false, AppMode::Dev),
             AppMode::User,
-            "admin's persisted Dev MUST clamp down to User",
+            "inklura_support's persisted Dev MUST clamp down to User",
         );
     }
 
     #[test]
-    fn resolve_effective_mode_regular_user_forced_to_user() {
-        // Neither admin nor super-admin ⇒ forced to User regardless of
-        // whatever the persisted value says.
+    fn resolve_effective_mode_regular_user_and_client_admin_forced_to_user() {
+        // Neither `is_inklura_support` nor `is_superadmin` ⇒ forced User.
+        // Applies to regular users AND client tenant_admin/owner/admin —
+        // both are customers, not Inklura staff.
         for persisted in [AppMode::User, AppMode::Support, AppMode::Dev] {
             assert_eq!(
                 AppMode::resolve_effective(true, false, false, persisted),
                 AppMode::User,
-                "regular user MUST be forced to User (persisted={persisted:?})",
+                "non-Inklura-staff MUST be forced to User (persisted={persisted:?})",
             );
         }
     }
 
-    // SDTEST-1057 — `can_switch` truth table (pure fn). Signed-in admins
-    // OR super-admins can switch; regular users see no switcher; logged
-    // out sees no switcher (welcome landing intercepts anyway).
+    // SDTEST-1057 — `can_switch` truth table (pure fn). Signed-in Inklura
+    // support OR super-admins can switch; everyone else (regular users +
+    // client admins) sees no switcher; logged out sees no switcher.
     #[test]
-    fn can_switch_true_for_signed_in_admin_or_superadmin() {
+    fn can_switch_true_for_signed_in_inklura_support_or_superadmin() {
         // Logged out ⇒ never.
-        for admin in [false, true] {
+        for support in [false, true] {
             for sup in [false, true] {
                 assert!(
-                    !AppMode::can_switch(false, admin, sup),
-                    "logged out ⇒ no switch (admin={admin}, sup={sup})",
+                    !AppMode::can_switch(false, support, sup),
+                    "logged out ⇒ no switch (support={support}, sup={sup})",
                 );
             }
         }
-        // Signed-in regular user ⇒ no switch.
+        // Signed-in regular user / client admin ⇒ no switch.
         assert!(!AppMode::can_switch(true, false, false));
-        // Signed-in admin ⇒ can switch (User ⇄ Support).
+        // Signed-in Inklura support ⇒ can switch (User ⇄ Support).
         assert!(AppMode::can_switch(true, true, false));
         // Signed-in super-admin ⇒ can switch (full range).
         assert!(AppMode::can_switch(true, true, true));
-        // Belt-and-braces: `is_superadmin=true, is_admin=false` shouldn't
-        // happen (server keeps is_admin inclusive), but if it did the
-        // super-admin tier must still switch.
+        // Belt-and-braces: `is_superadmin=true, is_inklura_support=false`
+        // shouldn't happen (server keeps it inclusive), but if it did
+        // the super-admin tier must still switch.
         assert!(AppMode::can_switch(true, false, true));
     }
 
@@ -910,8 +943,8 @@ mod tests {
             AppMode::allowed_modes(true, true),
             &[AppMode::User, AppMode::Support, AppMode::Dev],
         );
-        // Super-admin without is_admin=true (shouldn't happen server-side
-        // but be defensive) still gets the full range.
+        // Super-admin without is_inklura_support=true (shouldn't happen
+        // server-side but be defensive) still gets the full range.
         assert_eq!(
             AppMode::allowed_modes(false, true),
             &[AppMode::User, AppMode::Support, AppMode::Dev],
@@ -920,9 +953,9 @@ mod tests {
 
     #[test]
     fn resolve_effective_mode_covers_every_cell_of_the_truth_table() {
-        // Cross-product over (signed_in, is_admin, is_superadmin, persisted).
-        // 2 * 2 * 2 * 3 = 24 cells. Any diagonal drift breaks here even
-        // if the focused tests pass.
+        // Cross-product over (signed_in, is_inklura_support, is_superadmin,
+        // persisted). 2 * 2 * 2 * 3 = 24 cells. Any diagonal drift breaks
+        // here even if the focused tests pass.
         let cases: &[(bool, bool, bool, AppMode, AppMode)] = &[
             // Logged out — welcome intercepts, User is the safe default.
             (false, false, false, AppMode::User, AppMode::User),
@@ -934,11 +967,11 @@ mod tests {
             (false, true, true, AppMode::User, AppMode::User),
             (false, true, true, AppMode::Support, AppMode::User),
             (false, true, true, AppMode::Dev, AppMode::User),
-            // Regular user — forced User.
+            // Regular user / client admin — forced User.
             (true, false, false, AppMode::User, AppMode::User),
             (true, false, false, AppMode::Support, AppMode::User),
             (true, false, false, AppMode::Dev, AppMode::User),
-            // Admin (not super) — persisted clamped to {User, Support}.
+            // Inklura support (not super) — persisted clamped to {User, Support}.
             (true, true, false, AppMode::User, AppMode::User),
             (true, true, false, AppMode::Support, AppMode::Support),
             (true, true, false, AppMode::Dev, AppMode::User),
@@ -947,11 +980,11 @@ mod tests {
             (true, true, true, AppMode::Support, AppMode::Support),
             (true, true, true, AppMode::Dev, AppMode::Dev),
         ];
-        for (signed_in, admin, sup, persisted, expected) in cases.iter().copied() {
+        for (signed_in, support, sup, persisted, expected) in cases.iter().copied() {
             assert_eq!(
-                AppMode::resolve_effective(signed_in, admin, sup, persisted),
+                AppMode::resolve_effective(signed_in, support, sup, persisted),
                 expected,
-                "cell (signed_in={signed_in}, admin={admin}, sup={sup}, persisted={persisted:?})",
+                "cell (signed_in={signed_in}, support={support}, sup={sup}, persisted={persisted:?})",
             );
         }
     }

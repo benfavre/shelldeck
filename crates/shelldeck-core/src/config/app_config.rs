@@ -427,6 +427,7 @@ mod tests {
             name: "Ben Favre".to_string(),
             is_superadmin: true,
             is_admin: true,
+            is_inklura_support: true,
             roles: vec!["superadmin".to_string()],
         });
         logged_in.save_to(&path).expect("save_to");

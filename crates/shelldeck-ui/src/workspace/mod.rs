@@ -2161,7 +2161,10 @@ impl Workspace {
     }
 
     /// True when the account passes `isManageAdmin` server-side (inclusive
-    /// of super-admin). Unlocks Support mode; see `.agents/roles.md`.
+    /// of super-admin). **No longer used for mode gating** — kept only
+    /// for consumers that need "is this account a CM admin?" regardless
+    /// of ShellDeck-staff status.
+    #[allow(dead_code)]
     fn is_admin(&self) -> bool {
         self.app_config
             .account
@@ -2170,23 +2173,40 @@ impl Workspace {
             .unwrap_or(false)
     }
 
-    /// Signed-in admins OR super-admins may switch modes. Regular users see
-    /// no switcher at all — they're forced to User.
+    /// True when the account passes `isInkluraSupport` server-side
+    /// (inclusive of super-admin). **The Support-mode gate.** `is_admin`
+    /// is deliberately not used here — it would include client
+    /// tenant_admins, who are customers.
+    fn is_inklura_support(&self) -> bool {
+        self.app_config
+            .account
+            .as_ref()
+            .map(|a| a.is_inklura_support || a.is_superadmin)
+            .unwrap_or(false)
+    }
+
+    /// Signed-in Inklura support OR super-admins may switch modes.
+    /// Regular users and client admins see no switcher — forced User.
     pub fn can_switch_mode(&self) -> bool {
-        AppMode::can_switch(self.signed_in(), self.is_admin(), self.is_superadmin())
+        AppMode::can_switch(
+            self.signed_in(),
+            self.is_inklura_support(),
+            self.is_superadmin(),
+        )
     }
 
     /// The surface to present. Logged-out → the welcome landing intercepts
     /// the render before this hits; the User fallback is defensive. Signed-
-    /// in super-admin → persisted mode; admin → persisted clamped to
-    /// {User, Support}; regular → User.
+    /// in super-admin → persisted mode; inklura_support → persisted
+    /// clamped to {User, Support}; anyone else (including client admins)
+    /// → forced User.
     ///
     /// Delegates to `AppMode::resolve_effective`; that pure fn is under
     /// test in `SDTEST-1052`.
     pub fn effective_mode(&self) -> AppMode {
         AppMode::resolve_effective(
             self.signed_in(),
-            self.is_admin(),
+            self.is_inklura_support(),
             self.is_superadmin(),
             self.app_config.cloud_sync.mode,
         )
@@ -6405,6 +6425,8 @@ impl Workspace {
 
         let role_label = if account.is_superadmin {
             t!("user.infos.role.superadmin").to_string()
+        } else if account.is_inklura_support {
+            t!("user.infos.role.inklura_support").to_string()
         } else if account.is_admin {
             t!("user.infos.role.admin").to_string()
         } else {
