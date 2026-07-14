@@ -402,7 +402,9 @@ fn main() -> Result<()> {
             is_resizable: true,
             window_min_size: Some(size(px(600.0), px(400.0))),
             window_decorations: Some(WindowDecorations::Client),
-            app_id: Some("com.shelldeck.desktop".to_string()),
+            // Must match packaging/linux/shelldeck.desktop (basename + StartupWMClass)
+            // so GNOME/Wayland can pair the window with the .desktop and pick up the icon.
+            app_id: Some("shelldeck".to_string()),
             ..Default::default()
         };
 

@@ -78,12 +78,19 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
-# Copy icon if available, generate placeholder otherwise
+# Copy icon if available, else build one from the committed iconset,
+# else fall back to the dark-blue placeholder as a last resort.
 ICON_SRC="$PROJECT_ROOT/packaging/icons/shelldeck.icns"
+ICONSET_SRC="$PROJECT_ROOT/packaging/icons/iconset"
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$APP_DIR/Contents/Resources/shelldeck.icns"
+elif [ -d "$ICONSET_SRC" ] && command -v iconutil &>/dev/null; then
+    echo "==> Building shelldeck.icns from $ICONSET_SRC"
+    iconutil -c icns "$ICONSET_SRC" -o "$APP_DIR/Contents/Resources/shelldeck.icns" || {
+        echo "  WARNING: iconutil failed on iconset, .app will have no icon"
+    }
 else
-    echo "==> No shelldeck.icns found, generating placeholder..."
+    echo "==> No shelldeck.icns and no usable iconset, generating placeholder..."
     # Create a simple PNG and convert to icns using sips (macOS built-in)
     TEMP_PNG="$(mktemp /tmp/shelldeck-icon-XXXX.png)"
     if command -v sips &>/dev/null; then
