@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 
+use adabraka_ui::theme::use_theme;
 use gpui::prelude::*;
 use gpui::*;
 use parking_lot::Mutex;
@@ -1086,6 +1087,7 @@ struct TerminalToolbarTooltip {
 
 impl Render for TerminalToolbarTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let font_family = use_theme().tokens.font_family.clone();
         div()
             .px(px(8.0))
             .py(px(4.0))
@@ -1095,6 +1097,7 @@ impl Render for TerminalToolbarTooltip {
             .border_color(ShellDeckColors::border())
             .shadow_md()
             .text_size(px(11.0))
+            .font_family(font_family)
             .text_color(ShellDeckColors::text_primary())
             .whitespace_nowrap()
             .child(self.label.clone())
@@ -2302,7 +2305,28 @@ impl TerminalView {
         let lbl_favorites = t!("terminal.toolbar.favorites");
         let lbl_recent = t!("terminal.toolbar.recent");
 
-        let toolbar_btn = |id: &str, label: &str| {
+        let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
+            if cfg!(target_os = "macos") {
+                (
+                    "\u{2318}",
+                    "\u{2318}C",
+                    "\u{2318}V",
+                    "\u{2318}D",
+                    "\u{2318}\u{21E7}D",
+                )
+            } else {
+                (
+                    "Ctrl+",
+                    "Ctrl+Shift+C",
+                    "Ctrl+Shift+V",
+                    "Ctrl+Shift+D",
+                    "Ctrl+Shift+Alt+D",
+                )
+            };
+        let shortcut_tooltip = |label: &str, keys: String| format!("{label} ({keys})");
+
+        let toolbar_btn = |id: &str, label: &str, tooltip_label: String| {
+            let tooltip_label: SharedString = tooltip_label.into();
             div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
                 .flex()
@@ -2320,6 +2344,12 @@ impl TerminalView {
                         .text_color(ShellDeckColors::text_primary())
                         .child(label.to_string()),
                 )
+                .tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: tooltip_label.clone(),
+                    })
+                    .into()
+                })
         };
 
         let toolbar_icon = |id: &str, icon: &str, tooltip_label: String| {
@@ -2430,15 +2460,22 @@ impl TerminalView {
         // Left group: icon-only at compact widths, labels otherwise.
         if compact {
             toolbar = toolbar.child(
-                toolbar_icon("tb-search", "search", lbl_search.to_string()).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.toggle_search();
-                        cx.notify();
-                    },
-                )),
+                toolbar_icon(
+                    "tb-search",
+                    "search",
+                    shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_search();
+                    cx.notify();
+                })),
             );
 
-            let mut copy = toolbar_icon("tb-copy", "copy", lbl_copy.to_string());
+            let mut copy = toolbar_icon(
+                "tb-copy",
+                "copy",
+                shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+            );
             if !has_selection {
                 copy = copy.opacity(0.45).cursor_default();
             } else {
@@ -2449,25 +2486,35 @@ impl TerminalView {
             }
             toolbar = toolbar.child(copy);
             toolbar = toolbar.child(
-                toolbar_icon("tb-paste", "clipboard-paste", lbl_paste.to_string()).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.paste_clipboard(cx);
-                        cx.notify();
-                    }),
-                ),
+                toolbar_icon(
+                    "tb-paste",
+                    "clipboard-paste",
+                    shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.paste_clipboard(cx);
+                    cx.notify();
+                })),
             );
         } else {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-search", lbl_search.as_ref()).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.toggle_search();
-                            cx.notify();
-                        },
-                    )),
+                    toolbar_btn(
+                        "tb-search",
+                        lbl_search.as_ref(),
+                        shortcut_tooltip(lbl_search.as_ref(), format!("{primary}F")),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_search();
+                        cx.notify();
+                    })),
                 )
                 .child({
-                    let mut btn = toolbar_btn("tb-copy", lbl_copy.as_ref());
+                    let mut btn = toolbar_btn(
+                        "tb-copy",
+                        lbl_copy.as_ref(),
+                        shortcut_tooltip(lbl_copy.as_ref(), copy_keys.to_string()),
+                    );
                     if !has_selection {
                         btn = btn.opacity(0.45).cursor_default();
                     } else {
@@ -2479,12 +2526,15 @@ impl TerminalView {
                     btn
                 })
                 .child(
-                    toolbar_btn("tb-paste", lbl_paste.as_ref()).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.paste_clipboard(cx);
-                            cx.notify();
-                        },
-                    )),
+                    toolbar_btn(
+                        "tb-paste",
+                        lbl_paste.as_ref(),
+                        shortcut_tooltip(lbl_paste.as_ref(), paste_keys.to_string()),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.paste_clipboard(cx);
+                        cx.notify();
+                    })),
                 );
         }
 
@@ -2501,33 +2551,49 @@ impl TerminalView {
         if self.layout.is_split() {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-rotate-split", lbl_rotate.as_ref()).on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.toggle_split_direction();
-                            this.resize_if_needed(window);
-                            cx.notify();
-                        },
-                    )),
+                    toolbar_btn(
+                        "tb-rotate-split",
+                        lbl_rotate.as_ref(),
+                        lbl_rotate.to_string(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_split_direction();
+                        this.resize_if_needed(window);
+                        cx.notify();
+                    })),
                 )
                 .child(
-                    toolbar_btn("tb-close-split", lbl_close_split.as_ref()).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.close_split();
-                            cx.notify();
-                        },
-                    )),
+                    toolbar_btn(
+                        "tb-close-split",
+                        lbl_close_split.as_ref(),
+                        lbl_close_split.to_string(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_split();
+                        cx.notify();
+                    })),
                 );
         } else if !self.layout.is_split() {
-            toolbar = toolbar.child(toolbar_btn("tb-split-h", lbl_split_h.as_ref()).on_click(
-                cx.listener(|this, _, _, cx| {
+            toolbar = toolbar.child(
+                toolbar_btn(
+                    "tb-split-h",
+                    lbl_split_h.as_ref(),
+                    shortcut_tooltip(lbl_split_h.as_ref(), split_h_keys.to_string()),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
                     this.split_horizontal(cx);
-                }),
-            ));
-            toolbar = toolbar.child(toolbar_btn("tb-split-v", lbl_split_v.as_ref()).on_click(
-                cx.listener(|this, _, _, cx| {
+                })),
+            );
+            toolbar = toolbar.child(
+                toolbar_btn(
+                    "tb-split-v",
+                    lbl_split_v.as_ref(),
+                    shortcut_tooltip(lbl_split_v.as_ref(), split_v_keys.to_string()),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
                     this.split_vertical(cx);
-                }),
-            ));
+                })),
+            );
         }
 
         // Separator
@@ -2548,7 +2614,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-out",
                     "minus",
-                    t!("terminal.shortcut.zoom").to_string(),
+                    shortcut_tooltip(t!("terminal.shortcut.zoom").as_ref(), format!("{primary}-")),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_out();
@@ -2584,7 +2650,7 @@ impl TerminalView {
                 toolbar_icon(
                     "tb-zoom-in",
                     "plus",
-                    t!("terminal.shortcut.zoom").to_string(),
+                    shortcut_tooltip(t!("terminal.shortcut.zoom").as_ref(), format!("{primary}=")),
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.zoom_in();
@@ -2614,7 +2680,7 @@ impl TerminalView {
                     }))
                     .into_any_element()
             } else {
-                toolbar_btn("tb-scripts", lbl_scripts.as_ref())
+                toolbar_btn("tb-scripts", lbl_scripts.as_ref(), lbl_scripts.to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.script_dropdown_open = !this.script_dropdown_open;
                         cx.notify();
@@ -2903,29 +2969,37 @@ impl TerminalView {
 
         if compact {
             toolbar = toolbar.child(
-                toolbar_icon("tb-clear", "trash-2", lbl_clear.to_string()).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        if let Some(session) = this.active_session() {
-                            let mut grid = session.grid.lock();
-                            grid.erase_display(2);
-                            grid.cursor_to(0, 0);
-                        }
-                        cx.notify();
-                    },
-                )),
-            );
-        } else {
-            toolbar = toolbar.child(div().flex_grow());
-            toolbar = toolbar.child(toolbar_btn("tb-clear", lbl_clear.as_ref()).on_click(
-                cx.listener(|this, _, _, cx| {
+                toolbar_icon(
+                    "tb-clear",
+                    "trash-2",
+                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
                         let mut grid = session.grid.lock();
                         grid.erase_display(2);
                         grid.cursor_to(0, 0);
                     }
                     cx.notify();
-                }),
-            ));
+                })),
+            );
+        } else {
+            toolbar = toolbar.child(div().flex_grow());
+            toolbar = toolbar.child(
+                toolbar_btn(
+                    "tb-clear",
+                    lbl_clear.as_ref(),
+                    shortcut_tooltip(lbl_clear.as_ref(), format!("{primary}L")),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(session) = this.active_session() {
+                        let mut grid = session.grid.lock();
+                        grid.erase_display(2);
+                        grid.cursor_to(0, 0);
+                    }
+                    cx.notify();
+                })),
+            );
         }
 
         toolbar
@@ -3580,6 +3654,14 @@ impl TerminalView {
 
                 for (ri, row) in visible.iter().enumerate() {
                     let y = bounds.origin.y + cell_h * ri as f32;
+
+                    // Repaint the default background as one strip per row. GPUI
+                    // tooltips trigger an isolated frame, so relying on retained
+                    // canvas pixels would make full-screen TUIs disappear briefly.
+                    window.paint_quad(fill(
+                        Bounds::new(point(bounds.origin.x, y), size(bounds.size.width, cell_h)),
+                        palette.background_color(),
+                    ));
 
                     for (ci, cell) in row.iter().enumerate() {
                         let x = bounds.origin.x + cell_w * ci as f32;
