@@ -309,6 +309,17 @@ Existing: **0 tests**.
 
 ---
 
+## 19. `config/deep_link.rs` + `config/single_instance.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1320 | `deep_link.rs::parses_every_documented_verb` (+ `scheme_is_case_insensitive_but_id_is_not`, `ignores_query_and_fragment_and_trailing_slash`, `rejects_bad_scheme_and_unknown_verbs`, `rejects_malformed_uuid`, `looks_like_prefix_check`) | SDUC-406 | Green | Single choke point every OS-delivered URL flows through. |
+| SDTEST-1321 | `single_instance.rs::primary_then_secondary_forwards_payload` | SDUC-407 | Green | First = primary, second forwards + bows out, primary receives the link. |
+| SDTEST-1322 | `single_instance.rs::stale_discovery_file_is_taken_over` | SDUC-407 | Green | Dead primary → next launch takes over instead of stranding. |
+| SDTEST-1323 | `single_instance.rs::wrong_token_handoff_is_rejected` | SDUC-407 | Green | Token guard drops a rogue local hand-off. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

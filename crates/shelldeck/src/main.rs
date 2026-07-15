@@ -5,6 +5,8 @@ use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString, WindowDecorations};
 use shelldeck_core::config::app_config::AppConfig;
+use shelldeck_core::config::deep_link::DeepLink;
+use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_ui::theme::ShellDeckColors;
@@ -372,6 +374,24 @@ fn dispatch_tray_command(
     }
 }
 
+/// Parse + route a `shelldeck://…` payload (a bare focus ping arrives as an
+/// empty string) onto the workspace, then bring the window to the front so
+/// the deep link visibly lands. Runs on the GPUI foreground thread.
+fn dispatch_deep_link(
+    payload: String,
+    ws: gpui::WeakEntity<Workspace>,
+    window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    let link = DeepLink::parse(&payload);
+    let _ = window.update(cx, |_, window, cx| {
+        window.activate_window();
+        if let (Some(link), Some(ws)) = (link, ws.upgrade()) {
+            ws.update(cx, |ws, cx| ws.open_deep_link(link, cx));
+        }
+    });
+}
+
 fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -382,6 +402,23 @@ fn main() -> Result<()> {
         .init();
 
     tracing::info!("Starting ShellDeck v{}", shelldeck_core::VERSION);
+
+    // Single-instance guard + deep-link hand-off. If the OS launched us to
+    // follow a `shelldeck://…` link (or just to focus an existing window),
+    // and another instance is already running, forward the URL to it and
+    // exit — never spawn a duplicate window. Otherwise we become the
+    // primary and hold the listener for the app lifetime.
+    let deep_link_arg = std::env::args().skip(1).find(|a| DeepLink::looks_like(a));
+    let primary = match single_instance::acquire(deep_link_arg.as_deref()) {
+        Acquire::AlreadyRunning => {
+            tracing::info!("another ShellDeck instance is running; forwarded request and exiting");
+            return Ok(());
+        }
+        Acquire::Primary(p) => p,
+    };
+    // The receiver yields forwarded deep links (and our own launch arg, if
+    // any, delivered first). Polled from the GPUI window init below.
+    let deep_link_rx = primary.listen(deep_link_arg);
 
     // Load configuration
     let config = AppConfig::load().unwrap_or_else(|e| {
@@ -604,6 +641,30 @@ fn main() -> Result<()> {
                             let ws_handle = ws_handle.clone();
                             let _ = cx.update(|cx| {
                                 dispatch_tray_command(cmd, ws_handle, window_handle, cx);
+                            });
+                        }
+                    }
+                })
+                .detach();
+            }
+
+            // Deep-link dispatch loop. Drains URLs forwarded by the
+            // single-instance guard (and our own launch arg, delivered
+            // first) and routes them onto the workspace. Mirrors the tray
+            // loop: a short foreground timer + non-blocking drain.
+            {
+                let ws_handle = workspace.downgrade();
+                let window_handle = window.window_handle();
+                cx.spawn(async move |cx| {
+                    use std::time::Duration;
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(150))
+                            .await;
+                        while let Ok(payload) = deep_link_rx.try_recv() {
+                            let ws_handle = ws_handle.clone();
+                            let _ = cx.update(|cx| {
+                                dispatch_deep_link(payload, ws_handle, window_handle, cx);
                             });
                         }
                     }

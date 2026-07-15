@@ -976,6 +976,34 @@ if [ "$OS" = "Linux" ]; then
   fi
 fi
 
+# Register the shelldeck:// URL scheme handler so deep links open the app.
+# Best-effort: writes a per-user .desktop with the MimeType and points the
+# default handler at it. No-op on headless boxes without xdg tooling.
+if [ "$OS" = "Linux" ]; then
+  APPS_DIR="$HOME/.local/share/applications"
+  mkdir -p "$APPS_DIR"
+  cat > "$APPS_DIR/shelldeck.desktop" <<DESKTOP
+[Desktop Entry]
+Name=ShellDeck
+Comment=GPU-accelerated terminal and SSH companion
+Exec=$INSTALL_DIR/shelldeck %u
+Icon=shelldeck
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;ssh;shell;
+StartupWMClass=shelldeck
+MimeType=x-scheme-handler/shelldeck;
+DESKTOP
+  if command -v xdg-mime &>/dev/null; then
+    xdg-mime default shelldeck.desktop x-scheme-handler/shelldeck 2>/dev/null || true
+  fi
+  if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database "$APPS_DIR" 2>/dev/null || true
+  fi
+  info "Registered shelldeck:// deep-link handler"
+fi
+
 add_to_path() {
   local rc="$1"
   if [ -f "$rc" ] && grep -qF '.shelldeck/bin' "$rc" 2>/dev/null; then return; fi
@@ -1104,6 +1132,23 @@ $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($CurrentPath -notlike "*$InstallDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$InstallDir;$CurrentPath", "User")
     Write-Host "==> Added $InstallDir to user PATH" -ForegroundColor Blue
+}
+
+# Register the shelldeck:// URL protocol so deep links open the app (per-user).
+try {
+    $Exe = Join-Path $InstallDir "shelldeck.exe"
+    $Root = "HKCU:\\Software\\Classes\\shelldeck"
+    New-Item -Path $Root -Force | Out-Null
+    Set-ItemProperty -Path $Root -Name "(default)" -Value "URL:ShellDeck Protocol"
+    Set-ItemProperty -Path $Root -Name "URL Protocol" -Value ""
+    New-Item -Path "$Root\\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path "$Root\\DefaultIcon" -Name "(default)" -Value "$Exe,0"
+    New-Item -Path "$Root\\shell\\open\\command" -Force | Out-Null
+    $Cmd = '"' + $Exe + '" "%1"'
+    Set-ItemProperty -Path "$Root\\shell\\open\\command" -Name "(default)" -Value $Cmd
+    Write-Host "==> Registered shelldeck:// deep-link handler" -ForegroundColor Blue
+} catch {
+    Write-Host "warn: could not register shelldeck:// handler: $_" -ForegroundColor Yellow
 }
 
 Write-Host ""

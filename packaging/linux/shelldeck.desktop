@@ -1,10 +1,11 @@
 [Desktop Entry]
 Name=ShellDeck
 Comment=GPU-accelerated terminal and SSH companion
-Exec=shelldeck
+Exec=shelldeck %u
 Icon=shelldeck
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
 Keywords=terminal;ssh;shell;
 StartupWMClass=shelldeck
+MimeType=x-scheme-handler/shelldeck;

@@ -1214,6 +1214,30 @@ without erroring.
 
 ---
 
+## 19. Deep links (`shelldeck://`)
+
+### SDUC-406 — `shelldeck://…` URLs parse to typed actions
+
+`DeepLink::parse` turns an OS-delivered URL into a typed variant
+(`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
+`OpenTicket`/`JeanConfirm`). The scheme is case-insensitive; embedded
+UUIDs are validated (bad UUID → `None`); query strings, fragments and
+trailing slashes are ignored; unknown verbs and wrong schemes parse to
+`None` so the router can no-op instead of guessing. Server-side IDs
+(sites/tickets/issues/Jean jobs) keep their original casing.
+
+### SDUC-407 — Single instance + deep-link hand-off
+
+ShellDeck runs as one process per user session. A second launch (or a
+`shelldeck://` link followed while the app is open) forwards its
+payload to the running instance over a loopback socket guarded by a
+shared token, then exits — never a duplicate window. A stale discovery
+file (crashed primary) is taken over by the next launch instead of
+stranding it, and a hand-off carrying the wrong token is dropped so a
+rogue local process cannot inject links.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1222,6 +1246,9 @@ without erroring.
 
 ## Change log
 
+- **2026-07-15** — Added § 19 deep links (SDUC-406 parse grammar,
+  SDUC-407 single-instance + hand-off) for the `shelldeck://` companion
+  feature. Tests SDTEST-1320..1323 in `config/{deep_link,single_instance}.rs`.
 - **2026-07-07** — Initial catalogue.
 - **2026-07-09** — Added SDUC-170/171/172 (Support timestamp aliases,
   Lucide channel mapping) and § 18 i18n (SDUC-400..405) following the

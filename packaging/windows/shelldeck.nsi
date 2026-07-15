@@ -102,6 +102,12 @@ Section "Install"
 
     ; Store install dir
     WriteRegStr HKLM "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
+
+    ; Register the shelldeck:// URL protocol so deep links open the app.
+    WriteRegStr HKCR "shelldeck" "" "URL:ShellDeck Protocol"
+    WriteRegStr HKCR "shelldeck" "URL Protocol" ""
+    WriteRegStr HKCR "shelldeck\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
+    WriteRegStr HKCR "shelldeck\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
 SectionEnd
 
 ; ---------------------------------------------------------------------------
@@ -123,4 +129,7 @@ Section "Uninstall"
     ; Remove registry
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
     DeleteRegKey HKLM "Software\${APP_NAME}"
+
+    ; Remove the shelldeck:// URL protocol registration.
+    DeleteRegKey HKCR "shelldeck"
 SectionEnd

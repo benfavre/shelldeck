@@ -256,6 +256,14 @@ impl SidebarView {
         self.connections = connections;
     }
 
+    /// Highlight a connection in the Connections section without opening an
+    /// SSH session. Used by the `shelldeck://open/connection/<uuid>` deep
+    /// link so a link can point the user at a connection without connecting.
+    pub fn focus_connection(&mut self, id: Uuid) {
+        self.active_section = SidebarSection::Connections;
+        self.selected_connection = Some(id);
+    }
+
     /// Set the active-site filter. `Some(id)` scopes the list to that site
     /// (plus unbound connections); `None` shows every site.
     pub fn set_site_filter(&mut self, site_filter: Option<Uuid>) {

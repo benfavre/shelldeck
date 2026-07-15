@@ -74,6 +74,17 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>11.0</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.shelldeck.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>shelldeck</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

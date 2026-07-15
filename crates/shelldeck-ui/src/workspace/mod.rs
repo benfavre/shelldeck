@@ -8,6 +8,7 @@ use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
+use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::issues::{self, Issue, IssueInstance};
 use shelldeck_core::config::jean_fleet::{
     self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance,
@@ -4585,6 +4586,115 @@ impl Workspace {
         self.active_view = ActiveView::JeanConsole;
         self.on_active_view_changed(cx);
         cx.notify();
+    }
+
+    /// Route a `shelldeck://…` deep link (already parsed by
+    /// `shelldeck_core::config::deep_link`) onto the right surface. Called
+    /// from `main.rs` when the OS hands the URL to us — either as the arg
+    /// that launched this process, or forwarded from a second launch by the
+    /// single-instance guard. Best-effort: an unresolvable target (unknown
+    /// UUID, no permission) toasts instead of failing.
+    pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
+        tracing::info!("deep link: {link:?}");
+        match link {
+            DeepLink::OpenConnection(id) => {
+                if !self.connections.iter().any(|c| c.id == id) {
+                    self.show_toast(
+                        t!("toast.deeplink.connection_not_found").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Dev, cx);
+                }
+                self.switch_to_section(SidebarSection::Connections);
+                self.sidebar.update(cx, |s, cx| {
+                    s.focus_connection(id);
+                    cx.notify();
+                });
+                self.on_active_view_changed(cx);
+                cx.notify();
+            }
+            DeepLink::SshConnect(id) => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Dev, cx);
+                }
+                if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
+                    let title = conn.display_name().to_string();
+                    self.connect_ssh(conn, cx);
+                    self.add_activity(
+                        t!("activity.connecting_to", name = title.as_str()).to_string(),
+                        ActivityType::Connection,
+                        cx,
+                    );
+                    self.active_view = ActiveView::Terminal;
+                    cx.notify();
+                } else {
+                    self.show_toast(
+                        t!("toast.deeplink.connection_not_found").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+            }
+            DeepLink::TunnelStart(id) => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Dev, cx);
+                }
+                self.switch_to_section(SidebarSection::PortForwards);
+                self.on_active_view_changed(cx);
+                self.handle_forward_event(&PortForwardEvent::StartForward(id), cx);
+                cx.notify();
+            }
+            DeepLink::OpenSite(id) => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::User, cx);
+                }
+                let label = self
+                    .site_directory
+                    .as_ref()
+                    .and_then(|p| p.sites.iter().find(|s| s.site_id == id))
+                    .map(|s| s.display_label());
+                self.select_site(Some(id), label, cx);
+                cx.notify();
+            }
+            DeepLink::OpenIssue(id) => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Support, cx);
+                    self.support.update(cx, |v, cx| {
+                        v.set_section(crate::support_view::SupportSection::Requests);
+                        cx.notify();
+                    });
+                }
+                self.select_issue(id, cx);
+                cx.notify();
+            }
+            DeepLink::OpenTicket(id) => {
+                if !self.can_switch_mode() {
+                    self.show_toast(
+                        t!("toast.deeplink.support_only").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                self.set_mode(AppMode::Support, cx);
+                self.support.update(cx, |v, cx| {
+                    v.set_section(crate::support_view::SupportSection::Tickets);
+                    cx.notify();
+                });
+                self.select_support_ticket(id, cx);
+                cx.notify();
+            }
+            DeepLink::JeanConfirm(_job_id) => {
+                // v1 opens the Fleet view where awaiting jobs are listed;
+                // scrolling to / pre-selecting the exact job is a follow-up
+                // (see docs/roadmap/companion.md §3).
+                self.open_fleet(cx);
+            }
+        }
     }
 
     /// Key handling for the User-mode "Demander à JeanClaude" composer.

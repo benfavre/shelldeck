@@ -15,7 +15,7 @@
 |---|------|--------|
 | 1 | Autostart au login | ✅ landed 2026-07-15 (`shelldeck-core::config::autostart` + Settings toggle + startup reconcile) |
 | 2 | Tray icon + notifications OS | ✅ landed 2026-07-15 (4 phases : fondation, compteurs live, notifs OS delta, opt-in Settings + close_to_tray) |
-| 3 | Deep links `shelldeck://` | ⏳ à faire |
+| 3 | Deep links `shelldeck://` | ✅ landed 2026-07-15 (parser `deep_link` + single-instance loopback hand-off + `Workspace::open_deep_link` + OS scheme registration Linux/macOS/Windows) |
 | 4 | Recent activity | ⏳ à faire |
 | 5 | Pin / favoris rapides | ⏸ bloqué sur choix de catégorie |
 | 6 | Onboarding first-run | ⏳ à faire (attendre stabilisation des surfaces) |
@@ -114,34 +114,63 @@ Livré en 4 sous-commits :
 - Un `TrayService` dans le crate `shelldeck` (main) qui s'abonne aux
   événements pertinents et pousse dans le tray.
 
-## 3. Deep links `shelldeck://`
+## 3. Deep links `shelldeck://` — ✅ livré 2026-07-15
 
 **Objectif :** couture entre le desktop et les autres surfaces
 (Manage, Slack, JeanClaude, e-mails). Un clic sur un lien
-`shelldeck://…` doit ouvrir ShellDeck sur la bonne vue / lancer la
-bonne action.
+`shelldeck://…` ouvre ShellDeck sur la bonne vue / lance la bonne
+action.
 
-**Schéma proposé :**
+**Grammaire livrée** (parseur pur `shelldeck_core::config::deep_link`,
+verbes insensibles à la casse, IDs serveur sensibles à la casse,
+query/fragment/slash final ignorés) :
 
 | Lien | Action |
 |------|--------|
-| `shelldeck://open/connection/<uuid>` | Ouvre la fenêtre + focus sur la connexion |
+| `shelldeck://open/connection/<uuid>` | Focus la connexion (sans SSH) — Dev + section Connexions |
 | `shelldeck://ssh/connect/<uuid>` | Ouvre + lance SSH |
-| `shelldeck://tunnel/<site>/<port>` | Ouvre + démarre le tunnel |
-| `shelldeck://open/site/<uuid>` | Bascule sur le site + affiche User home |
-| `shelldeck://issue/<uuid>` | Ouvre la demande en Support |
-| `shelldeck://ticket/<uuid>` | Ouvre le ticket en Support |
-| `shelldeck://jean/confirm/<job_id>` | Ouvre Jean Console sur la validation |
+| `shelldeck://tunnel/start/<uuid>` | Démarre le port-forward enregistré (par UUID) |
+| `shelldeck://open/site/<id>` | Bascule sur le site + User home |
+| `shelldeck://issue/<id>` | Ouvre la demande (Support si staff, sinon User) |
+| `shelldeck://ticket/<id>` | Ouvre le ticket en Support (staff only) |
+| `shelldeck://jean/confirm/<job_id>` | Ouvre la vue Fleet (validations en attente) |
 
-**Techniquement :**
+**Livré :**
 
-- Enregistrement OS du scheme (Linux `.desktop`, macOS
-  `Info.plist` `CFBundleURLTypes`, Windows registry `URL Protocol`).
-- Router dans `main.rs` qui parse le `Arg::from_env` et dispatche vers
-  `Workspace::open_deep_link(url, cx)`.
-- Cible côté Manage : PR séparée qui ajoute les boutons « Ouvrir dans
-  ShellDeck » aux endroits stratégiques (page site, page ticket, page
+- **Parseur** `deep_link::DeepLink::parse` — pur, std-only, unit-testé
+  (SDTEST-1320). UUID validés au parse ; verbe/scheme inconnus → `None`
+  (le routeur no-op au lieu de deviner).
+- **Single-instance + hand-off** `config::single_instance` : le primary
+  bind un listener loopback TCP éphémère + écrit `instance.json`
+  (`{port, token}`, 0600 sur Unix) ; un second lancement forwarde son
+  URL via le socket (poignée de main token) puis quitte — jamais de
+  fenêtre dupliquée. Fichier périmé (primary crashé) → repris au
+  lancement suivant ; token invalide → drop. Portable (même pattern que
+  `browser_connect_listen` OIDC, zéro `cfg`). Unit-testé (SDTEST-1321..1323).
+- **Routeur** `Workspace::open_deep_link(link, cx)` — bascule le mode si
+  besoin, résout l'ID vers la surface, toast si introuvable / non
+  autorisé (tickets = staff).
+- **Wiring** `main.rs` : `single_instance::acquire(arg)` au boot →
+  `AlreadyRunning` (exit) ou `Primary::listen(initial)` → canal drainé
+  dans une boucle GPUI (miroir de la boucle tray) qui parse + dispatche
+  + `activate_window`.
+- **Enregistrement OS du scheme** : `.desktop` `MimeType=x-scheme-handler/shelldeck;`
+  + `Exec=shelldeck %u` (packaging + AppImage) ; enregistrement runtime
+  dans `install.sh` (write `~/.local/share/applications/shelldeck.desktop`
+  + `xdg-mime default` + `update-desktop-database`) ; macOS
+  `CFBundleURLTypes` dans `build-dmg.sh` ; Windows `URL Protocol` dans le
+  NSIS + `install.ps1` (HKCU `Software\Classes\shelldeck`).
+
+**Non fait / follow-ups :**
+
+- **Ciblage fin d'un job Jean** : `jean/confirm/<job_id>` ouvre la vue
+  Fleet mais ne scrolle pas / ne pré-sélectionne pas le job exact
+  (deux espaces d'ID : `thread_ts` JeanClaude vs `JeanJob.id` Fleet).
+- **Cible côté Manage** : PR séparée qui ajoute les boutons « Ouvrir
+  dans ShellDeck » aux endroits stratégiques (page site, ticket,
   connexion).
+- **`tunnel/<site>/<port>`** (schéma initial) non retenu — pas d'API
+  pour résoudre `(site, port)` → tunnel ; on cible le `PortForward.id`.
 
 ## 4. Pin / favoris rapides
 
