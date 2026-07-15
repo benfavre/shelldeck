@@ -42,4 +42,4 @@ macro_rules! t {
 }
 
 pub use i18n::{apply_ui_language, rel_time};
-pub use workspace::Workspace;
+pub use workspace::{TrayCounters, TrayNotification, Workspace};

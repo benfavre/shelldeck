@@ -373,6 +373,18 @@ pub struct Workspace {
     /// so `shelldeck-ui` stays independent of the `tray-icon` crate —
     /// the `main.rs` closure keeps the sender internally.
     tray_state_publisher: Option<Box<dyn Fn(TrayCounters) + Send + Sync>>,
+    /// Optional OS-notification dispatcher. Same "closure supplied by
+    /// `main.rs`" pattern as `tray_state_publisher` so `shelldeck-ui`
+    /// stays independent of `notify-rust`. Called from
+    /// `publish_tray_state` on positive deltas and from
+    /// `apply_tick_result` on Fleet job completion.
+    tray_notifier: Option<Box<dyn Fn(TrayNotification) + Send + Sync>>,
+    /// Previous tray counters, kept for delta detection. `None` before
+    /// the first publish — the first publish seeds the value without
+    /// firing notifications so a fresh app launch with pre-existing
+    /// unread tickets doesn't dump a spurious "N nouveaux tickets"
+    /// notification on startup.
+    last_tray_counters: Option<TrayCounters>,
 }
 
 /// Snapshot mirror of `shelldeck::tray::TrayState`, kept in
@@ -384,6 +396,26 @@ pub struct TrayCounters {
     pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub jean_pending: usize,
+}
+
+/// Notifications the workspace asks the OS to display when a
+/// user-relevant delta happens (new ticket arrived, Jean job needs a
+/// human, SSH session dropped, Fleet job finished). `main.rs` wires
+/// this to `notify-rust`; other UIs (headless tests, mock harness) can
+/// stub the notifier with a no-op or a spy.
+#[derive(Debug, Clone)]
+pub enum TrayNotification {
+    /// N new unread support tickets appeared since the last publish.
+    NewTickets { count: usize },
+    /// N new Jean fleet jobs are awaiting user confirmation.
+    JeanPending { count: usize },
+    /// N previously-active SSH sessions dropped since the last publish.
+    /// Coarse — we don't know *which* host from the counter alone;
+    /// finer notifications would need per-session hooks.
+    SshDisconnected { count: usize },
+    /// A Fleet job finished. `success = false` means the executor
+    /// returned a non-zero exit or an error surfaced to the toast.
+    FleetJobDone { success: bool },
 }
 
 impl Workspace {
@@ -747,6 +779,8 @@ impl Workspace {
             theme_before_preview: None,
             terminal_theme_before_preview: None,
             tray_state_publisher: None,
+            tray_notifier: None,
+            last_tray_counters: None,
         }
     }
 
@@ -763,15 +797,38 @@ impl Workspace {
         self.tray_state_publisher = Some(publisher);
     }
 
-    /// Compute current tray counters + push into the publisher. Cheap
-    /// enough (four vec-scans + a small mutex read) to call from every
-    /// spot that changes state a user might want to see reflected in
-    /// the tray. The tray thread diffs against its last known state,
-    /// so redundant publishes are silently dropped.
-    pub fn publish_tray_state(&self, cx: &App) {
-        let Some(publisher) = self.tray_state_publisher.as_ref() else {
-            return;
-        };
+    /// Wire the OS-notification dispatcher after tray init. `main.rs`
+    /// supplies a closure that translates [`TrayNotification`] into a
+    /// `notify-rust` call. `None` means the tray is unavailable —
+    /// every subsequent emit is a no-op.
+    pub fn set_tray_notifier(
+        &mut self,
+        notifier: Box<dyn Fn(TrayNotification) + Send + Sync>,
+    ) {
+        self.tray_notifier = Some(notifier);
+    }
+
+    /// Fire an OS notification if the notifier is wired. Public so
+    /// non-counter-driven events (Fleet job completion, future SSH
+    /// disconnect hooks with the actual host name) can dispatch
+    /// directly without going through `publish_tray_state`.
+    pub fn emit_tray_notification(&self, n: TrayNotification) {
+        if let Some(notifier) = self.tray_notifier.as_ref() {
+            notifier(n);
+        }
+    }
+
+    /// Compute current tray counters + push into the publisher AND
+    /// fire OS notifications for positive deltas (new tickets, Jean
+    /// pending) or SSH-disconnect decrements. The first publish just
+    /// seeds `last_tray_counters` without notifying — otherwise a
+    /// launch with existing unread tickets would spam the OS.
+    ///
+    /// Cheap enough (four vec-scans + a small notify-rust dispatch on
+    /// deltas) to call from every spot that changes user-facing state.
+    /// The tray thread diffs the counters against its last known
+    /// state, so redundant publishes are silently dropped.
+    pub fn publish_tray_state(&mut self, cx: &App) {
         let active_ssh = self
             .connections
             .iter()
@@ -780,12 +837,37 @@ impl Workspace {
         let open_tunnels = self.active_tunnels.len();
         let unread_tickets = self.support.read(cx).unread_ticket_count();
         let jean_pending = self.runtime_awaiting.len();
-        publisher(TrayCounters {
+        let counters = TrayCounters {
             active_ssh,
             open_tunnels,
             unread_tickets,
             jean_pending,
-        });
+        };
+
+        // Delta notifications — skipped entirely on the first publish
+        // so the seed value doesn't fire a startup burst.
+        if let Some(prev) = self.last_tray_counters {
+            if counters.unread_tickets > prev.unread_tickets {
+                self.emit_tray_notification(TrayNotification::NewTickets {
+                    count: counters.unread_tickets - prev.unread_tickets,
+                });
+            }
+            if counters.jean_pending > prev.jean_pending {
+                self.emit_tray_notification(TrayNotification::JeanPending {
+                    count: counters.jean_pending - prev.jean_pending,
+                });
+            }
+            if counters.active_ssh < prev.active_ssh {
+                self.emit_tray_notification(TrayNotification::SshDisconnected {
+                    count: prev.active_ssh - counters.active_ssh,
+                });
+            }
+        }
+        self.last_tray_counters = Some(counters);
+
+        if let Some(publisher) = self.tray_state_publisher.as_ref() {
+            publisher(counters);
+        }
     }
 
     /// Decide whether a window-close request should proceed.
@@ -3325,6 +3407,7 @@ impl Workspace {
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
+                let success = r.is_ok();
                 if let Err(e) = r {
                     ws.show_toast(
                         t!(
@@ -3342,6 +3425,10 @@ impl Workspace {
                         cx,
                     );
                 }
+                // Notify the OS whether the job succeeded — the user
+                // may have switched away from the ShellDeck window
+                // while the executor was running.
+                ws.emit_tray_notification(TrayNotification::FleetJobDone { success });
                 ws.runtime_busy = false; // free for the next claim
                 ws.push_runtime_status_to_fleet(cx);
                 ws.refresh_fleet_view(cx);

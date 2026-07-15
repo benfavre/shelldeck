@@ -286,6 +286,57 @@ impl AssetSource for Assets {
     }
 }
 
+/// Format + fire an OS notification for a workspace-side delta.
+/// Called from a detached thread so a slow notification daemon (D-Bus
+/// on Linux, `NSUserNotificationCenter` on macOS, WinRT toasts on
+/// Windows) never blocks the workspace or the tray.
+///
+/// Icon strategy: pass the freedesktop-compatible name `shelldeck` —
+/// the packaging install ships an entry under `/usr/share/icons/…` so
+/// notification daemons pick it up. On macOS/Windows `notify-rust`
+/// falls back gracefully when the icon can't be resolved.
+fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<()> {
+    use shelldeck_ui::TrayNotification;
+    let (summary, body) = match n {
+        TrayNotification::NewTickets { count } => (
+            "ShellDeck — Support".to_string(),
+            match count {
+                1 => "1 nouveau ticket support".to_string(),
+                n => format!("{n} nouveaux tickets support"),
+            },
+        ),
+        TrayNotification::JeanPending { count } => (
+            "ShellDeck — Jean".to_string(),
+            match count {
+                1 => "Un job Jean attend votre validation".to_string(),
+                n => format!("{n} jobs Jean attendent votre validation"),
+            },
+        ),
+        TrayNotification::SshDisconnected { count } => (
+            "ShellDeck — SSH".to_string(),
+            match count {
+                1 => "Une connexion SSH s'est terminée".to_string(),
+                n => format!("{n} connexions SSH se sont terminées"),
+            },
+        ),
+        TrayNotification::FleetJobDone { success } => (
+            "ShellDeck — Fleet".to_string(),
+            if success {
+                "Job Fleet terminé".to_string()
+            } else {
+                "Job Fleet échoué".to_string()
+            },
+        ),
+    };
+    notify_rust::Notification::new()
+        .appname("ShellDeck")
+        .summary(&summary)
+        .body(&body)
+        .icon("shelldeck")
+        .show()?;
+    Ok(())
+}
+
 /// Route a menu-click coming out of the system tray onto the workspace.
 /// Runs on the GPUI foreground thread — safe to touch `App` state.
 fn dispatch_tray_command(
@@ -523,8 +574,22 @@ fn main() -> Result<()> {
                         // best-effort, ignore.
                         let _ = state_tx.send(state);
                     }));
+                    // OS notifications on deltas. Notify-rust's .show()
+                    // is a synchronous D-Bus call on Linux; fire off a
+                    // detached thread so a slow notification daemon
+                    // never stalls the workspace.
+                    ws.set_tray_notifier(Box::new(|n| {
+                        std::thread::spawn(move || {
+                            if let Err(e) = show_tray_notification(n) {
+                                tracing::warn!("OS notification failed: {e}");
+                            }
+                        });
+                    }));
                     // Push a first snapshot so the tray doesn't sit at
-                    // "0 / 0 / 0 / 0" until the first mutation.
+                    // "0 / 0 / 0 / 0" until the first mutation. The
+                    // first publish also seeds `last_tray_counters`
+                    // *without* firing notifications, so pre-existing
+                    // unread tickets don't spam the OS on startup.
                     ws.publish_tray_state(cx);
                 });
                 let ws_handle = workspace.downgrade();
