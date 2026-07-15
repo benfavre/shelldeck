@@ -364,6 +364,26 @@ pub struct Workspace {
     /// Same idea for a previewed terminal color theme: the terminal theme name
     /// to restore if the palette is dismissed without committing.
     terminal_theme_before_preview: Option<String>,
+    /// Optional publisher into the system-tray state channel. Set once
+    /// at startup by `main.rs` after `TrayService::new` returns; `None`
+    /// when the tray failed to come up (Flatpak sandbox, missing GTK,
+    /// etc.) so publishes become no-ops rather than crashing.
+    ///
+    /// Uses a boxed `Fn` instead of the raw `std::sync::mpsc::Sender`
+    /// so `shelldeck-ui` stays independent of the `tray-icon` crate —
+    /// the `main.rs` closure keeps the sender internally.
+    tray_state_publisher: Option<Box<dyn Fn(TrayCounters) + Send + Sync>>,
+}
+
+/// Snapshot mirror of `shelldeck::tray::TrayState`, kept in
+/// `shelldeck-ui` to avoid a dependency on the `shelldeck` binary
+/// crate. The `main.rs`-side closure translates one into the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrayCounters {
+    pub active_ssh: usize,
+    pub open_tunnels: usize,
+    pub unread_tickets: usize,
+    pub jean_pending: usize,
 }
 
 impl Workspace {
@@ -726,7 +746,46 @@ impl Workspace {
             _bext_poll: None,
             theme_before_preview: None,
             terminal_theme_before_preview: None,
+            tray_state_publisher: None,
         }
+    }
+
+    /// Wire the tray state publisher after tray init. `main.rs` calls
+    /// this once at startup with a closure that translates
+    /// [`TrayCounters`] into the binary-crate's `tray::TrayState` and
+    /// pushes it into the tray thread. `None` means the tray failed to
+    /// come up — every subsequent `publish_tray_state` becomes a
+    /// no-op.
+    pub fn set_tray_state_publisher(
+        &mut self,
+        publisher: Box<dyn Fn(TrayCounters) + Send + Sync>,
+    ) {
+        self.tray_state_publisher = Some(publisher);
+    }
+
+    /// Compute current tray counters + push into the publisher. Cheap
+    /// enough (four vec-scans + a small mutex read) to call from every
+    /// spot that changes state a user might want to see reflected in
+    /// the tray. The tray thread diffs against its last known state,
+    /// so redundant publishes are silently dropped.
+    pub fn publish_tray_state(&self, cx: &App) {
+        let Some(publisher) = self.tray_state_publisher.as_ref() else {
+            return;
+        };
+        let active_ssh = self
+            .connections
+            .iter()
+            .filter(|c| matches!(c.status, ConnectionStatus::Connected))
+            .count();
+        let open_tunnels = self.active_tunnels.len();
+        let unread_tickets = self.support.read(cx).unread_ticket_count();
+        let jean_pending = self.runtime_awaiting.len();
+        publisher(TrayCounters {
+            active_ssh,
+            open_tunnels,
+            unread_tickets,
+            jean_pending,
+        });
     }
 
     /// Decide whether a window-close request should proceed.
@@ -2383,6 +2442,10 @@ impl Workspace {
                     }
                     cx.notify();
                 });
+                // Support poll changed unread_ticket_count → refresh
+                // tray counters. Fires every 30 s while Support is
+                // active; the tray dedups.
+                ws.publish_tray_state(cx);
             });
         })
         .detach();
@@ -3059,6 +3122,7 @@ impl Workspace {
             self.runtime_instance = None;
             self.runtime_awaiting.clear();
             self.runtime_busy = false;
+            self.publish_tray_state(cx);
             self.show_toast(
                 t!("toast.jean.runtime_off").to_string(),
                 ToastLevel::Info,
@@ -3202,6 +3266,7 @@ impl Workspace {
                 if let Some(job) = tick.awaiting_confirm {
                     if !self.runtime_awaiting.iter().any(|j| j.id == job.id) {
                         self.runtime_awaiting.push(job);
+                        self.publish_tray_state(cx);
                     }
                     self.runtime_busy = true;
                     self.show_toast(
@@ -3236,6 +3301,7 @@ impl Workspace {
         };
         let (workdir, model) = self.runtime_workdir_model();
         self.runtime_awaiting.retain(|j| j.id != job_id);
+        self.publish_tray_state(cx);
         // busy stays true through execution.
         self.push_runtime_status_to_fleet(cx);
         self.show_toast(
@@ -3291,6 +3357,7 @@ impl Workspace {
         };
         self.runtime_awaiting.retain(|j| j.id != job_id);
         self.runtime_busy = false;
+        self.publish_tray_state(cx);
         self.push_runtime_status_to_fleet(cx);
         let jid = job_id;
         cx.background_executor()
@@ -4312,6 +4379,10 @@ impl Workspace {
         self.status_bar.update(cx, |bar, _| {
             bar.set_counts(terminal_count, active_forwards, running_scripts);
         });
+        // Also push the fresh state to the tray. The tray publisher
+        // dedups against its last state, so this is cheap even when
+        // update_dashboard_stats runs on every unrelated tick.
+        self.publish_tray_state(cx);
     }
 
     /// Persist the current set of open terminal tabs so they can be restored on

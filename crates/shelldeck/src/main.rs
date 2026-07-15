@@ -86,6 +86,7 @@ lucide_assets!(
     "server",
     "settings",
     "shield",
+    "shield-check",
     "sticky-note",
     "table",
     "tag",
@@ -464,16 +465,15 @@ fn main() -> Result<()> {
         // sandbox, headless container, minimal WM) the app still runs.
         // Must be constructed on the main thread (GTK requirement on
         // Linux); running inside the GPUI closure satisfies that.
-        let tray_rx = match tray::TrayService::new() {
+        // (cmd_rx, state_tx) — Some when the tray came up, None when
+        // the backend refused. state_tx feeds the live-counter row
+        // updates from the workspace side.
+        let tray_handles = match tray::TrayService::new() {
             Ok(mut svc) => {
-                let rx = svc.take_receiver();
-                // On Linux the TrayIcon lives inside its dedicated
-                // gtk::main thread and does not need to be kept alive
-                // here; on other platforms the icon is leaked inside
-                // `spawn_tray_backend`. Either way, dropping `svc` is
-                // safe — the underlying tray persists.
+                let cmd_rx = svc.take_receiver();
+                let state_tx = svc.take_state_sender();
                 drop(svc);
-                Some(rx)
+                Some((cmd_rx, state_tx))
             }
             Err(e) => {
                 tracing::warn!("system tray unavailable: {e:#}");
@@ -505,11 +505,28 @@ fn main() -> Result<()> {
             // last session was in Support mode).
             workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
 
-            // Route tray menu clicks to workspace actions. The receiver
-            // is drained on a 150 ms foreground poll — snappy enough for
-            // menu clicks, cheap enough to run forever. `try_recv` never
-            // blocks; the loop only exists so we get called at all.
-            if let Some(rx) = tray_rx {
+            // Route tray menu clicks to workspace actions AND publish
+            // workspace counter changes back into the tray menu.
+            if let Some((rx, state_tx)) = tray_handles {
+                // Publisher for the tray counters. Ships a boxed
+                // closure into the workspace so `shelldeck-ui` doesn't
+                // need to know about the tray crate.
+                workspace.update(cx, |ws, cx| {
+                    ws.set_tray_state_publisher(Box::new(move |counters| {
+                        let state = tray::TrayState {
+                            active_ssh: counters.active_ssh,
+                            open_tunnels: counters.open_tunnels,
+                            unread_tickets: counters.unread_tickets,
+                            jean_pending: counters.jean_pending,
+                        };
+                        // Send failure means the tray thread died —
+                        // best-effort, ignore.
+                        let _ = state_tx.send(state);
+                    }));
+                    // Push a first snapshot so the tray doesn't sit at
+                    // "0 / 0 / 0 / 0" until the first mutation.
+                    ws.publish_tray_state(cx);
+                });
                 let ws_handle = workspace.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {

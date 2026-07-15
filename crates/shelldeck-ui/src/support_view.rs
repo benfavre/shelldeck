@@ -760,6 +760,13 @@ impl SupportView {
         ))
     }
 
+    /// Count of tickets with `unread=true`. Used by the system tray
+    /// counter row + the OS notification hook so external surfaces
+    /// don't need to touch the private `tickets` field.
+    pub fn unread_ticket_count(&self) -> usize {
+        self.tickets.iter().filter(|t| t.unread).count()
+    }
+
     pub fn set_list(&mut self, tickets: Vec<SupportTicket>, counts: SupportCounts, me: SupportMe) {
         self.tickets = tickets;
         self.counts = counts;

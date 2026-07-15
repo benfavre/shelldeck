@@ -8,12 +8,15 @@
 //!
 //! # Architecture
 //!
-//! - Menu events fire on the tray thread (a dedicated GTK-owning
-//!   thread on Linux; the platform run-loop elsewhere) and are
-//!   marshalled back to GPUI via a `Sender<TrayCommand>` that the
-//!   workspace consumes on the foreground executor.
-//! - Phase A (this file): static menu — Show window / Command palette /
-//!   Quit. Counters + notifications land in phases B + C.
+//! - Menu clicks fire on the tray thread and are marshalled back to
+//!   GPUI via a `Sender<TrayCommand>` that the workspace consumes on
+//!   the foreground executor.
+//! - Live counter updates flow the other way: the workspace publishes a
+//!   [`TrayState`] snapshot via a `Sender<TrayState>` and the tray
+//!   thread rewrites its counter menu items with the new values.
+//! - Phase A: static menu (Show/Palette/Quit). Phase B (this file):
+//!   live counters. Phase C: OS notifications on deltas. Phase D:
+//!   opt-in per notification category.
 //!
 //! # Linux GTK requirement
 //!
@@ -25,24 +28,27 @@
 //! The fix is a dedicated tray thread that:
 //!
 //! 1. Calls `gtk::init()`.
-//! 2. Builds the `TrayIcon` inside the thread.
-//! 3. Runs `gtk::main()` forever so GTK's event loop keeps dispatching
-//!    menu clicks into the global `MenuEvent` channel.
-//!
-//! The main thread never touches the `TrayIcon` after handoff — the
-//! event router uses the crate's global static receiver, and the
-//! `mpsc::Sender` we install via `set_event_handler` is `Send`.
+//! 2. Builds the `TrayIcon` (and its `MenuItem`s) inside the thread.
+//! 3. Registers a `glib::timeout_add_local` that periodically drains
+//!    the state channel from within GTK's loop — `MenuItem::set_text`
+//!    is `!Send` and can only run on the GTK thread.
+//! 4. Parks on `gtk::main()` so GTK's event loop keeps dispatching
+//!    both menu clicks (via the global `MenuEvent` channel) and our
+//!    state-drain timeout.
 //!
 //! # Platform notes
 //!
 //! - **Linux**: `libayatana-appindicator3` or `libappindicator3`,
 //!   typically pre-installed on GNOME/KDE.
 //! - **macOS**: `NSStatusItem`. Colored icons render as-is; a template
-//!   (monochrome + alpha) is nicer but not shipped yet.
-//! - **Windows**: `Shell_NotifyIcon`. Consumes an ICO.
+//!   (monochrome + alpha) is nicer but not shipped yet. Live counter
+//!   updates are a follow-up (needs a `dispatch_async(main_queue)`
+//!   bridge instead of the GTK timeout).
+//! - **Windows**: `Shell_NotifyIcon`. Live counter updates likewise
+//!   need `PostMessage` glue; not wired yet.
 
 use anyhow::{Context, Result};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 
 /// Actions the tray can request from the running app. The workspace
@@ -59,12 +65,28 @@ pub enum TrayCommand {
     Quit,
 }
 
-/// Public handle over the tray subsystem. Dropping it does **not** tear
-/// down the tray thread — on purpose: the tray must outlive every
-/// caller on the main thread. Callers keep this only to consume the
-/// command receiver.
+/// Snapshot of the counters the tray displays. Published by the
+/// workspace whenever any tracked count changes; the tray thread
+/// diffs against its last known state and only calls `MenuItem::set_text`
+/// on the rows that actually moved, keeping the menu paint quiet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrayState {
+    /// SSH connections in `Connected` status.
+    pub active_ssh: usize,
+    /// Port forwards currently open.
+    pub open_tunnels: usize,
+    /// Support tickets with `unread=true`.
+    pub unread_tickets: usize,
+    /// Jean fleet jobs waiting for user confirmation before running.
+    pub jean_pending: usize,
+}
+
+/// Public handle over the tray subsystem. Callers drop this once
+/// they've taken the receiver + sender — the tray thread owns the
+/// live `TrayIcon` and `MenuItem`s.
 pub struct TrayService {
     rx: Option<Receiver<TrayCommand>>,
+    state_tx: Option<Sender<TrayState>>,
 }
 
 impl TrayService {
@@ -81,16 +103,21 @@ impl TrayService {
     /// than aborting the app.
     pub fn new() -> Result<Self> {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<TrayCommand>();
-        install_menu_router(cmd_tx.clone());
+        install_menu_router(cmd_tx);
+
+        let (state_tx, state_rx) = std::sync::mpsc::channel::<TrayState>();
 
         // Icon bytes are cheap to decode on either thread. We do it
-        // here so a bad PNG surfaces as an early hard error rather than
-        // as a silent tray-thread failure.
+        // here so a bad PNG surfaces as an early hard error rather
+        // than as a silent tray-thread failure.
         let icon = load_icon().context("load tray icon")?;
 
-        spawn_tray_backend(icon)?;
+        spawn_tray_backend(icon, state_rx)?;
 
-        Ok(Self { rx: Some(cmd_rx) })
+        Ok(Self {
+            rx: Some(cmd_rx),
+            state_tx: Some(state_tx),
+        })
     }
 
     /// Hand off the command receiver to the caller. Panics if called
@@ -101,21 +128,31 @@ impl TrayService {
             .take()
             .expect("TrayService::take_receiver called twice")
     }
+
+    /// Hand off the state sender to the caller. The workspace keeps
+    /// this and pushes a fresh [`TrayState`] every time its counters
+    /// change; the tray thread updates its menu labels from within
+    /// the GTK loop.
+    pub fn take_state_sender(&mut self) -> Sender<TrayState> {
+        self.state_tx
+            .take()
+            .expect("TrayService::take_state_sender called twice")
+    }
 }
 
 /// Install the global menu-event handler that routes menu clicks into
 /// our channel. Called once per process; a second call replaces the
 /// first (documented `tray_icon` behaviour).
 ///
-/// The item ids are set inside [`build_menu`] as stable strings so
-/// this handler doesn't need to see the `MenuItem`s directly.
-fn install_menu_router(cmd_tx: std::sync::mpsc::Sender<TrayCommand>) {
+/// The item ids are stable strings set inside [`build_menu`] so this
+/// handler doesn't need to see the `MenuItem`s directly.
+fn install_menu_router(cmd_tx: Sender<TrayCommand>) {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let cmd = match event.id.0.as_str() {
             SHOW_ID => TrayCommand::ShowWindow,
             PALETTE_ID => TrayCommand::OpenPalette,
             QUIT_ID => TrayCommand::Quit,
-            _ => return,
+            _ => return, // counter rows are non-clickable disabled items
         };
         if let Err(e) = cmd_tx.send(cmd) {
             tracing::warn!("tray event dropped (no consumer?): {e}");
@@ -127,24 +164,139 @@ const SHOW_ID: &str = "shelldeck.tray.show";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
 const QUIT_ID: &str = "shelldeck.tray.quit";
 
-/// Build the static Phase A menu. Ids are stable strings so the router
-/// can match them without holding on to `MenuItem` handles.
-fn build_menu() -> Result<Menu> {
+// Ids for the disabled counter rows. They still need ids so the same
+// widget can be found later for `set_text` (though on GTK we hold the
+// MenuItem handles directly).
+const COUNTER_SSH_ID: &str = "shelldeck.tray.counter.ssh";
+const COUNTER_TUNNELS_ID: &str = "shelldeck.tray.counter.tunnels";
+const COUNTER_TICKETS_ID: &str = "shelldeck.tray.counter.tickets";
+const COUNTER_JEAN_ID: &str = "shelldeck.tray.counter.jean";
+
+/// The four counter `MenuItem`s live here, produced by [`build_menu`]
+/// alongside their parent menu. Kept together so the tray-thread's
+/// state-drain closure can reach them via a single move-capture.
+struct CounterItems {
+    ssh: MenuItem,
+    tunnels: MenuItem,
+    tickets: MenuItem,
+    jean: MenuItem,
+}
+
+/// Build the tray menu — click actions on top, live counters in the
+/// middle (disabled = non-clickable placeholders whose text is
+/// rewritten on state updates), Quit at the bottom.
+fn build_menu() -> Result<(Menu, CounterItems)> {
     let menu = Menu::new();
 
     let show_item = MenuItem::with_id(SHOW_ID, "Ouvrir ShellDeck", true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, "Palette de commandes", true, None);
     let quit_item = MenuItem::with_id(QUIT_ID, "Quitter", true, None);
 
+    // Counter rows: `enabled = false` so the tray marks them as
+    // dimmed / unclickable — they exist for information only.
+    let counters = CounterItems {
+        ssh: MenuItem::with_id(
+            COUNTER_SSH_ID,
+            &counter_label_ssh(0),
+            false,
+            None,
+        ),
+        tunnels: MenuItem::with_id(
+            COUNTER_TUNNELS_ID,
+            &counter_label_tunnels(0),
+            false,
+            None,
+        ),
+        tickets: MenuItem::with_id(
+            COUNTER_TICKETS_ID,
+            &counter_label_tickets(0),
+            false,
+            None,
+        ),
+        jean: MenuItem::with_id(
+            COUNTER_JEAN_ID,
+            &counter_label_jean(0),
+            false,
+            None,
+        ),
+    };
+
     menu.append(&show_item).context("append Show item")?;
-    menu.append(&PredefinedMenuItem::separator())
-        .context("append separator")?;
     menu.append(&palette_item).context("append Palette item")?;
     menu.append(&PredefinedMenuItem::separator())
-        .context("append separator 2")?;
+        .context("append separator counters-top")?;
+    menu.append(&counters.ssh).context("append SSH counter")?;
+    menu.append(&counters.tunnels)
+        .context("append tunnels counter")?;
+    menu.append(&counters.tickets)
+        .context("append tickets counter")?;
+    menu.append(&counters.jean).context("append Jean counter")?;
+    menu.append(&PredefinedMenuItem::separator())
+        .context("append separator quit-top")?;
     menu.append(&quit_item).context("append Quit item")?;
 
-    Ok(menu)
+    Ok((menu, counters))
+}
+
+/// Apply a fresh state to the counter items. Only rewrites labels that
+/// actually changed so the tray menu stays quiet under repeated
+/// identical publishes. Must run on the GTK thread on Linux.
+fn apply_state(counters: &CounterItems, prev: &mut TrayState, next: TrayState) {
+    if prev.active_ssh != next.active_ssh {
+        counters.ssh.set_text(&counter_label_ssh(next.active_ssh));
+    }
+    if prev.open_tunnels != next.open_tunnels {
+        counters
+            .tunnels
+            .set_text(&counter_label_tunnels(next.open_tunnels));
+    }
+    if prev.unread_tickets != next.unread_tickets {
+        counters
+            .tickets
+            .set_text(&counter_label_tickets(next.unread_tickets));
+    }
+    if prev.jean_pending != next.jean_pending {
+        counters
+            .jean
+            .set_text(&counter_label_jean(next.jean_pending));
+    }
+    *prev = next;
+}
+
+// Label formatters. French to match the app's default locale; plurals
+// are hand-picked because a single-count row is common enough to be
+// worth the specialisation.
+
+fn counter_label_ssh(n: usize) -> String {
+    match n {
+        0 => "Aucune connexion SSH active".to_string(),
+        1 => "1 connexion SSH active".to_string(),
+        n => format!("{n} connexions SSH actives"),
+    }
+}
+
+fn counter_label_tunnels(n: usize) -> String {
+    match n {
+        0 => "Aucun tunnel ouvert".to_string(),
+        1 => "1 tunnel ouvert".to_string(),
+        n => format!("{n} tunnels ouverts"),
+    }
+}
+
+fn counter_label_tickets(n: usize) -> String {
+    match n {
+        0 => "Aucun ticket non lu".to_string(),
+        1 => "1 ticket non lu".to_string(),
+        n => format!("{n} tickets non lus"),
+    }
+}
+
+fn counter_label_jean(n: usize) -> String {
+    match n {
+        0 => "Aucune validation Jean en attente".to_string(),
+        1 => "1 validation Jean en attente".to_string(),
+        n => format!("{n} validations Jean en attente"),
+    }
 }
 
 /// Load the tray PNG. 32 px is the sweet spot for tray display across
@@ -161,12 +313,14 @@ fn load_icon() -> Result<tray_icon::Icon> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_tray_backend(icon: tray_icon::Icon) -> Result<()> {
-    // A oneshot to synchronise "tray is live" with the main thread.
-    // We wait here so if GTK init or tray build fails, the error
-    // bubbles up before the app opens its main window. If everything
-    // is fine, the thread parks on `gtk::main()` for the rest of the
-    // process's life.
+fn spawn_tray_backend(
+    icon: tray_icon::Icon,
+    state_rx: Receiver<TrayState>,
+) -> Result<()> {
+    // Oneshot to synchronise "tray is live" with the main thread. If
+    // GTK init or tray build fails, the error bubbles up before the
+    // app opens its main window. On success the thread parks on
+    // `gtk::main()` for the rest of the process's life.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
     std::thread::Builder::new()
@@ -177,8 +331,8 @@ fn spawn_tray_backend(icon: tray_icon::Icon) -> Result<()> {
                 return;
             }
 
-            let menu = match build_menu() {
-                Ok(m) => m,
+            let (menu, counters) = match build_menu() {
+                Ok(pair) => pair,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
                     return;
@@ -199,33 +353,49 @@ fn spawn_tray_backend(icon: tray_icon::Icon) -> Result<()> {
                 }
             };
 
-            // Signal success — the main thread can now proceed with
-            // the rest of app startup. The tray is guaranteed alive
-            // (bound to `_tray` in this scope).
+            // Register the state-drain inside GTK's main context.
+            // Runs every 200 ms — snappy enough for the human, cheap
+            // enough to run forever. `timeout_add_local` requires
+            // being called from the main context (we are, we're the
+            // GTK thread).
+            //
+            // The closure owns `counters` (the MenuItem handles),
+            // `prev_state` for diffing, and `state_rx` for draining
+            // publishes from the workspace.
+            let mut prev_state = TrayState::default();
+            gtk::glib::timeout_add_local(
+                std::time::Duration::from_millis(200),
+                move || {
+                    while let Ok(next) = state_rx.try_recv() {
+                        apply_state(&counters, &mut prev_state, next);
+                    }
+                    gtk::glib::ControlFlow::Continue
+                },
+            );
+
             let _ = ready_tx.send(Ok(()));
 
-            // Park on GTK's main loop. This never returns — the tray
-            // is kept up by this loop dispatching menu clicks into the
-            // global `MenuEvent` channel that our router consumes.
+            // Park on GTK's main loop — never returns.
             gtk::main();
         })
         .context("spawn shelldeck-tray thread")?;
 
-    // Block briefly for the tray-thread status. If it fails, we
-    // return the error and the caller can fall back to no-tray mode.
     ready_rx
         .recv()
         .context("tray thread died before signalling")?
 }
 
 #[cfg(not(target_os = "linux"))]
-fn spawn_tray_backend(icon: tray_icon::Icon) -> Result<()> {
+fn spawn_tray_backend(
+    icon: tray_icon::Icon,
+    state_rx: Receiver<TrayState>,
+) -> Result<()> {
     // macOS + Windows: no separate event loop needed, the platform
     // run-loop drives the tray directly. The `TrayIcon` must be built
     // on the main thread but doesn't need to be kept as a named
     // binding — we intentionally leak it so it lives for the whole
     // process (dropping the icon removes the tray entry).
-    let menu = build_menu()?;
+    let (menu, _counters) = build_menu()?;
     let tray = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("ShellDeck")
@@ -233,5 +403,16 @@ fn spawn_tray_backend(icon: tray_icon::Icon) -> Result<()> {
         .build()
         .context("build tray icon")?;
     Box::leak(Box::new(tray));
+
+    // TODO(companion/tray-macos-windows): live-counter updates need a
+    // platform bridge equivalent to the GTK `timeout_add_local` used on
+    // Linux (`dispatch_async(main_queue)` on macOS, `PostMessage` +
+    // WndProc on Windows). Until then, drain the receiver on a
+    // background thread and drop the values so the workspace-side
+    // channel doesn't back up.
+    std::thread::Builder::new()
+        .name("shelldeck-tray-state-drain".to_string())
+        .spawn(move || while state_rx.recv().is_ok() {})
+        .context("spawn tray state-drain thread")?;
     Ok(())
 }
