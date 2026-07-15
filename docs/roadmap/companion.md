@@ -14,7 +14,7 @@
 | # | Item | Statut |
 |---|------|--------|
 | 1 | Autostart au login | ✅ landed 2026-07-15 (`shelldeck-core::config::autostart` + Settings toggle + startup reconcile) |
-| 2 | Tray icon + notifications OS | ⏳ à faire |
+| 2 | Tray icon + notifications OS | ✅ landed 2026-07-15 (4 phases : fondation, compteurs live, notifs OS delta, opt-in Settings + close_to_tray) |
 | 3 | Deep links `shelldeck://` | ⏳ à faire |
 | 4 | Recent activity | ⏳ à faire |
 | 5 | Pin / favoris rapides | ⏸ bloqué sur choix de catégorie |
@@ -39,11 +39,49 @@ raccourcis clavier utiles.
   `onboarding_completed: bool` dans `AppConfig`.
 - Skippable, replayable depuis Settings.
 
-## 2. Tray icon / présence menu-bar
+## 2. Tray icon / présence menu-bar — ✅ livré 2026-07-15
 
-**Objectif :** ShellDeck vit dans le tray/menu-bar en permanence,
-même fenêtre fermée. Statut vivant + actions rapides + notifications
-OS pour les événements qui comptent.
+Livré en 4 sous-commits :
+
+- **Phase A — fondation** : `tray-icon` + `notify-rust` + `image` en
+  workspace deps, `gtk` en Linux-only dep sur `shelldeck`. Nouveau
+  module `crates/shelldeck/src/tray/` avec `TrayService`. Sur Linux
+  un thread dédié `shelldeck-tray` init GTK + park sur `gtk::main()`
+  (adabraka-gpui ne bootstrap pas GTK, appeler le tray depuis la
+  closure GPUI panic sinon). Menu statique : Ouvrir / Palette /
+  Quitter, routing via `MenuEvent::set_event_handler` + mpsc canal.
+- **Phase B — compteurs live** : `TrayState` snapshot + second canal
+  `state_tx`. Sur Linux, `glib::timeout_add_local` inside la GTK
+  loop draine le state et call `MenuItem::set_text` seulement sur
+  les rows qui ont changé (dedup). 4 rows désactivées : SSH actives
+  / tunnels ouverts / tickets non lus / validations Jean en attente.
+  `Workspace::publish_tray_state` appelé depuis `update_dashboard_stats`,
+  `refresh_support`, et chaque mutation de `runtime_awaiting`.
+- **Phase C — notifs OS sur delta** : `TrayNotification` enum
+  (NewTickets/JeanPending/SshDisconnected/FleetJobDone). Delta
+  computed vs `last_tray_counters` (skip first publish pour éviter
+  la salve au démarrage). `main.rs` wrap `notify-rust` sur un thread
+  détaché pour ne jamais bloquer si le daemon de notif traîne.
+- **Phase D — Settings + close_to_tray** : nouvelle section `[tray]`
+  dans `AppConfig` (`close_to_tray` défaut false, 4 opts-out
+  notifications défaut true). 5 nouveaux toggles dans Settings →
+  Général (i18n fr + en). `close_to_tray` intercepte
+  `on_window_should_close` : si tray up + opt in, `window.hide_window()`
+  et retour `false` au lieu de fermer.
+
+**Non fait dans cette livraison** (follow-ups) :
+
+- **macOS/Windows** : sur ces plateformes, le tray se construit
+  (menu statique) mais les compteurs live ne s'updatent pas — il
+  faut un bridge équivalent à `glib::timeout_add_local` (respectivement
+  `dispatch_async(main_queue)` et `PostMessage`+`WndProc`). `TODO` en
+  place dans `spawn_tray_backend`.
+- **Compteurs cliquables** pour focus sur la vue correspondante
+  (SSH → Connexions, tickets → Support, etc.). Facile à ajouter,
+  juste 4 variantes `TrayCommand` supplémentaires.
+- **Icône template** monochrome pour macOS dark/light adaptatif.
+- **Notification riche** avec l'identité de la connexion perdue au
+  lieu du compte agrégé (`SshDisconnected { count }`).
 
 **Statut affiché :**
 

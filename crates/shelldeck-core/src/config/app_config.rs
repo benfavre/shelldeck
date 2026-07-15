@@ -38,6 +38,11 @@ pub struct AppConfig {
     /// token = not connected; `#[serde(default)]` keeps older configs parsing.
     #[serde(default)]
     pub bext_cloud: crate::config::bext_cloud::BextCloudConfig,
+    /// `[tray]` — system-tray preferences (close-to-tray + per-category
+    /// notification opt-in). `#[serde(default)]` keeps older configs
+    /// without a `[tray]` section parsing cleanly.
+    #[serde(default)]
+    pub tray: TrayConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +191,49 @@ pub struct GeneralConfig {
     /// Windows). `false` by default — opt-in.
     #[serde(default)]
     pub autostart: bool,
+}
+
+/// System-tray preferences. Per-category opt-in on the OS notifications
+/// fired from workspace state deltas + `close_to_tray` for
+/// close-button-hides-to-tray behaviour. Every field defaults to a
+/// safe/opt-in setting so a fresh install doesn't burst notifications
+/// but the tray + close-quit still work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrayConfig {
+    /// When true and the tray is up, clicking the window close button
+    /// hides the window instead of quitting. The user can still quit
+    /// from the tray "Quitter" item or Cmd/Ctrl+Q. Defaults to
+    /// **false** — traditional close-quits behaviour — because a
+    /// silent minimize-to-tray surprises users who don't know the tray
+    /// icon is there. Users opt in via Settings.
+    pub close_to_tray: bool,
+    /// Show an OS notification when new unread support tickets arrive.
+    pub notify_new_tickets: bool,
+    /// Show an OS notification when Jean fleet jobs need user
+    /// confirmation.
+    pub notify_jean_pending: bool,
+    /// Show an OS notification when previously-active SSH sessions
+    /// drop.
+    pub notify_ssh_disconnect: bool,
+    /// Show an OS notification when a Fleet job finishes (either
+    /// success or failure). Especially useful in `auto` runtime mode.
+    pub notify_fleet_done: bool,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self {
+            close_to_tray: false,
+            // Notifications on by default — the whole point of Phase C
+            // is to catch state changes while the window is hidden.
+            // Users can mute any category from Settings → Général.
+            notify_new_tickets: true,
+            notify_jean_pending: true,
+            notify_ssh_disconnect: true,
+            notify_fleet_done: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -374,6 +374,70 @@ impl SettingsView {
                     &entity,
                 ),
             ))
+            // System-tray preferences — grouped at the bottom of the
+            // Général tab because they're companion-mode polish (opt-in
+            // per notification category + close-button minimizes to
+            // tray). All persisted via `AppConfig.tray`.
+            .child(Self::render_setting_row(
+                t!("settings.tray.close_to_tray.label").as_ref(),
+                t!("settings.tray.close_to_tray.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-close-to-tray",
+                    self.config.tray.close_to_tray,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.close_to_tray = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_new_tickets.label").as_ref(),
+                t!("settings.tray.notify_new_tickets.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-new-tickets",
+                    self.config.tray.notify_new_tickets,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_new_tickets = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_jean_pending.label").as_ref(),
+                t!("settings.tray.notify_jean_pending.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-jean-pending",
+                    self.config.tray.notify_jean_pending,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_jean_pending = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_ssh_disconnect.label").as_ref(),
+                t!("settings.tray.notify_ssh_disconnect.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-ssh-disconnect",
+                    self.config.tray.notify_ssh_disconnect,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_ssh_disconnect = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_fleet_done.label").as_ref(),
+                t!("settings.tray.notify_fleet_done.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-fleet-done",
+                    self.config.tray.notify_fleet_done,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_fleet_done = value;
+                    },
+                ),
+            ))
             .child(self.render_cloud_sync_settings(cx))
     }
 

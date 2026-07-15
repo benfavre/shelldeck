@@ -611,11 +611,19 @@ fn main() -> Result<()> {
                 .detach();
             }
 
-            // Intercept window close to honor the `confirm_before_close` setting.
+            // Intercept window close to honor the `confirm_before_close`
+            // and `close_to_tray` settings. `close_to_tray` wins when
+            // enabled + tray up: hide the window and return false so
+            // the app stays alive in the tray.
             {
                 let w = workspace.downgrade();
-                window.on_window_should_close(cx, move |_window, cx| {
+                window.on_window_should_close(cx, move |window, cx| {
                     if let Some(ws) = w.upgrade() {
+                        let hide = ws.read(cx).should_hide_to_tray();
+                        if hide {
+                            window.hide_window();
+                            return false;
+                        }
                         ws.update(cx, |ws, cx| ws.confirm_window_close(cx))
                     } else {
                         true

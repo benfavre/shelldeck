@@ -845,19 +845,21 @@ impl Workspace {
         };
 
         // Delta notifications — skipped entirely on the first publish
-        // so the seed value doesn't fire a startup burst.
+        // so the seed value doesn't fire a startup burst. Each category
+        // is opt-out via `AppConfig.tray.notify_*` (Settings → Général).
         if let Some(prev) = self.last_tray_counters {
-            if counters.unread_tickets > prev.unread_tickets {
+            let cfg = &self.app_config.tray;
+            if cfg.notify_new_tickets && counters.unread_tickets > prev.unread_tickets {
                 self.emit_tray_notification(TrayNotification::NewTickets {
                     count: counters.unread_tickets - prev.unread_tickets,
                 });
             }
-            if counters.jean_pending > prev.jean_pending {
+            if cfg.notify_jean_pending && counters.jean_pending > prev.jean_pending {
                 self.emit_tray_notification(TrayNotification::JeanPending {
                     count: counters.jean_pending - prev.jean_pending,
                 });
             }
-            if counters.active_ssh < prev.active_ssh {
+            if cfg.notify_ssh_disconnect && counters.active_ssh < prev.active_ssh {
                 self.emit_tray_notification(TrayNotification::SshDisconnected {
                     count: prev.active_ssh - counters.active_ssh,
                 });
@@ -875,6 +877,15 @@ impl Workspace {
     /// When `confirm_before_close` is enabled and there are active terminal
     /// sessions or running tunnels, the first close attempt is intercepted: we
     /// warn the user and require a second close to confirm (matching the
+    /// Should the close button hide the window to the tray instead of
+    /// quitting? True only when the user opted in via Settings **and**
+    /// the tray is actually up (no publisher = no tray, so hiding
+    /// would strand the app invisible). `main.rs` checks this before
+    /// `confirm_window_close` and calls `window.hide_window()` if true.
+    pub fn should_hide_to_tray(&self) -> bool {
+        self.app_config.tray.close_to_tray && self.tray_state_publisher.is_some()
+    }
+
     /// app's existing two-step "click again to confirm" pattern). Returns
     /// `true` to allow the window to close, `false` to cancel.
     pub fn confirm_window_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1180,6 +1191,7 @@ impl Workspace {
                 self.app_config.general = config.general.clone();
                 self.app_config.terminal = config.terminal.clone();
                 self.app_config.editor = config.editor.clone();
+                self.app_config.tray = config.tray.clone();
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
@@ -3427,8 +3439,11 @@ impl Workspace {
                 }
                 // Notify the OS whether the job succeeded — the user
                 // may have switched away from the ShellDeck window
-                // while the executor was running.
-                ws.emit_tray_notification(TrayNotification::FleetJobDone { success });
+                // while the executor was running. Muted from Settings
+                // → Général via `AppConfig.tray.notify_fleet_done`.
+                if ws.app_config.tray.notify_fleet_done {
+                    ws.emit_tray_notification(TrayNotification::FleetJobDone { success });
+                }
                 ws.runtime_busy = false; // free for the next claim
                 ws.push_runtime_status_to_fleet(cx);
                 ws.refresh_fleet_view(cx);
