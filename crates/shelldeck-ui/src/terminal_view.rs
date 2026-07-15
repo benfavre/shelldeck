@@ -1906,12 +1906,24 @@ impl TerminalView {
                         // Suppress repaint while synchronized output is active
                         // (batching updates to prevent flicker). When the app turns
                         // sync off, dirty is set and any_sync cleared.
-                        if any_dirty && !any_sync {
+                        let should_refresh = any_dirty && !any_sync;
+                        if should_refresh {
                             cx.notify();
                         }
+                        should_refresh
                     });
-                    if result.is_err() {
-                        break;
+                    match result {
+                        Ok(true) => {
+                            // The grid is mutated by the PTY/SSH reader outside
+                            // GPUI's entity update cycle. Explicitly schedule a
+                            // frame as well as invalidating this entity; otherwise
+                            // some platforms only paint after the next input event.
+                            if cx.refresh().is_err() {
+                                break;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(_) => break,
                     }
                 }
             },
