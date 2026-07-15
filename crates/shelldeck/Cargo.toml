@@ -25,3 +25,9 @@ anyhow = { workspace = true }
 directories = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
+tray-icon = { workspace = true }
+notify-rust = { workspace = true }
+image = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { workspace = true }

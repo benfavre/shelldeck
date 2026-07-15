@@ -4488,6 +4488,17 @@ impl Workspace {
         });
     }
 
+    /// Public entry point for external callers (system tray, IPC deep
+    /// links, remote triggers) to toggle the command palette without
+    /// touching the private `command_palette` field.
+    pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette.update(cx, |palette, cx| {
+            palette.toggle(window, cx);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         self.sidebar.update(cx, |sidebar, _cx| {

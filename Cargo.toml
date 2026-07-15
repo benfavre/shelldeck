@@ -53,6 +53,14 @@ directories = "6"
 notify = "7"
 keyring = "3"
 auto-launch = "0.5"
+tray-icon = "0.22"
+notify-rust = "4"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+# GTK — Linux only; the tray-icon crate depends on libappindicator which
+# itself sits on GTK. adabraka-gpui uses Wayland/X11 natively without
+# initialising GTK, so we init + run gtk::main() on a dedicated thread
+# (see crates/shelldeck/src/tray/mod.rs).
+gtk = "0.18"
 parking_lot = "0.12"
 smallvec = "1.13"
 once_cell = "1.19"

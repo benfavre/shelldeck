@@ -1,4 +1,5 @@
 mod actions;
+mod tray;
 
 use adabraka_ui::prelude::*;
 use anyhow::Result;
@@ -64,6 +65,7 @@ lucide_assets!(
     "filter",
     "flag",
     "globe",
+    "grid-2x2",
     "inbox",
     "info",
     "key",
@@ -85,6 +87,7 @@ lucide_assets!(
     "settings",
     "shield",
     "sticky-note",
+    "table",
     "tag",
     "terminal",
     "trash-2",
@@ -282,6 +285,41 @@ impl AssetSource for Assets {
     }
 }
 
+/// Route a menu-click coming out of the system tray onto the workspace.
+/// Runs on the GPUI foreground thread — safe to touch `App` state.
+fn dispatch_tray_command(
+    cmd: tray::TrayCommand,
+    ws: gpui::WeakEntity<Workspace>,
+    window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    use tray::TrayCommand;
+    match cmd {
+        TrayCommand::ShowWindow => {
+            // Restore + focus the main window (or a no-op if already
+            // frontmost). `activate_window` is the portable way to say
+            // "give this window the OS focus".
+            let _ = window.update(cx, |_, window, _cx| {
+                window.activate_window();
+            });
+        }
+        TrayCommand::OpenPalette => {
+            if let Some(ws) = ws.upgrade() {
+                let _ = window.update(cx, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.toggle_command_palette(window, cx));
+                    window.activate_window();
+                });
+            }
+        }
+        TrayCommand::Quit => {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |ws, cx| ws.shutdown(cx));
+            }
+            cx.quit();
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -420,6 +458,29 @@ fn main() -> Result<()> {
             ..Default::default()
         };
 
+        // System tray. Ships the app's "companion" presence: menu with
+        // Show / Palette / Quit, live counters (phase B), OS notifs
+        // (phase C). Best-effort — if the tray backend refuses (Flatpak
+        // sandbox, headless container, minimal WM) the app still runs.
+        // Must be constructed on the main thread (GTK requirement on
+        // Linux); running inside the GPUI closure satisfies that.
+        let tray_rx = match tray::TrayService::new() {
+            Ok(mut svc) => {
+                let rx = svc.take_receiver();
+                // On Linux the TrayIcon lives inside its dedicated
+                // gtk::main thread and does not need to be kept alive
+                // here; on other platforms the icon is leaked inside
+                // `spawn_tray_backend`. Either way, dropping `svc` is
+                // safe — the underlying tray persists.
+                drop(svc);
+                Some(rx)
+            }
+            Err(e) => {
+                tracing::warn!("system tray unavailable: {e:#}");
+                None
+            }
+        };
+
         match cx.open_window(window_options, |window, cx| {
             let workspace = cx.new(|cx| {
                 Workspace::new(
@@ -443,6 +504,30 @@ fn main() -> Result<()> {
             // Activate the persisted app mode (loads Support data + poll if the
             // last session was in Support mode).
             workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
+
+            // Route tray menu clicks to workspace actions. The receiver
+            // is drained on a 150 ms foreground poll — snappy enough for
+            // menu clicks, cheap enough to run forever. `try_recv` never
+            // blocks; the loop only exists so we get called at all.
+            if let Some(rx) = tray_rx {
+                let ws_handle = workspace.downgrade();
+                let window_handle = window.window_handle();
+                cx.spawn(async move |cx| {
+                    use std::time::Duration;
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(150))
+                            .await;
+                        while let Ok(cmd) = rx.try_recv() {
+                            let ws_handle = ws_handle.clone();
+                            let _ = cx.update(|cx| {
+                                dispatch_tray_command(cmd, ws_handle, window_handle, cx);
+                            });
+                        }
+                    }
+                })
+                .detach();
+            }
 
             // Intercept window close to honor the `confirm_before_close` setting.
             {
