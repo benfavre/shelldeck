@@ -209,6 +209,13 @@ parallel `cargo test`.
 | SDTEST-1333 | `terminal_view.rs::command_discovery_searches_every_path_entry` | SDUC-410 | Green | Uses isolated temporary PATH entries; never depends on the developer machine's installed CLIs. |
 | SDTEST-1334 | `terminal_view.rs::command_discovery_honors_executable_extensions` | SDUC-410 | Green | Pins PATHEXT-style suffix lookup used by Windows npm-installed CLIs. |
 
+## 8b. `shelldeck/src/tray/mod.rs` — pinned menu routing
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1336 | `tray::tests::pinned_menu_id_routes_to_connection` | SDUC-412 | Green | A tray id containing a valid UUID routes to that exact pinned connection. |
+| SDTEST-1337 | `tray::tests::unknown_or_malformed_menu_id_is_ignored` | SDUC-412 | Green | Counter rows, unknown actions and malformed UUIDs cannot trigger a connection. |
+
 ---
 
 ## 9. Cross-platform coverage (referenced from everywhere)

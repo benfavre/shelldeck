@@ -6925,6 +6925,7 @@ dependencies = [
  "parking_lot",
  "ropey",
  "rust-i18n",
+ "serde_json",
  "shelldeck-core",
  "shelldeck-ssh",
  "shelldeck-terminal",

@@ -1245,6 +1245,45 @@ rogue local process cannot inject links.
 
 ---
 
+## 20. Recent activity
+
+### SDUC-408 — Durable local activity log
+
+ShellDeck records user-visible activity to a local JSONL log
+(`activity.jsonl`) and reloads the newest entries at startup. The log
+captures the activity kind, timestamp, message, optional target/action, and
+optional detail (for example script exit code). Reads return newest-first,
+respect the requested limit, and skip malformed lines so one bad append does
+not prevent the app from opening.
+
+### SDUC-409 — Recent activity surface
+
+Dev mode exposes an "Activité" surface with search, kind filters, relative
+timestamps, and contextual open actions. Entries can route back to the
+matching surface when enough target data is present: terminal, connection,
+script, tunnel, support ticket, hosted request, site, Jean, Fleet, or bext.
+
+---
+
+## 21. Pinned connections
+
+### SDUC-411 — Pinned connections persist and remain connection-scoped
+
+Only connections can be pinned. Their UUIDs and order round-trip through
+`AppConfig.pinned_connections`; configurations written before the feature
+default to an empty list. The sidebar shows matching pins in a dedicated
+top section and exposes pin/unpin as a localized row hover action. Deleting a
+connection also removes its stale pin.
+
+### SDUC-412 — Tray quick access connects the selected pinned host
+
+The Linux tray submenu mirrors the current persisted pins. Each menu id embeds
+the connection UUID, so clicks route to that exact host even after the list is
+updated. Selecting an entry restores ShellDeck and starts the same SSH flow as
+the sidebar connection action. Unknown and malformed menu ids are ignored.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1253,8 +1292,14 @@ rogue local process cannot inject links.
 
 ## Change log
 
+- **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
+  SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
+  compatibility and tray menu-id dispatch.
 - **2026-07-15** — Added SDUC-410 dynamic terminal launchers: default
   shell always visible, Claude Code / Codex gated by executable discovery.
+- **2026-07-15** — Added § 20 Recent activity (SDUC-408 durable JSONL
+  store, SDUC-409 Dev surface with filters/search/open actions). Core
+  tests SDTEST-1330..1332 cover the durable file contract.
 - **2026-07-15** — Added § 19 deep links (SDUC-406 parse grammar,
   SDUC-407 single-instance + hand-off) for the `shelldeck://` companion
   feature. Tests SDTEST-1320..1323 in `config/{deep_link,single_instance}.rs`.

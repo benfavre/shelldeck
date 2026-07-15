@@ -2,6 +2,7 @@ use crate::error::{Result, ShellDeckError};
 use tracing::debug;
 
 const SERVICE_NAME: &str = "shelldeck-ssh";
+const AI_SERVICE_NAME: &str = "shelldeck-ai";
 
 /// Build a keyring entry key from host and user.
 fn entry_key(host: &str, user: &str) -> String {
@@ -65,6 +66,46 @@ pub fn delete_password(host: &str, user: &str) -> Result<()> {
 /// Build a keyring entry key for a key file passphrase.
 fn passphrase_entry_key(key_path: &str) -> String {
     format!("passphrase:{}", key_path)
+}
+
+fn ai_provider_key(provider: &str) -> String {
+    format!("provider:{}", provider.trim().to_ascii_lowercase())
+}
+
+/// Store an AI provider API key in the OS keychain. Provider secrets are
+/// intentionally kept out of `AppConfig` and never serialized to TOML.
+pub fn store_ai_api_key(provider: &str, api_key: &str) -> Result<()> {
+    let key = ai_provider_key(provider);
+    let entry = keyring::Entry::new(AI_SERVICE_NAME, &key)
+        .map_err(|e| ShellDeckError::Keychain(format!("Failed to create AI key entry: {e}")))?;
+    entry
+        .set_password(api_key)
+        .map_err(|e| ShellDeckError::Keychain(format!("Failed to store AI API key: {e}")))
+}
+
+pub fn get_ai_api_key(provider: &str) -> Result<Option<String>> {
+    let key = ai_provider_key(provider);
+    let entry = keyring::Entry::new(AI_SERVICE_NAME, &key)
+        .map_err(|e| ShellDeckError::Keychain(format!("Failed to create AI key entry: {e}")))?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(ShellDeckError::Keychain(format!(
+            "Failed to retrieve AI API key: {e}"
+        ))),
+    }
+}
+
+pub fn delete_ai_api_key(provider: &str) -> Result<()> {
+    let key = ai_provider_key(provider);
+    let entry = keyring::Entry::new(AI_SERVICE_NAME, &key)
+        .map_err(|e| ShellDeckError::Keychain(format!("Failed to create AI key entry: {e}")))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(ShellDeckError::Keychain(format!(
+            "Failed to delete AI API key: {e}"
+        ))),
+    }
 }
 
 /// Store a private key passphrase in the OS keychain, keyed by the key file path.
@@ -146,6 +187,13 @@ mod tests {
             passphrase_entry_key("/home/alice/.ssh/id_ed25519"),
             "passphrase:/home/alice/.ssh/id_ed25519",
         );
+    }
+
+    #[test]
+    fn ai_provider_keys_are_normalized_and_namespaced() {
+        assert_eq!(ai_provider_key(" OpenAI "), "provider:openai");
+        assert_eq!(ai_provider_key("ANTHROPIC"), "provider:anthropic");
+        assert_ne!(ai_provider_key("openai"), entry_key("openai", "provider"));
     }
 
     // ── SDTEST-120/123 — live keychain smoke (opt-in) ──────────────

@@ -2,6 +2,7 @@ use crate::scale::px;
 use adabraka_ui::display::card::Card;
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::activity::{ActivityEntry, ActivityKind};
 use uuid::Uuid;
 
 use crate::icons::lucide_icon;
@@ -17,29 +18,12 @@ pub enum DashboardEvent {
 
 impl EventEmitter<DashboardEvent> for DashboardView {}
 
-/// A single activity event for the feed
-#[derive(Debug, Clone)]
-pub struct ActivityEvent {
-    pub icon: &'static str,
-    pub message: String,
-    pub timestamp: String,
-    pub event_type: ActivityType,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ActivityType {
-    Connection,
-    Forward,
-    Script,
-    Error,
-}
-
 pub struct DashboardView {
     pub active_connections: usize,
     pub active_terminals: usize,
     pub running_scripts: usize,
     pub active_forwards: usize,
-    pub recent_activity: Vec<ActivityEvent>,
+    pub recent_activity: Vec<ActivityEntry>,
     pub favorite_hosts: Vec<(Uuid, String, String, bool)>,
 }
 
@@ -97,14 +81,23 @@ impl DashboardView {
             .min_w(px(180.0))
     }
 
-    fn render_activity_item(event: &ActivityEvent) -> impl IntoElement {
-        let color = match event.event_type {
-            ActivityType::Connection => ShellDeckColors::success(),
-            ActivityType::Forward => ShellDeckColors::primary(),
-            ActivityType::Script => ShellDeckColors::warning(),
-            ActivityType::Error => ShellDeckColors::error(),
-        };
+    fn activity_color(kind: ActivityKind) -> Hsla {
+        match kind {
+            ActivityKind::Terminal | ActivityKind::Connection => ShellDeckColors::success(),
+            ActivityKind::Forward | ActivityKind::Site | ActivityKind::Bext => {
+                ShellDeckColors::primary()
+            }
+            ActivityKind::Script | ActivityKind::Jean | ActivityKind::Fleet => {
+                ShellDeckColors::warning()
+            }
+            ActivityKind::Support | ActivityKind::Issue => ShellDeckColors::primary_hover(),
+            ActivityKind::Error => ShellDeckColors::error(),
+        }
+    }
 
+    fn render_activity_item(event: &ActivityEntry) -> impl IntoElement {
+        let color = Self::activity_color(event.kind);
+        let at_ms = event.at.timestamp_millis() as f64;
         div()
             .flex()
             .items_center()
@@ -137,7 +130,7 @@ impl DashboardView {
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
                     .flex_shrink_0()
-                    .child(event.timestamp.clone()),
+                    .child(crate::i18n::rel_time(at_ms)),
             )
     }
 

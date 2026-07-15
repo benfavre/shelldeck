@@ -1,11 +1,11 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus};
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::tunnel::TunnelHandle;
 use uuid::Uuid;
 
-use crate::dashboard::{ActivityEvent, ActivityType};
 use crate::port_forward_form::{PortForwardForm, PortForwardFormEvent};
 use crate::port_forward_view::PortForwardEvent;
 use crate::t;
@@ -39,7 +39,7 @@ impl Workspace {
                         tracing::error!("Port forward not found: {}", forward_id);
                         self.add_activity(
                             t!("activity.forward_not_found", id = forward_id).to_string(),
-                            ActivityType::Error,
+                            ActivityKind::Error,
                             cx,
                         );
                         self.show_toast(
@@ -78,7 +78,7 @@ impl Workspace {
                         });
                         self.add_activity(
                             t!("activity.forward_connection_not_found").to_string(),
-                            ActivityType::Error,
+                            ActivityKind::Error,
                             cx,
                         );
                         self.show_toast(
@@ -103,9 +103,13 @@ impl Workspace {
                     }
                 });
 
-                self.add_activity(
-                    t!("activity.forward_starting", label = label.as_str()).to_string(),
-                    ActivityType::Forward,
+                self.add_activity_entry(
+                    ActivityEntry::new(
+                        ActivityKind::Forward,
+                        t!("activity.forward_starting", label = label.as_str()).to_string(),
+                    )
+                    .with_target(forward_id.to_string(), label.clone())
+                    .with_action(ActivityAction::OpenForward),
                     cx,
                 );
                 self.show_toast(
@@ -251,7 +255,7 @@ impl Workspace {
                         });
                         self.add_activity(
                             t!("activity.forward_start_failed", label = label.as_str()).to_string(),
-                            ActivityType::Error,
+                            ActivityKind::Error,
                             cx,
                         );
                         self.show_toast(
@@ -267,7 +271,6 @@ impl Workspace {
                 // Now wait for the result from the background thread.
                 // We use cx.spawn to avoid blocking the UI thread.
                 let pf_handle = self.port_forwards.downgrade();
-                let dashboard_handle = self.dashboard.downgrade();
                 let weak_self = cx.entity().downgrade();
                 let label_for_activity = label.clone();
 
@@ -308,13 +311,17 @@ impl Workspace {
                                     }
                                 });
 
-                                ws.add_activity(
-                                    t!(
-                                        "activity.forward_active",
-                                        label = label_for_activity.as_str()
+                                ws.add_activity_entry(
+                                    ActivityEntry::new(
+                                        ActivityKind::Forward,
+                                        t!(
+                                            "activity.forward_active",
+                                            label = label_for_activity.as_str()
+                                        )
+                                        .to_string(),
                                     )
-                                    .to_string(),
-                                    ActivityType::Forward,
+                                    .with_target(forward_id.to_string(), label_for_activity.clone())
+                                    .with_action(ActivityAction::OpenForward),
                                     cx,
                                 );
                                 ws.show_toast(
@@ -342,28 +349,13 @@ impl Workspace {
                                 cx.notify();
                             });
 
-                            let _ = dashboard_handle.update(cx, |dashboard, _| {
-                                dashboard.recent_activity.insert(
-                                    0,
-                                    ActivityEvent {
-                                        icon: "alert",
-                                        message: t!(
-                                            "activity.forward_failed",
-                                            error = err_msg.as_str()
-                                        )
-                                        .to_string(),
-                                        timestamp: chrono::Local::now()
-                                            .format("%H:%M:%S")
-                                            .to_string(),
-                                        event_type: ActivityType::Error,
-                                    },
-                                );
-                                if dashboard.recent_activity.len() > 50 {
-                                    dashboard.recent_activity.truncate(50);
-                                }
-                            });
-
                             let _ = weak_self.update(cx, |ws, cx| {
+                                ws.add_activity(
+                                    t!("activity.forward_failed", error = err_msg.as_str())
+                                        .to_string(),
+                                    ActivityKind::Error,
+                                    cx,
+                                );
                                 ws.show_toast(
                                     t!("toast.forward.failed", error = err_msg.as_str())
                                         .to_string(),
@@ -383,28 +375,16 @@ impl Workspace {
                                 cx.notify();
                             });
 
-                            let _ = dashboard_handle.update(cx, |dashboard, _| {
-                                dashboard.recent_activity.insert(
-                                    0,
-                                    ActivityEvent {
-                                        icon: "alert",
-                                        message: t!(
-                                            "activity.forward_timeout",
-                                            label = label_for_activity.as_str()
-                                        )
-                                        .to_string(),
-                                        timestamp: chrono::Local::now()
-                                            .format("%H:%M:%S")
-                                            .to_string(),
-                                        event_type: ActivityType::Error,
-                                    },
-                                );
-                                if dashboard.recent_activity.len() > 50 {
-                                    dashboard.recent_activity.truncate(50);
-                                }
-                            });
-
                             let _ = weak_self.update(cx, |ws, cx| {
+                                ws.add_activity(
+                                    t!(
+                                        "activity.forward_timeout",
+                                        label = label_for_activity.as_str()
+                                    )
+                                    .to_string(),
+                                    ActivityKind::Error,
+                                    cx,
+                                );
                                 ws.show_toast(
                                     t!(
                                         "toast.forward.timeout",
@@ -455,9 +435,13 @@ impl Workspace {
                             .unwrap_or_else(|| format!("forward {}", forward_id))
                     };
 
-                    self.add_activity(
-                        t!("activity.forward_stopped", label = label.as_str()).to_string(),
-                        ActivityType::Forward,
+                    self.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Forward,
+                            t!("activity.forward_stopped", label = label.as_str()).to_string(),
+                        )
+                        .with_target(forward_id.to_string(), label.clone())
+                        .with_action(ActivityAction::OpenForward),
                         cx,
                     );
                     self.show_toast(
@@ -479,7 +463,7 @@ impl Workspace {
 
                     self.add_activity(
                         t!("activity.forward_stop_no_active").to_string(),
-                        ActivityType::Forward,
+                        ActivityKind::Forward,
                         cx,
                     );
                 }
@@ -535,13 +519,14 @@ impl Workspace {
                     this.port_forwards.update(cx, |pf, _| {
                         pf.forwards.push(forward.clone());
                     });
-                    this.add_activity(
-                        t!(
-                            "activity.forward_added",
-                            desc = forward.description().to_string()
+                    let desc = forward.description();
+                    this.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Forward,
+                            t!("activity.forward_added", desc = desc.as_str()).to_string(),
                         )
-                        .to_string(),
-                        ActivityType::Forward,
+                        .with_target(forward.id.to_string(), desc)
+                        .with_action(ActivityAction::OpenForward),
                         cx,
                     );
                     this.show_toast(
@@ -622,13 +607,14 @@ impl Workspace {
                             *existing = forward.clone();
                         }
                     });
-                    this.add_activity(
-                        t!(
-                            "activity.forward_updated",
-                            desc = forward.description().to_string()
+                    let desc = forward.description();
+                    this.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Forward,
+                            t!("activity.forward_updated", desc = desc.as_str()).to_string(),
                         )
-                        .to_string(),
-                        ActivityType::Forward,
+                        .with_target(forward.id.to_string(), desc)
+                        .with_action(ActivityAction::OpenForward),
                         cx,
                     );
                     this.show_toast(

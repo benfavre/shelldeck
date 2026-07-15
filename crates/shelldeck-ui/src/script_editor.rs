@@ -354,6 +354,21 @@ impl ScriptEditorView {
             .and_then(|id| self.scripts.iter().find(|s| s.id == id))
     }
 
+    pub fn ai_context_data(&self) -> serde_json::Value {
+        let selected = self.selected();
+        serde_json::json!({
+            "script": selected.map(|script| serde_json::json!({
+                "name": script.name,
+                "description": script.description,
+                "language": script.language.label(),
+                "body": script.body,
+                "working_dir": script.working_dir,
+                "tags": script.tags,
+            })),
+            "recent_output": self.execution_output.iter().rev().take(80).rev().cloned().collect::<Vec<_>>(),
+        })
+    }
+
     fn render_language_badge(lang: &ScriptLanguage) -> Div {
         let (r, g, b) = lang.badge_color();
         let color = gpui::hsla(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0);

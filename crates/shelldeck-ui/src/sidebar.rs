@@ -126,6 +126,7 @@ pub enum SidebarSection {
     PortForwards,
     ServerSync,
     Sites,
+    Recent,
     FileEditor,
     JeanConsole,
     Fleet,
@@ -143,6 +144,7 @@ impl SidebarSection {
             SidebarSection::PortForwards => "arrow-left-right",
             SidebarSection::ServerSync => "refresh-cw",
             SidebarSection::Sites => "globe",
+            SidebarSection::Recent => "activity",
             SidebarSection::FileEditor => "pencil",
             SidebarSection::JeanConsole => "cpu",
             SidebarSection::Fleet => "box",
@@ -159,6 +161,7 @@ impl SidebarSection {
             SidebarSection::PortForwards => t!("sidebar.nav.port_forwards"),
             SidebarSection::ServerSync => t!("sidebar.nav.server_sync"),
             SidebarSection::Sites => t!("sidebar.nav.sites"),
+            SidebarSection::Recent => t!("sidebar.nav.recent"),
             SidebarSection::FileEditor => t!("sidebar.nav.editor"),
             SidebarSection::JeanConsole => t!("sidebar.nav.jean"),
             SidebarSection::Fleet => t!("sidebar.nav.fleet"),
@@ -308,6 +311,10 @@ impl SidebarView {
 
     pub fn set_terminal_tab_count(&mut self, count: usize) {
         self.terminal_tab_count = count;
+    }
+
+    pub fn set_active_section(&mut self, section: SidebarSection) {
+        self.active_section = section;
     }
 
     pub fn toggle_collapsed(&mut self) {
@@ -767,6 +774,7 @@ impl Render for SidebarView {
             .child(self.render_nav_item(SidebarSection::PortForwards, None, cx))
             .child(self.render_nav_item(SidebarSection::ServerSync, None, cx))
             .child(self.render_nav_item(SidebarSection::Sites, None, cx))
+            .child(self.render_nav_item(SidebarSection::Recent, None, cx))
             .child(self.render_nav_item(SidebarSection::FileEditor, None, cx));
         if self.jean_available {
             nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, None, cx));

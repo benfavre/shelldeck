@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
 use shelldeck_core::models::script_runner::build_command;
@@ -7,7 +8,6 @@ use shelldeck_core::models::templates::all_templates;
 use shelldeck_ssh::client::SshClient;
 use uuid::Uuid;
 
-use crate::dashboard::ActivityType;
 use crate::script_editor::ScriptEvent;
 use crate::script_form::{ScriptForm, ScriptFormEvent};
 use crate::t;
@@ -86,9 +86,13 @@ impl Workspace {
                     let _ = self.store.update_script(s);
                 }
 
-                self.add_activity(
-                    t!("activity.script.running", name = script_name.as_str()).to_string(),
-                    ActivityType::Script,
+                self.add_activity_entry(
+                    ActivityEntry::new(
+                        ActivityKind::Script,
+                        t!("activity.script.running", name = script_name.as_str()).to_string(),
+                    )
+                    .with_target(script_id.to_string(), script_name.clone())
+                    .with_action(ActivityAction::OpenScript),
                     cx,
                 );
                 self.show_toast(
@@ -224,9 +228,13 @@ impl Workspace {
                         *existing = script.clone();
                     }
                 });
-                self.add_activity(
-                    t!("activity.script.updated", name = script.name.as_str()).to_string(),
-                    ActivityType::Script,
+                self.add_activity_entry(
+                    ActivityEntry::new(
+                        ActivityKind::Script,
+                        t!("activity.script.updated", name = script.name.as_str()).to_string(),
+                    )
+                    .with_target(script.id.to_string(), script.name.clone())
+                    .with_action(ActivityAction::OpenScript),
                     cx,
                 );
                 self.show_toast(
@@ -524,6 +532,40 @@ impl Workspace {
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
                             ws.update_dashboard_stats(cx);
+                            let code = exit_code.unwrap_or(-1);
+                            let (activity_message, level) = match exit_code {
+                                Some(0) => (
+                                    t!(
+                                        "activity.script.completed",
+                                        name = script_name_done.as_str()
+                                    )
+                                    .to_string(),
+                                    ToastLevel::Success,
+                                ),
+                                Some(code) => (
+                                    t!(
+                                        "activity.script.exited",
+                                        name = script_name_done.as_str(),
+                                        code = code
+                                    )
+                                    .to_string(),
+                                    ToastLevel::Error,
+                                ),
+                                None => (
+                                    t!("activity.script.failed", name = script_name_done.as_str())
+                                        .to_string(),
+                                    ToastLevel::Error,
+                                ),
+                            };
+                            ws.add_activity_entry(
+                                ActivityEntry::new(ActivityKind::Script, activity_message)
+                                    .with_target(script_id.to_string(), script_name_done.clone())
+                                    .with_detail(
+                                        t!("activity.script.exit_code", code = code).to_string(),
+                                    )
+                                    .with_action(ActivityAction::OpenScript),
+                                cx,
+                            );
                             match exit_code {
                                 Some(0) => {
                                     ws.show_toast(
@@ -532,7 +574,7 @@ impl Workspace {
                                             name = script_name_done.as_str()
                                         )
                                         .to_string(),
-                                        ToastLevel::Success,
+                                        level,
                                         cx,
                                     );
                                 }
@@ -544,7 +586,7 @@ impl Workspace {
                                             code = code
                                         )
                                         .to_string(),
-                                        ToastLevel::Error,
+                                        level,
                                         cx,
                                     );
                                 }
@@ -555,7 +597,7 @@ impl Workspace {
                                             name = script_name_done.as_str()
                                         )
                                         .to_string(),
-                                        ToastLevel::Error,
+                                        level,
                                         cx,
                                     );
                                 }
@@ -731,6 +773,31 @@ impl Workspace {
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
                             ws.update_dashboard_stats(cx);
+                            let code = exit_code.unwrap_or(-1);
+                            let activity_message = match exit_code {
+                                Some(0) | None => t!(
+                                    "activity.script.completed_on",
+                                    name = script_name_done.as_str(),
+                                    host = host_display.as_str()
+                                )
+                                .to_string(),
+                                Some(code) => t!(
+                                    "activity.script.exited_on",
+                                    name = script_name_done.as_str(),
+                                    code = code,
+                                    host = host_display.as_str()
+                                )
+                                .to_string(),
+                            };
+                            ws.add_activity_entry(
+                                ActivityEntry::new(ActivityKind::Script, activity_message)
+                                    .with_target(script_id.to_string(), script_name_done.clone())
+                                    .with_detail(
+                                        t!("activity.script.exit_code", code = code).to_string(),
+                                    )
+                                    .with_action(ActivityAction::OpenScript),
+                                cx,
+                            );
                             match exit_code {
                                 Some(0) | None => {
                                     ws.show_toast(
@@ -940,9 +1007,13 @@ impl Workspace {
             let _ = self.store.update_script(s);
         }
 
-        self.add_activity(
-            t!("activity.script.running", name = script_name.as_str()).to_string(),
-            ActivityType::Script,
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Script,
+                t!("activity.script.running", name = script_name.as_str()).to_string(),
+            )
+            .with_target(script_id.to_string(), script_name.clone())
+            .with_action(ActivityAction::OpenScript),
             cx,
         );
         self.show_toast(
@@ -1026,9 +1097,13 @@ impl Workspace {
                     this.scripts.update(cx, |editor, _| {
                         editor.add_script(script.clone());
                     });
-                    this.add_activity(
-                        t!("activity.script.added", name = script.name.as_str()).to_string(),
-                        ActivityType::Script,
+                    this.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Script,
+                            t!("activity.script.added", name = script.name.as_str()).to_string(),
+                        )
+                        .with_target(script.id.to_string(), script.name.clone())
+                        .with_action(ActivityAction::OpenScript),
                         cx,
                     );
                     this.show_toast(
@@ -1104,9 +1179,13 @@ impl Workspace {
                             *existing = script.clone();
                         }
                     });
-                    this.add_activity(
-                        t!("activity.script.updated", name = script.name.as_str()).to_string(),
-                        ActivityType::Script,
+                    this.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Script,
+                            t!("activity.script.updated", name = script.name.as_str()).to_string(),
+                        )
+                        .with_target(script.id.to_string(), script.name.clone())
+                        .with_action(ActivityAction::OpenScript),
                         cx,
                     );
                     this.show_toast(

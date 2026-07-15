@@ -16,12 +16,12 @@
 | 1 | Autostart au login | ✅ landed 2026-07-15 (`shelldeck-core::config::autostart` + Settings toggle + startup reconcile) |
 | 2 | Tray icon + notifications OS | ✅ landed 2026-07-15 (4 phases : fondation, compteurs live, notifs OS delta, opt-in Settings + close_to_tray) |
 | 3 | Deep links `shelldeck://` | ✅ landed 2026-07-15 (parser `deep_link` + single-instance loopback hand-off + `Workspace::open_deep_link` + OS scheme registration Linux/macOS/Windows) |
-| 4 | Recent activity | ⏳ à faire |
-| 5 | Pin / favoris rapides | ⏸ bloqué sur choix de catégorie |
-| 6 | Onboarding first-run | ⏳ à faire (attendre stabilisation des surfaces) |
+| 4 | Recent activity | ✅ landed 2026-07-15 (`shelldeck-core::config::activity` + vue Dev Activité + hooks scripts/tunnels/support/issues/Jean/sites) |
+| 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
+| 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
 | 7 | Couche IA transversale | ⏳ à faire (dépend de la stabilisation des surfaces ci-dessus) |
 
-## 1. Onboarding first-run
+## 1. Onboarding first-run — ✅ livré 2026-07-15
 
 **Objectif :** après la première connexion réussie (post `LoginForm`
 → `apply_login`), présenter un tour rapide qui explique les trois
@@ -29,15 +29,31 @@ modes (User / Support / Dev pour un super-admin), les surfaces
 principales (Mes sites, Mes demandes, palette, sync), et les
 raccourcis clavier utiles.
 
-**Portée :**
+**Livré :**
 
-- Distinct du **welcome landing** pré-login (`render_welcome_screen`
-  dans `workspace/mod.rs`) — celui-là est le gate pour les utilisateurs
-  non authentifiés, il reste.
-- Déclenché sur `AccountInfo.first_login: bool` (nouveau champ,
-  `#[serde(default = "true")]`) ou une clé locale
-  `onboarding_completed: bool` dans `AppConfig`.
-- Skippable, replayable depuis Settings.
+- Distinct du **welcome landing** pré-login (`render_welcome_screen`)
+  — celui-là reste le gate pour les utilisateurs non authentifiés.
+- Déclenché quand `AppConfig.general.onboarding_completed` est
+  `false` (défaut) : après `apply_login` et au prochain démarrage si
+  l'utilisateur était déjà connecté mais n'avait pas terminé le tour.
+- Module `onboarding_view.rs` : modal multi-étapes (Welcome → Modes*
+  → Surfaces → Raccourcis), skippable (Escape / Passer / ✕), clavier
+  ←/→/Entrée. L'étape Modes est omise quand `!can_switch_mode()`.
+- **Zone média hero** par étape (560×200) : placeholder stylé par défaut
+  (marque / icône Lucide + légende i18n « Aperçu à venir ») ; un GIF ou
+  WebP par étape s'active via `media_asset()` + `include_bytes` dans
+  `main.rs` — pas obligatoire sur toutes les étapes.
+- Pastilles de progression entre la zone média et le corps texte.
+- Persistance : skip ou fin → `onboarding_completed = true` + save.
+- **Settings → Général → « Revoir le guide »** relance le tour sans
+  réinitialiser la config (replay explicite).
+
+**Non fait / follow-ups :**
+
+- Pas de `AccountInfo.first_login` côté serveur — la clé locale
+  `onboarding_completed` suffit pour v1.
+- Pas de spotlight / surlignage in-app des widgets réels (tour
+  modal-only pour l'instant).
 
 ## 2. Tray icon / présence menu-bar — ✅ livré 2026-07-15
 
@@ -197,7 +213,7 @@ live du sous-menu utilisent actuellement le bridge GTK Linux. Le canal est
 cross-platform, mais le bridge de mutation du menu macOS/Windows reste le
 follow-up déjà documenté dans `tray/mod.rs`.
 
-## 5. Recent activity
+## 5. Recent activity — ✅ livré 2026-07-15
 
 **Objectif :** « qu'est-ce que j'ai fait récemment ? » cross-crate,
 searchable, restorable. Alimente aussi le résumé IA « ma semaine ».
@@ -213,12 +229,22 @@ searchable, restorable. Alimente aussi le résumé IA « ma semaine ».
 
 **Techniquement :**
 
-- Event bus léger dans `shelldeck-core` (`ActivityEvent` +
-  `ActivityStore` avec cap FIFO ~500 entrées).
-- Persisté dans `~/.local/share/ShellDeck/activity.jsonl` (append-only,
-  rotate à N Mo).
-- UI : nouvelle vue « Recent » (sidebar item ou palette).
-- Restore : bouton « Reprendre la session » sur les entrées terminal.
+- `shelldeck-core::config::activity` : `ActivityEntry` / `ActivityKind`
+  / `ActivityAction` + `ActivityStore`, persisté en JSONL local
+  (`activity.jsonl`), newest-first au chargement, cap 500 entrées, skip
+  des lignes corrompues.
+- UI Dev : nouvelle vue sidebar/palette « Activité » avec recherche,
+  filtres par type, timestamps relatifs, badges, et action contextuelle
+  quand l'entrée porte une cible.
+- Dashboard : le panneau « Activité récente » lit les mêmes entrées
+  durables (top 8) au lieu d'un feed mémoire séparé.
+- Hooks v1 : terminaux locaux, connexions SSH, scripts (run + exit
+  code), port forwards, tickets support, demandes/issues, site actif,
+  Jean `say`, validations/exécutions Fleet.
+- Restore v1 : action `OpenTerminal` rouvre la surface Terminal ; les
+  entrées ciblées rouvrent leur surface (connexion/script/tunnel/ticket/
+  demande/site/Jean/Fleet/bext). La reprise exacte d'un ancien PTY fermé
+  reste hors scope tant que le contenu de session n'est pas sérialisé.
 
 ## 6. Autostart au login (configurable) — ✅ livré 2026-07-15
 

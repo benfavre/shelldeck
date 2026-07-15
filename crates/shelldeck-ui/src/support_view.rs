@@ -867,6 +867,22 @@ impl SupportView {
         self.selected_id.clone()
     }
 
+    pub fn ai_context_data(&self) -> serde_json::Value {
+        match self.section {
+            SupportSection::Tickets => serde_json::to_value(&self.detail)
+                .unwrap_or_else(|_| serde_json::json!({ "ticket": null })),
+            SupportSection::Requests => serde_json::to_value(&self.issue_detail)
+                .unwrap_or_else(|_| serde_json::json!({ "issue": null })),
+        }
+    }
+
+    pub fn ai_surface(&self) -> shelldeck_core::ai::AiSurface {
+        match self.section {
+            SupportSection::Tickets => shelldeck_core::ai::AiSurface::Support,
+            SupportSection::Requests => shelldeck_core::ai::AiSurface::Issue,
+        }
+    }
+
     fn my_email(&self) -> &str {
         &self.me.email
     }
@@ -3823,10 +3839,7 @@ impl SupportView {
     /// the search query live from the input state at render time — same
     /// pattern as the sites-search input in the User home (adabraka
     /// `on_change` doesn't fire on typing, only programmatic set_value).
-    fn render_issues_assignee_picker_modal(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_issues_assignee_picker_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let current = self.issues_filter_draft.assignee.clone();
         let query = self
@@ -3945,11 +3958,7 @@ impl SupportView {
                         ),
                 )
                 .when(is_active, |el| {
-                    el.child(lucide_icon(
-                        "check",
-                        14.0,
-                        ShellDeckColors::primary(),
-                    ))
+                    el.child(lucide_icon("check", 14.0, ShellDeckColors::primary()))
                 })
                 .on_click({
                     let entity = entity.clone();
@@ -4035,14 +4044,8 @@ impl SupportView {
                     .child(
                         Input::new(&self.issues_assignee_search_state)
                             .size(InputSize::Sm)
-                            .placeholder(
-                                t!("support.issues.assignee.picker.search").to_string(),
-                            )
-                            .prefix(lucide_icon(
-                                "search",
-                                12.0,
-                                ShellDeckColors::text_muted(),
-                            ))
+                            .placeholder(t!("support.issues.assignee.picker.search").to_string())
+                            .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
                             .on_change({
                                 let entity = entity.clone();
                                 move |_, cx| {

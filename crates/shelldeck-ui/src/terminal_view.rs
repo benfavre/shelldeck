@@ -1579,6 +1579,33 @@ impl TerminalView {
         self.session_for(self.layout.focused)
     }
 
+    pub fn ai_context_data(&self) -> serde_json::Value {
+        let Some(session) = self.active_session() else {
+            return serde_json::json!({ "terminal": null });
+        };
+        let grid = session.grid.lock();
+        let rows = grid.visible_rows();
+        let output = rows
+            .iter()
+            .rev()
+            .take(120)
+            .rev()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::json!({
+            "title": session.title,
+            "state": format!("{:?}", session.state),
+            "visible_output": output,
+        })
+    }
+
     /// Close all terminal sessions for graceful shutdown.
     pub fn close_all_sessions(&mut self) {
         tracing::info!("Closing {} terminal sessions", self.pane.sessions.len());

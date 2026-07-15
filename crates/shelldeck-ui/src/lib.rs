@@ -1,3 +1,4 @@
+pub mod ai_assistant;
 pub mod bext_cloud_view;
 pub mod brand;
 pub mod command_palette;
@@ -12,8 +13,10 @@ pub mod i18n;
 pub mod icons;
 pub mod jean_view;
 pub mod login_form;
+pub mod onboarding_view;
 pub mod port_forward_form;
 pub mod port_forward_view;
+pub mod recent_view;
 pub mod scale;
 pub mod script_editor;
 pub mod script_form;

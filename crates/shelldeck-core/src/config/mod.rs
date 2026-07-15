@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod app_config;
 pub mod autostart;
 pub mod bext_cloud;
@@ -18,6 +19,7 @@ pub mod themes;
 pub mod watcher;
 pub mod workspace_state;
 
+pub use activity::{ActivityAction, ActivityEntry, ActivityKind, ActivityStore};
 pub use app_config::{AppConfig, UiLanguage};
 pub use bext_cloud::BextCloudConfig;
 pub use cloud_account::{AccountInfo, AppMode};

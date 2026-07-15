@@ -1,9 +1,14 @@
 use crate::icons::{lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
-use adabraka_ui::prelude::{install_theme, scrollable_vertical, Button, ButtonVariant};
+use adabraka_ui::overlays::sheet::{Sheet, SheetSize};
+use adabraka_ui::prelude::{install_theme, scrollable_vertical, use_theme, Button, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::ai::{create_client, AiContext, AiSurface};
+use shelldeck_core::config::activity::{
+    ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
+};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
@@ -24,19 +29,22 @@ use std::collections::HashMap;
 use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
+use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
     PaletteAction, SetAppMode, ToggleCommandPalette,
 };
 use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
-use crate::dashboard::{ActivityEvent, ActivityType, DashboardEvent, DashboardView};
+use crate::dashboard::{DashboardEvent, DashboardView};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
+use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
+use crate::recent_view::{RecentEvent, RecentView};
 use crate::script_editor::{ScriptEditorView, ScriptEvent};
 use crate::script_form::ScriptForm;
 use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
@@ -81,6 +89,28 @@ impl AccountStatus {
             AccountStatus::Rejected => ShellDeckColors::error(),
             AccountStatus::Unknown | AccountStatus::Offline => ShellDeckColors::text_muted(),
         }
+    }
+}
+
+struct WorkspaceTooltip {
+    label: SharedString,
+}
+
+impl Render for WorkspaceTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_surface())
+            .shadow_md()
+            .text_size(px(11.0))
+            .font_family(use_theme().tokens.font_family.clone())
+            .text_color(ShellDeckColors::text_primary())
+            .whitespace_nowrap()
+            .child(self.label.clone())
     }
 }
 
@@ -138,6 +168,7 @@ pub enum ActiveView {
     PortForwards,
     ServerSync,
     Sites,
+    Recent,
     FileEditor,
     JeanConsole,
     Fleet,
@@ -161,6 +192,7 @@ actions!(
         NewScript,
         OpenServerSync,
         OpenSites,
+        OpenRecent,
         OpenFileEditorView,
         CloudSyncNow,
         SwitchSite,
@@ -172,6 +204,7 @@ actions!(
         OpenSupportRequests,
         OpenBextCloud,
         ConnectBextCloud,
+        OpenAiAssistant,
     ]
 );
 
@@ -207,13 +240,17 @@ pub struct Workspace {
     port_forwards: Entity<PortForwardView>,
     server_sync: Entity<ServerSyncView>,
     sites: Entity<SitesView>,
+    recent: Entity<RecentView>,
     file_editor: Entity<FileEditorView>,
     settings: Entity<SettingsView>,
+    ai_assistant: Entity<AiAssistantView>,
+    ai_sheet: Option<Entity<Sheet>>,
     status_bar: Entity<StatusBar>,
     command_palette: Entity<CommandPalette>,
     toasts: Entity<ToastContainer>,
     connection_form: Option<Entity<ConnectionForm>>,
     login_form: Option<Entity<LoginForm>>,
+    onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
     template_browser: Option<Entity<TemplateBrowser>>,
@@ -225,6 +262,8 @@ pub struct Workspace {
     ui_font_family: String,
     /// Application UI base font size in pixels.
     ui_font_size: f32,
+    /// Newest-first durable activity cache, mirrored to Dashboard + RecentView.
+    recent_activity: Vec<ActivityEntry>,
     pub focus_handle: FocusHandle,
     /// Active tunnels keyed by the PortForward model ID (not the TunnelHandle internal id).
     active_tunnels: HashMap<Uuid, ActiveTunnel>,
@@ -235,10 +274,12 @@ pub struct Workspace {
     _terminal_sub: Subscription,
     _palette_sub: Subscription,
     _settings_sub: Subscription,
+    _ai_assistant_sub: Subscription,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
     _server_sync_sub: Subscription,
     _sites_sub: Subscription,
+    _recent_sub: Subscription,
     _file_editor_sub: Subscription,
     _form_sub: Option<Subscription>,
     _pf_form_sub: Option<Subscription>,
@@ -266,6 +307,8 @@ pub struct Workspace {
     account_status: AccountStatus,
     /// Kept alive while the login modal is open.
     _login_form_sub: Option<Subscription>,
+    /// Kept alive while the onboarding tour is open.
+    _onboarding_sub: Option<Subscription>,
     /// Cached full whoami response — kept in memory so the User-mode
     /// "Mes informations" tab can surface every field the server sends
     /// (device label, created_at, last_seen_at, …), not just the three
@@ -454,6 +497,14 @@ impl Workspace {
             s
         });
 
+        let recent_activity = match ActivityStore::load_recent(500) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!("Failed to load recent activity: {}", e);
+                Vec::new()
+            }
+        };
+
         let dashboard = cx.new(|_| {
             let mut d = DashboardView::new();
             let quick_connections: Vec<&Connection> = if initial_dashboard_pins.is_empty() {
@@ -476,6 +527,7 @@ impl Workspace {
                     )
                 })
                 .collect();
+            d.recent_activity = recent_activity.iter().take(8).cloned().collect();
             d
         });
 
@@ -492,6 +544,11 @@ impl Workspace {
             let mut view = SitesView::new(cx);
             view.set_connections(connections.clone());
             view.set_sites(store.managed_sites.clone());
+            view
+        });
+        let recent = cx.new(|cx| {
+            let mut view = RecentView::new(cx);
+            view.set_entries(recent_activity.clone());
             view
         });
         let file_editor = cx.new(FileEditorView::new);
@@ -529,7 +586,18 @@ impl Workspace {
         }
 
         let app_config = config.clone();
+        let ai_configured = app_config.ai.is_configured();
         let settings = cx.new(|settings_cx| SettingsView::new(config, settings_cx));
+        let ai_assistant = cx.new(|cx| {
+            AiAssistantView::new(
+                AiContext::new(
+                    AiSurface::Global,
+                    t!("ai.context.global").to_string(),
+                    serde_json::json!({}),
+                ),
+                cx,
+            )
+        });
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
@@ -550,7 +618,7 @@ impl Workspace {
             // Initial palette build — no account state yet, so no mode
             // switcher. `refresh_command_palette` will rebuild with the
             // right gating on login / whoami.
-            palette.set_actions(Self::base_palette_actions(false));
+            palette.set_actions(Self::base_palette_actions(false, ai_configured));
             palette
         });
 
@@ -601,6 +669,13 @@ impl Workspace {
             this.handle_settings_event(event, cx);
         });
 
+        let ai_assistant_sub = cx.subscribe(
+            &ai_assistant,
+            |this, _view, event: &AiAssistantEvent, cx| {
+                this.handle_ai_assistant_event(event.clone(), cx);
+            },
+        );
+
         // Subscribe to script editor events
         let scripts_sub = cx.subscribe(&scripts, |this, _scripts, event: &ScriptEvent, cx| {
             this.handle_script_event(event, cx);
@@ -623,6 +698,10 @@ impl Workspace {
         // Subscribe to sites events
         let sites_sub = cx.subscribe(&sites, |this, _view, event: &SitesEvent, cx| {
             this.handle_sites_event(event, cx);
+        });
+
+        let recent_sub = cx.subscribe(&recent, |this, _view, event: &RecentEvent, cx| {
+            this.handle_recent_event(event.clone(), cx);
         });
 
         // Subscribe to file editor events
@@ -709,13 +788,17 @@ impl Workspace {
             port_forwards,
             server_sync,
             sites,
+            recent,
             file_editor,
             settings,
+            ai_assistant,
+            ai_sheet: None,
             status_bar,
             command_palette,
             toasts,
             connection_form: None,
             login_form: None,
+            onboarding: None,
             port_forward_form: None,
             script_form: None,
             template_browser: None,
@@ -725,6 +808,7 @@ impl Workspace {
             sidebar_width: initial_sidebar_width,
             ui_font_family,
             ui_font_size,
+            recent_activity,
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
@@ -732,10 +816,12 @@ impl Workspace {
             _terminal_sub: terminal_sub,
             _palette_sub: palette_sub,
             _settings_sub: settings_sub,
+            _ai_assistant_sub: ai_assistant_sub,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
             _server_sync_sub: server_sync_sub,
             _sites_sub: sites_sub,
+            _recent_sub: recent_sub,
             _file_editor_sub: file_editor_sub,
             _dashboard_sub: dashboard_sub,
             _form_sub: None,
@@ -754,6 +840,7 @@ impl Workspace {
             account_menu_open: false,
             account_status: AccountStatus::Unknown,
             _login_form_sub: None,
+            _onboarding_sub: None,
             last_whoami: None,
             user_home_tab: UserHomeTab::Sites,
             site_directory: None,
@@ -810,10 +897,7 @@ impl Workspace {
     /// pushes it into the tray thread. `None` means the tray failed to
     /// come up — every subsequent `publish_tray_state` becomes a
     /// no-op.
-    pub fn set_tray_state_publisher(
-        &mut self,
-        publisher: Box<dyn Fn(TrayCounters) + Send + Sync>,
-    ) {
+    pub fn set_tray_state_publisher(&mut self, publisher: Box<dyn Fn(TrayCounters) + Send + Sync>) {
         self.tray_state_publisher = Some(publisher);
     }
 
@@ -821,10 +905,7 @@ impl Workspace {
     /// supplies a closure that translates [`TrayNotification`] into a
     /// `notify-rust` call. `None` means the tray is unavailable —
     /// every subsequent emit is a no-op.
-    pub fn set_tray_notifier(
-        &mut self,
-        notifier: Box<dyn Fn(TrayNotification) + Send + Sync>,
-    ) {
+    pub fn set_tray_notifier(&mut self, notifier: Box<dyn Fn(TrayNotification) + Send + Sync>) {
         self.tray_notifier = Some(notifier);
     }
 
@@ -1034,10 +1115,15 @@ impl Workspace {
                     });
                 } else if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
                     let title = conn.display_name().to_string();
+                    let conn_id = conn.id;
                     self.connect_ssh(conn.clone(), cx);
-                    self.add_activity(
-                        t!("activity.connecting_to", name = title.as_str()).to_string(),
-                        ActivityType::Connection,
+                    self.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Connection,
+                            t!("activity.connecting_to", name = title.as_str()).to_string(),
+                        )
+                        .with_target(conn_id.to_string(), title)
+                        .with_action(ActivityAction::ConnectConnection),
                         cx,
                     );
                 }
@@ -1047,7 +1133,18 @@ impl Workspace {
             SidebarEvent::ConnectionConnect(id) => {
                 tracing::info!("Connect requested: {}", id);
                 if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
+                    let title = conn.display_name().to_string();
+                    let conn_id = conn.id;
                     self.connect_ssh(conn.clone(), cx);
+                    self.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Connection,
+                            t!("activity.connecting_to", name = title.as_str()).to_string(),
+                        )
+                        .with_target(conn_id.to_string(), title)
+                        .with_action(ActivityAction::ConnectConnection),
+                        cx,
+                    );
                 }
                 self.active_view = ActiveView::Terminal;
                 cx.notify();
@@ -1107,7 +1204,7 @@ impl Workspace {
                         });
                         self.add_activity(
                             t!("activity.connection_deleted", name = name.as_str()).to_string(),
-                            ActivityType::Connection,
+                            ActivityKind::Connection,
                             cx,
                         );
                         self.show_toast(
@@ -1165,6 +1262,14 @@ impl Workspace {
             TerminalEvent::NewTabRequested => {
                 tracing::info!("New terminal tab created");
                 self.active_view = ActiveView::Terminal;
+                self.add_activity_entry(
+                    ActivityEntry::new(
+                        ActivityKind::Terminal,
+                        t!("activity.terminal_opened").to_string(),
+                    )
+                    .with_action(ActivityAction::OpenTerminal),
+                    cx,
+                );
                 self.update_dashboard_stats(cx);
                 self.sync_terminal_tab_count(cx);
                 cx.notify();
@@ -1174,6 +1279,11 @@ impl Workspace {
             }
             TerminalEvent::TabClosed(id) => {
                 tracing::info!("Terminal tab closed: {}", id);
+                self.add_activity(
+                    t!("activity.terminal_closed").to_string(),
+                    ActivityKind::Terminal,
+                    cx,
+                );
                 self.update_dashboard_stats(cx);
                 self.sync_terminal_tab_count(cx);
                 cx.notify();
@@ -1297,6 +1407,10 @@ impl Workspace {
                 self.app_config.terminal = config.terminal.clone();
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
+                self.app_config.ai = config.ai.clone();
+                if !self.app_config.ai.is_configured() {
+                    self.ai_sheet = None;
+                }
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
@@ -1336,6 +1450,12 @@ impl Workspace {
             SettingsEvent::AutostartRequested(desired) => {
                 self.apply_autostart_request(*desired, cx);
             }
+            SettingsEvent::ShowOnboarding => {
+                self.show_onboarding(cx);
+            }
+            SettingsEvent::AiApiKeyChanged { backend, value } => {
+                self.update_ai_api_key(*backend, value.clone(), cx);
+            }
             SettingsEvent::ThemeChanged(pref) => {
                 tracing::info!("Theme preference changed to {:?}", pref);
 
@@ -1355,6 +1475,167 @@ impl Workspace {
         }
     }
 
+    fn update_ai_api_key(
+        &mut self,
+        backend: shelldeck_core::ai::AiBackend,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(provider) = backend.provider_key() else {
+            return;
+        };
+        let provider = provider.to_string();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let deleting = value.trim().is_empty();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    if deleting {
+                        shelldeck_core::config::keychain::delete_ai_api_key(&provider)
+                    } else {
+                        shelldeck_core::config::keychain::store_ai_api_key(&provider, value.trim())
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(()) => ws.show_toast(
+                    if deleting {
+                        t!("toast.ai.key_deleted").to_string()
+                    } else {
+                        t!("toast.ai.key_saved").to_string()
+                    },
+                    ToastLevel::Info,
+                    cx,
+                ),
+                Err(error) => ws.show_toast(
+                    t!("toast.ai.key_failed", error = error.to_string()).to_string(),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    fn open_ai_assistant(&mut self, cx: &mut Context<Self>) {
+        let context = self.current_ai_context(cx);
+        if !self.app_config.ai.allows(context.surface) {
+            return;
+        }
+        self.open_ai_assistant_with_context(context, cx);
+    }
+
+    fn current_ai_context(&self, cx: &App) -> AiContext {
+        if self.effective_mode() == AppMode::Support {
+            let support = self.support.read(cx);
+            return AiContext::new(
+                support.ai_surface(),
+                t!("ai.context.support").to_string(),
+                support.ai_context_data(),
+            );
+        }
+        if self.effective_mode() == AppMode::User && self.user_home_tab == UserHomeTab::Requests {
+            return AiContext::new(
+                AiSurface::Issue,
+                t!("ai.context.issue").to_string(),
+                serde_json::to_value(&self.issue_detail)
+                    .unwrap_or_else(|_| serde_json::json!({ "issue": null })),
+            );
+        }
+        match self.active_view {
+            ActiveView::Terminal => AiContext::new(
+                AiSurface::Terminal,
+                t!("ai.context.terminal").to_string(),
+                self.terminal.read(cx).ai_context_data(),
+            ),
+            ActiveView::Scripts => AiContext::new(
+                AiSurface::Script,
+                t!("ai.context.script").to_string(),
+                self.scripts.read(cx).ai_context_data(),
+            ),
+            ActiveView::JeanConsole | ActiveView::Fleet => AiContext::new(
+                AiSurface::Jean,
+                t!("ai.context.jean").to_string(),
+                serde_json::to_value(&self.jean_state)
+                    .unwrap_or_else(|_| serde_json::json!({ "jean": null })),
+            ),
+            ActiveView::Recent | ActiveView::Dashboard => AiContext::new(
+                AiSurface::Recent,
+                t!("ai.context.recent").to_string(),
+                serde_json::to_value(self.recent_activity.iter().take(50).collect::<Vec<_>>())
+                    .unwrap_or_else(|_| serde_json::json!([])),
+            ),
+            _ => AiContext::new(
+                AiSurface::Global,
+                t!("ai.context.global").to_string(),
+                serde_json::json!({
+                    "active_view": format!("{:?}", self.active_view),
+                    "active_site": self.app_config.cloud_sync.active_site_label,
+                    "connections": self.connections.len(),
+                    "active_tunnels": self.active_tunnels.len(),
+                    "active_scripts": self.active_scripts.len(),
+                }),
+            ),
+        }
+    }
+
+    fn ai_available_for_current_surface(&self, cx: &App) -> bool {
+        self.app_config
+            .ai
+            .allows(self.current_ai_context(cx).surface)
+    }
+
+    fn open_ai_assistant_with_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
+        if !self.app_config.ai.is_configured() {
+            return;
+        }
+        self.ai_assistant
+            .update(cx, |assistant, cx| assistant.set_context(context, cx));
+        let assistant = self.ai_assistant.clone();
+        let workspace = cx.entity().downgrade();
+        self.ai_sheet = Some(cx.new(move |sheet_cx| {
+            Sheet::new(sheet_cx)
+                .size(SheetSize::Lg)
+                .title(t!("ai.assistant.title").to_string())
+                .description(t!("ai.assistant.description").to_string())
+                .content(assistant)
+                .on_close(move |_window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| {
+                            this.ai_sheet = None;
+                            cx.notify();
+                        });
+                    }
+                })
+        }));
+        cx.notify();
+    }
+
+    fn handle_ai_assistant_event(&mut self, event: AiAssistantEvent, cx: &mut Context<Self>) {
+        let AiAssistantEvent::Submit { prompt, context } = event;
+        let config = self.app_config.ai.clone();
+        self.ai_assistant
+            .update(cx, |assistant, cx| assistant.set_loading(true, cx));
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let client = create_client(&config)?;
+                    client
+                        .complete(&prompt, context)
+                        .map(|response| response.text)
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.ai_assistant.update(cx, |assistant, cx| {
+                    assistant.set_result(result, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Apply an autostart toggle change: try the OS-level write on a
     /// background thread, then commit the settings field (and save) if
     /// it worked, or toast the error and leave the toggle where the
@@ -1366,9 +1647,7 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    shelldeck_core::config::autostart::apply(desired)
-                })
+                .spawn(async move { shelldeck_core::config::autostart::apply(desired) })
                 .await;
 
             let _ = this.update(cx, |ws, cx| match result {
@@ -1419,6 +1698,7 @@ impl Workspace {
         self.scripts.update(cx, |_, cx| cx.notify());
         self.port_forwards.update(cx, |_, cx| cx.notify());
         self.server_sync.update(cx, |_, cx| cx.notify());
+        self.recent.update(cx, |_, cx| cx.notify());
         self.settings.update(cx, |_, cx| cx.notify());
         self.status_bar.update(cx, |_, cx| cx.notify());
         self.command_palette.update(cx, |_, cx| cx.notify());
@@ -1510,10 +1790,15 @@ impl Workspace {
                 if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
                     let conn = conn.clone();
                     let title = conn.display_name().to_string();
+                    let conn_id = conn.id;
                     self.connect_ssh(conn, cx);
-                    self.add_activity(
-                        t!("activity.quick_connecting_to", name = title.as_str()).to_string(),
-                        ActivityType::Connection,
+                    self.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Connection,
+                            t!("activity.quick_connecting_to", name = title.as_str()).to_string(),
+                        )
+                        .with_target(conn_id.to_string(), title)
+                        .with_action(ActivityAction::ConnectConnection),
                         cx,
                     );
                     self.active_view = ActiveView::Terminal;
@@ -1526,6 +1811,112 @@ impl Workspace {
                     );
                 }
             }
+        }
+    }
+
+    fn handle_recent_event(&mut self, event: RecentEvent, cx: &mut Context<Self>) {
+        match event {
+            RecentEvent::Open(entry) => self.open_activity(entry, cx),
+        }
+    }
+
+    fn open_activity(&mut self, entry: ActivityEntry, cx: &mut Context<Self>) {
+        match entry.action {
+            ActivityAction::None => {}
+            ActivityAction::OpenTerminal => {
+                self.activate_dev_section(SidebarSection::Terminals, cx);
+            }
+            ActivityAction::OpenConnection | ActivityAction::ConnectConnection => {
+                let Some(id) = entry
+                    .target_id
+                    .as_deref()
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                else {
+                    return;
+                };
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Dev, cx);
+                }
+                self.sidebar.update(cx, |s, cx| {
+                    s.focus_connection(id);
+                    cx.notify();
+                });
+                if entry.action == ActivityAction::ConnectConnection {
+                    if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
+                        self.connect_ssh(conn, cx);
+                        self.active_view = ActiveView::Terminal;
+                    }
+                } else {
+                    self.active_view = ActiveView::Dashboard;
+                }
+                self.on_active_view_changed(cx);
+                cx.notify();
+            }
+            ActivityAction::OpenForward => {
+                self.activate_dev_section(SidebarSection::PortForwards, cx);
+            }
+            ActivityAction::OpenScript => {
+                let script_id = entry
+                    .target_id
+                    .as_deref()
+                    .and_then(|id| Uuid::parse_str(id).ok());
+                self.activate_dev_section(SidebarSection::Scripts, cx);
+                if let Some(id) = script_id {
+                    self.scripts.update(cx, |editor, cx| {
+                        editor.selected_script = Some(id);
+                        cx.notify();
+                    });
+                }
+                self.populate_script_editor_connections(cx);
+                cx.notify();
+            }
+            ActivityAction::OpenSupport => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Support, cx);
+                }
+                self.refresh_support(cx);
+                cx.notify();
+            }
+            ActivityAction::OpenTicket => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Support, cx);
+                }
+                if let Some(id) = entry.target_id {
+                    self.select_support_ticket(id, cx);
+                }
+                cx.notify();
+            }
+            ActivityAction::OpenIssue => {
+                if self.can_switch_mode() {
+                    if self.issues_staff {
+                        self.set_mode(AppMode::Support, cx);
+                        self.support.update(cx, |v, cx| {
+                            v.set_section(crate::support_view::SupportSection::Requests);
+                            cx.notify();
+                        });
+                    } else {
+                        self.set_mode(AppMode::User, cx);
+                        self.user_home_tab = UserHomeTab::Requests;
+                    }
+                }
+                if let Some(id) = entry.target_id {
+                    self.select_issue(id, cx);
+                }
+                cx.notify();
+            }
+            ActivityAction::OpenSite => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::User, cx);
+                }
+                if let Some(id) = entry.target_id {
+                    self.select_site(Some(id), entry.target_label, cx);
+                }
+                self.user_home_tab = UserHomeTab::Sites;
+                cx.notify();
+            }
+            ActivityAction::OpenJean => self.open_jean_console(cx),
+            ActivityAction::OpenFleet => self.open_fleet(cx),
+            ActivityAction::OpenBext => self.open_bext_cloud(cx),
         }
     }
 
@@ -1561,13 +1952,14 @@ impl Workspace {
                     this.sidebar.update(cx, |sidebar, _| {
                         sidebar.set_connections(this.connections.clone());
                     });
-                    this.add_activity(
-                        t!(
-                            "activity.connection_added",
-                            name = conn.display_name().to_string()
+                    let conn_name = conn.display_name().to_string();
+                    this.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Connection,
+                            t!("activity.connection_added", name = conn_name.as_str()).to_string(),
                         )
-                        .to_string(),
-                        ActivityType::Connection,
+                        .with_target(conn.id.to_string(), conn_name)
+                        .with_action(ActivityAction::OpenConnection),
                         cx,
                     );
                     this.show_toast(
@@ -1597,23 +1989,31 @@ impl Workspace {
         cx.notify();
     }
 
-    fn add_activity(&mut self, message: String, event_type: ActivityType, cx: &mut Context<Self>) {
-        let event = ActivityEvent {
-            icon: match event_type {
-                ActivityType::Connection => "server",
-                ActivityType::Forward => "arrow",
-                ActivityType::Script => "play",
-                ActivityType::Error => "alert",
-            },
-            message,
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            event_type,
-        };
+    fn add_activity(&mut self, message: String, kind: ActivityKind, cx: &mut Context<Self>) {
+        self.add_activity_entry(ActivityEntry::new(kind, message), cx);
+    }
+
+    fn add_activity_entry(&mut self, entry: ActivityEntry, cx: &mut Context<Self>) {
+        if let Err(e) = ActivityStore::append(&entry) {
+            tracing::warn!("Failed to append activity entry: {}", e);
+        }
+        self.recent_activity.insert(0, entry);
+        if self.recent_activity.len() > 500 {
+            self.recent_activity.truncate(500);
+        }
+        self.push_recent_activity(cx);
+    }
+
+    fn push_recent_activity(&mut self, cx: &mut Context<Self>) {
+        let dashboard_entries: Vec<ActivityEntry> =
+            self.recent_activity.iter().take(8).cloned().collect();
+        let recent_entries = self.recent_activity.clone();
         self.dashboard.update(cx, |dashboard, _| {
-            dashboard.recent_activity.insert(0, event);
-            if dashboard.recent_activity.len() > 50 {
-                dashboard.recent_activity.truncate(50);
-            }
+            dashboard.recent_activity = dashboard_entries;
+        });
+        self.recent.update(cx, |recent, cx| {
+            recent.set_entries(recent_entries);
+            cx.notify();
         });
     }
 
@@ -1777,6 +2177,7 @@ impl Workspace {
                         // the persisted mode (starts the support poll if needed).
                         ws.refresh_sites(cx);
                         ws.activate_current_mode(cx);
+                        ws.maybe_show_onboarding(cx);
                     }
                     Err(e) if cloud_account::is_auth_rejected(&e) => {
                         ws.invalidate_cloud_session(cx);
@@ -1857,6 +2258,52 @@ impl Workspace {
         self.account_menu_open = false;
         self.login_form = Some(form);
         self._login_form_sub = Some(sub);
+        cx.notify();
+    }
+
+    /// Open the post-login onboarding tour. Callable from Settings replay
+    /// or from `maybe_show_onboarding` on first sign-in.
+    pub fn show_onboarding(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
+        let can_switch = self.can_switch_mode();
+        let form = cx.new(|form_cx| OnboardingView::new(can_switch, form_cx));
+        let sub = cx.subscribe(
+            &form,
+            |this, _form, event: &OnboardingEvent, cx| match event {
+                OnboardingEvent::Finished | OnboardingEvent::Skipped => {
+                    this.complete_onboarding(cx);
+                }
+            },
+        );
+        self.onboarding = Some(form);
+        self._onboarding_sub = Some(sub);
+        cx.notify();
+    }
+
+    /// Show onboarding once per account install when not yet completed.
+    fn maybe_show_onboarding(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() || self.app_config.general.onboarding_completed {
+            return;
+        }
+        if self.onboarding.is_some() {
+            return;
+        }
+        self.show_onboarding(cx);
+    }
+
+    /// Close the tour and persist completion (skip counts as done).
+    fn complete_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.onboarding = None;
+        self._onboarding_sub = None;
+        if !self.app_config.general.onboarding_completed {
+            self.app_config.general.onboarding_completed = true;
+            if let Err(e) = self.app_config.save() {
+                tracing::error!("Failed to save onboarding_completed: {}", e);
+            }
+            self.sync_settings_config(cx);
+        }
         cx.notify();
     }
 
@@ -2010,6 +2457,7 @@ impl Workspace {
         // last_seen_at) — the login response only carries the AccountInfo
         // subset, but "Mes informations" needs the richer payload.
         self.check_account_on_startup(cx);
+        self.maybe_show_onboarding(cx);
 
         let cfg = self.app_config.cloud_sync.clone();
         let name = account.display_name();
@@ -2167,6 +2615,8 @@ impl Workspace {
         label: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let activity_site_id = site_id.clone();
+        let activity_label = label.clone();
         self.app_config.cloud_sync.active_site_id = site_id.clone();
         self.app_config.cloud_sync.active_site_label = label;
         if let Err(e) = self.app_config.save() {
@@ -2179,6 +2629,18 @@ impl Workspace {
         });
         self.refresh_command_palette(cx);
         self.site_menu_open = false;
+        if let Some(site_id) = activity_site_id {
+            let label = activity_label.unwrap_or_else(|| site_id.clone());
+            self.add_activity_entry(
+                ActivityEntry::new(
+                    ActivityKind::Site,
+                    t!("activity.site.selected", label = label.as_str()).to_string(),
+                )
+                .with_target(site_id, label)
+                .with_action(ActivityAction::OpenSite),
+                cx,
+            );
+        }
         cx.notify();
     }
 
@@ -2244,7 +2706,7 @@ impl Workspace {
     /// `can_switch_mode` gates the "Mode : …" rows per SDUC-152 / SDTEST-1057
     /// — non-super-admins never see them in the palette, so no dispatched
     /// `SetAppMode` action can silently no-op on their end.
-    fn base_palette_actions(can_switch_mode: bool) -> Vec<PaletteAction> {
+    fn base_palette_actions(can_switch_mode: bool, ai_configured: bool) -> Vec<PaletteAction> {
         let mut actions = vec![
             PaletteAction::new(
                 t!("palette.new_terminal").to_string(),
@@ -2311,6 +2773,12 @@ impl Workspace {
                 None,
                 "globe",
                 Box::new(OpenSites),
+            ),
+            PaletteAction::new(
+                t!("palette.open_recent").to_string(),
+                None,
+                "activity",
+                Box::new(OpenRecent),
             ),
             PaletteAction::new(
                 t!("palette.open_file_editor").to_string(),
@@ -2385,6 +2853,15 @@ impl Workspace {
                 Box::new(OpenBextCloud),
             ),
         ];
+
+        if ai_configured {
+            actions.push(PaletteAction::new(
+                t!("palette.open_ai").to_string(),
+                None,
+                "zap",
+                Box::new(OpenAiAssistant),
+            ));
+        }
         // Mode switcher entries — super-admins only, per SDUC-152 (leaks
         // to a non-super-admin would show an action that then no-ops on
         // dispatch; SDTEST-1057 gates it at construction so nothing leaks
@@ -2422,7 +2899,8 @@ impl Workspace {
     /// the active site's manage areas. Called when the site directory loads or
     /// the active site changes.
     fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
-        let mut actions = Self::base_palette_actions(self.can_switch_mode());
+        let mut actions =
+            Self::base_palette_actions(self.can_switch_mode(), self.app_config.ai.is_configured());
         if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
             let label = site.display_label();
             for area in &dir.areas {
@@ -2648,6 +3126,15 @@ impl Workspace {
     fn select_support_ticket(&mut self, id: String, cx: &mut Context<Self>) {
         let base = self.account_base_url();
         let token = self.app_config.cloud_sync.token.clone();
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Support,
+                t!("activity.support.open_ticket", id = id.as_str()).to_string(),
+            )
+            .with_target(id.clone(), id.clone())
+            .with_action(ActivityAction::OpenTicket),
+            cx,
+        );
         self.support.update(cx, |v, cx| {
             v.set_loading(true);
             cx.notify();
@@ -2986,6 +3473,7 @@ impl Workspace {
         let Some(cfg) = self.effective_jean_config() else {
             return;
         };
+        let activity_text = text.clone();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -2994,6 +3482,15 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 match result {
                     Ok(_) => {
+                        ws.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Jean,
+                                t!("activity.jean.sent").to_string(),
+                            )
+                            .with_detail(activity_text.clone())
+                            .with_action(ActivityAction::OpenJean),
+                            cx,
+                        );
                         ws.show_toast(t!("toast.jean.sent").to_string(), ToastLevel::Success, cx)
                     }
                     Err(e) => ws.show_toast(
@@ -3333,59 +3830,61 @@ impl Workspace {
         let want = self.app_config.jean_runtime.enabled && self.fleet_base_token().is_some();
         if want {
             if self._runtime_loop.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    let step = this
-                        .update(cx, |ws, cx| ws.runtime_loop_step(cx))
-                        .ok()
-                        .flatten();
-                    let Some(step) = step else {
-                        break; // disabled / signed out → stop
-                    };
-                    match step {
-                        RuntimeStep::Register(base, token, reg) => {
-                            let r = cx
-                                .background_executor()
-                                .spawn(async move { jean_fleet::register(&base, &token, &reg) })
-                                .await;
-                            let _ = this.update(cx, |ws, cx| ws.apply_register(r, cx));
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        let step = this
+                            .update(cx, |ws, cx| ws.runtime_loop_step(cx))
+                            .ok()
+                            .flatten();
+                        let Some(step) = step else {
+                            break; // disabled / signed out → stop
+                        };
+                        match step {
+                            RuntimeStep::Register(base, token, reg) => {
+                                let r = cx
+                                    .background_executor()
+                                    .spawn(async move { jean_fleet::register(&base, &token, &reg) })
+                                    .await;
+                                let _ = this.update(cx, |ws, cx| ws.apply_register(r, cx));
+                            }
+                            RuntimeStep::HeartbeatOnly(base, token, id, version) => {
+                                cx.background_executor()
+                                    .spawn(async move {
+                                        let _ = jean_fleet::heartbeat(
+                                            &base,
+                                            &token,
+                                            &id,
+                                            "online",
+                                            None,
+                                            Some(&version),
+                                        );
+                                    })
+                                    .await;
+                            }
+                            RuntimeStep::Tick(tc) => {
+                                let r = cx
+                                    .background_executor()
+                                    .spawn(async move {
+                                        jean_fleet::runtime_tick(
+                                            &tc.base,
+                                            &tc.token,
+                                            &tc.instance_id,
+                                            &tc.workdir,
+                                            &tc.model,
+                                            &tc.autonomy,
+                                            &tc.version,
+                                            &ClaudeExecutor::default(),
+                                            std::time::Duration::from_secs(1800),
+                                        )
+                                    })
+                                    .await;
+                                let _ = this.update(cx, |ws, cx| ws.apply_tick_result(r, cx));
+                            }
                         }
-                        RuntimeStep::HeartbeatOnly(base, token, id, version) => {
-                            cx.background_executor()
-                                .spawn(async move {
-                                    let _ = jean_fleet::heartbeat(
-                                        &base,
-                                        &token,
-                                        &id,
-                                        "online",
-                                        None,
-                                        Some(&version),
-                                    );
-                                })
-                                .await;
-                        }
-                        RuntimeStep::Tick(tc) => {
-                            let r = cx
-                                .background_executor()
-                                .spawn(async move {
-                                    jean_fleet::runtime_tick(
-                                        &tc.base,
-                                        &tc.token,
-                                        &tc.instance_id,
-                                        &tc.workdir,
-                                        &tc.model,
-                                        &tc.autonomy,
-                                        &tc.version,
-                                        &ClaudeExecutor::default(),
-                                        std::time::Duration::from_secs(1800),
-                                    )
-                                })
-                                .await;
-                            let _ = this.update(cx, |ws, cx| ws.apply_tick_result(r, cx));
-                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(15))
+                            .await;
                     }
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(15))
-                        .await;
                 });
                 self._runtime_loop = Some(task);
             }
@@ -3459,7 +3958,19 @@ impl Workspace {
             Ok(tick) => {
                 if let Some(job) = tick.awaiting_confirm {
                     if !self.runtime_awaiting.iter().any(|j| j.id == job.id) {
+                        let job_id = job.id.clone();
+                        let prompt = job.prompt.clone();
                         self.runtime_awaiting.push(job);
+                        self.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Fleet,
+                                t!("activity.fleet.awaiting").to_string(),
+                            )
+                            .with_target(job_id, t!("activity.fleet.job").to_string())
+                            .with_detail(prompt)
+                            .with_action(ActivityAction::OpenFleet),
+                            cx,
+                        );
                         self.publish_tray_state(cx);
                     }
                     self.runtime_busy = true;
@@ -3498,11 +4009,23 @@ impl Workspace {
         self.publish_tray_state(cx);
         // busy stays true through execution.
         self.push_runtime_status_to_fleet(cx);
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Fleet,
+                t!("activity.fleet.running").to_string(),
+            )
+            .with_target(job.id.clone(), t!("activity.fleet.job").to_string())
+            .with_detail(job.prompt.clone())
+            .with_action(ActivityAction::OpenFleet),
+            cx,
+        );
         self.show_toast(
             t!("toast.jean.ticket_running").to_string(),
             ToastLevel::Info,
             cx,
         );
+        let job_id_for_activity = job.id.clone();
+        let prompt_for_activity = job.prompt.clone();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let r = cx
                 .background_executor()
@@ -3521,6 +4044,19 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 let success = r.is_ok();
                 if let Err(e) = r {
+                    ws.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Fleet,
+                            t!("activity.fleet.failed").to_string(),
+                        )
+                        .with_target(
+                            job_id_for_activity.clone(),
+                            t!("activity.fleet.job").to_string(),
+                        )
+                        .with_detail(prompt_for_activity.clone())
+                        .with_action(ActivityAction::OpenFleet),
+                        cx,
+                    );
                     ws.show_toast(
                         t!(
                             "toast.jean.ticket_failed",
@@ -3531,6 +4067,19 @@ impl Workspace {
                         cx,
                     );
                 } else {
+                    ws.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Fleet,
+                            t!("activity.fleet.done").to_string(),
+                        )
+                        .with_target(
+                            job_id_for_activity.clone(),
+                            t!("activity.fleet.job").to_string(),
+                        )
+                        .with_detail(prompt_for_activity.clone())
+                        .with_action(ActivityAction::OpenFleet),
+                        cx,
+                    );
                     ws.show_toast(
                         t!("toast.jean.ticket_done").to_string(),
                         ToastLevel::Success,
@@ -3557,10 +4106,26 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
+        let prompt = self
+            .runtime_awaiting
+            .iter()
+            .find(|j| j.id == job_id)
+            .map(|j| j.prompt.clone())
+            .unwrap_or_default();
         self.runtime_awaiting.retain(|j| j.id != job_id);
         self.runtime_busy = false;
         self.publish_tray_state(cx);
         self.push_runtime_status_to_fleet(cx);
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Fleet,
+                t!("activity.fleet.rejected").to_string(),
+            )
+            .with_target(job_id.clone(), t!("activity.fleet.job").to_string())
+            .with_detail(prompt)
+            .with_action(ActivityAction::OpenFleet),
+            cx,
+        );
         let jid = job_id;
         cx.background_executor()
             .spawn(async move {
@@ -3804,6 +4369,15 @@ impl Workspace {
             return;
         };
         self.issue_selected = Some(id.clone());
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Issue,
+                t!("activity.issue.open", id = id.as_str()).to_string(),
+            )
+            .with_target(id.clone(), id.clone())
+            .with_action(ActivityAction::OpenIssue),
+            cx,
+        );
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -3876,6 +4450,15 @@ impl Workspace {
                         ToastLevel::Success,
                         cx,
                     );
+                    ws.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Issue,
+                            t!("activity.issue.created", title = iss.title.as_str()).to_string(),
+                        )
+                        .with_target(iss.id.clone(), iss.title.clone())
+                        .with_action(ActivityAction::OpenIssue),
+                        cx,
+                    );
                     // Success: close the composer sheet, clear its buffers,
                     // and pop the detail sheet on the newly-created request.
                     ws.user_new_request_sheet_open = false;
@@ -3919,6 +4502,21 @@ impl Workspace {
                 Ok(iss) => {
                     ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss);
+                    if let Some((id, title)) = ws
+                        .issue_detail
+                        .as_ref()
+                        .map(|detail| (detail.id.clone(), detail.title.clone()))
+                    {
+                        ws.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Issue,
+                                t!("activity.issue.commented", title = title.as_str()).to_string(),
+                            )
+                            .with_target(id, title)
+                            .with_action(ActivityAction::OpenIssue),
+                            cx,
+                        );
+                    }
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -3955,6 +4553,21 @@ impl Workspace {
                 Ok(iss) => {
                     ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss);
+                    if let Some((id, title)) = ws
+                        .issue_detail
+                        .as_ref()
+                        .map(|detail| (detail.id.clone(), detail.title.clone()))
+                    {
+                        ws.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Issue,
+                                t!("activity.issue.updated", title = title.as_str()).to_string(),
+                            )
+                            .with_target(id, title)
+                            .with_action(ActivityAction::OpenIssue),
+                            cx,
+                        );
+                    }
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -3987,6 +4600,11 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(_) => {
+                    ws.add_activity(
+                        t!("activity.issue.deleted", id = deleted_id.as_str()).to_string(),
+                        ActivityKind::Issue,
+                        cx,
+                    );
                     ws.remove_issue_from_list(&deleted_id);
                     if ws.issue_selected.as_deref() == Some(deleted_id.as_str()) {
                         ws.issue_selected = None;
@@ -4564,7 +5182,11 @@ impl Workspace {
             self.app_config
                 .pinned_connections
                 .iter()
-                .filter_map(|id| self.connections.iter().find(|connection| connection.id == *id))
+                .filter_map(|id| {
+                    self.connections
+                        .iter()
+                        .find(|connection| connection.id == *id)
+                })
                 .take(5)
                 .collect()
         };
@@ -4666,6 +5288,8 @@ impl Workspace {
         self._form_sub = None;
         self.login_form = None;
         self._login_form_sub = None;
+        self.onboarding = None;
+        self._onboarding_sub = None;
         self.port_forward_form = None;
         self._pf_form_sub = None;
         self.script_form = None;
@@ -4731,10 +5355,15 @@ impl Workspace {
                 }
                 if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
                     let title = conn.display_name().to_string();
+                    let conn_id = conn.id;
                     self.connect_ssh(conn, cx);
-                    self.add_activity(
-                        t!("activity.connecting_to", name = title.as_str()).to_string(),
-                        ActivityType::Connection,
+                    self.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Connection,
+                            t!("activity.connecting_to", name = title.as_str()).to_string(),
+                        )
+                        .with_target(conn_id.to_string(), title)
+                        .with_action(ActivityAction::ConnectConnection),
                         cx,
                     );
                     self.active_view = ActiveView::Terminal;
@@ -4913,12 +5542,26 @@ impl Workspace {
             SidebarSection::PortForwards => ActiveView::PortForwards,
             SidebarSection::ServerSync => ActiveView::ServerSync,
             SidebarSection::Sites => ActiveView::Sites,
+            SidebarSection::Recent => ActiveView::Recent,
             SidebarSection::FileEditor => ActiveView::FileEditor,
             SidebarSection::JeanConsole => ActiveView::JeanConsole,
             SidebarSection::Fleet => ActiveView::Fleet,
             SidebarSection::BextCloud => ActiveView::BextCloud,
             SidebarSection::Settings => ActiveView::Settings,
         };
+    }
+
+    fn activate_dev_section(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::Dev, cx);
+        }
+        self.switch_to_section(section);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_active_section(section);
+            cx.notify();
+        });
+        self.on_active_view_changed(cx);
+        cx.notify();
     }
 
     /// Called when the active Dev view changes — (re)start the Jean poll if the
@@ -5047,6 +5690,14 @@ impl Workspace {
             terminal.spawn_local_terminal(cx);
         });
         self.active_view = ActiveView::Terminal;
+        self.add_activity_entry(
+            ActivityEntry::new(
+                ActivityKind::Terminal,
+                t!("activity.terminal_opened").to_string(),
+            )
+            .with_action(ActivityAction::OpenTerminal),
+            cx,
+        );
         self.update_dashboard_stats(cx);
         self.sync_terminal_tab_count(cx);
     }
@@ -5157,6 +5808,7 @@ impl Workspace {
         sites_loaded: bool,
         mode_switch: Option<AppMode>,
         ui_font_size: f32,
+        ai_configured: bool,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -5538,6 +6190,34 @@ impl Workspace {
             )
             .child(inc_btn);
 
+        let ai_button = ai_configured.then(|| {
+            let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
+            div()
+                .id("titlebar-ai")
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(28.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(btn_hover_bg))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: tooltip.clone(),
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(|_this, _, _window, cx| {
+                    cx.dispatch_action(&OpenAiAssistant);
+                }))
+                .child(
+                    svg()
+                        .path(lucide_path("zap"))
+                        .size(px(13.0))
+                        .text_color(btn_text),
+                )
+        });
+
         // Subtle vertical divider between the chrome control clusters.
         let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
 
@@ -5559,6 +6239,7 @@ impl Workspace {
                     .gap(px(4.0))
                     .pr(px(8.0))
                     .child(scale_group)
+                    .children(ai_button)
                     .child(divider())
                     .child(account_btn)
                     .children(mode_switcher)
@@ -6570,9 +7251,8 @@ impl Workspace {
                     ))
                     .child("wp-admin")
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, _cx| {
-                        let _ = shelldeck_core::config::cloud_account::open_in_browser(
-                            &wp_url_owned,
-                        );
+                        let _ =
+                            shelldeck_core::config::cloud_account::open_in_browser(&wp_url_owned);
                     })),
             );
         }
@@ -6638,87 +7318,88 @@ impl Workspace {
         let sid_for_click = sid.clone();
         let label_for_click = label.clone();
 
-        div()
-            .w_full()
-            .h(px(SITE_ROW_H))
-            .py(px(4.0))
-            .child(
-                div()
-                    .w_full()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .px(px(12.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(border_color)
-                    .bg(ShellDeckColors::bg_sidebar())
-            .child({
-                let mut identity = div().flex().flex_col().flex_1().min_w(px(0.0)).overflow_hidden();
-                let mut label_row = div().flex().items_center().gap(px(6.0)).child(
-                    div()
-                        .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .truncate()
-                        .child(label.clone()),
-                );
-                if site.is_wordpress == Some(true) {
-                    label_row = label_row.child(
+        div().w_full().h(px(SITE_ROW_H)).py(px(4.0)).child(
+            div()
+                .w_full()
+                .h_full()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(12.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(border_color)
+                .bg(ShellDeckColors::bg_sidebar())
+                .child({
+                    let mut identity = div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden();
+                    let mut label_row = div().flex().items_center().gap(px(6.0)).child(
                         div()
-                            .px(px(5.0))
-                            .py(px(1.0))
-                            .rounded(px(4.0))
-                            .bg(ShellDeckColors::primary().opacity(0.12))
-                            .text_size(px(10.0))
+                            .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::primary())
-                            .flex_shrink_0()
-                            .child("WP"),
+                            .text_color(ShellDeckColors::text_primary())
+                            .truncate()
+                            .child(label.clone()),
                     );
-                }
-                identity = identity.child(label_row).child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .truncate()
-                        .child(if site.host.is_empty() {
-                            site.tenant_name.clone()
-                        } else {
-                            site.host.clone()
-                        }),
-                );
-                identity
-            })
-            .child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "uh-act-{}",
-                        sid
-                    ))))
-                    .px(px(10.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .flex_shrink_0()
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .bg(ShellDeckColors::bg_primary())
-                    .text_color(ShellDeckColors::text_primary())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child(t!("user.sites.activate").to_string())
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.select_site(
-                            Some(sid_for_click.clone()),
-                            Some(label_for_click.clone()),
-                            cx,
+                    if site.is_wordpress == Some(true) {
+                        label_row = label_row.child(
+                            div()
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .bg(ShellDeckColors::primary().opacity(0.12))
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::primary())
+                                .flex_shrink_0()
+                                .child("WP"),
                         );
-                    })),
-            ),
-            )
+                    }
+                    identity = identity.child(label_row).child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .truncate()
+                            .child(if site.host.is_empty() {
+                                site.tenant_name.clone()
+                            } else {
+                                site.host.clone()
+                            }),
+                    );
+                    identity
+                })
+                .child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!(
+                            "uh-act-{}",
+                            sid
+                        ))))
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(6.0))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .flex_shrink_0()
+                        .border_1()
+                        .border_color(ShellDeckColors::border())
+                        .bg(ShellDeckColors::bg_primary())
+                        .text_color(ShellDeckColors::text_primary())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ShellDeckColors::hover_bg()))
+                        .child(t!("user.sites.activate").to_string())
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.select_site(
+                                Some(sid_for_click.clone()),
+                                Some(label_for_click.clone()),
+                                cx,
+                            );
+                        })),
+                ),
+        )
     }
 
     /// Tab bar for the User-mode home. Three tabs (Sites / Demandes /
@@ -6945,11 +7626,7 @@ impl Workspace {
                 "users",
             ))
             .child(field(
-                t!(
-                    "user.infos.field.sites_available",
-                    count = sites_count
-                )
-                .to_string(),
+                t!("user.infos.field.sites_available", count = sites_count).to_string(),
                 t!("user.infos.field.sites_count", count = sites_count).to_string(),
                 "globe",
             ));
@@ -6986,11 +7663,7 @@ impl Workspace {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::primary())
-                            .child(lucide_icon(
-                                "shield",
-                                10.0,
-                                ShellDeckColors::primary(),
-                            ))
+                            .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
                             .child(role.clone()),
                     );
                 }
@@ -7087,9 +7760,7 @@ impl Workspace {
                 // SVGs in currentColor and the mark's multi-fill palette
                 // (teal frame + dark inner + light glyph) would collapse
                 // to a single tint. The PNG raster preserves every colour.
-                img("images/shelldeck-icon.png")
-                    .w(px(72.0))
-                    .h(px(72.0)),
+                img("images/shelldeck-icon.png").w(px(72.0)).h(px(72.0)),
             )
             .child(
                 div()
@@ -7260,11 +7931,7 @@ impl Workspace {
                     .mt(px(8.0))
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(lucide_icon(
-                        "check",
-                        11.0,
-                        ShellDeckColors::success(),
-                    ))
+                    .child(lucide_icon("check", 11.0, ShellDeckColors::success()))
                     .child(t!("welcome.inklura.trust").to_string()),
             );
 
@@ -7372,17 +8039,13 @@ impl Workspace {
                             .child(account.initial()),
                     )
                     .child({
-                        let mut name_row = div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .text_size(px(16.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(account.display_name()),
-                            );
+                        let mut name_row = div().flex().items_center().gap(px(8.0)).child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(account.display_name()),
+                        );
                         // Super-admin badge (`shield` + label, primary tint)
                         // — surfaces the role the token was minted with so
                         // the user knows why they see Support/Dev options.
@@ -7397,30 +8060,20 @@ impl Workspace {
                                     .rounded(px(6.0))
                                     .bg(ShellDeckColors::primary().opacity(0.14))
                                     .border_1()
-                                    .border_color(
-                                        ShellDeckColors::primary().opacity(0.35),
-                                    )
+                                    .border_color(ShellDeckColors::primary().opacity(0.35))
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ShellDeckColors::primary())
-                                    .child(lucide_icon(
-                                        "shield",
-                                        10.0,
-                                        ShellDeckColors::primary(),
-                                    ))
+                                    .child(lucide_icon("shield", 10.0, ShellDeckColors::primary()))
                                     .child(t!("user.badge.super_admin").to_string()),
                             );
                         }
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(name_row)
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(format!("{} · {}", account.email, server)),
-                            )
+                        div().flex().flex_col().child(name_row).child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(format!("{} · {}", account.email, server)),
+                        )
                     }),
             )
             .child(
@@ -7625,8 +8278,7 @@ impl Workspace {
                             for i in range {
                                 if let Some(site) = others.get(i) {
                                     items.push(
-                                        this.render_compact_site_row(site, cx)
-                                            .into_any_element(),
+                                        this.render_compact_site_row(site, cx).into_any_element(),
                                     );
                                 }
                             }
@@ -7697,9 +8349,7 @@ impl Workspace {
                                 div().w(px(260.0)).child(
                                     Input::new(&self.user_sites_search_state)
                                         .size(InputSize::Sm)
-                                        .placeholder(
-                                            t!("user.sites.search").to_string(),
-                                        )
+                                        .placeholder(t!("user.sites.search").to_string())
                                         .prefix(lucide_icon(
                                             "search",
                                             12.0,
@@ -8497,43 +9147,46 @@ impl Render for Workspace {
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else {
-        // The app mode selects the whole surface. User/Support are full-pane
-        // manage surfaces (no sidebar); Dev is the classic terminal workspace.
-        // Dev views (terminal sessions etc.) are hidden, never destroyed.
-        match self.effective_mode() {
-            AppMode::Support => {
-                main_area = main_area.child(self.support.clone());
-            }
-            AppMode::User => {
-                main_area = main_area.child(self.render_user_home(_cx));
-            }
-            AppMode::Dev => {
-                if self.sidebar_visible {
-                    main_area = main_area.child(self.sidebar.clone());
+            // The app mode selects the whole surface. User/Support are full-pane
+            // manage surfaces (no sidebar); Dev is the classic terminal workspace.
+            // Dev views (terminal sessions etc.) are hidden, never destroyed.
+            match self.effective_mode() {
+                AppMode::Support => {
+                    main_area = main_area.child(self.support.clone());
                 }
-
-                let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
-                if !output_resizing && !sidebar_resizing {
-                    content = content.block_mouse_except_scroll();
+                AppMode::User => {
+                    main_area = main_area.child(self.render_user_home(_cx));
                 }
+                AppMode::Dev => {
+                    if self.sidebar_visible {
+                        main_area = main_area.child(self.sidebar.clone());
+                    }
 
-                match self.active_view {
-                    ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
-                    ActiveView::Terminal => content = content.child(self.terminal.clone()),
-                    ActiveView::Scripts => content = content.child(self.scripts.clone()),
-                    ActiveView::PortForwards => content = content.child(self.port_forwards.clone()),
-                    ActiveView::ServerSync => content = content.child(self.server_sync.clone()),
-                    ActiveView::Sites => content = content.child(self.sites.clone()),
-                    ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
-                    ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
-                    ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
-                    ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
-                    ActiveView::Settings => content = content.child(self.settings.clone()),
+                    let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
+                    if !output_resizing && !sidebar_resizing {
+                        content = content.block_mouse_except_scroll();
+                    }
+
+                    match self.active_view {
+                        ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
+                        ActiveView::Terminal => content = content.child(self.terminal.clone()),
+                        ActiveView::Scripts => content = content.child(self.scripts.clone()),
+                        ActiveView::PortForwards => {
+                            content = content.child(self.port_forwards.clone())
+                        }
+                        ActiveView::ServerSync => content = content.child(self.server_sync.clone()),
+                        ActiveView::Sites => content = content.child(self.sites.clone()),
+                        ActiveView::Recent => content = content.child(self.recent.clone()),
+                        ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
+                        ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
+                        ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
+                        ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
+                        ActiveView::Settings => content = content.child(self.settings.clone()),
+                    }
+
+                    main_area = main_area.child(content);
                 }
-
-                main_area = main_area.child(content);
             }
-        }
         } // end of `else` (not-welcome branch)
 
         let h1 = handle.clone();
@@ -8551,6 +9204,8 @@ impl Render for Workspace {
         let h13 = handle.clone();
         let h14 = handle.clone();
         let h15 = handle.clone();
+        let h16 = handle.clone();
+        let h17 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -8673,6 +9328,18 @@ impl Render for Workspace {
                     ws.update(cx, |ws, cx| {
                         ws.apply_terminal_theme_by_name(&name, cx);
                     });
+                }
+            })
+            .on_action(move |_: &OpenRecent, _window, cx| {
+                if let Some(ws) = h16.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.activate_dev_section(SidebarSection::Recent, cx);
+                    });
+                }
+            })
+            .on_action(move |_: &OpenAiAssistant, _window, cx| {
+                if let Some(ws) = h17.upgrade() {
+                    ws.update(cx, |ws, cx| ws.open_ai_assistant(cx));
                 }
             });
 
@@ -8914,6 +9581,7 @@ impl Render for Workspace {
                 None
             },
             self.ui_font_size,
+            self.ai_available_for_current_surface(_cx),
             &handle,
             _cx,
         );
@@ -8959,6 +9627,10 @@ impl Render for Workspace {
         // Command palette overlay
         root = root.child(self.command_palette.clone());
 
+        if let Some(sheet) = &self.ai_sheet {
+            root = root.child(sheet.clone());
+        }
+
         // Toast notification overlay
         root = root.child(self.toasts.clone());
 
@@ -8966,6 +9638,7 @@ impl Render for Workspace {
         // level so hover/click on elements behind is properly blocked.
         let has_modal = self.connection_form.is_some()
             || self.login_form.is_some()
+            || self.onboarding.is_some()
             || self.port_forward_form.is_some()
             || self.script_form.is_some()
             || self.template_browser.is_some()
@@ -8984,6 +9657,9 @@ impl Render for Workspace {
                 modal_layer = modal_layer.child(form.clone());
             }
             if let Some(ref form) = self.login_form {
+                modal_layer = modal_layer.child(form.clone());
+            }
+            if let Some(ref form) = self.onboarding {
                 modal_layer = modal_layer.child(form.clone());
             }
             if let Some(ref form) = self.port_forward_form {

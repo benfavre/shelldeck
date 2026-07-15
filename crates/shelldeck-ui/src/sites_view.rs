@@ -2,7 +2,10 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::scale::px;
+use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
+use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::models::connection::Connection;
@@ -12,6 +15,7 @@ use uuid::Uuid;
 
 const PAGE_SIZE: usize = 50;
 
+use crate::icons::lucide_icon;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -377,7 +381,11 @@ impl SitesView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let key = group_key.to_string();
-        let toggle_char = if is_collapsed { ">" } else { "v" };
+        let chevron_slug = if is_collapsed {
+            "chevron-right"
+        } else {
+            "chevron-down"
+        };
 
         let type_color = match type_label {
             "Nginx" => ShellDeckColors::success(),
@@ -393,6 +401,7 @@ impl SitesView {
             ))))
             .flex()
             .items_center()
+            .gap(px(6.0))
             .w_full()
             .px(px(12.0))
             .py(px(5.0))
@@ -404,10 +413,17 @@ impl SitesView {
             }))
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .w(px(16.0))
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(toggle_char),
+                    .h(px(16.0))
+                    .flex_shrink_0()
+                    .child(lucide_icon(
+                        chevron_slug,
+                        12.0,
+                        ShellDeckColors::text_muted(),
+                    )),
             )
             .child(
                 div()
@@ -496,69 +512,57 @@ impl SitesView {
             ))
     }
 
-    fn render_filter_badge(&self, filter: SiteTypeFilter, cx: &mut Context<Self>) -> Stateful<Div> {
-        let is_active = self.type_filter == filter;
-        let label = filter.label();
-        div()
-            .id(ElementId::from(SharedString::from(format!(
-                "filter-{}",
-                label
-            ))))
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(12.0))
-            .cursor_pointer()
-            .text_size(px(11.0))
-            .font_weight(FontWeight::MEDIUM)
-            .when(is_active, |el| {
-                el.bg(ShellDeckColors::primary()).text_color(gpui::white())
-            })
-            .when(!is_active, |el| {
-                el.bg(ShellDeckColors::bg_surface())
-                    .text_color(ShellDeckColors::text_muted())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.type_filter = filter;
-                this.visible_card_count = PAGE_SIZE;
-                this.collapsed_groups.clear();
-                cx.notify();
-            }))
-            .child(label)
+    /// Compact adabraka `Button` for filter/sort/view-mode chips. Mirrors
+    /// `SupportView::compact_filter_button` exactly so every ShellDeck filter
+    /// bar shares the same building block (see `.agents/ui-components.md` —
+    /// harmonization).
+    fn compact_filter_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        Button::new(id, label)
+            .size(ButtonSize::Sm)
+            .h(gpui::px(26.0))
+            .px(gpui::px(8.0))
     }
 
-    fn render_sort_option(&self, sort: SiteSortBy, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_type_filter_chip(
+        &self,
+        filter: SiteTypeFilter,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_active = self.type_filter == filter;
+        let label = filter.label();
+        let id = ElementId::from(SharedString::from(format!("sites-filter-{}", label)));
+        let entity = cx.entity();
+        Self::compact_filter_button(id, label)
+            .variant(ButtonVariant::Outline)
+            .selected(is_active)
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.type_filter = filter;
+                    this.visible_card_count = PAGE_SIZE;
+                    this.collapsed_groups.clear();
+                    cx.notify();
+                });
+            })
+    }
+
+    fn render_sort_chip(&self, sort: SiteSortBy, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.sort_by == sort;
-        let arrow = if is_active {
-            if self.sort_ascending {
-                " ^"
+        let label = sort.label();
+        let id = ElementId::from(SharedString::from(format!("sites-sort-{}", label)));
+        let entity = cx.entity();
+        let mut btn = Self::compact_filter_button(id, label)
+            .variant(ButtonVariant::Outline)
+            .selected(is_active);
+        if is_active {
+            let arrow_slug = if self.sort_ascending {
+                "arrow-up"
             } else {
-                " v"
-            }
-        } else {
-            ""
-        };
-        div()
-            .id(ElementId::from(SharedString::from(format!(
-                "sort-{}",
-                sort.label()
-            ))))
-            .px(px(8.0))
-            .py(px(3.0))
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .text_size(px(10.0))
-            .when(is_active, |el| {
-                el.text_color(ShellDeckColors::primary())
-                    .font_weight(FontWeight::SEMIBOLD)
-            })
-            .when(!is_active, |el| {
-                el.text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
+                "arrow-down"
+            };
+            btn = btn.icon(IconSource::from(arrow_slug));
+        }
+        btn.on_click(move |_, _, cx| {
+            entity.update(cx, |this, cx| {
                 if this.sort_by == sort {
                     this.sort_ascending = !this.sort_ascending;
                 } else {
@@ -568,127 +572,139 @@ impl SitesView {
                 this.visible_card_count = PAGE_SIZE;
                 this.collapsed_groups.clear();
                 cx.notify();
-            }))
-            .child(format!("{}{}", sort.label(), arrow))
+            });
+        })
     }
 
+    fn render_view_mode_chip(
+        &self,
+        mode: SitesViewMode,
+        label: impl Into<SharedString>,
+        icon_slug: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_active = self.view_mode == mode;
+        let id = ElementId::from(SharedString::from(format!("sites-view-{:?}", mode)));
+        let entity = cx.entity();
+        Self::compact_filter_button(id, label)
+            .variant(ButtonVariant::Outline)
+            .selected(is_active)
+            .icon(IconSource::from(icon_slug))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.view_mode = mode;
+                    cx.notify();
+                });
+            })
+    }
+
+    /// Filter panel mirroring `SupportView::render_filters` — a `search_row`
+    /// (real `Input` + `Badge`) stacked over a wrapping `chips_row` of
+    /// `compact_filter_button`s for type / sort / view mode. Same widgets,
+    /// same layout as Support so both surfaces share visual language
+    /// (see `.agents/ui-components.md`).
     fn render_filter_toolbar(&self, cx: &mut Context<Self>) -> Div {
-        let mut toolbar = div()
+        let entity = cx.entity();
+        let total = self.sites.len();
+        let filtered = self.filtered_sites().len();
+
+        let search_row = div()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .w_full()
-            .flex_shrink_0()
-            .flex_wrap();
+            .gap(px(6.0))
+            .child(
+                div().flex_1().min_w(px(220.0)).child(
+                    Input::new(&self.search_state)
+                        .size(InputSize::Sm)
+                        .placeholder(t!("sites.search_placeholder").to_string())
+                        .clearable(true)
+                        .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
+                        .on_change({
+                            let entity = entity.clone();
+                            move |value, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.search_query = value.to_string();
+                                    this.visible_card_count = PAGE_SIZE;
+                                    this.collapsed_groups.clear();
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                ),
+            )
+            .child(
+                Badge::new(if filtered == total {
+                    t!("sites.count_all", count = total).to_string()
+                } else {
+                    t!("sites.count_filtered", filtered = filtered, total = total).to_string()
+                })
+                .variant(BadgeVariant::Secondary),
+            );
 
-        // Real `Input` — cursor, selection, clearable × chip, search-glass
-        // prefix. `on_change` mirrors the value into `self.search_query` for
-        // the fuzzy-match helpers.
-        let search_input = div().min_w(px(220.0)).child(
-            Input::new(&self.search_state)
-                .size(InputSize::Sm)
-                .placeholder(t!("sites.search_placeholder").to_string())
-                .clearable(true)
-                .prefix(
-                    svg()
-                        .path("icons/lucide/search.svg")
-                        .size(px(12.0))
-                        .flex_shrink_0()
-                        .text_color(ShellDeckColors::text_muted()),
-                )
-                .on_change({
-                    let entity = cx.entity();
-                    move |value, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.search_query = value.to_string();
-                            this.visible_card_count = PAGE_SIZE;
-                            this.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    }
-                }),
-        );
+        let mut chips_row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.0))
+            .mt(px(6.0));
 
-        toolbar = toolbar.child(search_input);
+        // Type filters (mirrors Support ticket status chips).
+        chips_row = chips_row
+            .child(self.render_type_filter_chip(SiteTypeFilter::All, cx))
+            .child(self.render_type_filter_chip(SiteTypeFilter::Nginx, cx))
+            .child(self.render_type_filter_chip(SiteTypeFilter::Mysql, cx))
+            .child(self.render_type_filter_chip(SiteTypeFilter::Postgresql, cx));
 
-        // Type filter badges
-        toolbar = toolbar
-            .child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()))
-            .child(self.render_filter_badge(SiteTypeFilter::All, cx))
-            .child(self.render_filter_badge(SiteTypeFilter::Nginx, cx))
-            .child(self.render_filter_badge(SiteTypeFilter::Mysql, cx))
-            .child(self.render_filter_badge(SiteTypeFilter::Postgresql, cx));
-
-        // Sort options
-        toolbar = toolbar.child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()));
-        toolbar = toolbar
+        // Separator + sort chips.
+        chips_row = chips_row
+            .child(
+                div()
+                    .mx(px(4.0))
+                    .w(px(1.0))
+                    .h(px(20.0))
+                    .bg(ShellDeckColors::border()),
+            )
             .child(
                 div()
                     .text_size(px(10.0))
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(ShellDeckColors::text_muted())
                     .child(t!("sites.sort.label").to_string()),
             )
-            .child(self.render_sort_option(SiteSortBy::Name, cx))
-            .child(self.render_sort_option(SiteSortBy::Server, cx))
-            .child(self.render_sort_option(SiteSortBy::Type, cx))
-            .child(self.render_sort_option(SiteSortBy::DiscoveredAt, cx));
+            .child(self.render_sort_chip(SiteSortBy::Name, cx))
+            .child(self.render_sort_chip(SiteSortBy::Server, cx))
+            .child(self.render_sort_chip(SiteSortBy::Type, cx))
+            .child(self.render_sort_chip(SiteSortBy::DiscoveredAt, cx));
 
-        // View mode toggle
-        toolbar = toolbar.child(div().w(px(1.0)).h(px(20.0)).bg(ShellDeckColors::border()));
+        // Separator + view mode toggle.
+        chips_row = chips_row
+            .child(
+                div()
+                    .mx(px(4.0))
+                    .w(px(1.0))
+                    .h(px(20.0))
+                    .bg(ShellDeckColors::border()),
+            )
+            .child(self.render_view_mode_chip(
+                SitesViewMode::Table,
+                t!("sites.view.table").to_string(),
+                "table",
+                cx,
+            ))
+            .child(self.render_view_mode_chip(
+                SitesViewMode::Cards,
+                t!("sites.view.cards").to_string(),
+                "grid-2x2",
+                cx,
+            ));
 
-        let is_table = self.view_mode == SitesViewMode::Table;
-        toolbar = toolbar.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .id("view-mode-table")
-                        .px(px(6.0))
-                        .py(px(3.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .text_size(px(10.0))
-                        .when(is_table, |el| {
-                            el.bg(ShellDeckColors::primary().opacity(0.15))
-                                .text_color(ShellDeckColors::primary())
-                        })
-                        .when(!is_table, |el| {
-                            el.text_color(ShellDeckColors::text_muted())
-                                .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view_mode = SitesViewMode::Table;
-                            cx.notify();
-                        }))
-                        .child(t!("sites.view.table").to_string()),
-                )
-                .child(
-                    div()
-                        .id("view-mode-cards")
-                        .px(px(6.0))
-                        .py(px(3.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .text_size(px(10.0))
-                        .when(!is_table, |el| {
-                            el.bg(ShellDeckColors::primary().opacity(0.15))
-                                .text_color(ShellDeckColors::primary())
-                        })
-                        .when(is_table, |el| {
-                            el.text_color(ShellDeckColors::text_muted())
-                                .hover(|el| el.text_color(ShellDeckColors::text_primary()))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view_mode = SitesViewMode::Cards;
-                            cx.notify();
-                        }))
-                        .child(t!("sites.view.cards").to_string()),
-                ),
-        );
-
-        toolbar
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_shrink_0()
+            .child(search_row)
+            .child(chips_row)
     }
 
     fn render_table_header() -> Div {
@@ -771,7 +787,7 @@ impl SitesView {
             .port()
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let ssl_str = if site.has_ssl() { "[SSL]" } else { "-" };
+        let has_ssl = site.has_ssl();
 
         let mut tag_row = div()
             .flex()
@@ -903,19 +919,25 @@ impl SitesView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(port_str),
             )
-            // SSL
-            .child(
-                div()
-                    .w(px(40.0))
-                    .flex_shrink_0()
-                    .text_size(px(11.0))
-                    .text_color(if site.has_ssl() {
-                        ShellDeckColors::success()
-                    } else {
-                        ShellDeckColors::text_muted()
-                    })
-                    .child(ssl_str),
-            )
+            // SSL — Lucide `shield-check` when secured, faint dash otherwise.
+            .child({
+                let mut ssl_cell = div().w(px(40.0)).flex_shrink_0().flex().items_center();
+                if has_ssl {
+                    ssl_cell = ssl_cell.child(lucide_icon(
+                        "shield-check",
+                        14.0,
+                        ShellDeckColors::success(),
+                    ));
+                } else {
+                    ssl_cell = ssl_cell.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child("-"),
+                    );
+                }
+                ssl_cell
+            })
             // Root/Size
             .child(
                 div()
@@ -1866,32 +1888,12 @@ impl Render for SitesView {
         page = page.child(
             div()
                 .px(px(24.0))
-                .py(px(8.0))
+                .py(px(10.0))
                 .flex_shrink_0()
                 .child(self.render_filter_toolbar(cx)),
         );
 
-        // Result count line
         let filtered_count = filtered.len();
-        let total_count = self.sites.len();
-        let count_text = if filtered_count == total_count {
-            t!("sites.count_all", count = total_count).to_string()
-        } else {
-            t!(
-                "sites.count_filtered",
-                filtered = filtered_count,
-                total = total_count
-            )
-            .to_string()
-        };
-        page = page.child(
-            div().px(px(24.0)).pb(px(4.0)).flex_shrink_0().child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(count_text),
-            ),
-        );
 
         // Content area (table/cards + optional detail panel)
         let mut content_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();

@@ -82,6 +82,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/jean_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
 | SDTEST-070 | *to write* — save_to writes atomically | SDUC-091 | **Red / P0** | The config is the user's investment; a torn write on power loss is unrecoverable. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
+| SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
 
 ---
 
@@ -105,6 +106,16 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-091 | `workspace_state.rs::load_from_missing_returns_default` | SDUC-089 | Green | |
 | SDTEST-092 | `workspace_state.rs::clear_at_removes_file` | SDUC-089 | Green | |
 | SDTEST-093 | `workspace_state.rs::load_from_corrupt_returns_err` | SDUC-089 | Green | |
+
+---
+
+## 6a. `config/activity.rs` — recent activity log
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1330 | `activity.rs::append_to_and_load_recent_return_newest_first_with_limit` | SDUC-408 | Green | Appends JSONL entries, then loads newest-first with a limit. |
+| SDTEST-1331 | `activity.rs::load_recent_ignores_blank_and_malformed_lines` | SDUC-408 | Green | One corrupt line cannot brick startup. |
+| SDTEST-1332 | `activity.rs::old_entries_without_action_default_to_none` | SDUC-408 | Green | Back-compat for entries written before route actions existed. |
 
 ---
 

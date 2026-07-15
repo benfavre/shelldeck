@@ -1,13 +1,16 @@
 use crate::scale::px;
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input::{Input, InputSize};
+use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::toggle::Toggle;
-use adabraka_ui::prelude::scrollable_vertical;
+use adabraka_ui::prelude::{scrollable_vertical, Button, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
 
 use crate::t;
+use shelldeck_core::ai::{command_available, AiBackend};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
@@ -33,6 +36,7 @@ pub enum SettingsTab {
     General,
     Terminal,
     Editor,
+    Ai,
     Appearance,
     About,
 }
@@ -49,6 +53,14 @@ pub enum SettingsEvent {
     /// toggle unchanged (on OS failure — Flatpak sandbox, permissions,
     /// missing HOME, …). See `Workspace::apply_autostart_request`.
     AutostartRequested(bool),
+    /// Replay the post-login onboarding tour (`Settings → Général`).
+    ShowOnboarding,
+    /// Store or remove an API credential in the OS keychain. The value never
+    /// enters `AppConfig` or `shelldeck.toml`.
+    AiApiKeyChanged {
+        backend: AiBackend,
+        value: String,
+    },
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -66,6 +78,9 @@ pub struct SettingsView {
     terminal_cursor_style_select: Entity<Select<SharedString>>,
     general_language_select: Entity<Select<UiLanguage>>,
     ui_font_family_select: Entity<Select<SharedString>>,
+    ai_backend_select: Entity<Select<AiBackend>>,
+    ai_model_state: Entity<InputState>,
+    ai_api_key_state: Entity<InputState>,
 }
 
 impl SettingsView {
@@ -76,6 +91,8 @@ impl SettingsView {
         let terminal_cursor_style_select = build_terminal_cursor_style_select(&config, cx);
         let general_language_select = build_general_language_select(&config, cx);
         let ui_font_family_select = build_ui_font_family_select(&config, cx);
+        let ai_backend_select = build_ai_backend_select(&config, cx);
+        let ai_model = config.ai.model.clone();
         Self {
             config,
             active_tab: SettingsTab::General,
@@ -86,6 +103,9 @@ impl SettingsView {
             terminal_cursor_style_select,
             general_language_select,
             ui_font_family_select,
+            ai_backend_select,
+            ai_model_state: cx.new(|cx| InputState::new(cx).placeholder(ai_model)),
+            ai_api_key_state: cx.new(InputState::new),
         }
     }
 
@@ -114,6 +134,9 @@ impl SettingsView {
         }
         if self.config.general.ui_font_family != old.general.ui_font_family {
             self.ui_font_family_select = build_ui_font_family_select(&self.config, cx);
+        }
+        if self.config.ai.backend != old.ai.backend {
+            self.ai_backend_select = build_ai_backend_select(&self.config, cx);
         }
     }
 
@@ -373,6 +396,18 @@ impl SettingsView {
                     self.config.general.autostart,
                     &entity,
                 ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.general.onboarding_replay.label").as_ref(),
+                t!("settings.general.onboarding_replay.description").as_ref(),
+                Button::new(
+                    "onboarding-replay",
+                    t!("settings.general.onboarding_replay.button").to_string(),
+                )
+                .variant(ButtonVariant::Outline)
+                .on_click(cx.listener(|_this, _, _window, cx| {
+                    cx.emit(SettingsEvent::ShowOnboarding);
+                })),
             ))
             // System-tray preferences — grouped at the bottom of the
             // Général tab because they're companion-mode polish (opt-in
@@ -677,6 +712,178 @@ impl SettingsView {
                     },
                 ),
             ))
+    }
+
+    fn render_ai_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let backend = self.config.ai.backend;
+        let status = match backend {
+            AiBackend::Disabled => t!("settings.ai.status.disabled").to_string(),
+            AiBackend::ClaudeCli => local_backend_status("claude"),
+            AiBackend::CodexCli => local_backend_status("codex"),
+            AiBackend::AiderCli => local_backend_status("aider"),
+            AiBackend::OpenAi | AiBackend::Anthropic => {
+                t!("settings.ai.status.keychain").to_string()
+            }
+        };
+
+        let model_parent = entity.clone();
+        let model_input = Input::new(&self.ai_model_state)
+            .size(InputSize::Sm)
+            .placeholder(if self.config.ai.model.is_empty() {
+                backend.default_model().to_string()
+            } else {
+                self.config.ai.model.clone()
+            })
+            .on_blur(move |value, cx| {
+                model_parent.update(cx, |this, cx| {
+                    let value = value.trim().to_string();
+                    if this.config.ai.model != value {
+                        this.config.ai.model = value;
+                        this.save_config(cx);
+                    }
+                });
+            });
+
+        let mut root = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(Self::render_setting_row(
+                t!("settings.ai.enabled.label").as_ref(),
+                t!("settings.ai.enabled.description").as_ref(),
+                Self::bind_toggle(
+                    "ai-enabled",
+                    self.config.ai.enabled,
+                    &entity,
+                    |this, value| this.config.ai.enabled = value,
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.ai.backend.label").as_ref(),
+                t!("settings.ai.backend.description").as_ref(),
+                div().w(px(220.0)).child(self.ai_backend_select.clone()),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.ai.status.label").as_ref(),
+                t!("settings.ai.status.description").as_ref(),
+                div()
+                    .text_size(px(13.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(status),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.ai.model.label").as_ref(),
+                t!("settings.ai.model.description").as_ref(),
+                div().w(px(220.0)).child(model_input),
+            ));
+
+        if let Some(provider) = backend.provider_key() {
+            let key_state = self.ai_api_key_state.clone();
+            let provider = provider.to_string();
+            root = root.child(Self::render_setting_row(
+                t!("settings.ai.api_key.label").as_ref(),
+                t!("settings.ai.api_key.description").as_ref(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .w(px(300.0))
+                    .child(
+                        div().flex_grow().child(
+                            Input::new(&self.ai_api_key_state)
+                                .size(InputSize::Sm)
+                                .password(true)
+                                .placeholder(t!("settings.ai.api_key.placeholder").to_string()),
+                        ),
+                    )
+                    .child(
+                        Button::new(
+                            "ai-api-key-save",
+                            t!("settings.ai.api_key.save").to_string(),
+                        )
+                        .variant(ButtonVariant::Outline)
+                        .on_click(cx.listener(
+                            move |_this, _, _window, cx| {
+                                let value = key_state.read(cx).content().trim().to_string();
+                                cx.emit(SettingsEvent::AiApiKeyChanged { backend, value });
+                            },
+                        )),
+                    )
+                    .child(
+                        Button::new(
+                            "ai-api-key-delete",
+                            t!("settings.ai.api_key.delete").to_string(),
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .on_click(cx.listener(
+                            move |_this, _, _window, cx| {
+                                cx.emit(SettingsEvent::AiApiKeyChanged {
+                                    backend: if provider == "openai" {
+                                        AiBackend::OpenAi
+                                    } else {
+                                        AiBackend::Anthropic
+                                    },
+                                    value: String::new(),
+                                });
+                            },
+                        )),
+                    ),
+            ));
+        }
+
+        root.child(Self::render_about_section(
+            t!("settings.ai.surfaces.section").as_ref(),
+        ))
+        .child(ai_surface_row(
+            "ai-surface-support",
+            "support",
+            self.config.ai.surfaces.support,
+            &entity,
+            |this, value| this.config.ai.surfaces.support = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-issues",
+            "issues",
+            self.config.ai.surfaces.issues,
+            &entity,
+            |this, value| this.config.ai.surfaces.issues = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-scripts",
+            "scripts",
+            self.config.ai.surfaces.scripts,
+            &entity,
+            |this, value| this.config.ai.surfaces.scripts = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-terminal",
+            "terminal",
+            self.config.ai.surfaces.terminal,
+            &entity,
+            |this, value| this.config.ai.surfaces.terminal = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-jean",
+            "jean",
+            self.config.ai.surfaces.jean,
+            &entity,
+            |this, value| this.config.ai.surfaces.jean = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-naming",
+            "naming",
+            self.config.ai.surfaces.naming,
+            &entity,
+            |this, value| this.config.ai.surfaces.naming = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-recent",
+            "recent",
+            self.config.ai.surfaces.recent,
+            &entity,
+            |this, value| this.config.ai.surfaces.recent = value,
+        ))
     }
 
     /// Shared `[- value +]` stepper — used by every numeric setting that
@@ -1455,6 +1662,9 @@ impl Render for SettingsView {
             SettingsTab::Editor => {
                 tab_content = tab_content.child(self.render_editor_settings(cx));
             }
+            SettingsTab::Ai => {
+                tab_content = tab_content.child(self.render_ai_settings(cx));
+            }
             SettingsTab::Appearance => {
                 tab_content = tab_content.child(self.render_appearance_settings(cx));
             }
@@ -1502,6 +1712,11 @@ impl Render for SettingsView {
                             .child(self.render_tab_button(
                                 SettingsTab::Editor,
                                 t!("settings.tab.editor").as_ref(),
+                                cx,
+                            ))
+                            .child(self.render_tab_button(
+                                SettingsTab::Ai,
+                                t!("settings.tab.ai").as_ref(),
                                 cx,
                             ))
                             .child(self.render_tab_button(
@@ -1755,5 +1970,79 @@ fn build_ui_font_family_select(
         cx,
         |this| this.config.general.ui_font_family.as_str(),
         |this, v| this.config.general.ui_font_family = v,
+    )
+}
+
+fn build_ai_backend_select(
+    config: &AppConfig,
+    cx: &mut Context<SettingsView>,
+) -> Entity<Select<AiBackend>> {
+    let entries = [
+        (
+            AiBackend::Disabled,
+            t!("settings.ai.backend.disabled").to_string(),
+        ),
+        (AiBackend::ClaudeCli, "Claude Code CLI".to_string()),
+        (AiBackend::CodexCli, "Codex CLI".to_string()),
+        (AiBackend::AiderCli, "Aider CLI".to_string()),
+        (AiBackend::OpenAi, "OpenAI API".to_string()),
+        (AiBackend::Anthropic, "Anthropic API".to_string()),
+    ];
+    let options = entries
+        .iter()
+        .map(|(backend, label)| SelectOption::new(*backend, label.clone()))
+        .collect();
+    let selected = entries
+        .iter()
+        .position(|(backend, _)| *backend == config.ai.backend);
+    let parent = cx.entity();
+    cx.new(move |select_cx| {
+        Select::new(select_cx)
+            .options(options)
+            .selected_index(selected)
+            .on_change(move |backend, _window, cx| {
+                let backend = *backend;
+                parent.update(cx, |this, cx| {
+                    if this.config.ai.backend == backend {
+                        return;
+                    }
+                    this.config.ai.backend = backend;
+                    this.config.ai.enabled = backend != AiBackend::Disabled;
+                    this.config.ai.model.clear();
+                    this.save_config(cx);
+                });
+            })
+    })
+}
+
+fn local_backend_status(command: &str) -> String {
+    if command_available(command) {
+        t!("settings.ai.status.available", command = command).to_string()
+    } else {
+        t!("settings.ai.status.missing", command = command).to_string()
+    }
+}
+
+fn ai_surface_row(
+    id: &'static str,
+    name: &'static str,
+    checked: bool,
+    entity: &Entity<SettingsView>,
+    set: impl Fn(&mut SettingsView, bool) + 'static,
+) -> impl IntoElement {
+    let label = match name {
+        "support" => t!("settings.ai.surfaces.support").to_string(),
+        "issues" => t!("settings.ai.surfaces.issues").to_string(),
+        "scripts" => t!("settings.ai.surfaces.scripts").to_string(),
+        "terminal" => t!("settings.ai.surfaces.terminal").to_string(),
+        "jean" => t!("settings.ai.surfaces.jean").to_string(),
+        "naming" => t!("settings.ai.surfaces.naming").to_string(),
+        "recent" => t!("settings.ai.surfaces.recent").to_string(),
+        _ => name.to_string(),
+    };
+    SettingsView::render_setting_row(
+        &label,
+        t!("settings.ai.surfaces.description").as_ref(),
+        SettingsView::bind_toggle(id, checked, entity, set),
     )
 }

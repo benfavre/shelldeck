@@ -11,6 +11,10 @@ pub struct AppConfig {
     pub theme: ThemePreference,
     pub terminal: TerminalConfig,
     pub general: GeneralConfig,
+    /// `[ai]` — opt-in contextual assistant backend and per-surface controls.
+    /// API credentials are stored separately in the OS keychain.
+    #[serde(default)]
+    pub ai: crate::ai::AiConfig,
     /// `[editor]` — code editor preferences (font, indent, wrap, gutter…).
     /// `#[serde(default)]` keeps existing `shelldeck.toml` files without an
     /// `[editor]` section parsing cleanly.
@@ -195,6 +199,11 @@ pub struct GeneralConfig {
     /// Windows). `false` by default — opt-in.
     #[serde(default)]
     pub autostart: bool,
+    /// Whether the post-login onboarding tour has been completed (or
+    /// skipped). `false` by default — first successful login shows the
+    /// tour; replayable from Settings → Général.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 /// System-tray preferences. Per-category opt-in on the OS notifications
@@ -315,6 +324,7 @@ impl Default for GeneralConfig {
             ui_font_family: "System Default".to_string(),
             ui_font_size: 14.0,
             autostart: false,
+            onboarding_completed: false,
         }
     }
 }
