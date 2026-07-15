@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 
 use gpui::prelude::*;
@@ -19,6 +20,54 @@ use shelldeck_core::config::themes::TerminalTheme;
 use crate::glyph_cache::GlyphCache;
 use crate::t;
 use crate::theme::ShellDeckColors;
+
+const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
+const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
+
+fn command_extensions() -> Vec<OsString> {
+    if cfg!(windows) {
+        std::env::var_os("PATHEXT")
+            .map(|value| {
+                value
+                    .to_string_lossy()
+                    .split(';')
+                    .filter(|extension| !extension.trim().is_empty())
+                    .map(|extension| OsString::from(extension.trim()))
+                    .collect()
+            })
+            .filter(|extensions: &Vec<OsString>| !extensions.is_empty())
+            .unwrap_or_else(|| {
+                [".COM", ".EXE", ".BAT", ".CMD"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect()
+            })
+    } else {
+        vec![OsString::new()]
+    }
+}
+
+fn command_available_in_path(command: &str, path: Option<&OsStr>, extensions: &[OsString]) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+
+    std::env::split_paths(path).any(|directory| {
+        extensions.iter().any(|extension| {
+            let mut filename = OsString::from(command);
+            filename.push(extension);
+            directory.join(filename).is_file()
+        })
+    })
+}
+
+fn command_available(command: &str) -> bool {
+    command_available_in_path(
+        command,
+        std::env::var_os("PATH").as_deref(),
+        &command_extensions(),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Procedural block / box-drawing character renderer
@@ -1014,6 +1063,10 @@ pub struct TerminalView {
     /// When `false`, the cursor stays steady regardless of the program's
     /// DECSCUSR blink request.
     cursor_blink_enabled: bool,
+    /// Local AI CLIs discovered in PATH when the view is created. Their launch
+    /// actions stay hidden when the corresponding executable is unavailable.
+    claude_available: bool,
+    codex_available: bool,
     /// Configured scrollback buffer size (lines). Applied to live grids and to
     /// newly added sessions.
     configured_scrollback: usize,
@@ -1055,6 +1108,8 @@ struct TabMenuState {
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let (output_tx, output_rx) = mpsc::unbounded_channel::<()>();
+        let claude_available = command_available("claude");
+        let codex_available = command_available("codex");
         Self {
             pane: TerminalPane {
                 sessions: Vec::new(),
@@ -1103,6 +1158,8 @@ impl TerminalView {
             cursor_blink_on: true,
             cursor_blink_timer: None,
             cursor_blink_enabled: true,
+            claude_available,
+            codex_available,
             configured_scrollback: 10_000,
             has_focus: false,
             output_tx,
@@ -1803,24 +1860,34 @@ impl TerminalView {
         self.ensure_refresh_running(cx);
     }
 
-    /// Start the Claude Code CLI by running `claude --dangerously-skip-permissions`.
-    ///
-    /// Runs in the currently active terminal session if there is one; otherwise
-    /// opens a fresh local terminal first. The bytes are queued on the PTY input
-    /// channel immediately; the shell's line discipline buffers them until the
-    /// prompt is ready, so the command runs as soon as the shell is.
-    pub fn launch_claude(&mut self, cx: &mut Context<Self>) {
-        // Reuse the open terminal; only spawn one when none exists.
-        if self.active_session().is_none() {
+    /// Run a local CLI in the active terminal, creating one when necessary.
+    fn launch_cli(&mut self, command: &str, label: &str, cx: &mut Context<Self>) {
+        let spawned_terminal = self.active_session().is_none();
+        if spawned_terminal {
             self.spawn_local_terminal(cx);
         }
 
         if let Some(session) = self.active_session() {
-            session.write_input(b"claude --dangerously-skip-permissions\n");
+            let mut input = command.as_bytes().to_vec();
+            input.push(b'\n');
+            session.write_input(&input);
         }
 
-        tracing::info!("Launched Claude Code in the active terminal");
+        if spawned_terminal {
+            cx.emit(TerminalEvent::NewTabRequested);
+        }
+        tracing::info!("Launched {} in the active terminal", label);
         cx.notify();
+    }
+
+    /// Start Claude Code in the current terminal, or in a new local terminal.
+    pub fn launch_claude(&mut self, cx: &mut Context<Self>) {
+        self.launch_cli(CLAUDE_CLI_COMMAND, "Claude Code", cx);
+    }
+
+    /// Start Codex with workspace writes and approvals requested when needed.
+    pub fn launch_codex(&mut self, cx: &mut Context<Self>) {
+        self.launch_cli(CODEX_CLI_COMMAND, "Codex", cx);
     }
 
     /// Start the periodic refresh loop if it is not already running.
@@ -2200,6 +2267,7 @@ impl TerminalView {
         let lbl_copy = t!("terminal.toolbar.copy");
         let lbl_paste = t!("terminal.toolbar.paste");
         let lbl_claude = t!("terminal.toolbar.claude");
+        let lbl_codex = t!("terminal.toolbar.codex");
         let lbl_rotate = t!("terminal.toolbar.rotate");
         let lbl_close_split = t!("terminal.toolbar.close_split");
         let lbl_split_h = t!("terminal.toolbar.split_h");
@@ -2263,6 +2331,28 @@ impl TerminalView {
                 .child(label.to_string())
         };
 
+        // Branded CLI launchers need a compact logo + label treatment that the
+        // standard one-line Button component does not support.
+        let cli_button = |id: &'static str, label: String, accent: Hsla, logo: AnyElement| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .pl(px(5.0))
+                .pr(px(9.0))
+                .py(px(3.0))
+                .rounded(px(5.0))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(accent)
+                .bg(accent.opacity(0.12))
+                .cursor_pointer()
+                .hover(move |el| el.bg(accent.opacity(0.2)))
+                .child(logo)
+                .child(label)
+        };
+
         let (ctrl, secondary) = if cfg!(target_os = "macos") {
             ("\u{2318}", "\u{2318}")
         } else {
@@ -2285,37 +2375,37 @@ impl TerminalView {
             .border_b_1()
             .border_color(ShellDeckColors::border());
 
-        // Claude launcher (leftmost, branded)
-        toolbar = toolbar
-            .child(
-                div()
-                    .id("tb-claude")
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .pl(px(5.0))
-                    .pr(px(9.0))
-                    .py(px(3.0))
-                    .rounded(px(5.0))
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(Self::claude_orange())
-                    .bg(Self::claude_orange().opacity(0.12))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(Self::claude_orange().opacity(0.2)))
-                    .child(Self::claude_logo(18.0))
-                    .child(lbl_claude.to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.launch_claude(cx);
-                    })),
-            )
-            .child(
+        if self.claude_available {
+            toolbar = toolbar.child(
+                cli_button(
+                    "tb-claude",
+                    lbl_claude.to_string(),
+                    Self::claude_orange(),
+                    Self::claude_logo(18.0).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.launch_claude(cx))),
+            );
+        }
+        if self.codex_available {
+            toolbar = toolbar.child(
+                cli_button(
+                    "tb-codex",
+                    lbl_codex.to_string(),
+                    Self::codex_green(),
+                    Self::codex_logo(18.0).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.launch_codex(cx))),
+            );
+        }
+        if self.claude_available || self.codex_available {
+            toolbar = toolbar.child(
                 div()
                     .w(px(1.0))
                     .h(px(16.0))
                     .mx(px(6.0))
                     .bg(ShellDeckColors::border()),
             );
+        }
 
         // Left group: search, copy, paste
         toolbar = toolbar
@@ -4683,8 +4773,11 @@ impl TerminalView {
         gpui::rgb(0xD97757).into()
     }
 
-    /// A rounded badge bearing the Claude "sunburst" mark, sized to `size`.
-    /// Used by the launch button and the empty-state call to action.
+    fn codex_green() -> gpui::Hsla {
+        gpui::rgb(0x10A37F).into()
+    }
+
+    /// A rounded badge bearing the Simple Icons Claude Code mark.
     fn claude_logo(size: f32) -> impl IntoElement {
         div()
             .flex()
@@ -4694,13 +4787,89 @@ impl TerminalView {
             .h(px(size))
             .rounded(px(size * 0.26))
             .bg(Self::claude_orange())
+            .child(crate::icons::simple_icon(
+                "claudecode",
+                size * 0.72,
+                gpui::white(),
+            ))
+    }
+
+    fn codex_logo(size: f32) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(size))
+            .h(px(size))
+            .rounded(px(size * 0.26))
+            .bg(Self::codex_green())
+            .child(crate::icons::simple_icon(
+                "openai",
+                size * 0.72,
+                gpui::white(),
+            ))
+    }
+
+    fn terminal_logo(size: f32) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(size))
+            .h(px(size))
+            .rounded(px(size * 0.26))
+            .bg(ShellDeckColors::primary())
+            .child(crate::icons::lucide_icon(
+                "terminal",
+                size * 0.58,
+                gpui::white(),
+            ))
+    }
+
+    /// Two-line launch actions are custom because adabraka's Button supports a
+    /// single label but not the command preview used by this terminal surface.
+    fn launcher_card(
+        id: &'static str,
+        title: String,
+        command: String,
+        accent: Hsla,
+        logo: AnyElement,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .w(px(220.0))
+            .h(px(64.0))
+            .px(px(10.0))
+            .rounded(px(8.0))
+            .bg(accent)
+            .shadow_sm()
+            .cursor_pointer()
+            .hover(move |el| el.bg(accent.opacity(0.88)))
+            .child(logo)
             .child(
                 div()
-                    .text_size(px(size * 0.62))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(gpui::white())
-                    // U+2733 EIGHT SPOKED ASTERISK — the Claude sunburst mark.
-                    .child("\u{2733}"),
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.0))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(gpui::white())
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(10.0))
+                            .text_color(gpui::white().opacity(0.85))
+                            .child(command),
+                    ),
             )
     }
 
@@ -4745,6 +4914,61 @@ impl TerminalView {
                 )
         };
 
+        let mut launchers = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap(px(10.0))
+            .max_w(px(700.0))
+            .child(
+                Self::launcher_card(
+                    "empty-launch-terminal",
+                    t!("terminal.empty.open_terminal").to_string(),
+                    t!("terminal.empty.open_terminal_cmd").to_string(),
+                    ShellDeckColors::primary(),
+                    Self::terminal_logo(26.0).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.spawn_local_terminal(cx);
+                    this.focus_handle.focus(window);
+                    cx.emit(TerminalEvent::NewTabRequested);
+                    cx.notify();
+                })),
+            );
+
+        if self.claude_available {
+            launchers = launchers.child(
+                Self::launcher_card(
+                    "empty-launch-claude",
+                    t!("terminal.empty.launch_claude").to_string(),
+                    t!("terminal.empty.launch_claude_cmd").to_string(),
+                    Self::claude_orange(),
+                    Self::claude_logo(26.0).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.launch_claude(cx);
+                    this.focus_handle.focus(window);
+                })),
+            );
+        }
+
+        if self.codex_available {
+            launchers = launchers.child(
+                Self::launcher_card(
+                    "empty-launch-codex",
+                    t!("terminal.empty.launch_codex").to_string(),
+                    t!("terminal.empty.launch_codex_cmd").to_string(),
+                    Self::codex_green(),
+                    Self::codex_logo(26.0).into_any_element(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.launch_codex(cx);
+                    this.focus_handle.focus(window);
+                })),
+            );
+        }
+
         div()
             .flex()
             .flex_col()
@@ -4779,44 +5003,7 @@ impl TerminalView {
                             .child(t!("terminal.empty.hint", cmd = cmd).to_string()),
                     ),
             )
-            // Primary call to action: launch Claude Code
-            .child(
-                div()
-                    .id("empty-launch-claude")
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .pl(px(10.0))
-                    .pr(px(16.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(Self::claude_orange())
-                    .shadow_sm()
-                    .cursor_pointer()
-                    .hover(|el| el.bg(Self::claude_orange().opacity(0.88)))
-                    .child(Self::claude_logo(26.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(gpui::white())
-                                    .child(t!("terminal.empty.launch_claude").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(gpui::white().opacity(0.85))
-                                    .child(t!("terminal.empty.launch_claude_cmd").to_string()),
-                            ),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.launch_claude(cx);
-                    })),
-            )
+            .child(launchers)
             // Keyboard shortcuts reference
             .child(
                 div()
@@ -5127,5 +5314,56 @@ impl Render for TerminalView {
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_available_in_path;
+    use std::ffi::OsString;
+    use std::fs;
+
+    fn test_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("shelldeck-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    // SDTEST-1333
+    #[test]
+    fn command_discovery_searches_every_path_entry() {
+        let missing = test_dir("missing-cli");
+        let bin = test_dir("available-cli");
+        fs::create_dir_all(&bin).expect("create test bin directory");
+        fs::write(bin.join("claude"), b"").expect("create test executable");
+        let path = std::env::join_paths([missing, bin.clone()]).expect("join test PATH");
+
+        assert!(command_available_in_path(
+            "claude",
+            Some(path.as_os_str()),
+            &[OsString::new()],
+        ));
+        assert!(!command_available_in_path(
+            "codex",
+            Some(path.as_os_str()),
+            &[OsString::new()],
+        ));
+
+        fs::remove_dir_all(bin).expect("remove test bin directory");
+    }
+
+    // SDTEST-1334
+    #[test]
+    fn command_discovery_honors_executable_extensions() {
+        let bin = test_dir("extension-cli");
+        fs::create_dir_all(&bin).expect("create test bin directory");
+        fs::write(bin.join("codex.CMD"), b"").expect("create test executable");
+        let path = std::env::join_paths([bin.clone()]).expect("join test PATH");
+
+        assert!(command_available_in_path(
+            "codex",
+            Some(path.as_os_str()),
+            &[OsString::from(".CMD")],
+        ));
+
+        fs::remove_dir_all(bin).expect("remove test bin directory");
     }
 }

@@ -129,6 +129,7 @@ macro_rules! simple_assets {
 
 simple_assets!(
     "bun",
+    "claudecode",
     "docker",
     "dockercompose",
     "gnubash",
@@ -136,6 +137,7 @@ simple_assets!(
     "mysql",
     "nginx",
     "nodedotjs",
+    "openai",
     "php",
     "postgresql",
     "python",

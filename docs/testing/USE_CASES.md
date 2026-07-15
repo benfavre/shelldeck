@@ -149,6 +149,13 @@ with a writable stdin, readable stdout, correct initial size, and
 grid via the parser, and drives repaints via the output-notifier
 channel (event-driven, **not** polled).
 
+### SDUC-410 — Terminal launchers follow locally installed AI CLIs
+
+The empty terminal surface always offers the default shell. It checks
+`PATH` when the view starts and only adds Claude Code and Codex launchers
+when `claude` and `codex` are installed; the live terminal toolbar follows
+the same availability rules.
+
 ### SDUC-024 — Terminal session resize propagates
 
 `TerminalSession::resize` reshapes the grid *and* the PTY window size
@@ -1246,6 +1253,8 @@ rogue local process cannot inject links.
 
 ## Change log
 
+- **2026-07-15** — Added SDUC-410 dynamic terminal launchers: default
+  shell always visible, Claude Code / Codex gated by executable discovery.
 - **2026-07-15** — Added § 19 deep links (SDUC-406 parse grammar,
   SDUC-407 single-instance + hand-off) for the `shelldeck://` companion
   feature. Tests SDTEST-1320..1323 in `config/{deep_link,single_instance}.rs`.

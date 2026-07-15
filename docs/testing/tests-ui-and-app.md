@@ -202,6 +202,15 @@ parallel `cargo test`.
 
 ---
 
+## 8a. `shelldeck-ui/terminal_view.rs` — CLI discovery helpers
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1333 | `terminal_view.rs::command_discovery_searches_every_path_entry` | SDUC-410 | Green | Uses isolated temporary PATH entries; never depends on the developer machine's installed CLIs. |
+| SDTEST-1334 | `terminal_view.rs::command_discovery_honors_executable_extensions` | SDUC-410 | Green | Pins PATHEXT-style suffix lookup used by Windows npm-installed CLIs. |
+
+---
+
 ## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST
