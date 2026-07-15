@@ -2251,6 +2251,10 @@ impl TerminalView {
         // The toolbar has no mouse-coordinate math, so this is safe.
         let scale = Self::ui_scale(window);
         let px = |v: f32| gpui::px(v * scale);
+        let available_width = window.viewport_size().width.to_f64() as f32
+            - (self.sidebar_width + SIDEBAR_HANDLE_WIDTH);
+        let compact = available_width < 940.0 * scale;
+        let show_pinned_scripts = available_width >= 1400.0 * scale;
 
         let zoom = self
             .tabs
@@ -2277,14 +2281,14 @@ impl TerminalView {
         let lbl_favorites = t!("terminal.toolbar.favorites");
         let lbl_recent = t!("terminal.toolbar.recent");
 
-        let toolbar_btn = |id: &str, label: &str, hint: &str| {
-            let mut btn = div()
+        let toolbar_btn = |id: &str, label: &str| {
+            div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
                 .flex()
                 .items_center()
-                .gap(px(6.0))
                 .px(px(8.0))
                 .py(px(3.0))
+                .flex_shrink_0()
                 .rounded(px(4.0))
                 .cursor_pointer()
                 .hover(|el| el.bg(ShellDeckColors::hover_bg()))
@@ -2294,25 +2298,10 @@ impl TerminalView {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(ShellDeckColors::text_primary())
                         .child(label.to_string()),
-                );
-            if !hint.is_empty() {
-                btn = btn.child(
-                    div()
-                        .flex_shrink_0()
-                        .px(px(4.0))
-                        .py(px(1.0))
-                        .rounded(px(3.0))
-                        .bg(ShellDeckColors::hint_bg())
-                        .text_size(px(9.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(hint.to_string()),
-                );
-            }
-            btn
+                )
         };
 
-        let toolbar_icon = |id: &str, label: &str| {
+        let toolbar_icon = |id: &str, icon: &str| {
             div()
                 .id(ElementId::from(SharedString::from(id.to_string())))
                 .flex()
@@ -2321,27 +2310,32 @@ impl TerminalView {
                 .w(px(28.0))
                 .h(px(24.0))
                 .rounded(px(4.0))
-                .text_size(px(12.0))
                 .text_color(ShellDeckColors::text_muted())
                 .cursor_pointer()
                 .hover(|el| {
                     el.bg(ShellDeckColors::hover_bg())
                         .text_color(ShellDeckColors::text_primary())
                 })
-                .child(label.to_string())
+                .child(
+                    svg()
+                        .path(format!("icons/lucide/{icon}.svg"))
+                        .text_color(ShellDeckColors::text_muted())
+                        .size(px(14.0)),
+                )
         };
 
         // Branded CLI launchers need a compact logo + label treatment that the
         // standard one-line Button component does not support.
         let cli_button = |id: &'static str, label: String, accent: Hsla, logo: AnyElement| {
-            div()
+            let mut button = div()
                 .id(id)
                 .flex()
                 .items_center()
+                .justify_center()
                 .gap(px(6.0))
-                .pl(px(5.0))
-                .pr(px(9.0))
+                .px(if compact { px(5.0) } else { px(7.0) })
                 .py(px(3.0))
+                .flex_shrink_0()
                 .rounded(px(5.0))
                 .text_size(px(11.0))
                 .font_weight(FontWeight::MEDIUM)
@@ -2349,19 +2343,11 @@ impl TerminalView {
                 .bg(accent.opacity(0.12))
                 .cursor_pointer()
                 .hover(move |el| el.bg(accent.opacity(0.2)))
-                .child(logo)
-                .child(label)
-        };
-
-        let (ctrl, secondary) = if cfg!(target_os = "macos") {
-            ("\u{2318}", "\u{2318}")
-        } else {
-            ("Ctrl+", "Ctrl+")
-        };
-        let shift = if cfg!(target_os = "macos") {
-            "\u{21E7}"
-        } else {
-            "Shift+"
+                .child(logo);
+            if !compact {
+                button = button.child(label);
+            }
+            button
         };
 
         let mut toolbar = div()
@@ -2370,32 +2356,30 @@ impl TerminalView {
             .w_full()
             .h(px(32.0))
             .px(px(8.0))
-            .gap(px(2.0))
+            .gap(px(6.0))
             .bg(ShellDeckColors::bg_sidebar())
             .border_b_1()
             .border_color(ShellDeckColors::border());
 
         if self.claude_available {
-            toolbar = toolbar.child(
-                cli_button(
-                    "tb-claude",
-                    lbl_claude.to_string(),
-                    Self::claude_orange(),
-                    Self::claude_logo(18.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.launch_claude(cx))),
-            );
+            let button = cli_button(
+                "tb-claude",
+                lbl_claude.to_string(),
+                Self::claude_orange(),
+                Self::claude_logo(18.0).into_any_element(),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.launch_claude(cx)));
+            toolbar = toolbar.child(button);
         }
         if self.codex_available {
-            toolbar = toolbar.child(
-                cli_button(
-                    "tb-codex",
-                    lbl_codex.to_string(),
-                    Self::codex_green(),
-                    Self::codex_logo(18.0).into_any_element(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.launch_codex(cx))),
-            );
+            let button = cli_button(
+                "tb-codex",
+                lbl_codex.to_string(),
+                Self::codex_green(),
+                Self::codex_logo(18.0).into_any_element(),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.launch_codex(cx)));
+            toolbar = toolbar.child(button);
         }
         if self.claude_available || self.codex_available {
             toolbar = toolbar.child(
@@ -2407,40 +2391,62 @@ impl TerminalView {
             );
         }
 
-        // Left group: search, copy, paste
-        toolbar = toolbar
-            .child(
-                toolbar_btn("tb-search", lbl_search.as_ref(), &format!("{}F", secondary)).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.toggle_search();
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child({
-                let mut btn =
-                    toolbar_btn("tb-copy", lbl_copy.as_ref(), &format!("{}{}C", ctrl, shift));
-                if !has_selection {
-                    btn = btn.opacity(0.45).cursor_default();
-                } else {
-                    btn = btn.on_click(cx.listener(|this, _, _, cx| {
-                        this.copy_selection(cx);
-                        cx.notify();
-                    }));
-                }
-                btn
-            })
-            .child(
-                toolbar_btn(
-                    "tb-paste",
-                    lbl_paste.as_ref(),
-                    &format!("{}{}V", ctrl, shift),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
+        // Left group: icon-only at compact widths, labels otherwise.
+        if compact {
+            toolbar = toolbar.child(toolbar_icon("tb-search", "search").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.toggle_search();
+                    cx.notify();
+                },
+            )));
+
+            let mut copy = toolbar_icon("tb-copy", "copy");
+            if !has_selection {
+                copy = copy.opacity(0.45).cursor_default();
+            } else {
+                copy = copy.on_click(cx.listener(|this, _, _, cx| {
+                    this.copy_selection(cx);
+                    cx.notify();
+                }));
+            }
+            toolbar = toolbar.child(copy);
+            toolbar = toolbar.child(toolbar_icon("tb-paste", "clipboard-paste").on_click(
+                cx.listener(|this, _, _, cx| {
                     this.paste_clipboard(cx);
                     cx.notify();
-                })),
-            );
+                }),
+            ));
+        } else {
+            toolbar = toolbar
+                .child(
+                    toolbar_btn("tb-search", lbl_search.as_ref()).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.toggle_search();
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child({
+                    let mut btn = toolbar_btn("tb-copy", lbl_copy.as_ref());
+                    if !has_selection {
+                        btn = btn.opacity(0.45).cursor_default();
+                    } else {
+                        btn = btn.on_click(cx.listener(|this, _, _, cx| {
+                            this.copy_selection(cx);
+                            cx.notify();
+                        }));
+                    }
+                    btn
+                })
+                .child(
+                    toolbar_btn("tb-paste", lbl_paste.as_ref()).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.paste_clipboard(cx);
+                            cx.notify();
+                        },
+                    )),
+                );
+        }
 
         // Separator
         toolbar = toolbar.child(
@@ -2455,7 +2461,7 @@ impl TerminalView {
         if self.layout.is_split() {
             toolbar = toolbar
                 .child(
-                    toolbar_btn("tb-rotate-split", lbl_rotate.as_ref(), "").on_click(cx.listener(
+                    toolbar_btn("tb-rotate-split", lbl_rotate.as_ref()).on_click(cx.listener(
                         |this, _, window, cx| {
                             this.toggle_split_direction();
                             this.resize_if_needed(window);
@@ -2464,32 +2470,24 @@ impl TerminalView {
                     )),
                 )
                 .child(
-                    toolbar_btn("tb-close-split", lbl_close_split.as_ref(), "").on_click(
-                        cx.listener(|this, _, _, cx| {
+                    toolbar_btn("tb-close-split", lbl_close_split.as_ref()).on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.close_split();
                             cx.notify();
-                        }),
-                    ),
-                );
-        } else {
-            toolbar = toolbar
-                .child(
-                    toolbar_btn(
-                        "tb-split-h",
-                        lbl_split_h.as_ref(),
-                        &format!("{}{}D", ctrl, shift),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.split_horizontal(cx);
-                    })),
-                )
-                .child(
-                    toolbar_btn("tb-split-v", lbl_split_v.as_ref(), "").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.split_vertical(cx);
                         },
                     )),
                 );
+        } else if !self.layout.is_split() {
+            toolbar = toolbar.child(toolbar_btn("tb-split-h", lbl_split_h.as_ref()).on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.split_horizontal(cx);
+                }),
+            ));
+            toolbar = toolbar.child(toolbar_btn("tb-split-v", lbl_split_v.as_ref()).on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.split_vertical(cx);
+                }),
+            ));
         }
 
         // Separator
@@ -2500,16 +2498,19 @@ impl TerminalView {
                 .mx(px(6.0))
                 .bg(ShellDeckColors::border()),
         );
+        if compact {
+            toolbar = toolbar.child(div().flex_grow());
+        }
 
         // Right group: zoom controls
         toolbar = toolbar
-            .child(
-                toolbar_icon("tb-zoom-out", "-").on_click(cx.listener(|this, _, window, cx| {
+            .child(toolbar_icon("tb-zoom-out", "minus").on_click(cx.listener(
+                |this, _, window, cx| {
                     this.zoom_out();
                     this.resize_if_needed(window);
                     cx.notify();
-                })),
-            )
+                },
+            )))
             .child(
                 div()
                     .id("tb-zoom-level")
@@ -2534,13 +2535,13 @@ impl TerminalView {
                         cx.notify();
                     })),
             )
-            .child(
-                toolbar_icon("tb-zoom-in", "+").on_click(cx.listener(|this, _, window, cx| {
+            .child(toolbar_icon("tb-zoom-in", "plus").on_click(cx.listener(
+                |this, _, window, cx| {
                     this.zoom_in();
                     this.resize_if_needed(window);
                     cx.notify();
-                })),
-            );
+                },
+            )));
 
         // Separator before scripts
         let has_scripts = !self.favorite_scripts.is_empty() || !self.recent_scripts.is_empty();
@@ -2555,14 +2556,22 @@ impl TerminalView {
 
             // Scripts dropdown button + panel
             let is_open = self.script_dropdown_open;
-            let mut scripts_wrapper = div().relative().child(
-                toolbar_btn("tb-scripts", lbl_scripts.as_ref(), "").on_click(cx.listener(
-                    |this, _, _, cx| {
+            let scripts_button = if compact {
+                toolbar_icon("tb-scripts", "scroll-text")
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.script_dropdown_open = !this.script_dropdown_open;
                         cx.notify();
-                    },
-                )),
-            );
+                    }))
+                    .into_any_element()
+            } else {
+                toolbar_btn("tb-scripts", lbl_scripts.as_ref())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.script_dropdown_open = !this.script_dropdown_open;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            };
+            let mut scripts_wrapper = div().relative().child(scripts_button);
 
             if is_open {
                 let mut dropdown = div()
@@ -2747,7 +2756,7 @@ impl TerminalView {
         }
 
         // Pinned script buttons
-        if !self.pinned_scripts.is_empty() {
+        if show_pinned_scripts && !self.pinned_scripts.is_empty() {
             // Separator before pinned scripts
             toolbar = toolbar.child(
                 div()
@@ -2842,12 +2851,20 @@ impl TerminalView {
             let _ = visible_count;
         }
 
-        // Spacer
-        toolbar = toolbar.child(div().flex_grow());
-
-        // Right-aligned: clear terminal
-        toolbar = toolbar.child(
-            toolbar_btn("tb-clear", lbl_clear.as_ref(), &format!("{}L", secondary)).on_click(
+        if compact {
+            toolbar = toolbar.child(toolbar_icon("tb-clear", "trash-2").on_click(cx.listener(
+                |this, _, _, cx| {
+                    if let Some(session) = this.active_session() {
+                        let mut grid = session.grid.lock();
+                        grid.erase_display(2);
+                        grid.cursor_to(0, 0);
+                    }
+                    cx.notify();
+                },
+            )));
+        } else {
+            toolbar = toolbar.child(div().flex_grow());
+            toolbar = toolbar.child(toolbar_btn("tb-clear", lbl_clear.as_ref()).on_click(
                 cx.listener(|this, _, _, cx| {
                     if let Some(session) = this.active_session() {
                         let mut grid = session.grid.lock();
@@ -2856,8 +2873,8 @@ impl TerminalView {
                     }
                     cx.notify();
                 }),
-            ),
-        );
+            ));
+        }
 
         toolbar
     }

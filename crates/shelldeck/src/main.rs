@@ -55,6 +55,7 @@ lucide_assets!(
     "circle-check",
     "circle-help",
     "clock",
+    "clipboard-paste",
     "copy",
     "cpu",
     "database",
