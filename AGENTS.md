@@ -193,9 +193,9 @@ rules loader.
 @.agents/patches.md
 @.agents/testing.md
 @.agents/i18n.md
+@.agents/ai.md
 
 <!-- Add one @-import per rule file above this comment. Example:
 @.agents/gpui-patterns.md
 @.agents/ssh-safety.md
 -->
-

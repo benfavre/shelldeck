@@ -3,8 +3,9 @@ use gpui::*;
 // Re-export workspace actions for keybinding registration
 pub use shelldeck_ui::workspace::{
     CloseTab, CloudSyncNow, ConnectBextCloud, JeanTogglePause, NewRequest, NewTerminal, NextTab,
-    OpenBextCloud, OpenFileEditorView, OpenFleet, OpenJeanConsole, OpenQuickConnect, OpenSettings,
-    OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleJeanRuntime, ToggleSidebar,
+    OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet, OpenJeanConsole,
+    OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite,
+    ToggleJeanRuntime, ToggleSidebar,
 };
 
 // Re-export terminal view actions
@@ -29,6 +30,8 @@ pub fn register_keybindings(cx: &mut App) {
     let mut bindings = vec![
         // Quick connect: Cmd+K (macOS) / Ctrl+K (Linux/Win)
         KeyBinding::new("secondary-k", OpenQuickConnect, None),
+        // Contextual AI assistant: keep Quick Connect's established Cmd/Ctrl+K.
+        KeyBinding::new("secondary-shift-k", OpenAiAssistant, None),
         // New terminal: Cmd+T (macOS) / Ctrl+T (Linux/Win)
         KeyBinding::new("secondary-t", NewTerminal, None),
         // Toggle sidebar: Cmd+B (macOS) / Ctrl+B (Linux/Win)

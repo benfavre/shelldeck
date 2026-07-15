@@ -25,7 +25,7 @@ SettingsView.config           ← snapshot for general/terminal persistence
 | Field(s) | Owner | Persisted via |
 |----------|-------|---------------|
 | `general.*` | Settings (merged into workspace) | `settings.save_config()` |
-| `terminal.*` | Settings (merged into workspace) | `settings.save_config()` |
+| `terminal.*`, `editor.*`, `tray.*`, `ai.*` | Settings (merged into workspace) | `settings.save_config()` |
 | `theme` | Workspace + Settings (`ThemeChanged`) | both paths |
 | `account`, `cloud_sync`, `jeanclaude`, `bext_cloud`, … | **Workspace only** | `app_config.save()` in workspace handlers |
 

@@ -104,7 +104,11 @@ impl SettingsView {
             general_language_select,
             ui_font_family_select,
             ai_backend_select,
-            ai_model_state: cx.new(|cx| InputState::new(cx).placeholder(ai_model)),
+            ai_model_state: cx.new(|cx| {
+                let mut state = InputState::new(cx);
+                state.content = ai_model.into();
+                state
+            }),
             ai_api_key_state: cx.new(InputState::new),
         }
     }
@@ -137,6 +141,13 @@ impl SettingsView {
         }
         if self.config.ai.backend != old.ai.backend {
             self.ai_backend_select = build_ai_backend_select(&self.config, cx);
+        }
+        if self.config.ai.model != old.ai.model {
+            let model = self.config.ai.model.clone();
+            self.ai_model_state.update(cx, |state, cx| {
+                state.content = model.into();
+                cx.notify();
+            });
         }
     }
 
@@ -806,6 +817,10 @@ impl SettingsView {
                         .on_click(cx.listener(
                             move |_this, _, _window, cx| {
                                 let value = key_state.read(cx).content().trim().to_string();
+                                key_state.update(cx, |state, cx| {
+                                    state.content = "".into();
+                                    cx.notify();
+                                });
                                 cx.emit(SettingsEvent::AiApiKeyChanged { backend, value });
                             },
                         )),
@@ -2009,6 +2024,10 @@ fn build_ai_backend_select(
                     this.config.ai.backend = backend;
                     this.config.ai.enabled = backend != AiBackend::Disabled;
                     this.config.ai.model.clear();
+                    this.ai_model_state.update(cx, |state, cx| {
+                        state.content = "".into();
+                        cx.notify();
+                    });
                     this.save_config(cx);
                 });
             })

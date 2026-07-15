@@ -293,7 +293,7 @@ impl AiClient for CliAiClient {
 
     fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse> {
         let prompt = composed_prompt(prompt, &ctx)?;
-        let cwd = ctx.cwd.unwrap_or_else(|| PathBuf::from("."));
+        let cwd = ctx.cwd.unwrap_or_else(std::env::temp_dir);
         let mut args: Vec<String> = match self.backend {
             AiBackend::ClaudeCli => vec![
                 "-p".into(),
@@ -310,6 +310,9 @@ impl AiClient for CliAiClient {
                 "--sandbox".into(),
                 "read-only".into(),
                 "--ephemeral".into(),
+                "--ignore-user-config".into(),
+                "--ignore-rules".into(),
+                "--skip-git-repo-check".into(),
                 "--color".into(),
                 "never".into(),
                 "-".into(),
@@ -319,6 +322,7 @@ impl AiClient for CliAiClient {
                 prompt.clone(),
                 "--dry-run".into(),
                 "--no-auto-commits".into(),
+                "--no-git".into(),
                 "--yes".into(),
             ],
             _ => unreachable!(),

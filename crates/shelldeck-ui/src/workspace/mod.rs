@@ -1565,6 +1565,25 @@ impl Workspace {
                 serde_json::to_value(self.recent_activity.iter().take(50).collect::<Vec<_>>())
                     .unwrap_or_else(|_| serde_json::json!([])),
             ),
+            ActiveView::Sites | ActiveView::PortForwards => AiContext::new(
+                AiSurface::Naming,
+                t!("ai.context.naming").to_string(),
+                serde_json::json!({
+                    "connections": self.connections.iter().map(|connection| serde_json::json!({
+                        "alias": connection.alias,
+                        "hostname": connection.hostname,
+                        "user": connection.user,
+                        "group": connection.group,
+                        "tags": connection.tags,
+                    })).collect::<Vec<_>>(),
+                    "tunnels": self.store.port_forwards.iter().map(|forward| serde_json::json!({
+                        "label": forward.label,
+                        "direction": format!("{:?}", forward.direction),
+                        "local": format!("{}:{}", forward.local_host, forward.local_port),
+                        "remote": format!("{}:{}", forward.remote_host, forward.remote_port),
+                    })).collect::<Vec<_>>(),
+                }),
+            ),
             _ => AiContext::new(
                 AiSurface::Global,
                 t!("ai.context.global").to_string(),
@@ -2857,7 +2876,7 @@ impl Workspace {
         if ai_configured {
             actions.push(PaletteAction::new(
                 t!("palette.open_ai").to_string(),
-                None,
+                Some("Ctrl+Shift+K"),
                 "zap",
                 Box::new(OpenAiAssistant),
             ));

@@ -102,10 +102,12 @@ impl AiAssistantView {
                 ("ai.quick.explain", "ai.prompt.script_explain"),
                 ("ai.quick.convert", "ai.prompt.script_convert"),
                 ("ai.quick.review", "ai.prompt.script_review"),
+                ("ai.quick.naming", "ai.prompt.naming"),
             ],
             AiSurface::Terminal => &[
                 ("ai.quick.command", "ai.prompt.terminal_command"),
                 ("ai.quick.error", "ai.prompt.terminal_error"),
+                ("ai.quick.issue_draft", "ai.prompt.terminal_issue"),
             ],
             AiSurface::Jean => &[("ai.quick.jean", "ai.prompt.jean")],
             AiSurface::Naming => &[("ai.quick.naming", "ai.prompt.naming")],
