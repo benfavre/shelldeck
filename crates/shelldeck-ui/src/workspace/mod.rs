@@ -444,6 +444,7 @@ impl Workspace {
             .and_then(|s| Uuid::parse_str(s).ok());
         let initial_nav_collapsed = config.general.sidebar_nav_collapsed;
         let initial_pinned_connections = config.pinned_connections.clone();
+        let initial_dashboard_pins = initial_pinned_connections.clone();
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_connections(connections.clone());
@@ -455,11 +456,20 @@ impl Workspace {
 
         let dashboard = cx.new(|_| {
             let mut d = DashboardView::new();
-            d.favorite_hosts = connections
-                .iter()
-                .take(5)
+            let quick_connections: Vec<&Connection> = if initial_dashboard_pins.is_empty() {
+                connections.iter().take(5).collect()
+            } else {
+                initial_dashboard_pins
+                    .iter()
+                    .filter_map(|id| connections.iter().find(|connection| connection.id == *id))
+                    .take(5)
+                    .collect()
+            };
+            d.favorite_hosts = quick_connections
+                .into_iter()
                 .map(|c| {
                     (
+                        c.id,
                         c.display_name().to_string(),
                         c.hostname.clone(),
                         c.status == ConnectionStatus::Connected,
@@ -937,7 +947,7 @@ impl Workspace {
             sidebar.set_pinned_connections(self.app_config.pinned_connections.clone());
             cx.notify();
         });
-        self.publish_tray_state(cx);
+        self.update_dashboard_stats(cx);
         self.show_toast(
             if unpinned {
                 t!("toast.connection.unpinned", name = name.as_str()).to_string()
@@ -1105,7 +1115,7 @@ impl Workspace {
                             ToastLevel::Info,
                             cx,
                         );
-                        self.publish_tray_state(cx);
+                        self.update_dashboard_stats(cx);
                         cx.notify();
                     }
                 } else {
@@ -1496,13 +1506,8 @@ impl Workspace {
 
     fn handle_dashboard_event(&mut self, event: &DashboardEvent, cx: &mut Context<Self>) {
         match event {
-            DashboardEvent::QuickConnect(alias) => {
-                // Find connection by alias/display name and connect
-                if let Some(conn) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.display_name() == alias.as_str())
-                {
+            DashboardEvent::QuickConnect(id) => {
+                if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
                     let conn = conn.clone();
                     let title = conn.display_name().to_string();
                     self.connect_ssh(conn, cx);
@@ -1515,7 +1520,7 @@ impl Workspace {
                     cx.notify();
                 } else {
                     self.show_toast(
-                        t!("toast.connection.not_found", alias = alias.as_str()).to_string(),
+                        t!("toast.deeplink.connection_not_found").to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
@@ -4553,12 +4558,21 @@ impl Workspace {
             })
             .count();
 
-        let favorite_hosts: Vec<(String, String, bool)> = self
-            .connections
-            .iter()
-            .take(5)
+        let quick_connections: Vec<&Connection> = if self.app_config.pinned_connections.is_empty() {
+            self.connections.iter().take(5).collect()
+        } else {
+            self.app_config
+                .pinned_connections
+                .iter()
+                .filter_map(|id| self.connections.iter().find(|connection| connection.id == *id))
+                .take(5)
+                .collect()
+        };
+        let favorite_hosts: Vec<(Uuid, String, String, bool)> = quick_connections
+            .into_iter()
             .map(|c| {
                 (
+                    c.id,
                     c.display_name().to_string(),
                     c.hostname.clone(),
                     c.status == ConnectionStatus::Connected,

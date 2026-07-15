@@ -2,6 +2,7 @@ use crate::scale::px;
 use adabraka_ui::display::card::Card;
 use gpui::prelude::*;
 use gpui::*;
+use uuid::Uuid;
 
 use crate::icons::lucide_icon;
 use crate::t;
@@ -10,8 +11,8 @@ use crate::theme::ShellDeckColors;
 /// Events emitted by the dashboard.
 #[derive(Debug, Clone)]
 pub enum DashboardEvent {
-    /// User clicked a quick-connect host button (alias).
-    QuickConnect(String),
+    /// User clicked a quick-connect host button.
+    QuickConnect(Uuid),
 }
 
 impl EventEmitter<DashboardEvent> for DashboardView {}
@@ -39,7 +40,7 @@ pub struct DashboardView {
     pub running_scripts: usize,
     pub active_forwards: usize,
     pub recent_activity: Vec<ActivityEvent>,
-    pub favorite_hosts: Vec<(String, String, bool)>, // (alias, hostname, is_connected)
+    pub favorite_hosts: Vec<(Uuid, String, String, bool)>,
 }
 
 impl Default for DashboardView {
@@ -169,13 +170,13 @@ impl DashboardView {
     }
 
     fn render_quick_connect_button(
+        id: Uuid,
         alias: &str,
         hostname: &str,
         is_connected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let alias_str = alias.to_string();
-        let alias_for_click = alias_str.clone();
         let status_color = if is_connected {
             ShellDeckColors::status_connected()
         } else {
@@ -202,7 +203,7 @@ impl DashboardView {
                     .bg(ShellDeckColors::primary().opacity(0.08))
             })
             .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                cx.emit(DashboardEvent::QuickConnect(alias_for_click.clone()));
+                cx.emit(DashboardEvent::QuickConnect(id));
             }))
             // Status indicator
             .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
@@ -294,8 +295,9 @@ impl Render for DashboardView {
         if !self.favorite_hosts.is_empty() {
             let hosts = self.favorite_hosts.clone();
             let mut host_buttons = div().flex().flex_wrap().gap(px(8.0));
-            for (alias, hostname, is_connected) in &hosts {
+            for (id, alias, hostname, is_connected) in &hosts {
                 host_buttons = host_buttons.child(Self::render_quick_connect_button(
+                    *id,
                     alias,
                     hostname,
                     *is_connected,
