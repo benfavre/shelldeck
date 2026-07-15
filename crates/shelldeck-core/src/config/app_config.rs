@@ -180,6 +180,12 @@ pub struct GeneralConfig {
     pub ui_font_family: String,
     /// Base font size in pixels for the application UI.
     pub ui_font_size: f32,
+    /// Launch ShellDeck automatically at OS login. Applied via
+    /// `shelldeck_core::config::autostart` (cross-platform: XDG desktop
+    /// entry on Linux, `launchd` login item on macOS, HKCU Run key on
+    /// Windows). `false` by default — opt-in.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +262,7 @@ impl Default for GeneralConfig {
             ui_language: UiLanguage::default(),
             ui_font_family: "System Default".to_string(),
             ui_font_size: 14.0,
+            autostart: false,
         }
     }
 }

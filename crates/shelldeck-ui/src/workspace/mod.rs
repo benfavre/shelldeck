@@ -1075,6 +1075,9 @@ impl Workspace {
                 self.refresh_command_palette(cx);
                 cx.notify();
             }
+            SettingsEvent::AutostartRequested(desired) => {
+                self.apply_autostart_request(*desired, cx);
+            }
             SettingsEvent::ThemeChanged(pref) => {
                 tracing::info!("Theme preference changed to {:?}", pref);
 
@@ -1092,6 +1095,54 @@ impl Workspace {
                 // left untouched when the app light/dark preference changes.
             }
         }
+    }
+
+    /// Apply an autostart toggle change: try the OS-level write on a
+    /// background thread, then commit the settings field (and save) if
+    /// it worked, or toast the error and leave the toggle where the
+    /// user found it if it didn't. See `.agents/session-state.md` for
+    /// why we route this via a dedicated event instead of the plain
+    /// `ConfigChanged` path — we can't roll back a disk write cleanly,
+    /// so we simply don't write until the OS confirms.
+    fn apply_autostart_request(&mut self, desired: bool, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    shelldeck_core::config::autostart::apply(desired)
+                })
+                .await;
+
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(actual) => {
+                    // Commit through Settings — it owns `general.autostart`
+                    // (see `.agents/session-state.md`) and its `save_config`
+                    // emits `ConfigChanged` so the workspace merges the
+                    // updated slice into `app_config` on the next tick.
+                    ws.settings.update(cx, |settings, cx| {
+                        settings.set_autostart(actual, cx);
+                    });
+                    ws.show_toast(
+                        if actual {
+                            t!("toast.autostart.enabled").to_string()
+                        } else {
+                            t!("toast.autostart.disabled").to_string()
+                        },
+                        ToastLevel::Info,
+                        cx,
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("autostart apply failed: {e}");
+                    ws.show_toast(
+                        t!("toast.autostart.failed", error = e.to_string()).to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     /// Swap the live `ShellDeckColors` palette and the adabraka-ui component
@@ -1499,11 +1550,8 @@ impl Workspace {
     /// prospects to Manage rather than dropping them into an unusable
     /// classic Dev workspace.
     pub fn open_signup(&mut self, cx: &mut Context<Self>) {
-        let url = format!(
-            "{}/register",
-            self.account_base_url().trim_end_matches('/')
-        );
-        match cloud_account::open_in_browser(&url) {
+        let url = "https://inklura.fr/signup";
+        match cloud_account::open_in_browser(url) {
             Ok(_) => self.show_toast(
                 t!("toast.opening_browser").to_string(),
                 ToastLevel::Info,

@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 directories = { workspace = true }
 notify = { workspace = true }
 keyring = { workspace = true }
+auto-launch = { workspace = true }
 ssh2-config = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }

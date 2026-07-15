@@ -301,6 +301,18 @@ fn main() -> Result<()> {
 
     shelldeck_ui::i18n::apply_ui_language(&config.general.ui_language);
 
+    // Reconcile OS-level autostart with the persisted preference. The
+    // Settings toggle is the source of truth; if the user manually
+    // removed the .desktop entry (Linux), disabled the launchd item
+    // (macOS), or the registry Run key was scrubbed, we re-enable so
+    // the behaviour matches what they saw last. Best-effort: sandboxed
+    // environments (Flatpak, Snap) may refuse — that's a warning, not
+    // a fatal error.
+    match shelldeck_core::config::autostart::apply(config.general.autostart) {
+        Ok(actual) => tracing::info!("autostart reconciled: {actual}"),
+        Err(e) => tracing::warn!("autostart reconcile skipped: {e}"),
+    }
+
     // Parse SSH config
     let ssh_connections = parse_ssh_config().unwrap_or_else(|e| {
         tracing::warn!("Failed to parse SSH config: {}", e);

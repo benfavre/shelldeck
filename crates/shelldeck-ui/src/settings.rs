@@ -43,6 +43,12 @@ pub enum SettingsTab {
 pub enum SettingsEvent {
     ConfigChanged(AppConfig),
     ThemeChanged(ThemePreference),
+    /// User flipped the "Launch at login" toggle to `desired`. Workspace
+    /// applies the OS-level change on a background thread, then either
+    /// commits the config field (on success) or toasts + leaves the
+    /// toggle unchanged (on OS failure — Flatpak sandbox, permissions,
+    /// missing HOME, …). See `Workspace::apply_autostart_request`.
+    AutostartRequested(bool),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -355,6 +361,19 @@ impl SettingsView {
                     },
                 ),
             ))
+            .child(Self::render_setting_row(
+                t!("settings.general.autostart.label").as_ref(),
+                t!("settings.general.autostart.description").as_ref(),
+                // Deliberately NOT `bind_toggle`: autostart writes to the OS
+                // (XDG autostart / launchd / registry) and may fail; the
+                // toggle only "sticks" once the workspace confirms the OS
+                // accepted the change. See `Workspace::apply_autostart_request`.
+                Self::bind_autostart_toggle(
+                    "general-autostart",
+                    self.config.general.autostart,
+                    &entity,
+                ),
+            ))
             .child(self.render_cloud_sync_settings(cx))
     }
 
@@ -378,6 +397,36 @@ impl SettingsView {
                     this.save_config(cx);
                 });
             })
+    }
+
+    /// Autostart toggle. Emits `SettingsEvent::AutostartRequested(desired)`
+    /// instead of updating the config: the workspace attempts the
+    /// OS-level change asynchronously, then commits the field (via
+    /// `set_autostart` + `save_config`) only if the OS accepted it. If
+    /// the OS refuses the toggle stays where it was — no disk write, no
+    /// visual bounce.
+    fn bind_autostart_toggle(
+        id: &'static str,
+        checked: bool,
+        entity: &Entity<SettingsView>,
+    ) -> impl IntoElement {
+        let entity = entity.clone();
+        Toggle::new(id)
+            .checked(checked)
+            .on_click(move |value, _window, cx| {
+                let value = *value;
+                entity.update(cx, |_, cx| {
+                    cx.emit(SettingsEvent::AutostartRequested(value));
+                });
+            })
+    }
+
+    /// Commit an autostart change once the workspace confirmed the OS
+    /// accepted it. Bypasses the toggle path so the workspace doesn't
+    /// bounce a fresh `AutostartRequested` back at itself.
+    pub fn set_autostart(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.config.general.autostart = value;
+        self.save_config(cx);
     }
 
     /// Mask a Cloud Sync token for display: never show the full secret, just a

@@ -1,4 +1,5 @@
 pub mod app_config;
+pub mod autostart;
 pub mod bext_cloud;
 pub mod bext_instance;
 pub mod cloud_account;
