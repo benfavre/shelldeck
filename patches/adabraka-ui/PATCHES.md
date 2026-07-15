@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **38**
+Total markers in code: **39**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -265,6 +265,28 @@ carries no marker of its own — see its entry).
   worth a PR (the reproducer is `on_enter` called N times after N
   renders of the same Input).
 
+### SDPATCH-012 — `Toggle` thumb overflows the right border when checked
+
+- **Files / symbols**:
+  - `src/components/toggle.rs` — `toggle_thumb`
+- **Markers**:
+  - `src/components/toggle.rs:241` — `// ShellDeck patch: SDPATCH-012 — the parent \`bg\` div has \`.border_2()\``
+- **Why**: `toggle_thumb` computed `max_x = bg_width - bar_width - inset * 2`
+  and used it to place the thumb via `.left(x)` on a relatively-positioned
+  child of the track. But the track div uses `.border_2()`, and gpui/taffy
+  is box-sizing: border-box — so `bg_width` (36 px on `ToggleSize::Md`)
+  includes the 2 px border on each side, and children positioned via
+  `.left()` are laid out relative to the padding-box (inside the border).
+  Result: unchecked position was fine (`.left(inset)`, ~2 px from the
+  visible left edge), but checked position placed the thumb at
+  `inset + max_x = 18 px`, so it ran from x=18 to x=34 in a padding-box
+  that's only 32 px wide — visually flush against the right border with
+  no breathing room. The user flagged it on the Editor settings toggles
+  (2026-07-15). Fix subtracts `border * 2` from `max_x` and computes it
+  once above the `.map()` so the animated and static branches stay in
+  sync (previously both branches redeclared the same buggy formula).
+- **Upstream status**: not filed yet — small, clean reproducer, worth a PR.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -296,6 +318,11 @@ carries no marker of its own — see its entry).
   Enter press invoked `on_enter` N times). Swapped for five direct
   `Rc<Fn>` slots on `InputState` populated via `state.update`. Marker
   count 30 → 38 (8 new markers).
+- **2026-07-15** — SDPATCH-012: fixed the Toggle thumb overflowing the
+  right border when checked. Root cause: `bg_width` includes the 2 px
+  border on each side (border-box), but `max_x` didn't subtract it, so
+  the checked position pushed the thumb 4 px past the right border.
+  Marker count 38 → 39.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past

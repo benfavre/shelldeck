@@ -238,6 +238,17 @@ fn toggle_thumb(
 ) -> impl IntoElement {
     let toggle_state = window.use_keyed_state(id.clone(), cx, |_, _| checked);
 
+    // ShellDeck patch: SDPATCH-012 — the parent `bg` div has `.border_2()`
+    // (2px each side). gpui/taffy uses border-box sizing, so `bg_width`
+    // includes the border, and the thumb's `left(x)` is measured from
+    // inside the border (padding-box). Without subtracting `border * 2`
+    // from the travel, the checked thumb overflowed past the right border
+    // (visually flush to the edge with zero gap; the unchecked position
+    // was fine because it uses `inset` directly). Compute `max_x` once so
+    // the animation and static branches stay in sync.
+    let border = px(2.0);
+    let max_x = bg_width - border * 2.0 - bar_width - inset * 2.0;
+
     div()
         .rounded(radius)
         .bg(color)
@@ -262,7 +273,6 @@ fn toggle_thumb(
                     ElementId::NamedInteger("toggle-slide".into(), checked as u64),
                     Animation::new(duration),
                     move |this, delta| {
-                        let max_x = bg_width - bar_width - inset * 2.0;
                         let x = if checked {
                             inset + max_x * delta
                         } else {
@@ -273,7 +283,6 @@ fn toggle_thumb(
                 )
                 .into_any_element()
             } else {
-                let max_x = bg_width - bar_width - inset * 2.0;
                 let x = if checked { inset + max_x } else { inset };
                 this.left(x).into_any_element()
             }
