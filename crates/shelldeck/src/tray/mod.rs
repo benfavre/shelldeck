@@ -49,7 +49,8 @@
 
 use anyhow::{Context, Result};
 use std::sync::mpsc::{Receiver, Sender};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use uuid::Uuid;
 
 /// Actions the tray can request from the running app. The workspace
 /// polls a receiver on the foreground executor and dispatches these
@@ -61,6 +62,8 @@ pub enum TrayCommand {
     ShowWindow,
     /// Open the command palette.
     OpenPalette,
+    /// Connect one of the persisted quick-access hosts.
+    ConnectPinned(Uuid),
     /// Quit the app.
     Quit,
 }
@@ -69,7 +72,7 @@ pub enum TrayCommand {
 /// workspace whenever any tracked count changes; the tray thread
 /// diffs against its last known state and only calls `MenuItem::set_text`
 /// on the rows that actually moved, keeping the menu paint quiet.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrayState {
     /// SSH connections in `Connected` status.
     pub active_ssh: usize,
@@ -79,6 +82,14 @@ pub struct TrayState {
     pub unread_tickets: usize,
     /// Jean fleet jobs waiting for user confirmation before running.
     pub jean_pending: usize,
+    /// Persisted quick-access connections, in sidebar order.
+    pub pinned_connections: Vec<PinnedConnection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedConnection {
+    pub id: Uuid,
+    pub name: String,
 }
 
 /// Public handle over the tray subsystem. Callers drop this once
@@ -148,11 +159,8 @@ impl TrayService {
 /// handler doesn't need to see the `MenuItem`s directly.
 fn install_menu_router(cmd_tx: Sender<TrayCommand>) {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        let cmd = match event.id.0.as_str() {
-            SHOW_ID => TrayCommand::ShowWindow,
-            PALETTE_ID => TrayCommand::OpenPalette,
-            QUIT_ID => TrayCommand::Quit,
-            _ => return, // counter rows are non-clickable disabled items
+        let Some(cmd) = command_for_menu_id(event.id.0.as_str()) else {
+            return;
         };
         if let Err(e) = cmd_tx.send(cmd) {
             tracing::warn!("tray event dropped (no consumer?): {e}");
@@ -160,9 +168,22 @@ fn install_menu_router(cmd_tx: Sender<TrayCommand>) {
     }));
 }
 
+fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
+    match id {
+        SHOW_ID => Some(TrayCommand::ShowWindow),
+        PALETTE_ID => Some(TrayCommand::OpenPalette),
+        QUIT_ID => Some(TrayCommand::Quit),
+        _ => id
+            .strip_prefix(PINNED_ID_PREFIX)
+            .and_then(|raw| Uuid::parse_str(raw).ok())
+            .map(TrayCommand::ConnectPinned),
+    }
+}
+
 const SHOW_ID: &str = "shelldeck.tray.show";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
 const QUIT_ID: &str = "shelldeck.tray.quit";
+const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
 
 // Ids for the disabled counter rows. They still need ids so the same
 // widget can be found later for `set_text` (though on GTK we hold the
@@ -182,47 +203,40 @@ struct CounterItems {
     jean: MenuItem,
 }
 
+struct MenuItems {
+    counters: CounterItems,
+    pinned_menu: Submenu,
+    pinned_items: Vec<MenuItem>,
+}
+
 /// Build the tray menu — click actions on top, live counters in the
 /// middle (disabled = non-clickable placeholders whose text is
 /// rewritten on state updates), Quit at the bottom.
-fn build_menu() -> Result<(Menu, CounterItems)> {
+fn build_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
 
     let show_item = MenuItem::with_id(SHOW_ID, "Ouvrir ShellDeck", true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, "Palette de commandes", true, None);
     let quit_item = MenuItem::with_id(QUIT_ID, "Quitter", true, None);
+    let pinned_menu = Submenu::new("Connexions épinglées", true);
+    let no_pinned = MenuItem::new("Aucune connexion épinglée", false, None);
+    pinned_menu
+        .append(&no_pinned)
+        .context("append empty pinned row")?;
 
     // Counter rows: `enabled = false` so the tray marks them as
     // dimmed / unclickable — they exist for information only.
     let counters = CounterItems {
-        ssh: MenuItem::with_id(
-            COUNTER_SSH_ID,
-            &counter_label_ssh(0),
-            false,
-            None,
-        ),
-        tunnels: MenuItem::with_id(
-            COUNTER_TUNNELS_ID,
-            &counter_label_tunnels(0),
-            false,
-            None,
-        ),
-        tickets: MenuItem::with_id(
-            COUNTER_TICKETS_ID,
-            &counter_label_tickets(0),
-            false,
-            None,
-        ),
-        jean: MenuItem::with_id(
-            COUNTER_JEAN_ID,
-            &counter_label_jean(0),
-            false,
-            None,
-        ),
+        ssh: MenuItem::with_id(COUNTER_SSH_ID, &counter_label_ssh(0), false, None),
+        tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, &counter_label_tunnels(0), false, None),
+        tickets: MenuItem::with_id(COUNTER_TICKETS_ID, &counter_label_tickets(0), false, None),
+        jean: MenuItem::with_id(COUNTER_JEAN_ID, &counter_label_jean(0), false, None),
     };
 
     menu.append(&show_item).context("append Show item")?;
     menu.append(&palette_item).context("append Palette item")?;
+    menu.append(&pinned_menu)
+        .context("append pinned connections menu")?;
     menu.append(&PredefinedMenuItem::separator())
         .context("append separator counters-top")?;
     menu.append(&counters.ssh).context("append SSH counter")?;
@@ -235,13 +249,21 @@ fn build_menu() -> Result<(Menu, CounterItems)> {
         .context("append separator quit-top")?;
     menu.append(&quit_item).context("append Quit item")?;
 
-    Ok((menu, counters))
+    Ok((
+        menu,
+        MenuItems {
+            counters,
+            pinned_menu,
+            pinned_items: vec![no_pinned],
+        },
+    ))
 }
 
 /// Apply a fresh state to the counter items. Only rewrites labels that
 /// actually changed so the tray menu stays quiet under repeated
 /// identical publishes. Must run on the GTK thread on Linux.
-fn apply_state(counters: &CounterItems, prev: &mut TrayState, next: TrayState) {
+fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
+    let counters = &items.counters;
     if prev.active_ssh != next.active_ssh {
         counters.ssh.set_text(&counter_label_ssh(next.active_ssh));
     }
@@ -259,6 +281,34 @@ fn apply_state(counters: &CounterItems, prev: &mut TrayState, next: TrayState) {
         counters
             .jean
             .set_text(&counter_label_jean(next.jean_pending));
+    }
+    if prev.pinned_connections != next.pinned_connections {
+        for item in items.pinned_items.drain(..) {
+            if let Err(error) = items.pinned_menu.remove(&item) {
+                tracing::warn!("failed to remove pinned tray item: {error}");
+            }
+        }
+
+        if next.pinned_connections.is_empty() {
+            let item = MenuItem::new("Aucune connexion épinglée", false, None);
+            if let Err(error) = items.pinned_menu.append(&item) {
+                tracing::warn!("failed to append empty pinned tray row: {error}");
+            }
+            items.pinned_items.push(item);
+        } else {
+            for connection in &next.pinned_connections {
+                let item = MenuItem::with_id(
+                    format!("{PINNED_ID_PREFIX}{}", connection.id),
+                    &connection.name,
+                    true,
+                    None,
+                );
+                if let Err(error) = items.pinned_menu.append(&item) {
+                    tracing::warn!("failed to append pinned tray item: {error}");
+                }
+                items.pinned_items.push(item);
+            }
+        }
     }
     *prev = next;
 }
@@ -313,10 +363,7 @@ fn load_icon() -> Result<tray_icon::Icon> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_tray_backend(
-    icon: tray_icon::Icon,
-    state_rx: Receiver<TrayState>,
-) -> Result<()> {
+fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> Result<()> {
     // Oneshot to synchronise "tray is live" with the main thread. If
     // GTK init or tray build fails, the error bubbles up before the
     // app opens its main window. On success the thread parks on
@@ -331,7 +378,7 @@ fn spawn_tray_backend(
                 return;
             }
 
-            let (menu, counters) = match build_menu() {
+            let (menu, mut items) = match build_menu() {
                 Ok(pair) => pair,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -359,19 +406,16 @@ fn spawn_tray_backend(
             // being called from the main context (we are, we're the
             // GTK thread).
             //
-            // The closure owns `counters` (the MenuItem handles),
+            // The closure owns the menu handles,
             // `prev_state` for diffing, and `state_rx` for draining
             // publishes from the workspace.
             let mut prev_state = TrayState::default();
-            gtk::glib::timeout_add_local(
-                std::time::Duration::from_millis(200),
-                move || {
-                    while let Ok(next) = state_rx.try_recv() {
-                        apply_state(&counters, &mut prev_state, next);
-                    }
-                    gtk::glib::ControlFlow::Continue
-                },
-            );
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                while let Ok(next) = state_rx.try_recv() {
+                    apply_state(&mut items, &mut prev_state, next);
+                }
+                gtk::glib::ControlFlow::Continue
+            });
 
             let _ = ready_tx.send(Ok(()));
 
@@ -385,11 +429,30 @@ fn spawn_tray_backend(
         .context("tray thread died before signalling")?
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_menu_id_routes_to_connection() {
+        let id = Uuid::new_v4();
+        let menu_id = format!("{PINNED_ID_PREFIX}{id}");
+
+        assert!(matches!(
+            command_for_menu_id(&menu_id),
+            Some(TrayCommand::ConnectPinned(routed)) if routed == id
+        ));
+    }
+
+    #[test]
+    fn unknown_or_malformed_menu_id_is_ignored() {
+        assert!(command_for_menu_id("shelldeck.tray.counter.ssh").is_none());
+        assert!(command_for_menu_id("shelldeck.tray.pinned.invalid").is_none());
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
-fn spawn_tray_backend(
-    icon: tray_icon::Icon,
-    state_rx: Receiver<TrayState>,
-) -> Result<()> {
+fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> Result<()> {
     // macOS + Windows: no separate event loop needed, the platform
     // run-loop drives the tray directly. The `TrayIcon` must be built
     // on the main thread but doesn't need to be kept as a named

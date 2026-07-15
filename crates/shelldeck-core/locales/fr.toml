@@ -173,6 +173,13 @@ sidebar.no_matches = "Aucun hôte correspondant"
 sidebar.add_connection = "+ Ajouter une connexion"
 sidebar.show_nav = "AFFICHER NAV"
 sidebar.hide_nav = "MASQUER NAV"
+sidebar.pinned = "Épinglés"
+sidebar.other_hosts = "Autres hôtes"
+sidebar.pin_connection = "Épingler la connexion"
+sidebar.unpin_connection = "Désépingler la connexion"
+toast.connection.pinned = "%{name} épinglée"
+toast.connection.unpinned = "%{name} désépinglée"
+toast.connection.pin_failed = "Impossible d'enregistrer les favoris : %{error}"
 
 # Dashboard
 dashboard.welcome = "Bienvenue sur ShellDeck"

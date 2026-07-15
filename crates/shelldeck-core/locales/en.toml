@@ -173,6 +173,13 @@ sidebar.no_matches = "No matching hosts"
 sidebar.add_connection = "+ Add Connection"
 sidebar.show_nav = "SHOW NAV"
 sidebar.hide_nav = "HIDE NAV"
+sidebar.pinned = "Pinned"
+sidebar.other_hosts = "Other hosts"
+sidebar.pin_connection = "Pin connection"
+sidebar.unpin_connection = "Unpin connection"
+toast.connection.pinned = "Pinned %{name}"
+toast.connection.unpinned = "Unpinned %{name}"
+toast.connection.pin_failed = "Could not save favorites: %{error}"
 
 # Dashboard
 dashboard.welcome = "Welcome to ShellDeck"

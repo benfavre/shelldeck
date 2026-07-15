@@ -43,6 +43,10 @@ pub struct AppConfig {
     /// without a `[tray]` section parsing cleanly.
     #[serde(default)]
     pub tray: TrayConfig,
+    /// Connection ids shown in the sidebar and system-tray quick-access
+    /// sections. Order is user-defined and preserved across sessions.
+    #[serde(default)]
+    pub pinned_connections: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +427,8 @@ mod tests {
         config.general.sidebar_width = 333.0;
         config.general.auto_connect_on_startup = true;
         config.general.ui_font_family = "Inter".to_string();
+        let pinned_id = uuid::Uuid::new_v4();
+        config.pinned_connections.push(pinned_id);
 
         config.save_to(&path).expect("save_to");
         let loaded = AppConfig::load_from(&path).expect("load_from");
@@ -435,8 +441,25 @@ mod tests {
         assert_eq!(loaded.general.sidebar_width, 333.0);
         assert!(loaded.general.auto_connect_on_startup);
         assert_eq!(loaded.general.ui_font_family, "Inter");
+        assert_eq!(loaded.pinned_connections, vec![pinned_id]);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn older_config_defaults_pinned_connections_to_empty() {
+        let config: AppConfig = toml::from_str(
+            r#"
+theme = "Dark"
+
+[terminal]
+
+[general]
+"#,
+        )
+        .expect("parse config without pinned_connections");
+
+        assert!(config.pinned_connections.is_empty());
     }
 
     #[test]

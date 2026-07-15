@@ -172,26 +172,30 @@ query/fragment/slash final ignorés) :
 - **`tunnel/<site>/<port>`** (schéma initial) non retenu — pas d'API
   pour résoudre `(site, port)` → tunnel ; on cible le `PortForward.id`.
 
-## 4. Pin / favoris rapides
+## 4. Pin / favoris rapides — ✅ livré 2026-07-15
 
 **Objectif :** un « fast lane » pour les éléments les plus utilisés.
 Contrainte forte de Karim : **une seule catégorie d'éléments à la
 fois**, pas un système universel de pin sur n'importe quoi.
 
-**Décision restant à prendre :** quelle catégorie ?
+**Décision :** la catégorie unique est **Connexions**.
 
-- **Sites** — cohérent avec le titlebar site chip et le multi-tenant.
-- **Connexions** — cohérent avec le sidebar (déjà l'objet le plus
-  manipulé).
-- **Scripts** — cohérent avec l'idée « boîte à outils personnelle ».
+**Livré :**
 
-À trancher avant implémentation.
+- Action pin Lucide au hover sur chaque connexion, toujours visible lorsque
+  la connexion est épinglée, avec tooltip localisé.
+- Sections distinctes « Épinglés » et « Autres hôtes » en haut de la liste du
+  sidebar, filtrées avec la recherche et le site actif, sans doublon entre elles.
+- Sous-menu tray « Connexions épinglées » alimenté dynamiquement ; un clic
+  restaure ShellDeck et ouvre la connexion SSH.
+- Ordre et UUID persistés dans `AppConfig.pinned_connections: Vec<Uuid>` ; les
+  anciennes configurations chargent une liste vide et la suppression d'une
+  connexion nettoie aussi son favori.
 
-**UI proposée (indépendante de la catégorie choisie) :**
-
-- Étoile / icône pin sur chaque row de la catégorie (hover-action).
-- Section « Épinglés » en haut du sidebar / du menu tray.
-- Persisté dans `AppConfig` (nouveau champ `pinned_<category>: Vec<Uuid>`).
+**Limite plateforme existante :** comme les compteurs tray, les mises à jour
+live du sous-menu utilisent actuellement le bridge GTK Linux. Le canal est
+cross-platform, mais le bridge de mutation du menu macOS/Windows reste le
+follow-up déjà documenté dans `tray/mod.rs`.
 
 ## 5. Recent activity
 

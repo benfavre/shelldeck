@@ -391,12 +391,19 @@ pub struct Workspace {
 /// Snapshot mirror of `shelldeck::tray::TrayState`, kept in
 /// `shelldeck-ui` to avoid a dependency on the `shelldeck` binary
 /// crate. The `main.rs`-side closure translates one into the other.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrayCounters {
     pub active_ssh: usize,
     pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub jean_pending: usize,
+    pub pinned_connections: Vec<TrayPinnedConnection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayPinnedConnection {
+    pub id: Uuid,
+    pub name: String,
 }
 
 /// Notifications the workspace asks the OS to display when a
@@ -436,9 +443,11 @@ impl Workspace {
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
         let initial_nav_collapsed = config.general.sidebar_nav_collapsed;
+        let initial_pinned_connections = config.pinned_connections.clone();
         let sidebar = cx.new(|cx| {
             let mut s = SidebarView::new(cx);
             s.set_connections(connections.clone());
+            s.set_pinned_connections(initial_pinned_connections);
             s.set_site_filter(initial_site_filter);
             s.set_nav_collapsed(initial_nav_collapsed);
             s
@@ -838,17 +847,32 @@ impl Workspace {
         let open_tunnels = self.active_tunnels.len();
         let unread_tickets = self.support.read(cx).unread_ticket_count();
         let jean_pending = self.runtime_awaiting.len();
+        let pinned_connections = self
+            .app_config
+            .pinned_connections
+            .iter()
+            .filter_map(|id| {
+                self.connections
+                    .iter()
+                    .find(|connection| connection.id == *id)
+                    .map(|connection| TrayPinnedConnection {
+                        id: *id,
+                        name: connection.display_name().to_string(),
+                    })
+            })
+            .collect();
         let counters = TrayCounters {
             active_ssh,
             open_tunnels,
             unread_tickets,
             jean_pending,
+            pinned_connections,
         };
 
         // Delta notifications — skipped entirely on the first publish
         // so the seed value doesn't fire a startup burst. Each category
         // is opt-out via `AppConfig.tray.notify_*` (Settings → Général).
-        if let Some(prev) = self.last_tray_counters {
+        if let Some(prev) = self.last_tray_counters.as_ref() {
             let cfg = &self.app_config.tray;
             if cfg.notify_new_tickets && counters.unread_tickets > prev.unread_tickets {
                 self.emit_tray_notification(TrayNotification::NewTickets {
@@ -866,11 +890,68 @@ impl Workspace {
                 });
             }
         }
-        self.last_tray_counters = Some(counters);
+        self.last_tray_counters = Some(counters.clone());
 
         if let Some(publisher) = self.tray_state_publisher.as_ref() {
             publisher(counters);
         }
+    }
+
+    fn toggle_connection_pin(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let Some(connection) = self
+            .connections
+            .iter()
+            .find(|connection| connection.id == id)
+        else {
+            return;
+        };
+        let name = connection.display_name().to_string();
+        let unpinned = self.app_config.pinned_connections.contains(&id);
+        if unpinned {
+            self.app_config
+                .pinned_connections
+                .retain(|pinned| *pinned != id);
+        } else {
+            self.app_config.pinned_connections.push(id);
+        }
+
+        if let Err(error) = self.app_config.save() {
+            if unpinned {
+                self.app_config.pinned_connections.push(id);
+            } else {
+                self.app_config
+                    .pinned_connections
+                    .retain(|pinned| *pinned != id);
+            }
+            tracing::error!("Failed to persist pinned connections: {error}");
+            self.show_toast(
+                t!("toast.connection.pin_failed", error = error.to_string()).to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+
+        self.sync_settings_config(cx);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_pinned_connections(self.app_config.pinned_connections.clone());
+            cx.notify();
+        });
+        self.publish_tray_state(cx);
+        self.show_toast(
+            if unpinned {
+                t!("toast.connection.unpinned", name = name.as_str()).to_string()
+            } else {
+                t!("toast.connection.pinned", name = name.as_str()).to_string()
+            },
+            ToastLevel::Info,
+            cx,
+        );
+    }
+
+    /// Connect a pinned host selected from the system tray.
+    pub fn connect_pinned_connection(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.handle_sidebar_event(&SidebarEvent::ConnectionConnect(id), cx);
     }
 
     /// Decide whether a window-close request should proceed.
@@ -999,8 +1080,17 @@ impl Workspace {
                             }
                         }
                         self.connections.retain(|c| c.id != id);
+                        self.app_config
+                            .pinned_connections
+                            .retain(|pinned| *pinned != id);
+                        if let Err(error) = self.app_config.save() {
+                            tracing::error!("Failed to persist removed connection pin: {error}");
+                        }
+                        self.sync_settings_config(cx);
                         self.sidebar.update(cx, |sidebar, _| {
                             sidebar.set_connections(self.connections.clone());
+                            sidebar
+                                .set_pinned_connections(self.app_config.pinned_connections.clone());
                         });
                         self.port_forwards.update(cx, |pf, _| {
                             pf.forwards.retain(|f| f.connection_id != id);
@@ -1015,6 +1105,7 @@ impl Workspace {
                             ToastLevel::Info,
                             cx,
                         );
+                        self.publish_tray_state(cx);
                         cx.notify();
                     }
                 } else {
@@ -1030,6 +1121,9 @@ impl Workspace {
                         cx.notify();
                     }
                 }
+            }
+            SidebarEvent::ConnectionPinToggled(id) => {
+                self.toggle_connection_pin(*id, cx);
             }
             SidebarEvent::WidthChanged(width) => {
                 self.sidebar_width = *width;

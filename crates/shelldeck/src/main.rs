@@ -368,6 +368,14 @@ fn dispatch_tray_command(
                 });
             }
         }
+        TrayCommand::ConnectPinned(id) => {
+            if let Some(ws) = ws.upgrade() {
+                let _ = window.update(cx, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.connect_pinned_connection(id, cx));
+                    window.activate_window();
+                });
+            }
+        }
         TrayCommand::Quit => {
             if let Some(ws) = ws.upgrade() {
                 ws.update(cx, |ws, cx| ws.shutdown(cx));
@@ -609,6 +617,14 @@ fn main() -> Result<()> {
                             open_tunnels: counters.open_tunnels,
                             unread_tickets: counters.unread_tickets,
                             jean_pending: counters.jean_pending,
+                            pinned_connections: counters
+                                .pinned_connections
+                                .into_iter()
+                                .map(|connection| tray::PinnedConnection {
+                                    id: connection.id,
+                                    name: connection.name,
+                                })
+                                .collect(),
                         };
                         // Send failure means the tray thread died —
                         // best-effort, ignore.

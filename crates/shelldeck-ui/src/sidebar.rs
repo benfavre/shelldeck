@@ -13,6 +13,29 @@ use crate::icons::lucide_icon;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+struct SidebarTooltip {
+    label: SharedString,
+}
+
+impl Render for SidebarTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let font_family = use_theme().tokens.font_family.clone();
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_surface())
+            .shadow_md()
+            .text_size(px(11.0))
+            .font_family(font_family)
+            .text_color(ShellDeckColors::text_primary())
+            .whitespace_nowrap()
+            .child(self.label.clone())
+    }
+}
+
 /// Pure helper: whether a connection passes the sidebar's active-site
 /// filter. Extracted from `SidebarView::conn_matches_site` so unit tests
 /// don't need a GPUI `Context` to exercise the contract.
@@ -153,6 +176,7 @@ pub enum SidebarEvent {
     ConnectionConnect(Uuid),
     ConnectionEdit(Uuid),
     ConnectionDelete(Uuid),
+    ConnectionPinToggled(Uuid),
     /// Manage the bext instance behind this connection (loopback site SDK).
     ConnectionManageBext(Uuid),
     /// Open the row's kebab (⋮) action menu at the given window position.
@@ -172,6 +196,7 @@ pub enum SidebarEvent {
 
 pub struct SidebarView {
     connections: Vec<Connection>,
+    pinned_connections: Vec<Uuid>,
     selected_connection: Option<Uuid>,
     active_section: SidebarSection,
     collapsed: bool,
@@ -204,6 +229,7 @@ impl SidebarView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             connections: Vec::new(),
+            pinned_connections: Vec::new(),
             selected_connection: None,
             active_section: SidebarSection::Connections,
             collapsed: false,
@@ -254,6 +280,10 @@ impl SidebarView {
 
     pub fn set_connections(&mut self, connections: Vec<Connection>) {
         self.connections = connections;
+    }
+
+    pub fn set_pinned_connections(&mut self, pinned_connections: Vec<Uuid>) {
+        self.pinned_connections = pinned_connections;
     }
 
     /// Highlight a connection in the Connections section without opening an
@@ -427,6 +457,7 @@ impl SidebarView {
     ) -> impl IntoElement {
         let is_selected = self.selected_connection == Some(connection.id);
         let conn_id = connection.id;
+        let is_pinned = self.pinned_connections.contains(&conn_id);
         let status_color = match &connection.status {
             ConnectionStatus::Connected => ShellDeckColors::status_connected(),
             ConnectionStatus::Connecting => ShellDeckColors::warning(),
@@ -453,6 +484,52 @@ impl SidebarView {
         // Kebab button — faint hint always visible so the affordance is
         // discoverable, brightens on row hover. Click opens a dropdown at the
         // click position with SSH/Edit/bext/Delete.
+        let pin_tooltip = if is_pinned {
+            t!("sidebar.unpin_connection").to_string()
+        } else {
+            t!("sidebar.pin_connection").to_string()
+        };
+        let pin_button = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "conn-pin-{conn_id}"
+            ))))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .rounded(px(4.0))
+            .text_color(if is_pinned {
+                ShellDeckColors::primary()
+            } else {
+                ShellDeckColors::text_muted()
+            })
+            .opacity(if is_pinned { 1.0 } else { 0.0 })
+            .group_hover(group_name.clone(), |el| el.opacity(1.0))
+            .cursor_pointer()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .tooltip(move |_, cx| {
+                cx.new(|_| SidebarTooltip {
+                    label: pin_tooltip.clone().into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+                cx.emit(SidebarEvent::ConnectionPinToggled(conn_id));
+            }))
+            .child(
+                svg()
+                    .path("icons/lucide/pin.svg")
+                    .size(px(13.0))
+                    .text_color(if is_pinned {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::text_muted()
+                    }),
+            );
+
         let action_buttons = div()
             .id(ElementId::from(SharedString::from(format!(
                 "conn-kebab-{}",
@@ -610,6 +687,7 @@ impl SidebarView {
             );
 
         row = row.child(content);
+        row = row.child(pin_button);
         row = row.child(action_buttons);
         row
     }
@@ -636,6 +714,9 @@ impl Render for SidebarView {
         let mut ungrouped: Vec<&Connection> = Vec::new();
 
         for conn in &filtered {
+            if self.pinned_connections.contains(&conn.id) {
+                continue;
+            }
             if let Some(ref group) = conn.group {
                 grouped.entry(group.clone()).or_default().push(conn);
             } else {
@@ -703,6 +784,23 @@ impl Render for SidebarView {
             .id("sidebar-host-list")
             .child(Self::render_section_header(t!("sidebar.hosts").as_ref()))
             .child(self.render_search_bar(cx));
+
+        let pinned: Vec<&Connection> = self
+            .pinned_connections
+            .iter()
+            .filter_map(|id| filtered.iter().copied().find(|conn| conn.id == *id))
+            .collect();
+        if !pinned.is_empty() {
+            host_list = host_list.child(Self::render_section_header(t!("sidebar.pinned").as_ref()));
+            for conn in pinned {
+                host_list = host_list.child(self.render_connection_item_highlighted(conn, cx));
+            }
+            if !ungrouped.is_empty() || !grouped.is_empty() {
+                host_list = host_list.child(Self::render_section_header(
+                    t!("sidebar.other_hosts").as_ref(),
+                ));
+            }
+        }
 
         // Ungrouped connections (with highlights)
         for conn in &ungrouped {
