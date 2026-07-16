@@ -123,17 +123,12 @@ impl Render for WorkspaceTooltip {
 /// its own surface, and `Infos` is the new "quel compte / quel device"
 /// summary — surfaces every field the `/whoami` payload returns so the
 /// user can see exactly what ShellDeck knows about them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum UserHomeTab {
+    #[default]
     Sites,
     Requests,
     Infos,
-}
-
-impl Default for UserHomeTab {
-    fn default() -> Self {
-        UserHomeTab::Sites
-    }
 }
 
 /// Duration (ms) of the User-mode sheet enter/exit animation. The close
@@ -8772,9 +8767,7 @@ impl Workspace {
         if others_count > 0 {
             const MAX_LIST_H: f32 = 600.0;
             const MIN_LIST_H: f32 = 120.0;
-            let visible_h = (others_count as f32 * SITE_ROW_H)
-                .min(MAX_LIST_H)
-                .max(MIN_LIST_H);
+            let visible_h = (others_count as f32 * SITE_ROW_H).clamp(MIN_LIST_H, MAX_LIST_H);
             list = list.child(
                 div().w_full().h(px(visible_h)).child(
                     uniform_list(

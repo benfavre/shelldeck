@@ -29,14 +29,13 @@ enum OnboardingStep {
 impl OnboardingStep {
     /// Optional embedded media (GIF/WebP/PNG). `None` → styled placeholder slot.
     fn media_asset(self) -> Option<&'static str> {
-        match self {
-            // Per-step — enable when the asset exists + is wired in main.rs:
-            // Self::Welcome => Some("images/onboarding/welcome.gif"),
-            // Self::Modes => Some("images/onboarding/modes.gif"),
-            // Self::Surfaces => Some("images/onboarding/surfaces.gif"),
-            // Self::Shortcuts => Some("images/onboarding/shortcuts.gif"),
-            _ => None,
-        }
+        // Per-step — enable when the asset exists + is wired in main.rs:
+        // Self::Welcome => Some("images/onboarding/welcome.gif"),
+        // Self::Modes => Some("images/onboarding/modes.gif"),
+        // Self::Surfaces => Some("images/onboarding/surfaces.gif"),
+        // Self::Shortcuts => Some("images/onboarding/shortcuts.gif"),
+        let _ = self;
+        None
     }
 
     fn placeholder_icon(self) -> &'static str {
@@ -119,11 +118,9 @@ impl OnboardingView {
                     cx.notify();
                 }
             }
-            "left" | "arrowleft" => {
-                if self.index > 0 {
-                    self.index -= 1;
-                    cx.notify();
-                }
+            "left" | "arrowleft" if self.index > 0 => {
+                self.index -= 1;
+                cx.notify();
             }
             "right" | "arrowright" => {
                 if self.is_last() {

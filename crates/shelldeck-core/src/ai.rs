@@ -484,7 +484,7 @@ impl AiConversationStore {
             std::fs::create_dir_all(parent)?;
         }
         let mut recent = conversations.to_vec();
-        recent.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        recent.sort_by_key(|conversation| conversation.updated_at);
         let start = recent.len().saturating_sub(Self::MAX_CONVERSATIONS);
         let payload = serde_json::to_vec_pretty(&recent[start..]).map_err(|error| {
             ShellDeckError::Serialization(format!("Failed to serialize AI conversations: {error}"))
@@ -1089,7 +1089,11 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{output}'\n"),
+            )
+            .unwrap();
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
             permissions.set_mode(0o700);
             std::fs::set_permissions(&path, permissions).unwrap();
