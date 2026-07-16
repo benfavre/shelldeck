@@ -462,7 +462,7 @@ echo ""
 info "Recent commits since last tag:"
 LAST_TAG=$(latest_tag)
 if [[ -n "$LAST_TAG" ]]; then
-    git log --oneline "$LAST_TAG"..HEAD | head -10 | sed 's/^/  /'
+    git log --oneline -10 "$LAST_TAG"..HEAD | sed 's/^/  /'
 else
     git log --oneline -10 | sed 's/^/  /'
 fi
