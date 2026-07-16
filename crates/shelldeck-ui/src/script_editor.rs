@@ -64,6 +64,8 @@ pub struct ScriptEditorView {
     pub last_var_values: HashMap<Uuid, HashMap<String, String>>,
     /// Open kebab (⋮) menu: script + click position (window coords).
     kebab_menu: Option<(Uuid, Point<Pixels>)>,
+    /// Compact AI actions menu in the selected script toolbar.
+    ai_actions_menu: Option<(Uuid, Point<Pixels>)>,
 }
 
 impl ScriptEditorView {
@@ -342,6 +344,7 @@ impl ScriptEditorView {
             template_browser_open: false,
             last_var_values: HashMap::new(),
             kebab_menu: None,
+            ai_actions_menu: None,
         }
     }
 
@@ -1065,23 +1068,14 @@ impl ScriptEditorView {
                     })),
                 )
                 .child(
-                    Button::new("explain-script-ai", "")
+                    Button::new("script-ai-more", "")
                         .variant(ButtonVariant::Ai)
                         .size(ButtonSize::Sm)
-                        .tooltip(t!("ai.workflow.script_explain").to_string())
-                        .icon(IconSource::from("info"))
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ScriptEvent::ExplainWithAi(script_id));
-                        })),
-                )
-                .child(
-                    Button::new("review-script-ai", "")
-                        .variant(ButtonVariant::Ai)
-                        .size(ButtonSize::Sm)
-                        .tooltip(t!("ai.workflow.script_review").to_string())
-                        .icon(IconSource::from("shield-check"))
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ScriptEvent::ReviewWithAi(script_id));
+                        .tooltip(t!("ai.workflow.more_actions").to_string())
+                        .icon(IconSource::from("ellipsis"))
+                        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                            this.ai_actions_menu = Some((script_id, event.position()));
+                            cx.notify();
                         })),
                 )
         });
@@ -1735,6 +1729,50 @@ impl ScriptEditorView {
             .into_any_element(),
         )
     }
+
+    fn render_ai_actions_menu(
+        &self,
+        script_id: Uuid,
+        pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let explain_entity = entity.clone();
+        let review_entity = entity.clone();
+        let items = vec![
+            PopoverMenuItem::new(
+                "script-ai-explain",
+                t!("ai.workflow.script_explain").to_string(),
+            )
+            .icon("info")
+            .on_click(move |_, cx| {
+                explain_entity.update(cx, |this, cx| {
+                    this.ai_actions_menu = None;
+                    cx.emit(ScriptEvent::ExplainWithAi(script_id));
+                    cx.notify();
+                });
+            }),
+            PopoverMenuItem::new(
+                "script-ai-review",
+                t!("ai.workflow.script_review").to_string(),
+            )
+            .icon("shield-check")
+            .on_click(move |_, cx| {
+                review_entity.update(cx, |this, cx| {
+                    this.ai_actions_menu = None;
+                    cx.emit(ScriptEvent::ReviewWithAi(script_id));
+                    cx.notify();
+                });
+            }),
+        ];
+
+        PopoverMenu::new(pos, items).on_close(move |_, cx| {
+            entity.update(cx, |this, cx| {
+                this.ai_actions_menu = None;
+                cx.notify();
+            });
+        })
+    }
 }
 
 impl Render for ScriptEditorView {
@@ -1767,6 +1805,10 @@ impl Render for ScriptEditorView {
             if let Some(menu) = self.render_kebab_menu(script_id, pos, cx) {
                 container = container.child(menu);
             }
+        }
+
+        if let Some((script_id, pos)) = self.ai_actions_menu {
+            container = container.child(self.render_ai_actions_menu(script_id, pos, cx));
         }
 
         if self.run_target_menu_open && !self.is_running() {
