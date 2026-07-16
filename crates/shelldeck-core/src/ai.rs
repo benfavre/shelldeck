@@ -484,7 +484,7 @@ impl AiConversationStore {
             std::fs::create_dir_all(parent)?;
         }
         let mut recent = conversations.to_vec();
-        recent.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        recent.sort_by_key(|conversation| conversation.updated_at);
         let start = recent.len().saturating_sub(Self::MAX_CONVERSATIONS);
         let payload = serde_json::to_vec_pretty(&recent[start..]).map_err(|error| {
             ShellDeckError::Serialization(format!("Failed to serialize AI conversations: {error}"))

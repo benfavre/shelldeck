@@ -98,8 +98,8 @@ impl AppMode {
 
     /// Which modes a caller may actually pick from — used by the switcher
     /// + palette to only surface reachable modes. Regular users AND client
-    /// admins see nothing (only User); inklura_support sees User + Support;
-    /// super-admins see all three.
+    ///   admins see nothing (only User); inklura_support sees User + Support;
+    ///   super-admins see all three.
     pub fn allowed_modes(is_inklura_support: bool, is_superadmin: bool) -> &'static [AppMode] {
         if is_superadmin {
             &[AppMode::User, AppMode::Support, AppMode::Dev]

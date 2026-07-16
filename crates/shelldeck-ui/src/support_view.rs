@@ -3959,7 +3959,7 @@ impl SupportView {
                 icon: "user-check",
             });
         }
-        let has_agents_match = options.iter().skip(3).next().is_some();
+        let has_agents_match = options.len() > 3;
 
         // List body — one row per option, click applies + closes.
         let mut list = div().flex().flex_col().gap(px(2.0));

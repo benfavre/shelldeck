@@ -1483,7 +1483,7 @@ impl ScriptEditorView {
             .ai_generation_enabled
             .then(|| self.selected_failed_execution())
             .flatten()
-            .and_then(|_| self.selected_script)
+            .and(self.selected_script)
             .map(|script_id| {
                 Button::new(
                     "fix-failed-script-ai",

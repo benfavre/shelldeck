@@ -349,7 +349,7 @@ impl AiAssistantView {
             .filter(|conversation| conversation.archived == self.show_archived)
             .cloned()
             .collect::<Vec<_>>();
-        conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        conversations.sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at));
 
         if conversations.is_empty() {
             list = list.child(

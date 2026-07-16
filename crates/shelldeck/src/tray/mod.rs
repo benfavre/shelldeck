@@ -227,10 +227,10 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     // Counter rows: `enabled = false` so the tray marks them as
     // dimmed / unclickable — they exist for information only.
     let counters = CounterItems {
-        ssh: MenuItem::with_id(COUNTER_SSH_ID, &counter_label_ssh(0), false, None),
-        tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, &counter_label_tunnels(0), false, None),
-        tickets: MenuItem::with_id(COUNTER_TICKETS_ID, &counter_label_tickets(0), false, None),
-        jean: MenuItem::with_id(COUNTER_JEAN_ID, &counter_label_jean(0), false, None),
+        ssh: MenuItem::with_id(COUNTER_SSH_ID, counter_label_ssh(0), false, None),
+        tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, counter_label_tunnels(0), false, None),
+        tickets: MenuItem::with_id(COUNTER_TICKETS_ID, counter_label_tickets(0), false, None),
+        jean: MenuItem::with_id(COUNTER_JEAN_ID, counter_label_jean(0), false, None),
     };
 
     menu.append(&show_item).context("append Show item")?;
@@ -265,22 +265,22 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
 fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     let counters = &items.counters;
     if prev.active_ssh != next.active_ssh {
-        counters.ssh.set_text(&counter_label_ssh(next.active_ssh));
+        counters.ssh.set_text(counter_label_ssh(next.active_ssh));
     }
     if prev.open_tunnels != next.open_tunnels {
         counters
             .tunnels
-            .set_text(&counter_label_tunnels(next.open_tunnels));
+            .set_text(counter_label_tunnels(next.open_tunnels));
     }
     if prev.unread_tickets != next.unread_tickets {
         counters
             .tickets
-            .set_text(&counter_label_tickets(next.unread_tickets));
+            .set_text(counter_label_tickets(next.unread_tickets));
     }
     if prev.jean_pending != next.jean_pending {
         counters
             .jean
-            .set_text(&counter_label_jean(next.jean_pending));
+            .set_text(counter_label_jean(next.jean_pending));
     }
     if prev.pinned_connections != next.pinned_connections {
         for item in items.pinned_items.drain(..) {
