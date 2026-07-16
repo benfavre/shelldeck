@@ -6,6 +6,7 @@
 use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
 use crate::error::{Result, ShellDeckError};
+use crate::models::connection::Connection;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -162,6 +163,27 @@ impl AiContext {
             cwd: None,
         }
     }
+}
+
+pub fn host_context(connections: &[Connection]) -> Value {
+    Value::Array(
+        connections
+            .iter()
+            .map(|connection| {
+                json!({
+                    "id": connection.id,
+                    "name": connection.display_name(),
+                    "alias": connection.alias,
+                    "hostname": connection.hostname,
+                    "port": connection.port,
+                    "user": connection.user,
+                    "group": connection.group,
+                    "tags": connection.tags,
+                    "site": connection.site_label,
+                })
+            })
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1080,5 +1102,24 @@ mod tests {
         for (capability, expected) in capabilities {
             assert_eq!(serde_json::to_string(&capability).unwrap(), expected);
         }
+    }
+
+    // SDTEST-1348
+    #[test]
+    fn host_context_exposes_identity_without_credential_paths() {
+        let mut connection =
+            Connection::new_manual("prod-db".into(), "10.0.0.8".into(), "deploy".into());
+        connection.port = 2222;
+        connection.identity_file = Some("/home/test/.ssh/id_prod".into());
+        connection.tags = vec!["database".into(), "production".into()];
+
+        let serialized = serde_json::to_string(&host_context(&[connection])).unwrap();
+
+        assert!(serialized.contains("prod-db"));
+        assert!(serialized.contains("10.0.0.8"));
+        assert!(serialized.contains("deploy"));
+        assert!(serialized.contains("2222"));
+        assert!(!serialized.contains("identity_file"));
+        assert!(!serialized.contains("id_prod"));
     }
 }

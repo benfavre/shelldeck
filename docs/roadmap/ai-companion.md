@@ -378,8 +378,9 @@ cadre le comportement, pas encore le contrat de serialisation.
 
 Etat au 2026-07-16:
 
-- Fait: composant commun editable avec chargement, acceptation, regeneration,
-  annulation et mise en attente.
+- Fait: composant commun avec chargement, acceptation, regeneration,
+  annulation et mise en attente; les brouillons applicables sont editables,
+  les analyses sont en lecture seule dans une zone scrollable.
 - Fait: assistant general multi-tour avec conversations persistantes locales,
   historique actif/archive, suppression confirmee et limite aux 100 discussions
   les plus recentes.
@@ -394,15 +395,17 @@ Etat au 2026-07-16:
 - Fait: Terminal, génération d'une commande avec insertion sans exécution,
   diagnostic depuis la sélection ou la sortie visible, et brouillons en attente.
 - Fait: Support, résumé et triage depuis la toolbar du ticket; les analyses
-  restent éditables, peuvent être mises en attente et sont copiées explicitement.
+  peuvent être ajustées par instruction/régénération, mises en attente et copiées.
 - Fait: Scripts, explication et revue sécurité/portabilité/idempotence depuis la
-  toolbar; les analyses restent éditables, persistantes et copiées explicitement.
+  toolbar; les analyses sont scrollables, persistantes et copiées explicitement.
 
 La phase 1 est terminée.
 
 ### Phase 2 - application dans les ecrans
 
-- Inserer dans composer/formulaire/editeur.
+- Fait partiellement: insertion dans le composer Support, l'editeur de script et
+  le formulaire Nouveau/Modifier un script.
+- Restant: autres formulaires et surfaces.
 - Diff de script.
 - Tags, priorite, assignation.
 - Creation de demande.

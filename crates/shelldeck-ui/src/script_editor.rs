@@ -1023,7 +1023,7 @@ impl ScriptEditorView {
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .gap(px(4.0))
+                .gap(px(6.0))
                 .child(
                     Button::new(
                         "generate-script-ai",

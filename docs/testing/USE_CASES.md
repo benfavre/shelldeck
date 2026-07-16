@@ -1308,7 +1308,9 @@ AI response.
 Sensitive named fields are recursively redacted and serialized context is
 capped before transmission. Provider system guardrails are sent separately
 from untrusted context on OpenAI/Anthropic, and OpenAI Responses requests set
-`store=false`.
+`store=false`. Contexts include a bounded host directory (display identity,
+hostname, port, user, grouping, tags, site) so host aliases are understood,
+but never include identity-file paths or credentials.
 
 ### SDUC-416 — Local CLI isolation
 
@@ -1329,12 +1331,15 @@ commands normally.
 
 When the configured provider and matching surface are enabled, Support exposes
 explicit reply, summary, and triage actions; Scripts exposes generation,
-explanation, and review actions. Generated text remains editable and is never
-sent, saved, or executed automatically: accepting a reply fills the Support
-composer, accepting generation opens the selected script in its unsaved inline
-editor, and accepting an analysis copies it to the clipboard. A draft put on
-hold is persisted under its distinct capability and target, capped to the
-latest 100 entries, and restored when the same workflow is reopened.
+explanation, and review actions. Reply and script-generation drafts remain
+editable; analysis results are read-only, internally scrollable, and adjusted
+through guidance plus regeneration. Nothing is sent, saved, or executed
+automatically: accepting a reply fills the Support composer, accepting
+generation opens the selected script in its unsaved inline editor, and
+accepting an analysis copies it to the clipboard. The New/Edit Script form also
+offers a compact AI instruction field that inserts generated code into the
+unsaved body. A draft put on hold is persisted under its distinct capability
+and target, capped to the latest 100 entries, and restored when reopened.
 
 ---
 
@@ -1357,6 +1362,10 @@ latest 100 entries, and restored when the same workflow is reopened.
 - **2026-07-16** — Completed phase 1 integrated AI analysis workflows:
   Support summary/triage and Script explanation/review (SDUC-418,
   SDTEST-1347).
+- **2026-07-16** — Made integrated analyses read-only and internally
+  scrollable, added inline AI generation to the Script form, and exposed the
+  non-secret host directory to contextual AI (SDUC-415/418,
+  SDTEST-1348/1349).
 - **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
   SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
   compatibility and tray menu-id dispatch.

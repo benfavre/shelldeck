@@ -1,6 +1,7 @@
 use crate::scale::px;
 use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -31,6 +32,7 @@ fn script_form_error(err: ValidationError) -> String {
 #[allow(clippy::large_enum_variant)]
 pub enum ScriptFormEvent {
     Save(Script),
+    GenerateWithAi { instructions: String },
     Cancel,
 }
 
@@ -70,6 +72,10 @@ pub struct ScriptForm {
     selected_connection_idx: usize,
     name_state: Entity<InputState>,
     description_state: Entity<InputState>,
+    ai_prompt_state: Entity<InputState>,
+    ai_enabled: bool,
+    ai_loading: bool,
+    ai_error: Option<String>,
     language: ScriptLanguage,
     category: ScriptCategory,
     body: EditorBuffer,
@@ -129,7 +135,11 @@ impl ScriptForm {
         combobox
     }
 
-    pub fn new(connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        connections: Vec<(Uuid, String, String)>,
+        ai_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let connection_combobox = Self::init_connection_combobox(&connections, 0, cx);
         Self {
             editing_id: None,
@@ -137,6 +147,10 @@ impl ScriptForm {
             selected_connection_idx: 0,
             name_state: new_input_state_sf(cx, ""),
             description_state: new_input_state_sf(cx, ""),
+            ai_prompt_state: new_input_state_sf(cx, ""),
+            ai_enabled,
+            ai_loading: false,
+            ai_error: None,
             language: ScriptLanguage::Shell,
             category: ScriptCategory::Uncategorized,
             body: EditorBuffer::new(),
@@ -153,6 +167,7 @@ impl ScriptForm {
     pub fn from_script(
         script: &Script,
         connections: Vec<(Uuid, String, String)>,
+        ai_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let (target, selected_idx) = match &script.target {
@@ -172,6 +187,10 @@ impl ScriptForm {
             selected_connection_idx: selected_idx,
             name_state: new_input_state_sf(cx, &script.name),
             description_state: new_input_state_sf(cx, script.description.as_deref().unwrap_or("")),
+            ai_prompt_state: new_input_state_sf(cx, ""),
+            ai_enabled,
+            ai_loading: false,
+            ai_error: None,
             language: script.language.clone(),
             category: script.category,
             body: EditorBuffer::from_text(script.body.clone()),
@@ -189,7 +208,69 @@ impl ScriptForm {
         self.focus_handle.focus(window);
     }
 
-    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+    pub fn set_ai_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn set_ai_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        self.ai_loading = loading;
+        if loading {
+            self.ai_error = None;
+        }
+        cx.notify();
+    }
+
+    pub fn set_ai_result(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
+        self.ai_loading = false;
+        match result {
+            Ok(body) => {
+                self.body = EditorBuffer::from_text(body);
+                self.active_field = Some(FormField::Body);
+                self.ai_error = None;
+            }
+            Err(error) => self.ai_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    pub fn ai_context_data(&self, cx: &App) -> serde_json::Value {
+        let selected_connection = self.connections.get(self.selected_connection_idx);
+        serde_json::json!({
+            "form": {
+                "name": Self::field_value(&self.name_state, cx),
+                "description": Self::field_value(&self.description_state, cx),
+                "language": self.language.label(),
+                "category": self.category.label(),
+                "target": format!("{:?}", self.target),
+                "selected_host": selected_connection.map(|(_, alias, hostname)| serde_json::json!({
+                    "alias": alias,
+                    "hostname": hostname,
+                })),
+                "current_body": self.body.text(),
+            }
+        })
+    }
+
+    fn request_ai_generation(&mut self, cx: &mut Context<Self>) {
+        if self.ai_loading {
+            return;
+        }
+        let instructions = Self::field_value(&self.ai_prompt_state, cx)
+            .trim()
+            .to_string();
+        if instructions.is_empty() {
+            self.ai_error = Some(t!("script_form.ai.required").to_string());
+            cx.notify();
+            return;
+        }
+        self.ai_loading = true;
+        self.ai_error = None;
+        cx.emit(ScriptFormEvent::GenerateWithAi { instructions });
+        cx.notify();
+    }
+
+    fn field_value(state: &Entity<InputState>, cx: &App) -> String {
         state.read(cx).content().to_string()
     }
 
@@ -883,10 +964,69 @@ impl Render for ScriptForm {
         }
         let show_connection = matches!(self.target, ScriptTarget::Remote(_));
 
-        let mut form_fields = div()
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
+        let mut form_fields = div().flex().flex_col().gap(px(12.0));
+
+        if self.ai_enabled {
+            let mut ai_block = div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .p(px(10.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.35))
+                .bg(ShellDeckColors::primary().opacity(0.07))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::primary())
+                        .child(t!("script_form.ai.title").to_string()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap(px(8.0))
+                        .child(
+                            div().flex_1().min_w(px(0.0)).child(
+                                Input::new(&self.ai_prompt_state)
+                                    .size(InputSize::Sm)
+                                    .multi_line(true)
+                                    .min_rows(2)
+                                    .max_rows(4)
+                                    .placeholder(t!("script_form.ai.placeholder").to_string())
+                                    .disabled(self.ai_loading),
+                            ),
+                        )
+                        .child(
+                            Button::new(
+                                "script-form-ai-generate",
+                                t!("script_form.ai.generate").to_string(),
+                            )
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .loading(self.ai_loading)
+                            .icon(adabraka_ui::components::icon_source::IconSource::from(
+                                "sparkles",
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_ai_generation(cx);
+                            })),
+                        ),
+                );
+            if let Some(error) = &self.ai_error {
+                ai_block = ai_block.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::error())
+                        .child(error.clone()),
+                );
+            }
+            form_fields = form_fields.child(ai_block);
+        }
+
+        form_fields = form_fields
             // Name
             .child(self.render_text_field(
                 Some(FormField::Name),

@@ -6,8 +6,8 @@ use adabraka_ui::prelude::{install_theme, scrollable_vertical, use_theme, Button
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    configured_cli_available, create_client, test_connection, AiContext, AiDraft, AiDraftStore,
-    AiSurface,
+    configured_cli_available, create_client, host_context, test_connection, AiContext, AiDraft,
+    AiDraftStore, AiSurface,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -1643,51 +1643,51 @@ impl Workspace {
             return AiContext::new(
                 support.ai_surface(),
                 t!("ai.context.support").to_string(),
-                support.ai_context_data(),
+                self.ai_context_data_with_hosts(support.ai_context_data()),
             );
         }
         if self.effective_mode() == AppMode::User && self.user_home_tab == UserHomeTab::Requests {
             return AiContext::new(
                 AiSurface::Issue,
                 t!("ai.context.issue").to_string(),
-                serde_json::to_value(&self.issue_detail)
-                    .unwrap_or_else(|_| serde_json::json!({ "issue": null })),
+                self.ai_context_data_with_hosts(
+                    serde_json::to_value(&self.issue_detail)
+                        .unwrap_or_else(|_| serde_json::json!({ "issue": null })),
+                ),
             );
         }
         match self.active_view {
             ActiveView::Terminal => AiContext::new(
                 AiSurface::Terminal,
                 t!("ai.context.terminal").to_string(),
-                self.terminal.read(cx).ai_context_data(),
+                self.ai_context_data_with_hosts(self.terminal.read(cx).ai_context_data()),
             ),
             ActiveView::Scripts => AiContext::new(
                 AiSurface::Script,
                 t!("ai.context.script").to_string(),
-                self.scripts.read(cx).ai_context_data(),
+                self.script_ai_context_data(cx),
             ),
             ActiveView::JeanConsole | ActiveView::Fleet => AiContext::new(
                 AiSurface::Jean,
                 t!("ai.context.jean").to_string(),
-                serde_json::to_value(&self.jean_state)
-                    .unwrap_or_else(|_| serde_json::json!({ "jean": null })),
+                self.ai_context_data_with_hosts(
+                    serde_json::to_value(&self.jean_state)
+                        .unwrap_or_else(|_| serde_json::json!({ "jean": null })),
+                ),
             ),
             ActiveView::Recent | ActiveView::Dashboard => AiContext::new(
                 AiSurface::Recent,
                 t!("ai.context.recent").to_string(),
-                serde_json::to_value(self.recent_activity.iter().take(50).collect::<Vec<_>>())
-                    .unwrap_or_else(|_| serde_json::json!([])),
+                self.ai_context_data_with_hosts(
+                    serde_json::to_value(self.recent_activity.iter().take(50).collect::<Vec<_>>())
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                ),
             ),
             ActiveView::Sites | ActiveView::PortForwards => AiContext::new(
                 AiSurface::Naming,
                 t!("ai.context.naming").to_string(),
                 serde_json::json!({
-                    "connections": self.connections.iter().map(|connection| serde_json::json!({
-                        "alias": connection.alias,
-                        "hostname": connection.hostname,
-                        "user": connection.user,
-                        "group": connection.group,
-                        "tags": connection.tags,
-                    })).collect::<Vec<_>>(),
+                    "connections": self.ai_hosts_context_data(),
                     "tunnels": self.store.port_forwards.iter().map(|forward| serde_json::json!({
                         "label": forward.label,
                         "direction": format!("{:?}", forward.direction),
@@ -1699,15 +1699,33 @@ impl Workspace {
             _ => AiContext::new(
                 AiSurface::Global,
                 t!("ai.context.global").to_string(),
-                serde_json::json!({
+                self.ai_context_data_with_hosts(serde_json::json!({
                     "active_view": format!("{:?}", self.active_view),
                     "active_site": self.app_config.cloud_sync.active_site_label,
                     "connections": self.connections.len(),
                     "active_tunnels": self.active_tunnels.len(),
                     "active_scripts": self.active_scripts.len(),
-                }),
+                })),
             ),
         }
+    }
+
+    fn ai_hosts_context_data(&self) -> serde_json::Value {
+        host_context(&self.connections)
+    }
+
+    fn ai_context_data_with_hosts(&self, data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "screen": data,
+            "hosts": self.ai_hosts_context_data(),
+        })
+    }
+
+    fn script_ai_context_data(&self, cx: &App) -> serde_json::Value {
+        serde_json::json!({
+            "script": self.scripts.read(cx).ai_context_data(),
+            "hosts": self.ai_hosts_context_data(),
+        })
     }
 
     fn ai_backend_available(&self) -> bool {
@@ -1738,6 +1756,14 @@ impl Workspace {
                 cx,
             );
         });
+        if let Some(form) = self.script_form.as_ref() {
+            form.update(cx, |form, cx| {
+                form.set_ai_enabled(
+                    backend_ready && self.app_config.ai.allows(AiSurface::Script),
+                    cx,
+                );
+            });
+        }
         self.terminal.update(cx, |view, cx| {
             view.set_ai_actions_enabled(
                 backend_ready && self.app_config.ai.allows(AiSurface::Terminal),
@@ -1839,20 +1865,20 @@ impl Workspace {
             | AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
                 AiSurface::Support,
                 t!("ai.context.support").to_string(),
-                self.support.read(cx).ai_context_data(),
+                self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
             ),
             AiWorkflowTarget::ScriptGenerate { .. }
             | AiWorkflowTarget::ScriptExplain { .. }
             | AiWorkflowTarget::ScriptReview { .. } => AiContext::new(
                 AiSurface::Script,
                 t!("ai.context.script").to_string(),
-                self.scripts.read(cx).ai_context_data(),
+                self.script_ai_context_data(cx),
             ),
             AiWorkflowTarget::TerminalCommand { .. }
             | AiWorkflowTarget::TerminalDiagnose { .. } => AiContext::new(
                 AiSurface::Terminal,
                 t!("ai.context.terminal").to_string(),
-                self.terminal.read(cx).ai_context_data(),
+                self.ai_context_data_with_hosts(self.terminal.read(cx).ai_context_data()),
             ),
         }
     }

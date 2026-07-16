@@ -71,6 +71,17 @@ impl AiWorkflowTarget {
             Self::ScriptGenerate { .. } | Self::TerminalCommand { .. }
         )
     }
+
+    fn result_is_read_only(&self) -> bool {
+        matches!(
+            self,
+            Self::SupportSummary { .. }
+                | Self::SupportTriage { .. }
+                | Self::ScriptExplain { .. }
+                | Self::ScriptReview { .. }
+                | Self::TerminalDiagnose { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -332,13 +343,15 @@ impl Render for AiWorkflowView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
                             .child(match self.target {
-                                AiWorkflowTarget::SupportReply { .. }
-                                | AiWorkflowTarget::SupportSummary { .. }
+                                AiWorkflowTarget::SupportReply { .. } => {
+                                    t!("ai.workflow.guidance_label").to_string()
+                                }
+                                AiWorkflowTarget::SupportSummary { .. }
                                 | AiWorkflowTarget::SupportTriage { .. }
                                 | AiWorkflowTarget::ScriptExplain { .. }
                                 | AiWorkflowTarget::ScriptReview { .. }
                                 | AiWorkflowTarget::TerminalDiagnose { .. } => {
-                                    t!("ai.workflow.guidance_label").to_string()
+                                    t!("ai.workflow.adjust_label").to_string()
                                 }
                                 AiWorkflowTarget::ScriptGenerate { .. } => {
                                     t!("ai.workflow.instructions_label").to_string()
@@ -401,15 +414,48 @@ impl Render for AiWorkflowView {
                 );
             }
             if has_result {
-                body = body
-                    .child(
+                body = body.child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(if self.target.result_is_read_only() {
+                            t!("ai.workflow.analysis").to_string()
+                        } else {
+                            t!("ai.assistant.draft").to_string()
+                        }),
+                );
+                if self.target.result_is_read_only() {
+                    let result = self.result_state.read(cx).content().to_string();
+                    let mut content = div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .p(px(12.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_primary());
+                    for line in result.split('\n') {
+                        let display: SharedString = if line.is_empty() {
+                            " ".into()
+                        } else {
+                            line.to_string().into()
+                        };
+                        content = content.child(div().max_w(px(680.0)).child(display));
+                    }
+                    body = body.child(
                         div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("ai.assistant.draft").to_string()),
-                    )
-                    .child(
+                            .w_full()
+                            .h(px(280.0))
+                            .min_h(px(0.0))
+                            .overflow_hidden()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(ShellDeckColors::border())
+                            .bg(ShellDeckColors::bg_primary())
+                            .child(scrollable_vertical(content)),
+                    );
+                } else {
+                    body = body.child(
                         div().w_full().child(
                             Input::new(&self.result_state)
                                 .size(InputSize::Sm)
@@ -418,6 +464,7 @@ impl Render for AiWorkflowView {
                                 .max_rows(14),
                         ),
                     );
+                }
             }
         }
 

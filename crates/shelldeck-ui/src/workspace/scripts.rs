@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::ai::{create_client, AiContext, AiSurface};
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
@@ -1102,7 +1103,9 @@ impl Workspace {
             .map(|c| (c.id, c.display_name().to_string(), c.hostname.clone()))
             .collect();
 
-        let form = cx.new(|form_cx| ScriptForm::new(connections, form_cx));
+        let ai_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
+        let form = cx.new(|form_cx| ScriptForm::new(connections, ai_enabled, form_cx));
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
             match event {
@@ -1140,6 +1143,9 @@ impl Workspace {
                     this._script_form_sub = None;
                     cx.notify();
                 }
+                ScriptFormEvent::GenerateWithAi { instructions } => {
+                    this.generate_script_form_with_ai(instructions.clone(), cx);
+                }
                 ScriptFormEvent::Cancel => {
                     this.script_form = None;
                     this._script_form_sub = None;
@@ -1165,7 +1171,10 @@ impl Workspace {
             .collect();
 
         let script = script.clone();
-        let form = cx.new(|form_cx| ScriptForm::from_script(&script, connections, form_cx));
+        let ai_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
+        let form =
+            cx.new(|form_cx| ScriptForm::from_script(&script, connections, ai_enabled, form_cx));
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
             match event {
@@ -1222,6 +1231,9 @@ impl Workspace {
                     this._script_form_sub = None;
                     cx.notify();
                 }
+                ScriptFormEvent::GenerateWithAi { instructions } => {
+                    this.generate_script_form_with_ai(instructions.clone(), cx);
+                }
                 ScriptFormEvent::Cancel => {
                     this.script_form = None;
                     this._script_form_sub = None;
@@ -1233,5 +1245,43 @@ impl Workspace {
         self.script_form = Some(form);
         self._script_form_sub = Some(sub);
         cx.notify();
+    }
+
+    fn generate_script_form_with_ai(&mut self, instructions: String, cx: &mut Context<Self>) {
+        let Some(form) = self.script_form.as_ref().cloned() else {
+            return;
+        };
+        let context = AiContext::new(
+            AiSurface::Script,
+            t!("ai.context.script_form").to_string(),
+            serde_json::json!({
+                "draft": form.read(cx).ai_context_data(cx),
+                "hosts": self.ai_hosts_context_data(),
+            }),
+        );
+        let prompt = format!(
+            "{}\n\n{}:\n{}",
+            t!("ai.prompt.script_generate_form"),
+            t!("ai.workflow.additional_instructions"),
+            instructions.trim()
+        );
+        let config = self.app_config.ai.clone();
+        let form = form.downgrade();
+        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let client = create_client(&config)?;
+                    client
+                        .complete(&prompt, context)
+                        .map(|response| response.text)
+                })
+                .await
+                .map_err(|error| error.to_string());
+            if let Some(form) = form.upgrade() {
+                let _ = form.update(cx, |form, cx| form.set_ai_result(result, cx));
+            }
+        })
+        .detach();
     }
 }

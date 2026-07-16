@@ -340,6 +340,8 @@ Existing: **0 tests**.
 | SDTEST-1340 | `ai.rs::configured_cli_requires_an_executable_file` | SDUC-413 | Green | A present but non-executable custom CLI path cannot be reported as available. |
 | SDTEST-1342 | `app_config.rs::ai_config_round_trips_without_any_credential_field` | SDUC-413, SDUC-415 | Green | Pins backward-compatible `[ai]` persistence while proving API credentials have no serializable config field. |
 | SDTEST-1344 | `ai.rs::pending_ai_drafts_survive_disk_round_trip_and_keep_latest_hundred` | SDUC-418 | Green | Persists pending integrated-workflow drafts, restores their typed target/provider fields, and caps the durable file to the latest 100 entries. |
+| SDTEST-1347 | `ai.rs::integrated_analysis_capabilities_have_stable_distinct_storage_keys` | SDUC-418 | Green | Support summary/triage and Script explanation/review keep distinct stable snake_case keys in the persistent draft store. |
+| SDTEST-1348 | `ai.rs::host_context_exposes_identity_without_credential_paths` | SDUC-415 | Green | The host directory contains the alias/address/user/port needed for contextual references but excludes SSH identity-file paths. |
 
 ---
 

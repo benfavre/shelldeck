@@ -2519,7 +2519,7 @@ impl SupportView {
                         let entity = cx.entity();
                         let summary_id = tid.clone();
                         let triage_id = tid.clone();
-                        let mut actions = div().flex().items_center().flex_shrink_0().gap(px(4.0));
+                        let mut actions = div().flex().items_center().flex_shrink_0().gap(px(6.0));
                         if self.ai_reply_enabled {
                             actions = actions
                                 .child(
