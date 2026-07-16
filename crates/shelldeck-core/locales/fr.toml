@@ -1196,6 +1196,7 @@ ai.workflow.script_explain_guidance = "Précise éventuellement le niveau techni
 ai.workflow.script_review_guidance = "Précise éventuellement la plateforme cible ou les risques prioritaires…"
 ai.workflow.guidance_label = "Ajuster la réponse"
 ai.workflow.adjust_label = "Ajuster avec l'IA"
+ai.workflow.adjust = "Ajuster"
 ai.workflow.instructions_label = "Instructions de génération"
 ai.workflow.instructions_required = "Décris d'abord le script que l'IA doit générer."
 ai.workflow.additional_instructions = "Instructions complémentaires"

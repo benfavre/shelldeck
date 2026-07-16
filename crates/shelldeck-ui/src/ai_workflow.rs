@@ -269,6 +269,51 @@ impl Render for AiWorkflowView {
         };
         let has_result = !self.result_state.read(cx).content().trim().is_empty();
 
+        let instructions_input = if self.target.result_is_read_only() {
+            let entity = cx.entity();
+            div()
+                .flex()
+                .items_center()
+                .w_full()
+                .min_w(px(0.0))
+                .gap(px(8.0))
+                .child(
+                    div().flex_1().min_w(px(0.0)).child(
+                        Input::new(&self.instructions_state)
+                            .size(InputSize::Sm)
+                            .placeholder(instructions_placeholder)
+                            .disabled(self.loading)
+                            .on_enter(move |_, cx| {
+                                entity.update(cx, |this, cx| this.generate(cx));
+                            }),
+                    ),
+                )
+                .child(
+                    Button::new("ai-workflow-adjust", t!("ai.workflow.adjust").to_string())
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("sparkles"))
+                        .disabled(self.loading)
+                        .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .child(
+                    Input::new(&self.instructions_state)
+                        .w_full()
+                        .size(InputSize::Sm)
+                        .multi_line(true)
+                        .min_rows(3)
+                        .max_rows(6)
+                        .placeholder(instructions_placeholder)
+                        .disabled(self.loading),
+                )
+                .into_any_element()
+        };
+
         let mut body = div()
             .flex()
             .flex_col()
@@ -361,18 +406,7 @@ impl Render for AiWorkflowView {
                                 }
                             }),
                     )
-                    .child(
-                        div().w_full().min_w(px(0.0)).child(
-                            Input::new(&self.instructions_state)
-                                .w_full()
-                                .size(InputSize::Sm)
-                                .multi_line(true)
-                                .min_rows(3)
-                                .max_rows(6)
-                                .placeholder(instructions_placeholder)
-                                .disabled(self.loading),
-                        ),
-                    ),
+                    .child(instructions_input),
             );
 
         if self.restored {
