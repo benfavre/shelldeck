@@ -350,6 +350,22 @@ impl Workspace {
                     cx,
                 );
             }
+            ScriptEvent::ExplainWithAi(id) => {
+                self.open_ai_workflow(
+                    super::AiWorkflowTarget::ScriptExplain {
+                        script_id: id.to_string(),
+                    },
+                    cx,
+                );
+            }
+            ScriptEvent::ReviewWithAi(id) => {
+                self.open_ai_workflow(
+                    super::AiWorkflowTarget::ScriptReview {
+                        script_id: id.to_string(),
+                    },
+                    cx,
+                );
+            }
         }
     }
 

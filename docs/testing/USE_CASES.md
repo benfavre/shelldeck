@@ -1328,11 +1328,13 @@ commands normally.
 ### SDUC-418 — Integrated AI drafts for Support and Scripts
 
 When the configured provider and matching surface are enabled, Support exposes
-an explicit reply-suggestion action and Scripts exposes an explicit generation
-action. Generated text remains editable and is never sent, saved, or executed
-automatically: accepting fills the Support composer or opens the selected
-script in its unsaved inline editor. A draft put on hold is persisted, capped
-to the latest 100 entries, and restored when the same target is reopened.
+explicit reply, summary, and triage actions; Scripts exposes generation,
+explanation, and review actions. Generated text remains editable and is never
+sent, saved, or executed automatically: accepting a reply fills the Support
+composer, accepting generation opens the selected script in its unsaved inline
+editor, and accepting an analysis copies it to the clipboard. A draft put on
+hold is persisted under its distinct capability and target, capped to the
+latest 100 entries, and restored when the same workflow is reopened.
 
 ---
 
@@ -1352,6 +1354,9 @@ to the latest 100 entries, and restored when the same target is reopened.
   SDTEST-1343), capped at five commands per session.
 - **2026-07-16** — Added integrated Support/Script AI draft workflows and
   persistent per-target pending drafts (SDUC-418, SDTEST-1344).
+- **2026-07-16** — Completed phase 1 integrated AI analysis workflows:
+  Support summary/triage and Script explanation/review (SDUC-418,
+  SDTEST-1347).
 - **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
   SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
   compatibility and tray menu-id dispatch.

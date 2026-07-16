@@ -393,7 +393,12 @@ Etat au 2026-07-16:
   100 plus recents.
 - Fait: Terminal, génération d'une commande avec insertion sans exécution,
   diagnostic depuis la sélection ou la sortie visible, et brouillons en attente.
-- Restant: resume/triage Support et explication/review Scripts.
+- Fait: Support, résumé et triage depuis la toolbar du ticket; les analyses
+  restent éditables, peuvent être mises en attente et sont copiées explicitement.
+- Fait: Scripts, explication et revue sécurité/portabilité/idempotence depuis la
+  toolbar; les analyses restent éditables, persistantes et copiées explicitement.
+
+La phase 1 est terminée.
 
 ### Phase 2 - application dans les ecrans
 

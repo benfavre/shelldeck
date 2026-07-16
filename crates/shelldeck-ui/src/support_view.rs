@@ -183,6 +183,8 @@ pub enum SupportViewEvent {
     Refresh,
     SelectTicket(String),
     SuggestReply(String),
+    SummarizeTicket(String),
+    TriageTicket(String),
     /// Send the composer text as a reply (note=false) or internal note (note=true).
     Send {
         id: String,
@@ -2515,21 +2517,53 @@ impl SupportView {
                     )
                     .child({
                         let entity = cx.entity();
-                        IconButton::new("ellipsis-vertical")
-                            .variant(ButtonVariant::Ghost)
-                            .size(gpui::px(28.0))
-                            .icon_size(gpui::px(14.0))
-                            .on_click({
-                                move |event, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.popover_menu = Some((
-                                            SupportMenuKind::ConversationHeader,
-                                            event.position(),
-                                        ));
-                                        cx.notify();
-                                    });
-                                }
-                            })
+                        let summary_id = tid.clone();
+                        let triage_id = tid.clone();
+                        let mut actions = div().flex().items_center().flex_shrink_0().gap(px(4.0));
+                        if self.ai_reply_enabled {
+                            actions = actions
+                                .child(
+                                    Button::new("support-ai-summary", "")
+                                        .variant(ButtonVariant::Ai)
+                                        .size(ButtonSize::Sm)
+                                        .tooltip(t!("ai.workflow.support_summary").to_string())
+                                        .icon(IconSource::from("info"))
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.emit(SupportViewEvent::SummarizeTicket(
+                                                summary_id.clone(),
+                                            ));
+                                        })),
+                                )
+                                .child(
+                                    Button::new("support-ai-triage", "")
+                                        .variant(ButtonVariant::Ai)
+                                        .size(ButtonSize::Sm)
+                                        .tooltip(t!("ai.workflow.support_triage").to_string())
+                                        .icon(IconSource::from("flag"))
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.emit(SupportViewEvent::TriageTicket(
+                                                triage_id.clone(),
+                                            ));
+                                        })),
+                                );
+                        }
+                        actions.child(
+                            IconButton::new("ellipsis-vertical")
+                                .variant(ButtonVariant::Ghost)
+                                .size(gpui::px(28.0))
+                                .icon_size(gpui::px(14.0))
+                                .on_click({
+                                    move |event, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.popover_menu = Some((
+                                                SupportMenuKind::ConversationHeader,
+                                                event.position(),
+                                            ));
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
                     }),
             )
             .child(meta_row)

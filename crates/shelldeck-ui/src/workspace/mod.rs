@@ -1754,12 +1754,7 @@ impl Workspace {
     }
 
     fn open_ai_workflow(&mut self, target: AiWorkflowTarget, cx: &mut Context<Self>) {
-        let surface = match &target {
-            AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
-            AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
-            AiWorkflowTarget::TerminalCommand { .. }
-            | AiWorkflowTarget::TerminalDiagnose { .. } => AiSurface::Terminal,
-        };
+        let surface = target.surface();
         if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
             return;
         }
@@ -1773,11 +1768,28 @@ impl Workspace {
             .cloned();
         let should_generate = matches!(
             &target,
-            AiWorkflowTarget::SupportReply { .. } | AiWorkflowTarget::TerminalDiagnose { .. }
+            AiWorkflowTarget::SupportReply { .. }
+                | AiWorkflowTarget::SupportSummary { .. }
+                | AiWorkflowTarget::SupportTriage { .. }
+                | AiWorkflowTarget::ScriptExplain { .. }
+                | AiWorkflowTarget::ScriptReview { .. }
+                | AiWorkflowTarget::TerminalDiagnose { .. }
         ) && pending.is_none();
         let title = match &target {
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_title").to_string(),
+            AiWorkflowTarget::SupportSummary { .. } => {
+                t!("ai.workflow.support_summary_title").to_string()
+            }
+            AiWorkflowTarget::SupportTriage { .. } => {
+                t!("ai.workflow.support_triage_title").to_string()
+            }
             AiWorkflowTarget::ScriptGenerate { .. } => t!("ai.workflow.script_title").to_string(),
+            AiWorkflowTarget::ScriptExplain { .. } => {
+                t!("ai.workflow.script_explain_title").to_string()
+            }
+            AiWorkflowTarget::ScriptReview { .. } => {
+                t!("ai.workflow.script_review_title").to_string()
+            }
             AiWorkflowTarget::TerminalCommand { .. } => {
                 t!("ai.workflow.terminal_command_title").to_string()
             }
@@ -1822,12 +1834,16 @@ impl Workspace {
 
     fn ai_workflow_context(&self, target: &AiWorkflowTarget, cx: &App) -> AiContext {
         match target {
-            AiWorkflowTarget::SupportReply { .. } => AiContext::new(
+            AiWorkflowTarget::SupportReply { .. }
+            | AiWorkflowTarget::SupportSummary { .. }
+            | AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
                 AiSurface::Support,
                 t!("ai.context.support").to_string(),
                 self.support.read(cx).ai_context_data(),
             ),
-            AiWorkflowTarget::ScriptGenerate { .. } => AiContext::new(
+            AiWorkflowTarget::ScriptGenerate { .. }
+            | AiWorkflowTarget::ScriptExplain { .. }
+            | AiWorkflowTarget::ScriptReview { .. } => AiContext::new(
                 AiSurface::Script,
                 t!("ai.context.script").to_string(),
                 self.scripts.read(cx).ai_context_data(),
@@ -1852,8 +1868,20 @@ impl Workspace {
                     AiWorkflowTarget::SupportReply { .. } => {
                         t!("ai.prompt.support_reply").to_string()
                     }
+                    AiWorkflowTarget::SupportSummary { .. } => {
+                        t!("ai.prompt.support_summary").to_string()
+                    }
+                    AiWorkflowTarget::SupportTriage { .. } => {
+                        t!("ai.prompt.support_triage").to_string()
+                    }
                     AiWorkflowTarget::ScriptGenerate { .. } => {
                         t!("ai.prompt.script_generate").to_string()
+                    }
+                    AiWorkflowTarget::ScriptExplain { .. } => {
+                        t!("ai.prompt.script_explain").to_string()
+                    }
+                    AiWorkflowTarget::ScriptReview { .. } => {
+                        t!("ai.prompt.script_review").to_string()
                     }
                     AiWorkflowTarget::TerminalCommand { .. } => {
                         t!("ai.prompt.terminal_command_strict").to_string()
@@ -1894,11 +1922,25 @@ impl Workspace {
                 .detach();
             }
             AiWorkflowEvent::Accept { target, result } => {
+                let copied = matches!(
+                    &target,
+                    AiWorkflowTarget::SupportSummary { .. }
+                        | AiWorkflowTarget::SupportTriage { .. }
+                        | AiWorkflowTarget::ScriptExplain { .. }
+                        | AiWorkflowTarget::ScriptReview { .. }
+                        | AiWorkflowTarget::TerminalDiagnose { .. }
+                );
                 match &target {
                     AiWorkflowTarget::SupportReply { .. } => {
                         self.support.update(cx, |view, cx| {
                             view.set_composer_draft(result, cx);
                         });
+                    }
+                    AiWorkflowTarget::SupportSummary { .. }
+                    | AiWorkflowTarget::SupportTriage { .. }
+                    | AiWorkflowTarget::ScriptExplain { .. }
+                    | AiWorkflowTarget::ScriptReview { .. } => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(result));
                     }
                     AiWorkflowTarget::ScriptGenerate { script_id } => {
                         if let Ok(script_id) = Uuid::parse_str(script_id) {
@@ -1936,7 +1978,11 @@ impl Workspace {
                 }
                 self.close_ai_workflow(cx);
                 self.show_toast(
-                    t!("toast.ai.draft_applied").to_string(),
+                    if copied {
+                        t!("toast.ai.analysis_copied").to_string()
+                    } else {
+                        t!("toast.ai.draft_applied").to_string()
+                    },
                     ToastLevel::Success,
                     cx,
                 );
@@ -1952,12 +1998,7 @@ impl Workspace {
                 });
                 self.ai_drafts.push(AiDraft::new(
                     target.capability(),
-                    match &target {
-                        AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
-                        AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
-                        AiWorkflowTarget::TerminalCommand { .. }
-                        | AiWorkflowTarget::TerminalDiagnose { .. } => AiSurface::Terminal,
-                    },
+                    target.surface(),
                     target.target_id(),
                     self.app_config.ai.backend,
                     instructions,
@@ -3587,6 +3628,12 @@ impl Workspace {
             SupportViewEvent::SelectTicket(id) => self.select_support_ticket(id, cx),
             SupportViewEvent::SuggestReply(ticket_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::SupportReply { ticket_id }, cx)
+            }
+            SupportViewEvent::SummarizeTicket(ticket_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::SupportSummary { ticket_id }, cx)
+            }
+            SupportViewEvent::TriageTicket(ticket_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::SupportTriage { ticket_id }, cx)
             }
             SupportViewEvent::Send { id, text, note } => {
                 self.support_action(cx, move |base, token| {

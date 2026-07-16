@@ -28,6 +28,8 @@ pub enum ScriptEvent {
     ImportTemplate(String),
     RunScriptById(Uuid),
     GenerateWithAi(Uuid),
+    ExplainWithAi(Uuid),
+    ReviewWithAi(Uuid),
 }
 
 impl EventEmitter<ScriptEvent> for ScriptEditorView {}
@@ -1016,18 +1018,45 @@ impl ScriptEditorView {
                         .variant(ButtonVariant::Ghost),
                 )
         };
-        let ai_button = self.ai_generation_enabled.then(|| {
-            Button::new(
-                "generate-script-ai",
-                t!("ai.workflow.generate_script").to_string(),
-            )
-            .variant(ButtonVariant::Ai)
-            .size(adabraka_ui::components::button::ButtonSize::Sm)
-            .icon(IconSource::from("sparkles"))
-            .disabled(is_inline_editing)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                cx.emit(ScriptEvent::GenerateWithAi(script_id));
-            }))
+        let ai_actions = self.ai_generation_enabled.then(|| {
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .gap(px(4.0))
+                .child(
+                    Button::new(
+                        "generate-script-ai",
+                        t!("ai.workflow.generate_script").to_string(),
+                    )
+                    .variant(ButtonVariant::Ai)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("sparkles"))
+                    .disabled(is_inline_editing)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ScriptEvent::GenerateWithAi(script_id));
+                    })),
+                )
+                .child(
+                    Button::new("explain-script-ai", "")
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .tooltip(t!("ai.workflow.script_explain").to_string())
+                        .icon(IconSource::from("info"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ScriptEvent::ExplainWithAi(script_id));
+                        })),
+                )
+                .child(
+                    Button::new("review-script-ai", "")
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .tooltip(t!("ai.workflow.script_review").to_string())
+                        .icon(IconSource::from("shield-check"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ScriptEvent::ReviewWithAi(script_id));
+                        })),
+                )
         });
 
         // Header bar
@@ -1045,7 +1074,7 @@ impl ScriptEditorView {
                     .flex()
                     .flex_shrink_0()
                     .gap(px(8.0))
-                    .children(ai_button)
+                    .children(ai_actions)
                     .child(edit_button)
                     .child(run_buttons),
             );

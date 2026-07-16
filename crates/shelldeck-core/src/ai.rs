@@ -174,7 +174,11 @@ pub struct AiResponse {
 #[serde(rename_all = "snake_case")]
 pub enum AiCapability {
     SupportReply,
+    SupportSummary,
+    SupportTriage,
     ScriptGenerate,
+    ScriptExplain,
+    ScriptReview,
     TerminalCommand,
     TerminalDiagnose,
 }
@@ -1061,5 +1065,20 @@ mod tests {
         assert_eq!(loaded.first().unwrap().target_id, "ticket-5");
         assert_eq!(loaded.last().unwrap().result, "draft-104");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // SDTEST-1347
+    #[test]
+    fn integrated_analysis_capabilities_have_stable_distinct_storage_keys() {
+        let capabilities = [
+            (AiCapability::SupportSummary, "\"support_summary\""),
+            (AiCapability::SupportTriage, "\"support_triage\""),
+            (AiCapability::ScriptExplain, "\"script_explain\""),
+            (AiCapability::ScriptReview, "\"script_review\""),
+        ];
+
+        for (capability, expected) in capabilities {
+            assert_eq!(serde_json::to_string(&capability).unwrap(), expected);
+        }
     }
 }

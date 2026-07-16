@@ -226,6 +226,7 @@ parallel `cargo test`.
 | SDTEST-1341 | `ai_assistant.rs::stale_ai_response_is_rejected_after_context_invalidation` | SDUC-414 | Green | Pure request-generation gate extracted from the GPUI view; a response from a closed/previous context cannot overwrite the current draft. |
 | SDTEST-1345 | *to write* — integrated AI affordances follow backend and per-surface availability | SDUC-413, SDUC-418 | **Red / P1** | GPUI wiring: Support/Script buttons stay hidden when disabled and emit the exact selected target when enabled. |
 | SDTEST-1346 | *to write* — accepting an integrated draft prepares but never finalizes the action | SDUC-414, SDUC-418 | **Red / P0** | GPUI workflow: Support fills the reply composer without sending; Scripts fills the inline buffer without saving or executing. |
+| SDTEST-1347 | `ai.rs::integrated_analysis_capabilities_have_stable_distinct_storage_keys` | SDUC-418 | Green | Support summary/triage and Script explanation/review keep distinct stable snake_case keys in the persistent draft store. |
 
 ---
 

@@ -6,7 +6,7 @@ use adabraka_ui::prelude::{
 };
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{AiBackend, AiCapability, AiDraft};
+use shelldeck_core::ai::{AiBackend, AiCapability, AiDraft, AiSurface};
 
 use crate::icons::{ai_provider_badge, lucide_icon};
 use crate::scale::px;
@@ -16,7 +16,11 @@ use crate::theme::ShellDeckColors;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiWorkflowTarget {
     SupportReply { ticket_id: String },
+    SupportSummary { ticket_id: String },
+    SupportTriage { ticket_id: String },
     ScriptGenerate { script_id: String },
+    ScriptExplain { script_id: String },
+    ScriptReview { script_id: String },
     TerminalCommand { session_id: String },
     TerminalDiagnose { session_id: String },
 }
@@ -25,7 +29,11 @@ impl AiWorkflowTarget {
     pub fn capability(&self) -> AiCapability {
         match self {
             Self::SupportReply { .. } => AiCapability::SupportReply,
+            Self::SupportSummary { .. } => AiCapability::SupportSummary,
+            Self::SupportTriage { .. } => AiCapability::SupportTriage,
             Self::ScriptGenerate { .. } => AiCapability::ScriptGenerate,
+            Self::ScriptExplain { .. } => AiCapability::ScriptExplain,
+            Self::ScriptReview { .. } => AiCapability::ScriptReview,
             Self::TerminalCommand { .. } => AiCapability::TerminalCommand,
             Self::TerminalDiagnose { .. } => AiCapability::TerminalDiagnose,
         }
@@ -33,11 +41,27 @@ impl AiWorkflowTarget {
 
     pub fn target_id(&self) -> &str {
         match self {
-            Self::SupportReply { ticket_id } => ticket_id,
-            Self::ScriptGenerate { script_id } => script_id,
+            Self::SupportReply { ticket_id }
+            | Self::SupportSummary { ticket_id }
+            | Self::SupportTriage { ticket_id } => ticket_id,
+            Self::ScriptGenerate { script_id }
+            | Self::ScriptExplain { script_id }
+            | Self::ScriptReview { script_id } => script_id,
             Self::TerminalCommand { session_id } | Self::TerminalDiagnose { session_id } => {
                 session_id
             }
+        }
+    }
+
+    pub fn surface(&self) -> AiSurface {
+        match self {
+            Self::SupportReply { .. }
+            | Self::SupportSummary { .. }
+            | Self::SupportTriage { .. } => AiSurface::Support,
+            Self::ScriptGenerate { .. }
+            | Self::ScriptExplain { .. }
+            | Self::ScriptReview { .. } => AiSurface::Script,
+            Self::TerminalCommand { .. } | Self::TerminalDiagnose { .. } => AiSurface::Terminal,
         }
     }
 
@@ -210,8 +234,20 @@ impl Render for AiWorkflowView {
         };
         let instructions_placeholder = match self.target {
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_guidance").to_string(),
+            AiWorkflowTarget::SupportSummary { .. } => {
+                t!("ai.workflow.support_summary_guidance").to_string()
+            }
+            AiWorkflowTarget::SupportTriage { .. } => {
+                t!("ai.workflow.support_triage_guidance").to_string()
+            }
             AiWorkflowTarget::ScriptGenerate { .. } => {
                 t!("ai.workflow.script_instructions").to_string()
+            }
+            AiWorkflowTarget::ScriptExplain { .. } => {
+                t!("ai.workflow.script_explain_guidance").to_string()
+            }
+            AiWorkflowTarget::ScriptReview { .. } => {
+                t!("ai.workflow.script_review_guidance").to_string()
             }
             AiWorkflowTarget::TerminalCommand { .. } => {
                 t!("ai.workflow.terminal_command_instructions").to_string()
@@ -296,7 +332,12 @@ impl Render for AiWorkflowView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
                             .child(match self.target {
-                                AiWorkflowTarget::SupportReply { .. } => {
+                                AiWorkflowTarget::SupportReply { .. }
+                                | AiWorkflowTarget::SupportSummary { .. }
+                                | AiWorkflowTarget::SupportTriage { .. }
+                                | AiWorkflowTarget::ScriptExplain { .. }
+                                | AiWorkflowTarget::ScriptReview { .. }
+                                | AiWorkflowTarget::TerminalDiagnose { .. } => {
                                     t!("ai.workflow.guidance_label").to_string()
                                 }
                                 AiWorkflowTarget::ScriptGenerate { .. } => {
@@ -304,9 +345,6 @@ impl Render for AiWorkflowView {
                                 }
                                 AiWorkflowTarget::TerminalCommand { .. } => {
                                     t!("ai.workflow.terminal_command_label").to_string()
-                                }
-                                AiWorkflowTarget::TerminalDiagnose { .. } => {
-                                    t!("ai.workflow.guidance_label").to_string()
                                 }
                             }),
                     )
@@ -419,7 +457,11 @@ impl Render for AiWorkflowView {
                                 AiWorkflowTarget::TerminalCommand { .. } => {
                                     t!("ai.workflow.insert").to_string()
                                 }
-                                AiWorkflowTarget::TerminalDiagnose { .. } => {
+                                AiWorkflowTarget::SupportSummary { .. }
+                                | AiWorkflowTarget::SupportTriage { .. }
+                                | AiWorkflowTarget::ScriptExplain { .. }
+                                | AiWorkflowTarget::ScriptReview { .. }
+                                | AiWorkflowTarget::TerminalDiagnose { .. } => {
                                     t!("ai.workflow.copy").to_string()
                                 }
                                 _ => t!("ai.workflow.accept").to_string(),
