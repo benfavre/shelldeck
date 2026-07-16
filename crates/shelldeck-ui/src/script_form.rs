@@ -1,7 +1,9 @@
 use crate::scale::px;
 use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
-use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
+use adabraka_ui::prelude::{
+    Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -1017,7 +1019,8 @@ impl Render for ScriptForm {
                             )
                             .variant(ButtonVariant::Ai)
                             .size(ButtonSize::Sm)
-                            .loading(self.ai_loading)
+                            .min_w(px(102.0))
+                            .disabled(self.ai_loading)
                             .icon(adabraka_ui::components::icon_source::IconSource::from(
                                 "sparkles",
                             ))
@@ -1026,6 +1029,22 @@ impl Render for ScriptForm {
                             })),
                         ),
                 );
+            if self.ai_loading {
+                ai_block = ai_block.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(
+                            Spinner::new()
+                                .size(SpinnerSize::Xs)
+                                .variant(SpinnerVariant::Primary),
+                        )
+                        .child(t!("script_form.ai.generating").to_string()),
+                );
+            }
             if let Some(error) = &self.ai_error {
                 ai_block = ai_block.child(
                     div()
