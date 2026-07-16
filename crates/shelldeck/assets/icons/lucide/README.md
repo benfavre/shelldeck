@@ -77,13 +77,15 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (63 icons)
+## Inventory (65 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
 | Slug | Category | Used / reserved for |
 |------|----------|---------------------|
 | `activity` | dashboard | recent activity section header |
+| `archive` | action | archive an AI conversation |
+| `archive-restore` | action | restore an archived AI conversation |
 | `arrow-down` | navigation | scroll / sort down |
 | `arrow-left-right` | infra | port forwards |
 | `arrow-up` | navigation | scroll / sort up |

@@ -245,6 +245,7 @@ impl RenderOnce for Button {
         };
 
         let clickable = self.clickable();
+        let has_label = !self.label.is_empty();
         let handler = self.on_click.clone();
         let ripple_enabled = self.ripple_enabled && clickable;
         let ripple_id = ElementId::Name(format!("{}-ripple", self.id).into());
@@ -281,6 +282,7 @@ impl RenderOnce for Button {
             .gap_2()
             .h(height)
             .px(px_h)
+            .when(!has_label, |this| this.w(height).px(px(0.0)))
             .rounded(theme.tokens.radius_md)
             .text_color(fg)
             .bg(bg)
@@ -352,11 +354,13 @@ impl RenderOnce for Button {
                     .when(is_loading && icon_pos == IconPosition::Start, |this| {
                         this.child(render_loading_spinner(icon_size, fg))
                     })
-                    .child(
-                        div()
-                            .when(self.variant == ButtonVariant::Link, |this| this.underline())
-                            .child(label_text),
-                    )
+                    .when(has_label, |this| {
+                        this.child(
+                            div()
+                                .when(self.variant == ButtonVariant::Link, |this| this.underline())
+                                .child(label_text),
+                        )
+                    })
                     .when(icon_pos == IconPosition::End && !is_loading, |this| {
                         this.when_some(icon.clone(), |this, icon_src| {
                             this.child(render_icon(icon_src, icon_size, fg))

@@ -175,6 +175,8 @@ pub struct AiResponse {
 pub enum AiCapability {
     SupportReply,
     ScriptGenerate,
+    TerminalCommand,
+    TerminalDiagnose,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +253,127 @@ impl AiDraftStore {
         let start = drafts.len().saturating_sub(Self::MAX_DRAFTS);
         let payload = serde_json::to_vec_pretty(&drafts[start..]).map_err(|error| {
             ShellDeckError::Serialization(format!("Failed to serialize AI drafts: {error}"))
+        })?;
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, payload)?;
+        if cfg!(windows) && path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiChatMessage {
+    pub id: Uuid,
+    pub role: AiChatRole,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl AiChatMessage {
+    pub fn new(role: AiChatRole, content: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            role,
+            content: content.into(),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiConversation {
+    pub id: Uuid,
+    pub title: String,
+    pub surface: AiSurface,
+    pub context_title: String,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub messages: Vec<AiChatMessage>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AiConversation {
+    pub fn new(surface: AiSurface, context_title: impl Into<String>) -> Self {
+        let context_title = context_title.into();
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            title: context_title.clone(),
+            surface,
+            context_title,
+            archived: false,
+            messages: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn push(&mut self, role: AiChatRole, content: impl Into<String>) {
+        let content = content.into();
+        if self.messages.is_empty() && role == AiChatRole::User {
+            self.title = content.chars().take(56).collect();
+        }
+        self.messages.push(AiChatMessage::new(role, content));
+        if self.messages.len() > AiConversationStore::MAX_MESSAGES {
+            let excess = self.messages.len() - AiConversationStore::MAX_MESSAGES;
+            self.messages.drain(..excess);
+        }
+        self.updated_at = Utc::now();
+    }
+}
+
+pub struct AiConversationStore;
+
+impl AiConversationStore {
+    const MAX_CONVERSATIONS: usize = 100;
+    const MAX_MESSAGES: usize = 200;
+
+    pub fn path() -> PathBuf {
+        AppConfig::config_dir().join("ai-conversations.json")
+    }
+
+    pub fn load() -> Result<Vec<AiConversation>> {
+        Self::load_from(&Self::path())
+    }
+
+    pub fn save(conversations: &[AiConversation]) -> Result<()> {
+        Self::save_to(&Self::path(), conversations)
+    }
+
+    fn load_from(path: &Path) -> Result<Vec<AiConversation>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|error| {
+            ShellDeckError::Serialization(format!(
+                "Failed to parse AI conversations from {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
+    fn save_to(path: &Path, conversations: &[AiConversation]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut recent = conversations.to_vec();
+        recent.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        let start = recent.len().saturating_sub(Self::MAX_CONVERSATIONS);
+        let payload = serde_json::to_vec_pretty(&recent[start..]).map_err(|error| {
+            ShellDeckError::Serialization(format!("Failed to serialize AI conversations: {error}"))
         })?;
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, payload)?;
@@ -791,6 +914,50 @@ mod tests {
         assert_eq!(AiBackend::CodexCli.default_model(), "");
         assert_eq!(AiBackend::ClaudeCli.cli_command(), Some("claude"));
         assert_eq!(AiBackend::OpenAi.cli_command(), None);
+    }
+
+    #[test]
+    fn conversation_store_round_trips_messages_and_archive_state() {
+        let path = std::env::temp_dir().join(format!(
+            "shelldeck-ai-conversations-{}-{}.json",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let mut conversation = AiConversation::new(AiSurface::Terminal, "Terminal local");
+        conversation.push(AiChatRole::User, "Explique cette erreur");
+        conversation.push(AiChatRole::Assistant, "Voici le diagnostic");
+        conversation.archived = true;
+
+        AiConversationStore::save_to(&path, &[conversation.clone()]).unwrap();
+        let loaded = AiConversationStore::load_from(&path).unwrap();
+
+        assert_eq!(loaded, vec![conversation]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_store_keeps_the_most_recently_updated_conversations() {
+        let path = std::env::temp_dir().join(format!(
+            "shelldeck-ai-conversation-limit-{}-{}.json",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let mut conversations = (0..AiConversationStore::MAX_CONVERSATIONS)
+            .map(|index| AiConversation::new(AiSurface::Global, format!("Chat {index}")))
+            .collect::<Vec<_>>();
+        let mut recently_updated = AiConversation::new(AiSurface::Global, "Recently updated");
+        recently_updated.updated_at = Utc::now() + chrono::Duration::seconds(1);
+        let recent_id = recently_updated.id;
+        conversations.insert(0, recently_updated);
+
+        AiConversationStore::save_to(&path, &conversations).unwrap();
+        let loaded = AiConversationStore::load_from(&path).unwrap();
+
+        assert_eq!(loaded.len(), AiConversationStore::MAX_CONVERSATIONS);
+        assert!(loaded
+            .iter()
+            .any(|conversation| conversation.id == recent_id));
+        std::fs::remove_file(path).unwrap();
     }
 
     // SDTEST-1338

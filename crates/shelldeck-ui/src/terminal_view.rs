@@ -70,6 +70,17 @@ fn command_available(command: &str) -> bool {
     )
 }
 
+fn validate_ai_command(command: &str) -> Result<&str, &'static str> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("empty");
+    }
+    if command.lines().count() != 1 {
+        return Err("multiline");
+    }
+    Ok(command)
+}
+
 // ---------------------------------------------------------------------------
 // Procedural block / box-drawing character renderer
 // ---------------------------------------------------------------------------
@@ -639,6 +650,8 @@ pub enum TerminalEvent {
     RunScriptRequested(Uuid),
     /// Toggle pin/unpin a script on the toolbar.
     TogglePinScript(Uuid),
+    GenerateCommandWithAi(Uuid),
+    DiagnoseWithAi(Uuid),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1068,6 +1081,7 @@ pub struct TerminalView {
     /// actions stay hidden when the corresponding executable is unavailable.
     claude_available: bool,
     codex_available: bool,
+    ai_actions_enabled: bool,
     /// Configured scrollback buffer size (lines). Applied to live grids and to
     /// newly added sessions.
     configured_scrollback: usize,
@@ -1184,6 +1198,7 @@ impl TerminalView {
             cursor_blink_enabled: true,
             claude_available,
             codex_available,
+            ai_actions_enabled: false,
             configured_scrollback: 10_000,
             has_focus: false,
             output_tx,
@@ -1579,11 +1594,35 @@ impl TerminalView {
         self.session_for(self.layout.focused)
     }
 
+    pub fn set_ai_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_actions_enabled = enabled;
+        cx.notify();
+    }
+
+    /// Insert a reviewed AI command without submitting it.
+    pub fn insert_ai_command(
+        &self,
+        expected_session: Uuid,
+        command: &str,
+    ) -> Result<(), &'static str> {
+        let command = validate_ai_command(command)?;
+        let Some(session) = self.active_session() else {
+            return Err("no_session");
+        };
+        if session.id != expected_session {
+            return Err("session_changed");
+        }
+        session.write_input(command.as_bytes());
+        Ok(())
+    }
+
     pub fn ai_context_data(&self) -> serde_json::Value {
         let Some(session) = self.active_session() else {
             return serde_json::json!({ "terminal": null });
         };
         let grid = session.grid.lock();
+        let selection = grid.selected_text();
+        let cwd = grid.working_directory.clone();
         let rows = grid.visible_rows();
         let output = rows
             .iter()
@@ -1602,6 +1641,9 @@ impl TerminalView {
         serde_json::json!({
             "title": session.title,
             "state": format!("{:?}", session.state),
+            "session_id": session.id,
+            "cwd": cwd,
+            "selection": selection,
             "visible_output": output,
         })
     }
@@ -2331,6 +2373,8 @@ impl TerminalView {
         let lbl_clear = t!("terminal.toolbar.clear");
         let lbl_favorites = t!("terminal.toolbar.favorites");
         let lbl_recent = t!("terminal.toolbar.recent");
+        let lbl_ai_command = t!("terminal.toolbar.ai_command");
+        let lbl_ai_diagnose = t!("terminal.toolbar.ai_diagnose");
 
         let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
             if cfg!(target_os = "macos") {
@@ -2399,6 +2443,35 @@ impl TerminalView {
                     svg()
                         .path(format!("icons/lucide/{icon}.svg"))
                         .text_color(ShellDeckColors::text_muted())
+                        .size(px(14.0)),
+                )
+                .tooltip(move |_, cx| {
+                    cx.new(|_| TerminalToolbarTooltip {
+                        label: tooltip_label.clone(),
+                    })
+                    .into()
+                })
+        };
+
+        let ai_toolbar_icon = |id: &str, icon: &str, tooltip_label: String| {
+            let tooltip_label: SharedString = tooltip_label.into();
+            div()
+                .id(ElementId::from(SharedString::from(id.to_string())))
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(28.0))
+                .h(px(24.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.35))
+                .bg(ShellDeckColors::primary().opacity(0.10))
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.18)))
+                .child(
+                    svg()
+                        .path(format!("icons/lucide/{icon}.svg"))
+                        .text_color(ShellDeckColors::primary())
                         .size(px(14.0)),
                 )
                 .tooltip(move |_, cx| {
@@ -2482,6 +2555,46 @@ impl TerminalView {
                     .mx(px(6.0))
                     .bg(ShellDeckColors::border()),
             );
+        }
+
+        if self.ai_actions_enabled {
+            if let Some(session) = self.active_session() {
+                let session_id = session.id;
+                toolbar = toolbar.child(
+                    ai_toolbar_icon("tb-ai-command", "sparkles", lbl_ai_command.to_string())
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(TerminalEvent::GenerateCommandWithAi(session_id));
+                        })),
+                );
+
+                let has_diagnostic_context = {
+                    let grid = session.grid.lock();
+                    grid.selected_text().is_some()
+                        || grid
+                            .visible_rows()
+                            .iter()
+                            .any(|row| row.iter().any(|cell| !cell.c.is_whitespace()))
+                };
+                let mut diagnose = ai_toolbar_icon(
+                    "tb-ai-diagnose",
+                    "circle-alert",
+                    lbl_ai_diagnose.to_string(),
+                );
+                if has_diagnostic_context {
+                    diagnose = diagnose.on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TerminalEvent::DiagnoseWithAi(session_id));
+                    }));
+                } else {
+                    diagnose = diagnose.opacity(0.42).cursor_default();
+                }
+                toolbar = toolbar.child(diagnose).child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(16.0))
+                        .mx(px(6.0))
+                        .bg(ShellDeckColors::border()),
+                );
+            }
         }
 
         // Left group: icon-only at compact widths, labels otherwise.
@@ -5497,7 +5610,7 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::command_available_in_path;
+    use super::{command_available_in_path, validate_ai_command};
     use std::ffi::OsString;
     use std::fs;
 
@@ -5543,5 +5656,15 @@ mod tests {
         ));
 
         fs::remove_dir_all(bin).expect("remove test bin directory");
+    }
+
+    #[test]
+    fn ai_command_accepts_exactly_one_non_empty_line() {
+        assert_eq!(validate_ai_command("  ls -la  "), Ok("ls -la"));
+        assert_eq!(validate_ai_command(""), Err("empty"));
+        assert_eq!(
+            validate_ai_command("echo first\necho second"),
+            Err("multiline")
+        );
     }
 }

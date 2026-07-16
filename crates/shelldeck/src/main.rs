@@ -39,6 +39,8 @@ macro_rules! lucide_assets {
 
 lucide_assets!(
     "activity",
+    "archive",
+    "archive-restore",
     "arrow-down",
     "arrow-up",
     "arrow-left-right",

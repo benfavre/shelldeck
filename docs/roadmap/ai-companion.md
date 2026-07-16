@@ -380,14 +380,20 @@ Etat au 2026-07-16:
 
 - Fait: composant commun editable avec chargement, acceptation, regeneration,
   annulation et mise en attente.
+- Fait: assistant general multi-tour avec conversations persistantes locales,
+  historique actif/archive, suppression confirmee et limite aux 100 discussions
+  les plus recentes.
+- Fait: sheet conversationnelle a deux panneaux, fil et historique scrollables,
+  composer fixe, actions d'archivage/restauration et suppression accessibles.
 - Fait: Support, proposition de reponse puis insertion dans le composer sans
   envoi.
 - Fait: Scripts, generation depuis instructions puis insertion dans le buffer
   d'edition sans sauvegarde ni execution.
 - Fait: brouillons en attente persistants, restaures par cible et limites aux
   100 plus recents.
-- Restant: resume/triage Support, explication/review Scripts et workflows
-  Terminal.
+- Fait: Terminal, génération d'une commande avec insertion sans exécution,
+  diagnostic depuis la sélection ou la sortie visible, et brouillons en attente.
+- Restant: resume/triage Support et explication/review Scripts.
 
 ### Phase 2 - application dans les ecrans
 

@@ -277,9 +277,9 @@ impl Render for Sheet {
                                 .items_start()
                                 .justify_between()
                                 .gap(px(16.0))
-                                .px(px(24.0))
-                                .pt(px(24.0))
-                                .pb(px(20.0))
+                                .px(if assistant { px(18.0) } else { px(24.0) })
+                                .pt(if assistant { px(16.0) } else { px(24.0) })
+                                .pb(if assistant { px(14.0) } else { px(20.0) })
                                 .when(assistant, |header| {
                                     header.bg(theme.tokens.primary.opacity(0.06))
                                 })
@@ -303,7 +303,11 @@ impl Render for Sheet {
                                                     .items_center()
                                                     .gap(px(8.0))
                                                     .min_w_0()
-                                                    .text_size(px(18.0))
+                                                    .text_size(if assistant {
+                                                        px(16.0)
+                                                    } else {
+                                                        px(18.0)
+                                                    })
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .text_color(theme.tokens.foreground)
                                                     .when(assistant, |title_row| {
@@ -323,7 +327,11 @@ impl Render for Sheet {
                                                 div()
                                                     .w_full()
                                                     .min_w_0()
-                                                    .text_size(px(14.0))
+                                                    .text_size(if assistant {
+                                                        px(12.0)
+                                                    } else {
+                                                        px(14.0)
+                                                    })
                                                     .text_color(theme.tokens.muted_foreground)
                                                     .whitespace_normal()
                                                     .child(desc),

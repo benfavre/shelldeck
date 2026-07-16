@@ -17,6 +17,8 @@ use crate::theme::ShellDeckColors;
 pub enum AiWorkflowTarget {
     SupportReply { ticket_id: String },
     ScriptGenerate { script_id: String },
+    TerminalCommand { session_id: String },
+    TerminalDiagnose { session_id: String },
 }
 
 impl AiWorkflowTarget {
@@ -24,6 +26,8 @@ impl AiWorkflowTarget {
         match self {
             Self::SupportReply { .. } => AiCapability::SupportReply,
             Self::ScriptGenerate { .. } => AiCapability::ScriptGenerate,
+            Self::TerminalCommand { .. } => AiCapability::TerminalCommand,
+            Self::TerminalDiagnose { .. } => AiCapability::TerminalDiagnose,
         }
     }
 
@@ -31,11 +35,17 @@ impl AiWorkflowTarget {
         match self {
             Self::SupportReply { ticket_id } => ticket_id,
             Self::ScriptGenerate { script_id } => script_id,
+            Self::TerminalCommand { session_id } | Self::TerminalDiagnose { session_id } => {
+                session_id
+            }
         }
     }
 
     fn requires_instructions(&self) -> bool {
-        matches!(self, Self::ScriptGenerate { .. })
+        matches!(
+            self,
+            Self::ScriptGenerate { .. } | Self::TerminalCommand { .. }
+        )
     }
 }
 
@@ -203,6 +213,12 @@ impl Render for AiWorkflowView {
             AiWorkflowTarget::ScriptGenerate { .. } => {
                 t!("ai.workflow.script_instructions").to_string()
             }
+            AiWorkflowTarget::TerminalCommand { .. } => {
+                t!("ai.workflow.terminal_command_instructions").to_string()
+            }
+            AiWorkflowTarget::TerminalDiagnose { .. } => {
+                t!("ai.workflow.terminal_diagnose_guidance").to_string()
+            }
         };
         let has_result = !self.result_state.read(cx).content().trim().is_empty();
 
@@ -285,6 +301,12 @@ impl Render for AiWorkflowView {
                                 }
                                 AiWorkflowTarget::ScriptGenerate { .. } => {
                                     t!("ai.workflow.instructions_label").to_string()
+                                }
+                                AiWorkflowTarget::TerminalCommand { .. } => {
+                                    t!("ai.workflow.terminal_command_label").to_string()
+                                }
+                                AiWorkflowTarget::TerminalDiagnose { .. } => {
+                                    t!("ai.workflow.guidance_label").to_string()
                                 }
                             }),
                     )
@@ -391,11 +413,22 @@ impl Render for AiWorkflowView {
                         .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
                     )
                     .child(
-                        Button::new("ai-workflow-accept", t!("ai.workflow.accept").to_string())
-                            .variant(ButtonVariant::Default)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("check"))
-                            .on_click(cx.listener(|this, _, _, cx| this.accept(cx))),
+                        Button::new(
+                            "ai-workflow-accept",
+                            match self.target {
+                                AiWorkflowTarget::TerminalCommand { .. } => {
+                                    t!("ai.workflow.insert").to_string()
+                                }
+                                AiWorkflowTarget::TerminalDiagnose { .. } => {
+                                    t!("ai.workflow.copy").to_string()
+                                }
+                                _ => t!("ai.workflow.accept").to_string(),
+                            },
+                        )
+                        .variant(ButtonVariant::Default)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("check"))
+                        .on_click(cx.listener(|this, _, _, cx| this.accept(cx))),
                     )
             })
             .when(!has_result, |actions| {

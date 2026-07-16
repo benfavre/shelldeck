@@ -629,6 +629,12 @@ impl Workspace {
                 cx,
             );
         });
+        terminal.update(cx, |view, cx| {
+            view.set_ai_actions_enabled(
+                ai_backend_ready && app_config.ai.allows(AiSurface::Terminal),
+                cx,
+            );
+        });
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -1387,6 +1393,22 @@ impl Workspace {
                 self.sync_scripts_to_terminal_toolbar(cx);
                 cx.notify();
             }
+            TerminalEvent::GenerateCommandWithAi(session_id) => {
+                self.open_ai_workflow(
+                    AiWorkflowTarget::TerminalCommand {
+                        session_id: session_id.to_string(),
+                    },
+                    cx,
+                );
+            }
+            TerminalEvent::DiagnoseWithAi(session_id) => {
+                self.open_ai_workflow(
+                    AiWorkflowTarget::TerminalDiagnose {
+                        session_id: session_id.to_string(),
+                    },
+                    cx,
+                );
+            }
         }
     }
 
@@ -1716,6 +1738,12 @@ impl Workspace {
                 cx,
             );
         });
+        self.terminal.update(cx, |view, cx| {
+            view.set_ai_actions_enabled(
+                backend_ready && self.app_config.ai.allows(AiSurface::Terminal),
+                cx,
+            );
+        });
     }
 
     fn close_ai_workflow(&mut self, cx: &mut Context<Self>) {
@@ -1729,6 +1757,8 @@ impl Workspace {
         let surface = match &target {
             AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
             AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
+            AiWorkflowTarget::TerminalCommand { .. }
+            | AiWorkflowTarget::TerminalDiagnose { .. } => AiSurface::Terminal,
         };
         if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
             return;
@@ -1741,11 +1771,19 @@ impl Workspace {
                 draft.capability == target.capability() && draft.target_id == target.target_id()
             })
             .cloned();
-        let should_generate =
-            matches!(&target, AiWorkflowTarget::SupportReply { .. }) && pending.is_none();
+        let should_generate = matches!(
+            &target,
+            AiWorkflowTarget::SupportReply { .. } | AiWorkflowTarget::TerminalDiagnose { .. }
+        ) && pending.is_none();
         let title = match &target {
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_title").to_string(),
             AiWorkflowTarget::ScriptGenerate { .. } => t!("ai.workflow.script_title").to_string(),
+            AiWorkflowTarget::TerminalCommand { .. } => {
+                t!("ai.workflow.terminal_command_title").to_string()
+            }
+            AiWorkflowTarget::TerminalDiagnose { .. } => {
+                t!("ai.workflow.terminal_diagnose_title").to_string()
+            }
         };
         let workflow = cx.new(|cx| {
             AiWorkflowView::new(
@@ -1794,6 +1832,12 @@ impl Workspace {
                 t!("ai.context.script").to_string(),
                 self.scripts.read(cx).ai_context_data(),
             ),
+            AiWorkflowTarget::TerminalCommand { .. }
+            | AiWorkflowTarget::TerminalDiagnose { .. } => AiContext::new(
+                AiSurface::Terminal,
+                t!("ai.context.terminal").to_string(),
+                self.terminal.read(cx).ai_context_data(),
+            ),
         }
     }
 
@@ -1810,6 +1854,12 @@ impl Workspace {
                     }
                     AiWorkflowTarget::ScriptGenerate { .. } => {
                         t!("ai.prompt.script_generate").to_string()
+                    }
+                    AiWorkflowTarget::TerminalCommand { .. } => {
+                        t!("ai.prompt.terminal_command_strict").to_string()
+                    }
+                    AiWorkflowTarget::TerminalDiagnose { .. } => {
+                        t!("ai.prompt.terminal_error").to_string()
                     }
                 };
                 let prompt = if instructions.trim().is_empty() {
@@ -1857,6 +1907,25 @@ impl Workspace {
                             });
                         }
                     }
+                    AiWorkflowTarget::TerminalCommand { session_id } => {
+                        let applied = Uuid::parse_str(session_id).ok().is_some_and(|session_id| {
+                            self.terminal
+                                .read(cx)
+                                .insert_ai_command(session_id, &result)
+                                .is_ok()
+                        });
+                        if !applied {
+                            self.show_toast(
+                                t!("toast.ai.command_invalid").to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        }
+                    }
+                    AiWorkflowTarget::TerminalDiagnose { .. } => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(result));
+                    }
                 }
                 self.ai_drafts.retain(|draft| {
                     !(draft.capability == target.capability()
@@ -1886,6 +1955,8 @@ impl Workspace {
                     match &target {
                         AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
                         AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
+                        AiWorkflowTarget::TerminalCommand { .. }
+                        | AiWorkflowTarget::TerminalDiagnose { .. } => AiSurface::Terminal,
                     },
                     target.target_id(),
                     self.app_config.ai.backend,
@@ -1926,10 +1997,9 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         self.ai_sheet = Some(cx.new(move |sheet_cx| {
             Sheet::new(sheet_cx)
-                .size(SheetSize::Assistant)
+                .width(gpui::px(780.0))
                 .variant(SheetVariant::Assistant)
                 .title(t!("ai.assistant.title").to_string())
-                .description(t!("ai.assistant.description").to_string())
                 .dynamic_content(move || sheet_assistant.clone())
                 .on_close(move |_window, cx| {
                     if let Some(workspace) = workspace.upgrade() {
@@ -1946,6 +2016,7 @@ impl Workspace {
     fn handle_ai_assistant_event(&mut self, event: AiAssistantEvent, cx: &mut Context<Self>) {
         let AiAssistantEvent::Submit {
             request_id,
+            conversation_id,
             prompt,
             context,
         } = event;
@@ -1963,7 +2034,7 @@ impl Workspace {
                 .map_err(|error| error.to_string());
             let _ = this.update(cx, |workspace, cx| {
                 workspace.ai_assistant.update(cx, |assistant, cx| {
-                    assistant.set_result(request_id, result, cx);
+                    assistant.set_result(request_id, conversation_id, result, cx);
                 });
             });
         })

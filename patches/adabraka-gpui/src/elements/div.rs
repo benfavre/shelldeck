@@ -1512,7 +1512,10 @@ pub(crate) struct ScrollAnimation {
 
 impl ScrollAnimation {
     /// Default smoothing window per wheel notch.
-    pub(crate) const DEFAULT_DURATION: Duration = Duration::from_millis(160);
+    // 160 ms made short wheel bursts feel delayed because every notch
+    // extended the in-flight animation. Keep a brief ease-out without
+    // making list and conversation scrolling trail behind the pointer.
+    pub(crate) const DEFAULT_DURATION: Duration = Duration::from_millis(70);
 
     fn ease_out_cubic(t: f32) -> f32 {
         let inv = 1.0 - t.clamp(0.0, 1.0);
