@@ -405,6 +405,10 @@ La phase 1 est terminée.
 
 - Fait partiellement: insertion dans le composer Support, l'editeur de script et
   le formulaire Nouveau/Modifier un script.
+- Fait: la génération depuis le formulaire applique un résultat structuré et
+  validé (nom, description, langage, catégorie, corps), avec une régénération
+  corrective si le provider ne respecte pas le schéma. La cible et le host
+  restent sous contrôle explicite de l'utilisateur.
 - Restant: autres formulaires et surfaces.
 - Diff de script.
 - Tags, priorite, assignation.

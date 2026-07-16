@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{create_client, AiContext, AiSurface};
+use shelldeck_core::ai::{create_client, parse_generated_script_draft, AiContext, AiSurface};
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
@@ -1272,9 +1272,22 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     let client = create_client(&config)?;
-                    client
-                        .complete(&prompt, context)
-                        .map(|response| response.text)
+                    let response = client.complete(&prompt, context.clone())?;
+                    match parse_generated_script_draft(&response.text) {
+                        Ok(draft) => Ok(draft),
+                        Err(first_error) => {
+                            let repair_prompt = format!(
+                                "{}\n\n{}",
+                                prompt,
+                                t!(
+                                    "ai.prompt.script_generate_repair",
+                                    error = first_error.to_string()
+                                )
+                            );
+                            let repaired = client.complete(&repair_prompt, context)?;
+                            parse_generated_script_draft(&repaired.text)
+                        }
+                    }
                 })
                 .await
                 .map_err(|error| error.to_string());

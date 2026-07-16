@@ -1337,9 +1337,12 @@ through guidance plus regeneration. Nothing is sent, saved, or executed
 automatically: accepting a reply fills the Support composer, accepting
 generation opens the selected script in its unsaved inline editor, and
 accepting an analysis copies it to the clipboard. The New/Edit Script form also
-offers a compact AI instruction field that inserts generated code into the
-unsaved body. A draft put on hold is persisted under its distinct capability
-and target, capped to the latest 100 entries, and restored when reopened.
+offers a compact AI instruction field. Its provider response must validate
+against the structured name/description/language/category/body contract before
+all five unsaved fields are populated; one corrective regeneration is attempted
+for invalid JSON. The selected target and host are never changed implicitly. A
+draft put on hold is persisted under its distinct capability and target, capped
+to the latest 100 entries, and restored when reopened.
 
 ---
 
@@ -1366,6 +1369,9 @@ and target, capped to the latest 100 entries, and restored when reopened.
   scrollable, added inline AI generation to the Script form, and exposed the
   non-secret host directory to contextual AI (SDUC-415/418,
   SDTEST-1348/1349).
+- **2026-07-16** — Structured Script-form generation now validates and fills
+  name, description, language, category and body together, with one repair
+  attempt for malformed provider output (SDUC-418, SDTEST-1350).
 - **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
   SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
   compatibility and tray menu-id dispatch.

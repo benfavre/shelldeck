@@ -342,6 +342,7 @@ Existing: **0 tests**.
 | SDTEST-1344 | `ai.rs::pending_ai_drafts_survive_disk_round_trip_and_keep_latest_hundred` | SDUC-418 | Green | Persists pending integrated-workflow drafts, restores their typed target/provider fields, and caps the durable file to the latest 100 entries. |
 | SDTEST-1347 | `ai.rs::integrated_analysis_capabilities_have_stable_distinct_storage_keys` | SDUC-418 | Green | Support summary/triage and Script explanation/review keep distinct stable snake_case keys in the persistent draft store. |
 | SDTEST-1348 | `ai.rs::host_context_exposes_identity_without_credential_paths` | SDUC-415 | Green | The host directory contains the alias/address/user/port needed for contextual references but excludes SSH identity-file paths. |
+| SDTEST-1350 | `ai.rs::generated_script_json_populates_metadata_and_strips_markdown_fences` | SDUC-418 | Green | Structured Script-form output maps language/category, requires name/body, and tolerates accidental outer JSON or inner code fences without leaking them into the editor. |
 
 ---
 

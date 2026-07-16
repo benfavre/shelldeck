@@ -5,6 +5,7 @@ use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
 
+use shelldeck_core::ai::AiGeneratedScriptDraft;
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;
 
@@ -221,11 +222,21 @@ impl ScriptForm {
         cx.notify();
     }
 
-    pub fn set_ai_result(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
+    pub fn set_ai_result(
+        &mut self,
+        result: Result<AiGeneratedScriptDraft, String>,
+        cx: &mut Context<Self>,
+    ) {
         self.ai_loading = false;
         match result {
-            Ok(body) => {
-                self.body = EditorBuffer::from_text(body);
+            Ok(draft) => {
+                self.name_state
+                    .update(cx, |state, cx| state.replace_content(draft.name, cx));
+                self.description_state
+                    .update(cx, |state, cx| state.replace_content(draft.description, cx));
+                self.language = draft.language;
+                self.category = draft.category;
+                self.body = EditorBuffer::from_text(draft.body);
                 self.active_field = Some(FormField::Body);
                 self.ai_error = None;
             }

@@ -7,6 +7,7 @@ use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
 use crate::error::{Result, ShellDeckError};
 use crate::models::connection::Connection;
+use crate::models::script::{ScriptCategory, ScriptLanguage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -184,6 +185,88 @@ pub fn host_context(connections: &[Connection]) -> Value {
             })
             .collect(),
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiGeneratedScriptDraft {
+    pub name: String,
+    pub description: String,
+    pub language: ScriptLanguage,
+    pub category: ScriptCategory,
+    pub body: String,
+}
+
+pub fn parse_generated_script_draft(raw: &str) -> Result<AiGeneratedScriptDraft> {
+    let json_text = strip_markdown_fence(raw);
+    let value: Value = serde_json::from_str(json_text).map_err(|error| {
+        ShellDeckError::Serialization(format!("invalid generated script JSON: {error}"))
+    })?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+    };
+    let name = field("name");
+    let body = strip_markdown_fence(field("body")).trim();
+    if name.is_empty() || body.is_empty() {
+        return Err(ShellDeckError::Serialization(
+            "generated script requires non-empty name and body".to_string(),
+        ));
+    }
+
+    Ok(AiGeneratedScriptDraft {
+        name: name.to_string(),
+        description: field("description").to_string(),
+        language: parse_script_language(field("language")),
+        category: parse_script_category(field("category")),
+        body: body.to_string(),
+    })
+}
+
+fn strip_markdown_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let content = after_open
+        .split_once('\n')
+        .map(|(_, content)| content)
+        .unwrap_or(after_open);
+    content.strip_suffix("```").unwrap_or(content).trim()
+}
+
+fn parse_script_language(value: &str) -> ScriptLanguage {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "python" | "py" => ScriptLanguage::Python,
+        "node" | "nodejs" | "javascript" | "js" => ScriptLanguage::Node,
+        "bun" | "typescript" | "ts" => ScriptLanguage::Bun,
+        "php" => ScriptLanguage::Php,
+        "mysql" => ScriptLanguage::Mysql,
+        "postgresql" | "postgres" | "psql" => ScriptLanguage::Postgresql,
+        "docker" => ScriptLanguage::Docker,
+        "dockercompose" | "docker_compose" | "docker-compose" | "compose" => {
+            ScriptLanguage::DockerCompose
+        }
+        "systemd" => ScriptLanguage::Systemd,
+        "nginx" => ScriptLanguage::Nginx,
+        _ => ScriptLanguage::Shell,
+    }
+}
+
+fn parse_script_category(value: &str) -> ScriptCategory {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "system" => ScriptCategory::System,
+        "database" => ScriptCategory::Database,
+        "web" => ScriptCategory::Web,
+        "runtime" => ScriptCategory::Runtime,
+        "container" => ScriptCategory::Container,
+        "network" => ScriptCategory::Network,
+        "security" => ScriptCategory::Security,
+        "custom" => ScriptCategory::Custom,
+        _ => ScriptCategory::Uncategorized,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1121,5 +1204,27 @@ mod tests {
         assert!(serialized.contains("2222"));
         assert!(!serialized.contains("identity_file"));
         assert!(!serialized.contains("id_prod"));
+    }
+
+    // SDTEST-1350
+    #[test]
+    fn generated_script_json_populates_metadata_and_strips_markdown_fences() {
+        let draft = parse_generated_script_draft(
+            r#"```json
+{
+  "name": "Audit disques",
+  "description": "Vérifie l'espace disque des hosts de production.",
+  "language": "shell",
+  "category": "system",
+  "body": "```bash\n#!/bin/bash\ndf -h\n```"
+}
+```"#,
+        )
+        .unwrap();
+
+        assert_eq!(draft.name, "Audit disques");
+        assert_eq!(draft.language, ScriptLanguage::Shell);
+        assert_eq!(draft.category, ScriptCategory::System);
+        assert_eq!(draft.body, "#!/bin/bash\ndf -h");
     }
 }
