@@ -225,6 +225,10 @@ pub fn parse_generated_script_draft(raw: &str) -> Result<AiGeneratedScriptDraft>
     })
 }
 
+pub fn clean_generated_script_body(raw: &str) -> String {
+    strip_markdown_fence(raw).trim().to_string()
+}
+
 fn strip_markdown_fence(text: &str) -> &str {
     let trimmed = text.trim();
     let Some(after_open) = trimmed.strip_prefix("```") else {
@@ -284,6 +288,7 @@ pub enum AiCapability {
     ScriptGenerate,
     ScriptExplain,
     ScriptReview,
+    ScriptFix,
     TerminalCommand,
     TerminalDiagnose,
 }
@@ -1180,6 +1185,7 @@ mod tests {
             (AiCapability::SupportTriage, "\"support_triage\""),
             (AiCapability::ScriptExplain, "\"script_explain\""),
             (AiCapability::ScriptReview, "\"script_review\""),
+            (AiCapability::ScriptFix, "\"script_fix\""),
         ];
 
         for (capability, expected) in capabilities {

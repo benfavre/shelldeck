@@ -30,6 +30,7 @@ pub enum ScriptEvent {
     GenerateWithAi(Uuid),
     ExplainWithAi(Uuid),
     ReviewWithAi(Uuid),
+    FixWithAi(Uuid),
 }
 
 impl EventEmitter<ScriptEvent> for ScriptEditorView {}
@@ -371,6 +372,32 @@ impl ScriptEditorView {
                 "tags": script.tags,
             })),
             "recent_output": self.execution_output.iter().rev().take(80).rev().cloned().collect::<Vec<_>>(),
+        })
+    }
+
+    fn selected_failed_execution(&self) -> Option<&ExecutionRecord> {
+        let script_id = self.selected_script?;
+        self.history
+            .iter()
+            .rev()
+            .find(|record| record.script_id == script_id && record.failed())
+            .filter(|failed| {
+                !self.history.iter().rev().any(|record| {
+                    record.script_id == script_id && record.started_at > failed.started_at
+                })
+            })
+    }
+
+    pub fn ai_fix_context_data(&self) -> serde_json::Value {
+        let failed = self.selected_failed_execution();
+        serde_json::json!({
+            "script": self.ai_context_data(),
+            "failed_execution": failed.map(|record| serde_json::json!({
+                "exit_code": record.exit_code,
+                "output": record.output_log,
+                "connection_id": record.connection_id,
+                "started_at": record.started_at,
+            })),
         })
     }
 
@@ -1458,6 +1485,24 @@ impl ScriptEditorView {
             );
         }
 
+        let fix_button = self
+            .ai_generation_enabled
+            .then(|| self.selected_failed_execution())
+            .flatten()
+            .and_then(|_| self.selected_script)
+            .map(|script_id| {
+                Button::new(
+                    "fix-failed-script-ai",
+                    t!("ai.workflow.script_fix").to_string(),
+                )
+                .variant(ButtonVariant::Ai)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("sparkles"))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(ScriptEvent::FixWithAi(script_id));
+                }))
+            });
+
         let panel = div()
             .relative()
             .flex()
@@ -1505,6 +1550,7 @@ impl ScriptEditorView {
                             .flex()
                             .items_center()
                             .gap(px(10.0))
+                            .children(fix_button)
                             .child(
                                 div()
                                     .id("copy-output-btn")

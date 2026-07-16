@@ -409,6 +409,10 @@ La phase 1 est terminée.
   validé (nom, description, langage, catégorie, corps), avec une régénération
   corrective si le provider ne respecte pas le schéma. La cible et le host
   restent sous contrôle explicite de l'utilisateur.
+- Fait: après la dernière exécution échouée du script sélectionné, la barre de
+  sortie propose une correction IA basée sur le code de sortie et le log. La
+  proposition ouvre le buffer d'édition non sauvegardé et n'est jamais exécutée
+  automatiquement.
 - Restant: autres formulaires et surfaces.
 - Diff de script.
 - Tags, priorite, assignation.

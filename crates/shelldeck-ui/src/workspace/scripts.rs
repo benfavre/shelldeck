@@ -367,6 +367,14 @@ impl Workspace {
                     cx,
                 );
             }
+            ScriptEvent::FixWithAi(id) => {
+                self.open_ai_workflow(
+                    super::AiWorkflowTarget::ScriptFix {
+                        script_id: id.to_string(),
+                    },
+                    cx,
+                );
+            }
         }
     }
 

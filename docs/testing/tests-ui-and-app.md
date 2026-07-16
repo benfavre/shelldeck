@@ -227,6 +227,7 @@ parallel `cargo test`.
 | SDTEST-1345 | *to write* — integrated AI affordances follow backend and per-surface availability | SDUC-413, SDUC-418 | **Red / P1** | GPUI wiring: Support/Script buttons stay hidden when disabled and emit the exact selected target when enabled. |
 | SDTEST-1346 | *to write* — accepting an integrated draft prepares but never finalizes the action | SDUC-414, SDUC-418 | **Red / P0** | GPUI workflow: Support fills the reply composer without sending; Scripts fills the inline buffer without saving or executing. |
 | SDTEST-1349 | *to write* — Script form AI generation populates only unsaved form fields | SDUC-414, SDUC-418 | **Red / P1** | GPUI wiring: explicit prompt → loading state → validated name/description/language/category/body insertion; target/host unchanged, no save and no execution. |
+| SDTEST-1351 | *to write* — failed latest Script execution exposes correction without auto-run | SDUC-414, SDUC-418 | **Red / P0** | GPUI wiring: button hidden for running/success/no-history, visible for the selected script's latest non-zero exit, accepting opens unsaved inline editing only. |
 
 ---
 

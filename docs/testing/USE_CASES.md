@@ -1341,8 +1341,11 @@ offers a compact AI instruction field. Its provider response must validate
 against the structured name/description/language/category/body contract before
 all five unsaved fields are populated; one corrective regeneration is attempted
 for invalid JSON. The selected target and host are never changed implicitly. A
-draft put on hold is persisted under its distinct capability and target, capped
-to the latest 100 entries, and restored when reopened.
+failed latest execution exposes a contextual correction action using its exact
+exit code and output log; accepting opens the corrected body in the unsaved
+inline editor and never reruns it automatically. A draft put on hold is
+persisted under its distinct capability and target, capped to the latest 100
+entries, and restored when reopened.
 
 ---
 
@@ -1372,6 +1375,9 @@ to the latest 100 entries, and restored when reopened.
 - **2026-07-16** — Structured Script-form generation now validates and fills
   name, description, language, category and body together, with one repair
   attempt for malformed provider output (SDUC-418, SDTEST-1350).
+- **2026-07-16** — Added contextual Script correction after a failed latest
+  execution; correction remains unsaved and never auto-runs (SDUC-418,
+  SDTEST-1351).
 - **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
   SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
   compatibility and tray menu-id dispatch.

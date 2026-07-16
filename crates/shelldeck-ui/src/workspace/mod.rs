@@ -1799,6 +1799,7 @@ impl Workspace {
                 | AiWorkflowTarget::SupportTriage { .. }
                 | AiWorkflowTarget::ScriptExplain { .. }
                 | AiWorkflowTarget::ScriptReview { .. }
+                | AiWorkflowTarget::ScriptFix { .. }
                 | AiWorkflowTarget::TerminalDiagnose { .. }
         ) && pending.is_none();
         let title = match &target {
@@ -1816,6 +1817,7 @@ impl Workspace {
             AiWorkflowTarget::ScriptReview { .. } => {
                 t!("ai.workflow.script_review_title").to_string()
             }
+            AiWorkflowTarget::ScriptFix { .. } => t!("ai.workflow.script_fix_title").to_string(),
             AiWorkflowTarget::TerminalCommand { .. } => {
                 t!("ai.workflow.terminal_command_title").to_string()
             }
@@ -1874,6 +1876,14 @@ impl Workspace {
                 t!("ai.context.script").to_string(),
                 self.script_ai_context_data(cx),
             ),
+            AiWorkflowTarget::ScriptFix { .. } => AiContext::new(
+                AiSurface::Script,
+                t!("ai.context.script_fix").to_string(),
+                serde_json::json!({
+                    "script": self.scripts.read(cx).ai_fix_context_data(),
+                    "hosts": self.ai_hosts_context_data(),
+                }),
+            ),
             AiWorkflowTarget::TerminalCommand { .. }
             | AiWorkflowTarget::TerminalDiagnose { .. } => AiContext::new(
                 AiSurface::Terminal,
@@ -1909,6 +1919,7 @@ impl Workspace {
                     AiWorkflowTarget::ScriptReview { .. } => {
                         t!("ai.prompt.script_review").to_string()
                     }
+                    AiWorkflowTarget::ScriptFix { .. } => t!("ai.prompt.script_fix").to_string(),
                     AiWorkflowTarget::TerminalCommand { .. } => {
                         t!("ai.prompt.terminal_command_strict").to_string()
                     }
@@ -1972,6 +1983,14 @@ impl Workspace {
                         if let Ok(script_id) = Uuid::parse_str(script_id) {
                             self.scripts.update(cx, |view, cx| {
                                 view.apply_generated_body(script_id, result, cx);
+                            });
+                        }
+                    }
+                    AiWorkflowTarget::ScriptFix { script_id } => {
+                        if let Ok(script_id) = Uuid::parse_str(script_id) {
+                            let body = shelldeck_core::ai::clean_generated_script_body(&result);
+                            self.scripts.update(cx, |view, cx| {
+                                view.apply_generated_body(script_id, body, cx);
                             });
                         }
                     }

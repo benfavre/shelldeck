@@ -47,6 +47,10 @@ impl ExecutionRecord {
     pub fn succeeded(&self) -> bool {
         self.exit_code == Some(0)
     }
+
+    pub fn failed(&self) -> bool {
+        self.exit_code.is_some_and(|code| code != 0)
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +103,7 @@ mod tests {
             r.finish(code);
             assert!(!r.is_running());
             assert!(!r.succeeded(), "exit={code}: should not be succeeded");
+            assert!(r.failed(), "exit={code}: should be failed");
             assert_eq!(r.exit_code, Some(code));
         }
     }

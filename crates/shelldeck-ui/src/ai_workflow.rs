@@ -21,6 +21,7 @@ pub enum AiWorkflowTarget {
     ScriptGenerate { script_id: String },
     ScriptExplain { script_id: String },
     ScriptReview { script_id: String },
+    ScriptFix { script_id: String },
     TerminalCommand { session_id: String },
     TerminalDiagnose { session_id: String },
 }
@@ -34,6 +35,7 @@ impl AiWorkflowTarget {
             Self::ScriptGenerate { .. } => AiCapability::ScriptGenerate,
             Self::ScriptExplain { .. } => AiCapability::ScriptExplain,
             Self::ScriptReview { .. } => AiCapability::ScriptReview,
+            Self::ScriptFix { .. } => AiCapability::ScriptFix,
             Self::TerminalCommand { .. } => AiCapability::TerminalCommand,
             Self::TerminalDiagnose { .. } => AiCapability::TerminalDiagnose,
         }
@@ -46,7 +48,8 @@ impl AiWorkflowTarget {
             | Self::SupportTriage { ticket_id } => ticket_id,
             Self::ScriptGenerate { script_id }
             | Self::ScriptExplain { script_id }
-            | Self::ScriptReview { script_id } => script_id,
+            | Self::ScriptReview { script_id }
+            | Self::ScriptFix { script_id } => script_id,
             Self::TerminalCommand { session_id } | Self::TerminalDiagnose { session_id } => {
                 session_id
             }
@@ -60,7 +63,8 @@ impl AiWorkflowTarget {
             | Self::SupportTriage { .. } => AiSurface::Support,
             Self::ScriptGenerate { .. }
             | Self::ScriptExplain { .. }
-            | Self::ScriptReview { .. } => AiSurface::Script,
+            | Self::ScriptReview { .. }
+            | Self::ScriptFix { .. } => AiSurface::Script,
             Self::TerminalCommand { .. } | Self::TerminalDiagnose { .. } => AiSurface::Terminal,
         }
     }
@@ -260,6 +264,7 @@ impl Render for AiWorkflowView {
             AiWorkflowTarget::ScriptReview { .. } => {
                 t!("ai.workflow.script_review_guidance").to_string()
             }
+            AiWorkflowTarget::ScriptFix { .. } => t!("ai.workflow.script_fix_guidance").to_string(),
             AiWorkflowTarget::TerminalCommand { .. } => {
                 t!("ai.workflow.terminal_command_instructions").to_string()
             }
@@ -398,7 +403,8 @@ impl Render for AiWorkflowView {
                                 | AiWorkflowTarget::TerminalDiagnose { .. } => {
                                     t!("ai.workflow.adjust_label").to_string()
                                 }
-                                AiWorkflowTarget::ScriptGenerate { .. } => {
+                                AiWorkflowTarget::ScriptGenerate { .. }
+                                | AiWorkflowTarget::ScriptFix { .. } => {
                                     t!("ai.workflow.instructions_label").to_string()
                                 }
                                 AiWorkflowTarget::TerminalCommand { .. } => {
