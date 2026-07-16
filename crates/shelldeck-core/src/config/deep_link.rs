@@ -86,14 +86,14 @@ impl DeepLink {
         let verbs: Vec<String> = segments.iter().map(|s| s.to_ascii_lowercase()).collect();
         let verbs: Vec<&str> = verbs.iter().map(|s| s.as_str()).collect();
         match verbs.as_slice() {
-            ["open", "connection", _] => {
-                Uuid::parse_str(segments[2]).ok().map(DeepLink::OpenConnection)
-            }
+            ["open", "connection", _] => Uuid::parse_str(segments[2])
+                .ok()
+                .map(DeepLink::OpenConnection),
             ["ssh", "connect", _] => Uuid::parse_str(segments[2]).ok().map(DeepLink::SshConnect),
-            ["tunnel", "start", _] => {
-                Uuid::parse_str(segments[2]).ok().map(DeepLink::TunnelStart)
+            ["tunnel", "start", _] => Uuid::parse_str(segments[2]).ok().map(DeepLink::TunnelStart),
+            ["open", "site", _] => {
+                non_empty(segments[2]).map(|s| DeepLink::OpenSite(s.to_string()))
             }
-            ["open", "site", _] => non_empty(segments[2]).map(|s| DeepLink::OpenSite(s.to_string())),
             ["issue", _] => non_empty(segments[1]).map(|s| DeepLink::OpenIssue(s.to_string())),
             ["ticket", _] => non_empty(segments[1]).map(|s| DeepLink::OpenTicket(s.to_string())),
             ["jean", "confirm", _] => {

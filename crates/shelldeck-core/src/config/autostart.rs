@@ -169,6 +169,9 @@ mod tests {
         assert!(after_enable, "OS should report enabled after apply(true)");
 
         let after_disable = apply(false).expect("apply(false) must succeed");
-        assert!(!after_disable, "OS should report disabled after apply(false)");
+        assert!(
+            !after_disable,
+            "OS should report disabled after apply(false)"
+        );
     }
 }
