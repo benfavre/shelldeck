@@ -1349,6 +1349,18 @@ entries, and restored when reopened.
 
 ---
 
+## 23. Launch at login
+
+### SDUC-419 — Autostart uses the native per-user mechanism on every platform
+
+The Settings launch-at-login toggle creates a per-user XDG autostart entry on
+Linux, a Launch Agent on macOS, and an HKCU Run entry on Windows. Constructing
+the backend must compile against each platform-specific `auto-launch` API;
+macOS explicitly selects the Launch Agent path and never falls back to an
+AppleScript login item.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1357,6 +1369,9 @@ entries, and restored when reopened.
 
 ## Change log
 
+- **2026-07-16** — Added SDUC-419 and SDTEST-1352 after the macOS release
+  matrix caught the platform-specific fourth `auto-launch` constructor
+  argument.
 - **2026-07-16** — Added § 22 contextual AI assistant (SDUC-413..416) and
   SDTEST-1338..1342 for fake-CLI connection tests, provider payload privacy,
   executable validation, stale-response rejection, and credential-free config.
