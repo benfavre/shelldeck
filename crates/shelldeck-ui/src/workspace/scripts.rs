@@ -342,6 +342,14 @@ impl Workspace {
                     self.handle_script_event(&ScriptEvent::RunScript(script), cx);
                 }
             }
+            ScriptEvent::GenerateWithAi(id) => {
+                self.open_ai_workflow(
+                    super::AiWorkflowTarget::ScriptGenerate {
+                        script_id: id.to_string(),
+                    },
+                    cx,
+                );
+            }
         }
     }
 

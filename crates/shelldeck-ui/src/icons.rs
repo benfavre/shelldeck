@@ -6,7 +6,10 @@
 
 use adabraka_ui::components::icon::{Icon, IconSize};
 use gpui::{prelude::*, SharedString, *};
+use shelldeck_core::ai::AiBackend;
 use shelldeck_core::models::script::{ScriptCategory, ScriptLanguage};
+
+use crate::theme::ShellDeckColors;
 
 /// GPUI asset path for `svg().path(lucide_path("x"))` — inherits parent
 /// `text_color` (handy for hover states on a wrapping div).
@@ -50,6 +53,54 @@ pub fn simple_icon(name: &str, size_px: f32, color: Hsla) -> impl IntoElement {
         .size(px(size_px))
         .flex_shrink_0()
         .text_color(color)
+}
+
+/// Compact, non-interactive provider signature shared by every AI surface.
+pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
+    let icon = match backend {
+        AiBackend::ClaudeCli => {
+            simple_icon("claudecode", 14.0, ShellDeckColors::text_primary()).into_any_element()
+        }
+        AiBackend::CodexCli | AiBackend::OpenAi => {
+            simple_icon("openai", 14.0, ShellDeckColors::text_primary()).into_any_element()
+        }
+        AiBackend::Anthropic => {
+            simple_icon("anthropic", 14.0, ShellDeckColors::text_primary()).into_any_element()
+        }
+        AiBackend::AiderCli => {
+            lucide_icon("terminal", 14.0, ShellDeckColors::text_primary()).into_any_element()
+        }
+        AiBackend::Disabled => {
+            lucide_icon("sparkles", 14.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+    };
+    let model = model.trim().to_string();
+
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap(px(6.0))
+        .h(px(30.0))
+        .max_w(px(190.0))
+        .px(px(9.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(ShellDeckColors::primary().opacity(0.28))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_primary())
+        .child(icon)
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(if model.is_empty() {
+                    backend.display_name().to_string()
+                } else {
+                    format!("{} · {}", backend.display_name(), model)
+                }),
+        )
 }
 
 /// Chip row: brand SVG icon + label (icon keeps embedded fill).

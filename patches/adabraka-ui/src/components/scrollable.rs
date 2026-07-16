@@ -2,6 +2,7 @@
 
 use super::scrollbar::{Scrollbar, ScrollbarAxis, ScrollbarState};
 use gpui::{
+    prelude::FluentBuilder as _,
     div, relative, AnyElement, App, Bounds, Div, Element, ElementId, GlobalElementId,
     InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement,
     Pixels, Position, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement, Style,
@@ -204,7 +205,21 @@ where
                             .overflow_scroll()
                             .relative()
                             .size_full()
-                            .child(div().children(content)),
+                            // ShellDeck patch: SDPATCH-016 — vertical scroll
+                            // content must stretch to the viewport width.
+                            // Without this wrapper width, full-width Inputs
+                            // collapse to their smallest intrinsic width.
+                            .child(
+                                div()
+                                    .when(
+                                        matches!(
+                                            axis,
+                                            ScrollbarAxis::Vertical | ScrollbarAxis::Both
+                                        ),
+                                        |content| content.w_full().min_w_0(),
+                                    )
+                                    .children(content),
+                            ),
                     )
                     .child(
                         div()

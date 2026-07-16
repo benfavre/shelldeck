@@ -170,7 +170,7 @@ pub use crate::overlays::dialog::{Dialog, DialogSize};
 pub use crate::overlays::hover_card::{HoverCard, HoverCardAlignment, HoverCardPosition};
 pub use crate::overlays::popover::Popover;
 pub use crate::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
-pub use crate::overlays::sheet::{Sheet, SheetSide, SheetSize};
+pub use crate::overlays::sheet::{Sheet, SheetSide, SheetSize, SheetVariant};
 pub use crate::overlays::toast::{ToastItem, ToastManager, ToastPosition, ToastVariant};
 pub use crate::theme::{install_theme, use_theme, Theme, ThemeTokens, ThemeVariant};
 

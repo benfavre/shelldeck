@@ -202,8 +202,7 @@ pub struct InputState {
     pub(crate) on_enter_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
     pub(crate) on_focus_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
     pub(crate) on_blur_cb: Option<std::rc::Rc<dyn Fn(SharedString, &mut App)>>,
-    pub(crate) on_validate_cb:
-        Option<std::rc::Rc<dyn Fn(Result<(), ValidationError>, &mut App)>>,
+    pub(crate) on_validate_cb: Option<std::rc::Rc<dyn Fn(Result<(), ValidationError>, &mut App)>>,
     // ShellDeck patch: SDPATCH-009 — when true, the input behaves as a
     // multi-line textarea. Enter inserts `\n` into the content and paste
     // keeps embedded newlines. Rendering is delegated to SDPATCH-010, which
@@ -404,14 +403,44 @@ impl InputState {
         }
 
         cx.emit(InputEvent::Change);
-        // ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly
-        // once per change, replacing the leaking `cx.subscribe` in the Input
-        // wrapper.
+    }
+
+    /// Clear the buffer without a `Window`, keeping cursor and IME ranges
+    /// consistent for the next native edit.
+    // ShellDeck patch: SDPATCH-011 — direct `content = ""` resets leave the
+    // cursor range past the new buffer and make the next edit slice out of
+    // bounds. Centralize windowless resets with coherent internal state.
+    pub fn reset(&mut self, cx: &mut Context<Self>) {
+        self.content = "".into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.emit(InputEvent::Change);
         if let Some(cb) = self.on_change_cb.clone() {
-            let value = self.content.clone();
-            // ShellDeck patch: SDPATCH-012 — defer; see helper above.
-            defer_input_callback(cb, value, cx);
+            defer_input_callback(cb, self.content.clone(), cx);
         }
+        cx.notify();
+    }
+
+    /// Replace the complete buffer without requiring a `Window`.
+    ///
+    /// ShellDeck patch: SDPATCH-014 — contextual workflows can prepare text
+    /// in an existing input from a background completion callback. Keeping
+    /// the cursor at the end prevents the next native edit from inserting at
+    /// the start or slicing through a stale selection.
+    pub fn replace_content(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let value = value.into();
+        let filtered_value = self.filter_input(&value);
+        let len = filtered_value.len();
+        self.content = filtered_value.into();
+        self.selected_range = len..len;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.emit(InputEvent::Change);
+        if let Some(cb) = self.on_change_cb.clone() {
+            defer_input_callback(cb, self.content.clone(), cx);
+        }
+        cx.notify();
     }
 
     /// Validate the current input value
@@ -809,12 +838,7 @@ impl InputState {
         self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
     }
 
-    pub fn select_left_word(
-        &mut self,
-        _: &SelectLeftWord,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn select_left_word(&mut self, _: &SelectLeftWord, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
     }
 
@@ -1053,10 +1077,7 @@ impl InputState {
                 let visual = (line.wrap_boundaries().len() + 1) as f32;
                 let y_bottom = y_top + lh * visual;
                 if position.y < y_bottom {
-                    let local = point(
-                        position.x - bounds.left(),
-                        position.y - y_top,
-                    );
+                    let local = point(position.x - bounds.left(), position.y - y_top);
                     let within = match line.closest_index_for_position(local, lh) {
                         Ok(i) => i,
                         Err(i) => i,
@@ -1223,11 +1244,21 @@ impl EntityInputHandler for InputState {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
+        let mut range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        // ShellDeck patch: SDPATCH-011 — a stale external reset or IME range
+        // must not make native editing slice beyond the current UTF-8 buffer.
+        range.start = range.start.min(self.content.len());
+        range.end = range.end.min(self.content.len()).max(range.start);
+        while !self.content.is_char_boundary(range.start) {
+            range.start -= 1;
+        }
+        while !self.content.is_char_boundary(range.end) {
+            range.end -= 1;
+        }
 
         let filtered_text = self.filter_input(new_text);
         let formatted_text = if self.input_mask != InputMask::None {
@@ -1272,6 +1303,13 @@ impl EntityInputHandler for InputState {
         }
 
         cx.emit(InputEvent::Change);
+        // ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly
+        // once from the shared native text-edit path (typing, paste, delete,
+        // and set_value), replacing the leaking `cx.subscribe` in Input.
+        if let Some(cb) = self.on_change_cb.clone() {
+            let value = self.content.clone();
+            defer_input_callback(cb, value, cx);
+        }
         cx.notify();
     }
 
@@ -1482,17 +1520,9 @@ impl gpui::Element for InputTextElement {
                 let line_end = line_start + line.len();
                 let visual = (line.wrap_boundaries().len() + 1) as f32;
                 let line_height_total = line_h * visual;
-                if !placeholder_mode
-                    && cursor_byte >= line_start
-                    && cursor_byte <= line_end
-                {
-                    if let Some(pos) =
-                        line.position_for_index(cursor_byte - line_start, line_h)
-                    {
-                        cursor_point = Some(point(
-                            bounds.left() + pos.x,
-                            y_top + pos.y,
-                        ));
+                if !placeholder_mode && cursor_byte >= line_start && cursor_byte <= line_end {
+                    if let Some(pos) = line.position_for_index(cursor_byte - line_start, line_h) {
+                        cursor_point = Some(point(bounds.left() + pos.x, y_top + pos.y));
                     }
                 }
                 if !placeholder_mode
@@ -1519,12 +1549,8 @@ impl gpui::Element for InputTextElement {
                 byte_offset = line_end + 1;
             }
 
-            let cursor_quad = cursor_point.map(|p| {
-                fill(
-                    Bounds::new(p, size(px(2.0), line_h)),
-                    theme_ring,
-                )
-            });
+            let cursor_quad =
+                cursor_point.map(|p| fill(Bounds::new(p, size(px(2.0), line_h)), theme_ring));
             return PrepaintState {
                 line: None,
                 wrapped_lines: wrapped,
@@ -1563,6 +1589,16 @@ impl gpui::Element for InputTextElement {
             (input.placeholder.clone(), theme.tokens.muted_foreground)
         } else {
             (content, style.color)
+        };
+        // ShellDeck patch: SDPATCH-017 — a single-line Input must never pass
+        // embedded newlines to GPUI `shape_line`, which debug-panics and
+        // takes down the entire app. Native single-line paste normally strips
+        // them, but programmatic values and restored state can still contain
+        // line breaks, so render those as spaces defensively.
+        let display_text: SharedString = if display_text.contains('\n') {
+            display_text.replace('\n', " ").into()
+        } else {
+            display_text
         };
 
         let run = TextRun {
@@ -1648,15 +1684,11 @@ impl gpui::Element for InputTextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left()
-                                + line.x_for_index(selected_range.start)
-                                + scroll_offset,
+                            bounds.left() + line.x_for_index(selected_range.start) + scroll_offset,
                             bounds.top(),
                         ),
                         point(
-                            bounds.left()
-                                + line.x_for_index(selected_range.end)
-                                + scroll_offset,
+                            bounds.left() + line.x_for_index(selected_range.end) + scroll_offset,
                             bounds.bottom(),
                         ),
                     ),

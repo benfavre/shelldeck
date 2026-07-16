@@ -1,20 +1,47 @@
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
-use adabraka_ui::prelude::{scrollable_vertical, Button, ButtonVariant};
+use adabraka_ui::prelude::{
+    scrollable_vertical, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+};
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{AiContext, AiSurface};
+use shelldeck_core::ai::{AiBackend, AiContext, AiSurface};
 
+use crate::icons::{ai_provider_badge, lucide_icon};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
 #[derive(Debug, Clone)]
 pub enum AiAssistantEvent {
-    Submit { prompt: String, context: AiContext },
+    Submit {
+        request_id: u64,
+        prompt: String,
+        context: AiContext,
+    },
 }
 
 impl EventEmitter<AiAssistantEvent> for AiAssistantView {}
+
+#[derive(Default)]
+struct AiRequestGate {
+    epoch: u64,
+}
+
+impl AiRequestGate {
+    fn invalidate(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    fn begin(&mut self) -> u64 {
+        self.invalidate();
+        self.epoch
+    }
+
+    fn accepts(&self, request_id: u64) -> bool {
+        request_id == self.epoch
+    }
+}
 
 pub struct AiAssistantView {
     prompt_state: Entity<InputState>,
@@ -22,6 +49,9 @@ pub struct AiAssistantView {
     loading: bool,
     result: String,
     error: Option<String>,
+    request_gate: AiRequestGate,
+    backend: AiBackend,
+    model: String,
 }
 
 impl AiAssistantView {
@@ -32,11 +62,22 @@ impl AiAssistantView {
             loading: false,
             result: String::new(),
             error: None,
+            request_gate: AiRequestGate::default(),
+            backend: AiBackend::Disabled,
+            model: String::new(),
         }
     }
 
+    pub fn set_backend(&mut self, backend: AiBackend, model: String, cx: &mut Context<Self>) {
+        self.backend = backend;
+        self.model = model;
+        cx.notify();
+    }
+
     pub fn set_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
+        self.request_gate.invalidate();
         self.context = context;
+        self.loading = false;
         self.result.clear();
         self.error = None;
         cx.notify();
@@ -50,7 +91,15 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    pub fn set_result(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
+    pub fn set_result(
+        &mut self,
+        request_id: u64,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.request_gate.accepts(request_id) {
+            return;
+        }
         self.loading = false;
         match result {
             Ok(text) => {
@@ -62,7 +111,7 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    fn submit(&self, cx: &mut Context<Self>) {
+    fn submit(&mut self, cx: &mut Context<Self>) {
         if self.loading {
             return;
         }
@@ -70,18 +119,20 @@ impl AiAssistantView {
         if prompt.is_empty() {
             return;
         }
-        cx.emit(AiAssistantEvent::Submit {
-            prompt,
-            context: self.context.clone(),
-        });
+        self.submit_prompt(prompt, cx);
     }
 
-    fn submit_prompt(&self, prompt: String, cx: &mut Context<Self>) {
+    fn submit_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         if !self.loading {
+            let request_id = self.request_gate.begin();
+            self.loading = true;
+            self.error = None;
             cx.emit(AiAssistantEvent::Submit {
+                request_id,
                 prompt,
                 context: self.context.clone(),
             });
+            cx.notify();
         }
     }
 
@@ -120,6 +171,25 @@ impl AiAssistantView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::AiRequestGate;
+
+    // SDTEST-1341
+    #[test]
+    fn stale_ai_response_is_rejected_after_context_invalidation() {
+        let mut gate = AiRequestGate::default();
+        let old_request = gate.begin();
+        assert!(gate.accepts(old_request));
+
+        gate.invalidate();
+        assert!(!gate.accepts(old_request));
+
+        let current_request = gate.begin();
+        assert!(gate.accepts(current_request));
+    }
+}
+
 impl Render for AiAssistantView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let submit = {
@@ -140,8 +210,16 @@ impl Render for AiAssistantView {
         if self.loading {
             output = output.child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
+                    .child(
+                        Spinner::new()
+                            .size(SpinnerSize::Xs)
+                            .variant(SpinnerVariant::Primary),
+                    )
                     .child(t!("ai.assistant.generating").to_string()),
             );
         } else if let Some(error) = &self.error {
@@ -156,6 +234,15 @@ impl Render for AiAssistantView {
             );
         } else if !self.result.is_empty() {
             let result = self.result.clone();
+            let result_lines = self
+                .result
+                .split('\n')
+                .map(|line| {
+                    div()
+                        .min_h(px(18.0))
+                        .child(if line.is_empty() { " " } else { line }.to_string())
+                })
+                .collect::<Vec<_>>();
             output = output
                 .child(
                     div()
@@ -174,12 +261,13 @@ impl Render for AiAssistantView {
                         .text_size(px(13.0))
                         .text_color(ShellDeckColors::text_primary())
                         .whitespace_normal()
-                        .child(self.result.clone()),
+                        .children(result_lines),
                 )
                 .child(
                     div().flex().justify_end().child(
                         Button::new("ai-copy-draft", t!("ai.assistant.copy").to_string())
                             .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
                             .on_click(move |_event, _window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(result.clone()));
                             }),
@@ -187,7 +275,7 @@ impl Render for AiAssistantView {
                 );
         }
 
-        let mut quick_actions = div().flex().flex_wrap().gap(px(6.0));
+        let mut quick_actions = div().flex().flex_wrap().gap(px(8.0));
         for (index, (label, quick_prompt)) in Self::quick_actions(self.context.surface)
             .into_iter()
             .enumerate()
@@ -195,6 +283,7 @@ impl Render for AiAssistantView {
             quick_actions = quick_actions.child(
                 Button::new(("ai-quick", index), label)
                     .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
                     .disabled(self.loading)
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.submit_prompt(quick_prompt.clone(), cx);
@@ -202,27 +291,98 @@ impl Render for AiAssistantView {
             );
         }
 
-        div()
+        let model = if self.model.trim().is_empty() {
+            self.backend.default_model().to_string()
+        } else {
+            self.model.clone()
+        };
+
+        let body = div()
+            .id("ai-assistant-body")
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
+            .px(px(16.0))
+            .py(px(14.0))
             .gap(px(12.0))
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(self.context.title.clone()),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .p(px(10.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::primary().opacity(0.35))
+                    .bg(ShellDeckColors::primary().opacity(0.08))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(9.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(30.0))
+                                    .rounded(px(6.0))
+                                    .bg(ShellDeckColors::primary().opacity(0.16))
+                                    .child(lucide_icon(
+                                        "sparkles",
+                                        15.0,
+                                        ShellDeckColors::primary(),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .gap(px(1.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(ShellDeckColors::text_primary())
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(t!("ai.identity.label").to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .child(self.context.title.clone()),
+                                    ),
+                            ),
+                    )
+                    .child(ai_provider_badge(self.backend, &model)),
             )
             .child(quick_actions)
             .child(prompt)
             .child(
                 div().flex().justify_end().child(
                     Button::new("ai-submit", t!("ai.assistant.submit").to_string())
-                        .variant(ButtonVariant::Default)
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .icon(adabraka_ui::components::icon_source::IconSource::from(
+                            "sparkles",
+                        ))
                         .disabled(self.loading)
                         .on_click(cx.listener(|this, _, _window, cx| this.submit(cx))),
                 ),
             )
-            .child(scrollable_vertical(output))
+            .child(output);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(scrollable_vertical(body))
     }
 }

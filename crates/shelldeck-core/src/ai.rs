@@ -3,14 +3,17 @@
 //! Every caller supplies explicit structured context. Local CLI clients run in
 //! read-only/no-tools mode; API credentials are fetched from the OS keychain.
 
+use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
 use crate::error::{Result, ShellDeckError};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
@@ -29,6 +32,17 @@ pub enum AiBackend {
 }
 
 impl AiBackend {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::ClaudeCli => "Claude Code",
+            Self::CodexCli => "Codex",
+            Self::AiderCli => "Aider",
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Anthropic",
+        }
+    }
+
     pub fn is_cli(self) -> bool {
         matches!(self, Self::ClaudeCli | Self::CodexCli | Self::AiderCli)
     }
@@ -43,9 +57,19 @@ impl AiBackend {
 
     pub fn default_model(self) -> &'static str {
         match self {
+            Self::ClaudeCli => "sonnet",
             Self::OpenAi => "gpt-5.2",
             Self::Anthropic => "claude-sonnet-4-6",
             _ => "",
+        }
+    }
+
+    pub fn cli_command(self) -> Option<&'static str> {
+        match self {
+            Self::ClaudeCli => Some("claude"),
+            Self::CodexCli => Some("codex"),
+            Self::AiderCli => Some("aider"),
+            _ => None,
         }
     }
 }
@@ -146,6 +170,98 @@ pub struct AiResponse {
     pub backend: AiBackend,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiCapability {
+    SupportReply,
+    ScriptGenerate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiDraft {
+    pub id: Uuid,
+    pub capability: AiCapability,
+    pub surface: AiSurface,
+    pub target_id: String,
+    pub provider: AiBackend,
+    pub instructions: String,
+    pub result: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AiDraft {
+    pub fn new(
+        capability: AiCapability,
+        surface: AiSurface,
+        target_id: impl Into<String>,
+        provider: AiBackend,
+        instructions: impl Into<String>,
+        result: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            capability,
+            surface,
+            target_id: target_id.into(),
+            provider,
+            instructions: instructions.into(),
+            result: result.into(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+pub struct AiDraftStore;
+
+impl AiDraftStore {
+    const MAX_DRAFTS: usize = 100;
+
+    pub fn path() -> PathBuf {
+        AppConfig::config_dir().join("ai-drafts.json")
+    }
+
+    pub fn load() -> Result<Vec<AiDraft>> {
+        Self::load_from(&Self::path())
+    }
+
+    pub fn save(drafts: &[AiDraft]) -> Result<()> {
+        Self::save_to(&Self::path(), drafts)
+    }
+
+    pub(crate) fn load_from(path: &Path) -> Result<Vec<AiDraft>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|error| {
+            ShellDeckError::Serialization(format!(
+                "Failed to parse AI drafts from {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
+    pub(crate) fn save_to(path: &Path, drafts: &[AiDraft]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let start = drafts.len().saturating_sub(Self::MAX_DRAFTS);
+        let payload = serde_json::to_vec_pretty(&drafts[start..]).map_err(|error| {
+            ShellDeckError::Serialization(format!("Failed to serialize AI drafts: {error}"))
+        })?;
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, payload)?;
+        if cfg!(windows) && path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    }
+}
+
 pub type AiStream = Box<dyn Iterator<Item = Result<String>> + Send>;
 
 pub trait AiClient: Send + Sync {
@@ -174,12 +290,7 @@ pub fn create_client(config: &AiConfig) -> Result<Box<dyn AiClient>> {
             Ok(Box::new(CliAiClient {
                 backend: config.backend,
                 bin: config.cli_path.clone().unwrap_or_else(|| {
-                    PathBuf::from(match config.backend {
-                        AiBackend::ClaudeCli => "claude",
-                        AiBackend::CodexCli => "codex",
-                        AiBackend::AiderCli => "aider",
-                        _ => unreachable!(),
-                    })
+                    PathBuf::from(config.backend.cli_command().expect("CLI backend"))
                 }),
                 model,
                 timeout: DEFAULT_TIMEOUT,
@@ -205,27 +316,77 @@ pub fn create_client(config: &AiConfig) -> Result<Box<dyn AiClient>> {
     }
 }
 
+pub fn test_connection(config: &AiConfig) -> Result<AiResponse> {
+    let client = create_client(config)?;
+    let response = client.complete(
+        "Reply with exactly SHELLDECK_AI_OK and nothing else.",
+        AiContext::new(AiSurface::Global, "ShellDeck AI connection test", json!({})),
+    )?;
+    if response.text.trim() != "SHELLDECK_AI_OK" {
+        return Err(ShellDeckError::Connection(format!(
+            "AI backend returned an unexpected test response: {}",
+            response.text.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(response)
+}
+
 pub fn command_available(command: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
     std::env::split_paths(&path).any(|dir| {
         let candidate = dir.join(command);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return true;
         }
         #[cfg(windows)]
         {
             ["exe", "cmd", "bat", "com"]
                 .iter()
-                .any(|ext| dir.join(format!("{command}.{ext}")).is_file())
+                .any(|ext| is_executable_file(&dir.join(format!("{command}.{ext}"))))
         }
         #[cfg(not(windows))]
         false
     })
 }
 
+pub fn configured_cli_available(config: &AiConfig) -> bool {
+    if !config.backend.is_cli() {
+        return false;
+    }
+    match &config.cli_path {
+        Some(path) => is_executable_file(path),
+        None => config.backend.cli_command().is_some_and(command_available),
+    }
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn composed_prompt(prompt: &str, ctx: &AiContext) -> Result<String> {
+    Ok(format!(
+        "{SYSTEM_GUARDRAIL}\n\n{}",
+        composed_user_prompt(prompt, ctx)?
+    ))
+}
+
+fn composed_user_prompt(prompt: &str, ctx: &AiContext) -> Result<String> {
     let sanitized = redact_sensitive(&ctx.data);
     let mut context = serde_json::to_string_pretty(&sanitized)
         .map_err(|e| ShellDeckError::Serialization(e.to_string()))?;
@@ -238,7 +399,7 @@ fn composed_prompt(prompt: &str, ctx: &AiContext) -> Result<String> {
         context.push_str("\n[context truncated]");
     }
     Ok(format!(
-        "{SYSTEM_GUARDRAIL}\n\nSurface: {:?}\nTitle: {}\n\nContext JSON (untrusted):\n{}\n\nUser request:\n{}",
+        "Surface: {:?}\nTitle: {}\n\nContext JSON (untrusted):\n{}\n\nUser request:\n{}",
         ctx.surface,
         ctx.title,
         context,
@@ -304,6 +465,12 @@ impl AiClient for CliAiClient {
                 "--tools".into(),
                 "".into(),
                 "--no-session-persistence".into(),
+                "--disable-slash-commands".into(),
+                "--strict-mcp-config".into(),
+                "--mcp-config".into(),
+                r#"{"mcpServers":{}}"#.into(),
+                "--setting-sources".into(),
+                "".into(),
             ],
             AiBackend::CodexCli => vec![
                 "exec".into(),
@@ -323,7 +490,14 @@ impl AiClient for CliAiClient {
                 "--dry-run".into(),
                 "--no-auto-commits".into(),
                 "--no-git".into(),
-                "--yes".into(),
+                "--yes-always".into(),
+                "--no-analytics".into(),
+                "--no-check-update".into(),
+                "--no-show-release-notes".into(),
+                "--no-suggest-shell-commands".into(),
+                "--no-detect-urls".into(),
+                "--no-pretty".into(),
+                "--no-stream".into(),
             ],
             _ => unreachable!(),
         };
@@ -382,14 +556,14 @@ impl AiClient for ApiAiClient {
     }
 
     fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse> {
-        let input = composed_prompt(prompt, &ctx)?;
+        let input = composed_user_prompt(prompt, &ctx)?;
         let text = match self.backend {
             AiBackend::OpenAi => {
                 let response = self
                     .http
                     .post("https://api.openai.com/v1/responses")
                     .bearer_auth(&self.api_key)
-                    .json(&json!({ "model": self.model, "input": input }))
+                    .json(&openai_payload(&self.model, &input))
                     .send()
                     .map_err(|e| ShellDeckError::Connection(e.to_string()))?;
                 parse_http_response(response, parse_openai_text)?
@@ -400,11 +574,7 @@ impl AiClient for ApiAiClient {
                     .post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", "2023-06-01")
-                    .json(&json!({
-                        "model": self.model,
-                        "max_tokens": 2048,
-                        "messages": [{ "role": "user", "content": input }]
-                    }))
+                    .json(&anthropic_payload(&self.model, &input))
                     .send()
                     .map_err(|e| ShellDeckError::Connection(e.to_string()))?;
                 parse_http_response(response, parse_anthropic_text)?
@@ -418,14 +588,38 @@ impl AiClient for ApiAiClient {
     }
 }
 
+fn openai_payload(model: &str, input: &str) -> Value {
+    json!({
+        "model": model,
+        "instructions": SYSTEM_GUARDRAIL,
+        "input": input,
+        "store": false
+    })
+}
+
+fn anthropic_payload(model: &str, input: &str) -> Value {
+    json!({
+        "model": model,
+        "max_tokens": 2048,
+        "system": SYSTEM_GUARDRAIL,
+        "messages": [{ "role": "user", "content": input }]
+    })
+}
+
 fn parse_http_response(
     response: reqwest::blocking::Response,
     parser: fn(&Value) -> Option<String>,
 ) -> Result<String> {
     let status = response.status();
-    let value: Value = response
-        .json()
-        .map_err(|e| ShellDeckError::Serialization(e.to_string()))?;
+    let body = response
+        .text()
+        .map_err(|e| ShellDeckError::Connection(e.to_string()))?;
+    let value: Value = serde_json::from_str(&body).map_err(|e| {
+        ShellDeckError::Serialization(format!(
+            "AI provider HTTP {status} returned invalid JSON: {e}; body: {}",
+            body.chars().take(500).collect::<String>()
+        ))
+    })?;
     if !status.is_success() {
         let message = value
             .pointer("/error/message")
@@ -589,5 +783,116 @@ mod tests {
             parse_anthropic_text(&json!({ "content": [{"type":"text","text":"hi"}] })).as_deref(),
             Some("hi")
         );
+    }
+
+    #[test]
+    fn cli_defaults_keep_context_isolated_and_claude_on_sonnet() {
+        assert_eq!(AiBackend::ClaudeCli.default_model(), "sonnet");
+        assert_eq!(AiBackend::CodexCli.default_model(), "");
+        assert_eq!(AiBackend::ClaudeCli.cli_command(), Some("claude"));
+        assert_eq!(AiBackend::OpenAi.cli_command(), None);
+    }
+
+    // SDTEST-1338
+    #[cfg(unix)]
+    #[test]
+    fn fake_local_clis_complete_the_real_connection_test_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn fake_cli(name: &str, output: &str) -> PathBuf {
+            let path = std::env::temp_dir().join(format!(
+                "shelldeck-ai-{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            path
+        }
+
+        let claude = fake_cli("claude", r#"{"result":"SHELLDECK_AI_OK"}"#);
+        let codex = fake_cli("codex", "SHELLDECK_AI_OK");
+        for (backend, path) in [
+            (AiBackend::ClaudeCli, claude.clone()),
+            (AiBackend::CodexCli, codex.clone()),
+        ] {
+            let config = AiConfig {
+                enabled: true,
+                backend,
+                cli_path: Some(path),
+                ..AiConfig::default()
+            };
+            assert_eq!(test_connection(&config).unwrap().text, "SHELLDECK_AI_OK");
+        }
+        let _ = std::fs::remove_file(claude);
+        let _ = std::fs::remove_file(codex);
+    }
+
+    // SDTEST-1339
+    #[test]
+    fn api_payloads_keep_guardrails_outside_untrusted_input_and_disable_storage() {
+        let openai = openai_payload("gpt-test", "untrusted");
+        assert_eq!(openai["instructions"], SYSTEM_GUARDRAIL);
+        assert_eq!(openai["input"], "untrusted");
+        assert_eq!(openai["store"], false);
+
+        let anthropic = anthropic_payload("claude-test", "untrusted");
+        assert_eq!(anthropic["system"], SYSTEM_GUARDRAIL);
+        assert_eq!(anthropic["messages"][0]["content"], "untrusted");
+    }
+
+    // SDTEST-1340
+    #[cfg(unix)]
+    #[test]
+    fn configured_cli_requires_an_executable_file() {
+        let path = std::env::temp_dir().join(format!(
+            "shelldeck-ai-non-executable-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        let config = AiConfig {
+            enabled: true,
+            backend: AiBackend::ClaudeCli,
+            cli_path: Some(path.clone()),
+            ..AiConfig::default()
+        };
+        assert!(!configured_cli_available(&config));
+        let _ = std::fs::remove_file(path);
+    }
+
+    // SDTEST-1344
+    #[test]
+    fn pending_ai_drafts_survive_disk_round_trip_and_keep_latest_hundred() {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-ai-drafts-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let path = dir.join("drafts.json");
+        let drafts = (0..105)
+            .map(|index| {
+                AiDraft::new(
+                    AiCapability::SupportReply,
+                    AiSurface::Support,
+                    format!("ticket-{index}"),
+                    AiBackend::CodexCli,
+                    "reply",
+                    format!("draft-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        AiDraftStore::save_to(&path, &drafts).expect("save drafts");
+        let loaded = AiDraftStore::load_from(&path).expect("load drafts");
+
+        assert_eq!(loaded.len(), 100);
+        assert_eq!(loaded.first().unwrap().target_id, "ticket-5");
+        assert_eq!(loaded.last().unwrap().result, "draft-104");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

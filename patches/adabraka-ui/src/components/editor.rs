@@ -690,18 +690,16 @@ impl EditorState {
     fn reset_cursor_blink(&mut self, cx: &mut Context<Self>) {
         self.cursor_visible = true;
         self.last_cursor_move = std::time::Instant::now();
-        self.blink_task = Some(cx.spawn(async |this, cx| {
-            loop {
-                smol::Timer::after(std::time::Duration::from_millis(500)).await;
-                let ok = this
-                    .update(cx, |state, cx| {
-                        state.cursor_visible = !state.cursor_visible;
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !ok {
-                    break;
-                }
+        self.blink_task = Some(cx.spawn(async |this, cx| loop {
+            smol::Timer::after(std::time::Duration::from_millis(500)).await;
+            let ok = this
+                .update(cx, |state, cx| {
+                    state.cursor_visible = !state.cursor_visible;
+                    cx.notify();
+                })
+                .is_ok();
+            if !ok {
+                break;
             }
         }));
     }
@@ -1336,7 +1334,9 @@ impl EditorState {
     }
 
     fn rope_insert(&mut self, byte_offset: usize, text: &str) {
-        let char_offset = self.rope.byte_to_char(byte_offset.min(self.rope.len_bytes()));
+        let char_offset = self
+            .rope
+            .byte_to_char(byte_offset.min(self.rope.len_bytes()));
         self.rope.insert(char_offset, text);
     }
 
@@ -1366,6 +1366,8 @@ impl EditorState {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.is_modified = false;
+        self.max_line_width = px(0.0);
+        self.scroll_offset_x = px(0.0);
         self.invalidate_all_caches();
         if self.rope.len_bytes() > 50_000 {
             self.parse_async(cx);
@@ -2279,7 +2281,9 @@ impl EditorState {
                 (content, cursor_byte)
             });
 
-            let Ok((content, cursor_byte)) = search_input else { return };
+            let Ok((content, cursor_byte)) = search_input else {
+                return;
+            };
 
             let matches = smol::unblock(move || {
                 let mut results = Vec::new();
@@ -3626,8 +3630,8 @@ impl Element for EditorElement {
                             .unwrap_or(hsla(0.0, 0.0, 0.5, 0.6)),
                     };
 
-                    let diag_y =
-                        bounds.top() + padding_top + line_height * dr as f32 + line_height - px(2.0);
+                    let diag_y = bounds.top() + padding_top + line_height * dr as f32 + line_height
+                        - px(2.0);
 
                     if let Some(layout) = self.state.read(cx).line_layouts.get(&diag_line) {
                         let start_col = diag.start_col as usize;
@@ -3701,14 +3705,13 @@ impl Element for EditorElement {
                     };
                     let cursor_y =
                         bounds.top() + padding_top + line_height * cursor_display_row as f32;
-                    let cursor_x = if let Some(layout) =
-                        self.state.read(cx).line_layouts.get(&cursor.line)
-                    {
-                        bounds.left() + gutter_width + layout.x_for_index(cursor_col)
-                            - scroll_offset_x
-                    } else {
-                        bounds.left() + gutter_width - scroll_offset_x
-                    };
+                    let cursor_x =
+                        if let Some(layout) = self.state.read(cx).line_layouts.get(&cursor.line) {
+                            bounds.left() + gutter_width + layout.x_for_index(cursor_col)
+                                - scroll_offset_x
+                        } else {
+                            bounds.left() + gutter_width - scroll_offset_x
+                        };
 
                     let cursor_draw_color = self
                         .state
@@ -3951,8 +3954,11 @@ impl EditorElement {
 #[derive(IntoElement)]
 pub struct Editor {
     state: Entity<EditorState>,
+    placeholder: SharedString,
+    font_family: Option<SharedString>,
     min_lines: Option<usize>,
     max_lines: Option<usize>,
+    show_horizontal_scrollbar: bool,
     show_border: bool,
     style: StyleRefinement,
     cursor_color: Option<Hsla>,
@@ -3974,8 +3980,11 @@ impl Editor {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
+            placeholder: "".into(),
+            font_family: None,
             min_lines: None,
             max_lines: None,
+            show_horizontal_scrollbar: true,
             show_border: true,
             style: StyleRefinement::default(),
             cursor_color: None,
@@ -4001,6 +4010,16 @@ impl Editor {
         self
     }
 
+    pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn font_family(mut self, font_family: impl Into<SharedString>) -> Self {
+        self.font_family = Some(font_family.into());
+        self
+    }
+
     pub fn min_lines(mut self, lines: usize) -> Self {
         self.min_lines = Some(lines);
         self
@@ -4008,6 +4027,11 @@ impl Editor {
 
     pub fn max_lines(mut self, lines: usize) -> Self {
         self.max_lines = Some(lines);
+        self
+    }
+
+    pub fn show_horizontal_scrollbar(mut self, show: bool) -> Self {
+        self.show_horizontal_scrollbar = show;
         self
     }
 
@@ -4100,6 +4124,13 @@ impl RenderOnce for Editor {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let syn_fn = self.syntax_color_fn.take();
         self.state.update(cx, |state, _| {
+            if let Some(font_family) = self.font_family.clone() {
+                if state.font_family_override.as_ref() != Some(&font_family) {
+                    state.font_family_override = Some(font_family);
+                    state.line_layouts.clear();
+                    state.line_content_hashes.clear();
+                }
+            }
             state.cursor_color_override = self.cursor_color;
             state.selection_color_override = self.selection_color;
             state.line_number_color_override = self.line_number_color;
@@ -4124,11 +4155,14 @@ impl RenderOnce for Editor {
         let min_height = self.min_lines.map(|lines| px(lines as f32 * 20.0));
         let max_height = self.max_lines.map(|lines| px(lines as f32 * 20.0));
         let scroll_handle = self.state.read(cx).scroll_handle.clone();
+        let show_placeholder = self.state.read(cx).is_empty() && !self.placeholder.is_empty();
+        let placeholder = self.placeholder;
 
         let mut base = div()
             .id(("editor", self.state.entity_id()))
             .key_context("Editor")
             .track_focus(&self.state.read(cx).focus_handle(cx))
+            .relative()
             .w_full()
             .h_full()
             .max_h_full();
@@ -4194,7 +4228,11 @@ impl RenderOnce for Editor {
                     let (bounds, gutter_width, line_height) = {
                         let s = state.read(cx);
                         let b = s.last_bounds.unwrap_or_default();
-                        let gw = if s.show_line_numbers { px(80.0) } else { px(12.0) };
+                        let gw = if s.show_line_numbers {
+                            px(80.0)
+                        } else {
+                            px(12.0)
+                        };
                         let lh = s.line_height;
                         (b, gw, lh)
                     };
@@ -4210,7 +4248,11 @@ impl RenderOnce for Editor {
                     let (bounds, gutter_width, line_height) = {
                         let s = state.read(cx);
                         let b = s.last_bounds.unwrap_or_default();
-                        let gw = if s.show_line_numbers { px(80.0) } else { px(12.0) };
+                        let gw = if s.show_line_numbers {
+                            px(80.0)
+                        } else {
+                            px(12.0)
+                        };
                         let lh = s.line_height;
                         (b, gw, lh)
                     };
@@ -4223,19 +4265,21 @@ impl RenderOnce for Editor {
                 MouseButton::Left,
                 window.listener_for(&self.state, EditorState::on_mouse_up),
             )
-            .on_scroll_wheel({
-                let state = self.state.clone();
-                move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
-                    let delta_x = match event.delta {
-                        ScrollDelta::Pixels(p) => p.x,
-                        ScrollDelta::Lines(l) => px(l.x * 20.0),
-                    };
-                    if delta_x.abs() > px(0.5) {
-                        state.update(cx, |s, cx| {
-                            s.scroll_horizontal(-delta_x, cx);
-                        });
+            .when(self.show_horizontal_scrollbar, |this| {
+                this.on_scroll_wheel({
+                    let state = self.state.clone();
+                    move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
+                        let delta_x = match event.delta {
+                            ScrollDelta::Pixels(p) => p.x,
+                            ScrollDelta::Lines(l) => px(l.x * 20.0),
+                        };
+                        if delta_x.abs() > px(0.5) {
+                            state.update(cx, |s, cx| {
+                                s.scroll_horizontal(-delta_x, cx);
+                            });
+                        }
                     }
-                }
+                })
             })
             .child(
                 div()
@@ -4243,11 +4287,25 @@ impl RenderOnce for Editor {
                     .flex_col()
                     .size_full()
                     .child(div().flex_1().overflow_hidden().child(
-                        scrollable_vertical(self.state.clone())
-                            .with_scroll_handle(scroll_handle),
+                        scrollable_vertical(self.state.clone()).with_scroll_handle(scroll_handle),
                     ))
-                    .child(HorizontalScrollbar::new(self.state.clone(), cx)),
+                    .when(self.show_horizontal_scrollbar, |this| {
+                        this.child(HorizontalScrollbar::new(self.state.clone(), cx))
+                    }),
             )
+            .when(show_placeholder, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(12.0))
+                        .left(px(12.0))
+                        .right(px(12.0))
+                        .text_size(self.state.read(cx).font_size)
+                        .text_color(theme.tokens.muted_foreground)
+                        .line_clamp(1)
+                        .child(placeholder),
+                )
+            })
     }
 }
 
@@ -4392,7 +4450,9 @@ impl VerticalScrollbar {
             };
             let max_scroll = content_height + overscroll - viewport_height;
             let ttp = if max_scroll > px(0.0) {
-                ((scroll_y / max_scroll) * (100.0 - thp)).max(0.0).min(100.0 - thp)
+                ((scroll_y / max_scroll) * (100.0 - thp))
+                    .max(0.0)
+                    .min(100.0 - thp)
             } else {
                 0.0
             };

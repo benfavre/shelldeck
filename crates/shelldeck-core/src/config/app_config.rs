@@ -618,8 +618,33 @@ ui_font_size = 14.0
         assert!(loaded.cloud_sync.token.is_empty());
         assert!(loaded.cloud_sync.sync_on_startup);
         assert!(loaded.account.is_none());
+        assert!(!loaded.ai.enabled);
+        assert_eq!(loaded.ai.backend, crate::ai::AiBackend::Disabled);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // SDTEST-1342
+    #[test]
+    fn ai_config_round_trips_without_any_credential_field() {
+        let mut config = AppConfig::default();
+        config.ai.enabled = true;
+        config.ai.backend = crate::ai::AiBackend::OpenAi;
+        config.ai.model = "gpt-test".to_string();
+        config.ai.surfaces.terminal = false;
+
+        let serialized = toml::to_string_pretty(&config).expect("serialize AI config");
+        assert!(serialized.contains("[ai]"));
+        assert!(serialized.contains("backend = \"open_ai\""));
+        assert!(!serialized.contains("api_key"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("secret"));
+
+        let loaded: AppConfig = toml::from_str(&serialized).expect("reload AI config");
+        assert!(loaded.ai.enabled);
+        assert_eq!(loaded.ai.backend, crate::ai::AiBackend::OpenAi);
+        assert_eq!(loaded.ai.model, "gpt-test");
+        assert!(!loaded.ai.surfaces.terminal);
     }
 
     #[test]

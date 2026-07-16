@@ -5,12 +5,14 @@ use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::toggle::Toggle;
-use adabraka_ui::prelude::{scrollable_vertical, Button, ButtonVariant};
+use adabraka_ui::prelude::{
+    scrollable_vertical, Button, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+};
 use gpui::prelude::*;
 use gpui::*;
 
 use crate::t;
-use shelldeck_core::ai::{command_available, AiBackend};
+use shelldeck_core::ai::{configured_cli_available, AiBackend};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
@@ -57,13 +59,27 @@ pub enum SettingsEvent {
     ShowOnboarding,
     /// Store or remove an API credential in the OS keychain. The value never
     /// enters `AppConfig` or `shelldeck.toml`.
-    AiApiKeyChanged {
+    AiApiKeyStored {
         backend: AiBackend,
         value: String,
     },
+    AiApiKeyDeleted {
+        backend: AiBackend,
+    },
+    /// Run a real minimal completion through the selected backend.
+    AiTestRequested(AppConfig),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
+
+#[derive(Debug, Clone, Default)]
+pub enum AiConnectionState {
+    #[default]
+    NotTested,
+    Testing,
+    Connected,
+    Failed(String),
+}
 
 pub struct SettingsView {
     pub config: AppConfig,
@@ -81,6 +97,7 @@ pub struct SettingsView {
     ai_backend_select: Entity<Select<AiBackend>>,
     ai_model_state: Entity<InputState>,
     ai_api_key_state: Entity<InputState>,
+    ai_connection_state: AiConnectionState,
 }
 
 impl SettingsView {
@@ -110,6 +127,7 @@ impl SettingsView {
                 state
             }),
             ai_api_key_state: cx.new(InputState::new),
+            ai_connection_state: AiConnectionState::NotTested,
         }
     }
 
@@ -728,15 +746,37 @@ impl SettingsView {
     fn render_ai_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let backend = self.config.ai.backend;
-        let status = match backend {
-            AiBackend::Disabled => t!("settings.ai.status.disabled").to_string(),
-            AiBackend::ClaudeCli => local_backend_status("claude"),
-            AiBackend::CodexCli => local_backend_status("codex"),
-            AiBackend::AiderCli => local_backend_status("aider"),
-            AiBackend::OpenAi | AiBackend::Anthropic => {
-                t!("settings.ai.status.keychain").to_string()
-            }
+        let cli_missing = backend.is_cli() && !configured_cli_available(&self.config.ai);
+        let (status, status_color) = match &self.ai_connection_state {
+            AiConnectionState::Testing => (
+                t!("settings.ai.status.testing").to_string(),
+                ShellDeckColors::warning(),
+            ),
+            AiConnectionState::Connected => (
+                t!("settings.ai.status.connected").to_string(),
+                ShellDeckColors::success(),
+            ),
+            AiConnectionState::Failed(error) => (error.clone(), ShellDeckColors::error()),
+            AiConnectionState::NotTested => match backend {
+                AiBackend::Disabled => (
+                    t!("settings.ai.status.disabled").to_string(),
+                    ShellDeckColors::text_muted(),
+                ),
+                AiBackend::ClaudeCli | AiBackend::CodexCli | AiBackend::AiderCli => (
+                    local_backend_status(backend.cli_command().expect("CLI backend"), !cli_missing),
+                    if cli_missing {
+                        ShellDeckColors::error()
+                    } else {
+                        ShellDeckColors::text_muted()
+                    },
+                ),
+                AiBackend::OpenAi | AiBackend::Anthropic => (
+                    t!("settings.ai.status.not_tested").to_string(),
+                    ShellDeckColors::text_muted(),
+                ),
+            },
         };
+        let testing = matches!(self.ai_connection_state, AiConnectionState::Testing);
 
         let model_parent = entity.clone();
         let model_input = Input::new(&self.ai_model_state)
@@ -751,6 +791,7 @@ impl SettingsView {
                     let value = value.trim().to_string();
                     if this.config.ai.model != value {
                         this.config.ai.model = value;
+                        this.ai_connection_state = AiConnectionState::NotTested;
                         this.save_config(cx);
                     }
                 });
@@ -767,7 +808,10 @@ impl SettingsView {
                     "ai-enabled",
                     self.config.ai.enabled,
                     &entity,
-                    |this, value| this.config.ai.enabled = value,
+                    |this, value| {
+                        this.config.ai.enabled = value;
+                        this.ai_connection_state = AiConnectionState::NotTested;
+                    },
                 ),
             ))
             .child(Self::render_setting_row(
@@ -779,8 +823,18 @@ impl SettingsView {
                 t!("settings.ai.status.label").as_ref(),
                 t!("settings.ai.status.description").as_ref(),
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
                     .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_muted())
+                    .text_color(status_color)
+                    .when(testing, |row| {
+                        row.child(
+                            Spinner::new()
+                                .size(SpinnerSize::Xs)
+                                .variant(SpinnerVariant::Primary),
+                        )
+                    })
                     .child(status),
             ))
             .child(Self::render_setting_row(
@@ -815,13 +869,19 @@ impl SettingsView {
                         )
                         .variant(ButtonVariant::Outline)
                         .on_click(cx.listener(
-                            move |_this, _, _window, cx| {
+                            move |this, _, _window, cx| {
                                 let value = key_state.read(cx).content().trim().to_string();
-                                key_state.update(cx, |state, cx| {
-                                    state.content = "".into();
+                                if value.is_empty() {
+                                    this.ai_connection_state = AiConnectionState::Failed(
+                                        t!("settings.ai.api_key.required").to_string(),
+                                    );
                                     cx.notify();
+                                    return;
+                                }
+                                key_state.update(cx, |state, cx| {
+                                    state.reset(cx);
                                 });
-                                cx.emit(SettingsEvent::AiApiKeyChanged { backend, value });
+                                cx.emit(SettingsEvent::AiApiKeyStored { backend, value });
                             },
                         )),
                     )
@@ -833,19 +893,41 @@ impl SettingsView {
                         .variant(ButtonVariant::Ghost)
                         .on_click(cx.listener(
                             move |_this, _, _window, cx| {
-                                cx.emit(SettingsEvent::AiApiKeyChanged {
+                                cx.emit(SettingsEvent::AiApiKeyDeleted {
                                     backend: if provider == "openai" {
                                         AiBackend::OpenAi
                                     } else {
                                         AiBackend::Anthropic
                                     },
-                                    value: String::new(),
                                 });
                             },
                         )),
                     ),
             ));
         }
+
+        root = root.child(Self::render_setting_row(
+            t!("settings.ai.test.label").as_ref(),
+            t!("settings.ai.test.description").as_ref(),
+            Button::new(
+                "ai-test-connection",
+                if testing {
+                    t!("settings.ai.test.testing").to_string()
+                } else {
+                    t!("settings.ai.test.button").to_string()
+                },
+            )
+            .variant(ButtonVariant::Outline)
+            .icon(IconSource::Named("refresh-cw".into()))
+            .disabled(
+                testing || backend == AiBackend::Disabled || cli_missing || !self.config.ai.enabled,
+            )
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.ai_connection_state = AiConnectionState::Testing;
+                cx.emit(SettingsEvent::AiTestRequested(this.config.clone()));
+                cx.notify();
+            })),
+        ));
 
         root.child(Self::render_about_section(
             t!("settings.ai.surfaces.section").as_ref(),
@@ -899,6 +981,19 @@ impl SettingsView {
             &entity,
             |this, value| this.config.ai.surfaces.recent = value,
         ))
+    }
+
+    pub fn set_ai_connection_result(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        self.ai_connection_state = match result {
+            Ok(()) => AiConnectionState::Connected,
+            Err(error) => AiConnectionState::Failed(error),
+        };
+        cx.notify();
+    }
+
+    pub fn reset_ai_connection_state(&mut self, cx: &mut Context<Self>) {
+        self.ai_connection_state = AiConnectionState::NotTested;
+        cx.notify();
     }
 
     /// Shared `[- value +]` stepper — used by every numeric setting that
@@ -2005,7 +2100,18 @@ fn build_ai_backend_select(
     ];
     let options = entries
         .iter()
-        .map(|(backend, label)| SelectOption::new(*backend, label.clone()))
+        .map(|(backend, label)| {
+            let icon = match backend {
+                AiBackend::Disabled => IconSource::Named("x".into()),
+                AiBackend::ClaudeCli => IconSource::from("icons/simple/claudecode.svg"),
+                AiBackend::CodexCli | AiBackend::OpenAi => {
+                    IconSource::from("icons/simple/openai.svg")
+                }
+                AiBackend::AiderCli => IconSource::Named("terminal".into()),
+                AiBackend::Anthropic => IconSource::from("icons/simple/anthropic.svg"),
+            };
+            SelectOption::new(*backend, label.clone()).with_icon(icon)
+        })
         .collect();
     let selected = entries
         .iter()
@@ -2024,9 +2130,9 @@ fn build_ai_backend_select(
                     this.config.ai.backend = backend;
                     this.config.ai.enabled = backend != AiBackend::Disabled;
                     this.config.ai.model.clear();
+                    this.ai_connection_state = AiConnectionState::NotTested;
                     this.ai_model_state.update(cx, |state, cx| {
-                        state.content = "".into();
-                        cx.notify();
+                        state.reset(cx);
                     });
                     this.save_config(cx);
                 });
@@ -2034,8 +2140,8 @@ fn build_ai_backend_select(
     })
 }
 
-fn local_backend_status(command: &str) -> String {
-    if command_available(command) {
+fn local_backend_status(command: &str, available: bool) -> String {
+    if available {
         t!("settings.ai.status.available", command = command).to_string()
     } else {
         t!("settings.ai.status.missing", command = command).to_string()

@@ -9,7 +9,7 @@
 > quand on l'attaque, et la case correspondante est cochée ici après
 > merge.
 
-## Statut au 2026-07-15
+## Statut au 2026-07-16
 
 | # | Item | Statut |
 |---|------|--------|
@@ -19,7 +19,7 @@
 | 4 | Recent activity | ✅ landed 2026-07-15 (`shelldeck-core::config::activity` + vue Dev Activité + hooks scripts/tunnels/support/issues/Jean/sites) |
 | 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
 | 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
-| 7 | Couche IA transversale | ⏳ à faire (dépend de la stabilisation des surfaces ci-dessus) |
+| 7 | Couche IA transversale | 🚧 fondation en cours; cadrage des intégrations et de l'autonomie dans [`ai-companion.md`](ai-companion.md) |
 
 ## 1. Onboarding first-run — ✅ livré 2026-07-15
 
@@ -272,79 +272,17 @@ session (opt-in via Settings → Général).
 
 ## 7. Couche IA transversale
 
-**Objectif :** ShellDeck permet de brancher **une fois** un backend
-IA, et des boutons IA-powered apparaissent partout dans l'app
-(intégration à la Warp).
+**Objectif :** brancher un backend une fois, puis rendre l'IA native dans
+les écrans. La sheet générale reste disponible, mais les workflows principaux
+passent par des boutons contextuels, des suggestions éditables, des brouillons
+en attente et des actions applicables ou exécutables.
 
-### Deux modes de backend
+La cible inclut plusieurs niveaux d'autonomie: suggestion, préparation,
+confirmation et exécution automatique bornée par capacité. Les permissions,
+la cible, le risque, l'audit et l'arrêt manuel restent explicites.
 
-- **CLI local** — `claude` (Claude Code), `codex`, `aider`, etc.
-  Réutilise le pattern déjà éprouvé dans `jean_fleet::ClaudeExecutor`
-  (shell-out `claude -p --output-format stream-json …`). Zéro
-  gestion de clé API, utilise l'abonnement existant de l'utilisateur.
-- **API keys** — Anthropic / OpenAI / autres. Clés stockées dans le
-  **keychain OS** (jamais en TOML clair), via le wrapper `keychain`
-  déjà présent dans `shelldeck-core`.
-
-### Abstraction
-
-Une trait `AiClient` unique dans `shelldeck-core::ai` :
-
-```rust
-trait AiClient: Send + Sync {
-    fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse>;
-    fn stream(&self, prompt: &str, ctx: AiContext) -> Result<AiStream>;
-}
-```
-
-Une seule implémentation active à la fois ; plusieurs configurables.
-Chaque surface IA-powered passe par ce trait — pas de shell-out
-direct disséminé.
-
-### Config
-
-- Nouveau tab **Settings → IA** (entre Éditeur et Apparence).
-- Sélection backend + saisie clé API masquée.
-- Toggles par surface (« activer le bouton IA dans Support », etc.)
-  pour opt-out granulaire.
-
-### Boutons IA à débloquer (liste initiale, à étendre)
-
-**Support**
-
-- « Proposer une réponse IA » sur les tickets — draft depuis le fil.
-- « Résumer ce ticket » — long thread → 3 lignes en tête de ticket.
-- « Suggérer catégorie / priorité » sur incoming tickets.
-
-**Demandes / issues**
-
-- « Créer une demande depuis cette erreur » depuis une sortie terminal.
-- « Auto-tag / auto-priorité » sur nouvelles issues.
-
-**Scripts**
-
-- « Générer un script depuis instructions » (naturel → bash/python/…).
-- « Expliquer ce script » avant exécution (footguns, secrets, `rm -rf`).
-- « Convertir Bash ↔ Python » et autres paires de `ScriptLanguage`.
-- « Reviewer avant exécution » — safety pass.
-
-**Terminal (Warp-style copilot)**
-
-- « Générer une commande » depuis prompt naturel (Cmd+K in-terminal).
-- « Expliquer cette erreur » sur exit non-zéro.
-
-**Jean**
-
-- « Draft un prompt Jean depuis mon intention »
-  (« rejoue X sur tous les sites Paillard » → job Jean structuré).
-
-**Nommage auto**
-
-- Suggérer nom pour Connection / Tunnel / Script depuis contexte.
-
-**Recent activity summary**
-
-- « Résumé de ma semaine » depuis le stream d'activité (voir §5).
+Le cadrage complet, la matrice par surface, les contrats techniques et le
+phasage sont dans [`docs/roadmap/ai-companion.md`](ai-companion.md).
 
 ## Non-goals explicites
 
@@ -353,9 +291,9 @@ direct disséminé.
   contourne ça.
 - **Pas de pin universel** — la catégorie est unique, choisie en
   amont (voir §4).
-- **Pas de collecte télémétrie IA silencieuse** — chaque appel IA est
-  déclenché par une action utilisateur explicite ; pas d'auto-suggest
-  invisible côté serveur.
+- **Pas de collecte télémétrie IA silencieuse** — une policy d'automatisation
+  peut déclencher une capacité autorisée, mais elle ne permet jamais une
+  collecte générale ou invisible du contenu utilisateur.
 - **Pas de dépendance obligatoire à un provider IA** — la couche IA
   est opt-in ; ShellDeck reste utilisable sans backend configuré, les
   boutons IA sont simplement masqués.

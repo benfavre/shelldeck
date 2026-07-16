@@ -9,8 +9,8 @@ use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
-use shelldeck_ui::Workspace;
 use shelldeck_ui::theme::ShellDeckColors;
+use shelldeck_ui::Workspace;
 use std::borrow::Cow;
 use tracing_subscriber::EnvFilter;
 
@@ -90,6 +90,7 @@ lucide_assets!(
     "settings",
     "shield",
     "shield-check",
+    "sparkles",
     "sticky-note",
     "table",
     "tag",
@@ -129,6 +130,7 @@ macro_rules! simple_assets {
 }
 
 simple_assets!(
+    "anthropic",
     "bun",
     "claudecode",
     "docker",

@@ -31,6 +31,7 @@ fn render_loading_spinner(size: Pixels, color: Hsla) -> impl IntoElement {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ButtonVariant {
     Default,
+    Ai,
     Secondary,
     Destructive,
     Outline,
@@ -191,6 +192,16 @@ impl RenderOnce for Button {
                 theme.tokens.primary_foreground,
                 true,
             ),
+            // ShellDeck patch: SDPATCH-015 — AI affordances need one stable,
+            // recognizable treatment across every product surface.
+            ButtonVariant::Ai => (
+                theme.tokens.primary.opacity(0.12),
+                theme.tokens.primary,
+                theme.tokens.primary.opacity(0.42),
+                theme.tokens.primary.opacity(0.20),
+                theme.tokens.primary,
+                false,
+            ),
             ButtonVariant::Secondary => (
                 theme.tokens.secondary,
                 theme.tokens.secondary_foreground,
@@ -276,9 +287,10 @@ impl RenderOnce for Button {
             .when(has_shadow, |this| {
                 this.shadow(smallvec::smallvec![theme.tokens.shadow_xs])
             })
-            .when(self.variant == ButtonVariant::Outline, |this| {
-                this.border_1().border_color(border)
-            })
+            .when(
+                matches!(self.variant, ButtonVariant::Outline | ButtonVariant::Ai),
+                |this| this.border_1().border_color(border),
+            )
             .when(is_selected && !self.disabled, |this| {
                 this.bg(theme.tokens.accent)
                     .text_color(theme.tokens.accent_foreground)

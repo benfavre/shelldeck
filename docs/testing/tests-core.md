@@ -331,6 +331,18 @@ Existing: **0 tests**.
 
 ---
 
+## 20. `ai.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1338 | `ai.rs::fake_local_clis_complete_the_real_connection_test_path` | SDUC-413, SDUC-416 | Green | Fake executable Claude/Codex clients traverse config → subprocess → provider parsing → exact connection-test response without contacting a real provider. |
+| SDTEST-1339 | `ai.rs::api_payloads_keep_guardrails_outside_untrusted_input_and_disable_storage` | SDUC-415 | Green | Pins OpenAI `instructions` + `store=false` and Anthropic `system`, separate from untrusted user context. |
+| SDTEST-1340 | `ai.rs::configured_cli_requires_an_executable_file` | SDUC-413 | Green | A present but non-executable custom CLI path cannot be reported as available. |
+| SDTEST-1342 | `app_config.rs::ai_config_round_trips_without_any_credential_field` | SDUC-413, SDUC-415 | Green | Pins backward-compatible `[ai]` persistence while proving API credentials have no serializable config field. |
+| SDTEST-1344 | `ai.rs::pending_ai_drafts_survive_disk_round_trip_and_keep_latest_hundred` | SDUC-418 | Green | Persists pending integrated-workflow drafts, restores their typed target/provider fields, and caps the durable file to the latest 100 entries. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

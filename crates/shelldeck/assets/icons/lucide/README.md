@@ -132,6 +132,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `settings` | chrome | settings entry |
 | `shield` | security | admin / super-admin |
 | `shield-check` | security | Sites — SSL-enabled row indicator |
+| `sparkles` | AI | assistant actions and AI surfaces |
 | `sticky-note` | support | internal note mode |
 | `table` | view | Sites view — table mode toggle |
 | `tag` | support | tags, labels |

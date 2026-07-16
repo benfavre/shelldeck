@@ -130,6 +130,13 @@ impl RenderOnce for IconButton {
                 theme.tokens.primary.opacity(0.9),
                 theme.tokens.primary_foreground,
             ),
+            ButtonVariant::Ai => (
+                theme.tokens.primary.opacity(0.12),
+                theme.tokens.primary,
+                theme.tokens.primary.opacity(0.42),
+                theme.tokens.primary.opacity(0.20),
+                theme.tokens.primary,
+            ),
             ButtonVariant::Secondary => (
                 theme.tokens.secondary,
                 theme.tokens.secondary_foreground,

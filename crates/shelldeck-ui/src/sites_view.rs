@@ -359,8 +359,7 @@ impl SitesView {
     /// from a key handler).
     fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
         state.update(cx, |s, cx| {
-            s.content = "".into();
-            cx.notify();
+            s.reset(cx);
         });
     }
 

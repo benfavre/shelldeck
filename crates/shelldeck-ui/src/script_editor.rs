@@ -27,6 +27,7 @@ pub enum ScriptEvent {
     DeleteScript(Uuid),
     ImportTemplate(String),
     RunScriptById(Uuid),
+    GenerateWithAi(Uuid),
 }
 
 impl EventEmitter<ScriptEvent> for ScriptEditorView {}
@@ -48,6 +49,7 @@ pub struct ScriptEditorView {
     inline_editing: bool,
     inline_buffer: EditorBuffer,
     inline_script_id: Option<Uuid>,
+    ai_generation_enabled: bool,
     focus_handle: FocusHandle,
     // New: filtering state
     selected_category: Option<ScriptCategory>,
@@ -329,6 +331,7 @@ impl ScriptEditorView {
             inline_editing: false,
             inline_buffer: EditorBuffer::new(),
             inline_script_id: None,
+            ai_generation_enabled: false,
             focus_handle: cx.focus_handle(),
             selected_category: None,
             search_query: String::new(),
@@ -367,6 +370,21 @@ impl ScriptEditorView {
             })),
             "recent_output": self.execution_output.iter().rev().take(80).rev().cloned().collect::<Vec<_>>(),
         })
+    }
+
+    pub fn set_ai_generation_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_generation_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn apply_generated_body(&mut self, script_id: Uuid, body: String, cx: &mut Context<Self>) {
+        if self.scripts.iter().any(|script| script.id == script_id) {
+            self.selected_script = Some(script_id);
+            self.inline_script_id = Some(script_id);
+            self.inline_buffer = EditorBuffer::from_text(body);
+            self.inline_editing = true;
+            cx.notify();
+        }
     }
 
     fn render_language_badge(lang: &ScriptLanguage) -> Div {
@@ -998,6 +1016,19 @@ impl ScriptEditorView {
                         .variant(ButtonVariant::Ghost),
                 )
         };
+        let ai_button = self.ai_generation_enabled.then(|| {
+            Button::new(
+                "generate-script-ai",
+                t!("ai.workflow.generate_script").to_string(),
+            )
+            .variant(ButtonVariant::Ai)
+            .size(adabraka_ui::components::button::ButtonSize::Sm)
+            .icon(IconSource::from("sparkles"))
+            .disabled(is_inline_editing)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(ScriptEvent::GenerateWithAi(script_id));
+            }))
+        });
 
         // Header bar
         let header = div()
@@ -1014,6 +1045,7 @@ impl ScriptEditorView {
                     .flex()
                     .flex_shrink_0()
                     .gap(px(8.0))
+                    .children(ai_button)
                     .child(edit_button)
                     .child(run_buttons),
             );

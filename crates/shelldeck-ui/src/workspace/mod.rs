@@ -1,11 +1,14 @@
 use crate::icons::{lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
-use adabraka_ui::overlays::sheet::{Sheet, SheetSize};
+use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{install_theme, scrollable_vertical, use_theme, Button, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{create_client, AiContext, AiSurface};
+use shelldeck_core::ai::{
+    configured_cli_available, create_client, test_connection, AiContext, AiDraft, AiDraftStore,
+    AiSurface,
+};
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
 };
@@ -30,6 +33,7 @@ use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
+use crate::ai_workflow::{AiWorkflowEvent, AiWorkflowTarget, AiWorkflowView};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
@@ -245,6 +249,9 @@ pub struct Workspace {
     settings: Entity<SettingsView>,
     ai_assistant: Entity<AiAssistantView>,
     ai_sheet: Option<Entity<Sheet>>,
+    ai_workflow: Option<Entity<AiWorkflowView>>,
+    ai_workflow_sheet: Option<Entity<Sheet>>,
+    ai_drafts: Vec<AiDraft>,
     status_bar: Entity<StatusBar>,
     command_palette: Entity<CommandPalette>,
     toasts: Entity<ToastContainer>,
@@ -275,6 +282,7 @@ pub struct Workspace {
     _palette_sub: Subscription,
     _settings_sub: Subscription,
     _ai_assistant_sub: Subscription,
+    _ai_workflow_sub: Option<Subscription>,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
     _server_sync_sub: Subscription,
@@ -586,7 +594,6 @@ impl Workspace {
         }
 
         let app_config = config.clone();
-        let ai_configured = app_config.ai.is_configured();
         let settings = cx.new(|settings_cx| SettingsView::new(config, settings_cx));
         let ai_assistant = cx.new(|cx| {
             AiAssistantView::new(
@@ -604,6 +611,24 @@ impl Workspace {
         let jean_view = cx.new(JeanView::new);
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
+        let ai_drafts = AiDraftStore::load().unwrap_or_else(|error| {
+            tracing::warn!("Failed to load AI drafts: {error}");
+            Vec::new()
+        });
+        let ai_backend_ready = app_config.ai.is_configured()
+            && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
+        support.update(cx, |view, cx| {
+            view.set_ai_reply_enabled(
+                ai_backend_ready && app_config.ai.allows(AiSurface::Support),
+                cx,
+            );
+        });
+        scripts.update(cx, |view, cx| {
+            view.set_ai_generation_enabled(
+                ai_backend_ready && app_config.ai.allows(AiSurface::Script),
+                cx,
+            );
+        });
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -618,7 +643,7 @@ impl Workspace {
             // Initial palette build — no account state yet, so no mode
             // switcher. `refresh_command_palette` will rebuild with the
             // right gating on login / whoami.
-            palette.set_actions(Self::base_palette_actions(false, ai_configured));
+            palette.set_actions(Self::base_palette_actions(false, false));
             palette
         });
 
@@ -793,6 +818,9 @@ impl Workspace {
             settings,
             ai_assistant,
             ai_sheet: None,
+            ai_workflow: None,
+            ai_workflow_sheet: None,
+            ai_drafts,
             status_bar,
             command_palette,
             toasts,
@@ -817,6 +845,7 @@ impl Workspace {
             _palette_sub: palette_sub,
             _settings_sub: settings_sub,
             _ai_assistant_sub: ai_assistant_sub,
+            _ai_workflow_sub: None,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
             _server_sync_sub: server_sync_sub,
@@ -1402,15 +1431,19 @@ impl Workspace {
         match event {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
+                if self.app_config.ai != config.ai {
+                    self.ai_sheet = None;
+                    self.ai_workflow_sheet = None;
+                    self.ai_workflow = None;
+                    self._ai_workflow_sub = None;
+                }
                 // Merge settings-owned slices only — see `.agents/session-state.md`.
                 self.app_config.general = config.general.clone();
                 self.app_config.terminal = config.terminal.clone();
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
                 self.app_config.ai = config.ai.clone();
-                if !self.app_config.ai.is_configured() {
-                    self.ai_sheet = None;
-                }
+                self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
@@ -1453,8 +1486,14 @@ impl Workspace {
             SettingsEvent::ShowOnboarding => {
                 self.show_onboarding(cx);
             }
-            SettingsEvent::AiApiKeyChanged { backend, value } => {
-                self.update_ai_api_key(*backend, value.clone(), cx);
+            SettingsEvent::AiApiKeyStored { backend, value } => {
+                self.update_ai_api_key(*backend, Some(value.clone()), cx);
+            }
+            SettingsEvent::AiApiKeyDeleted { backend } => {
+                self.update_ai_api_key(*backend, None, cx);
+            }
+            SettingsEvent::AiTestRequested(config) => {
+                self.test_ai_connection(config.clone(), cx);
             }
             SettingsEvent::ThemeChanged(pref) => {
                 tracing::info!("Theme preference changed to {:?}", pref);
@@ -1478,40 +1517,91 @@ impl Workspace {
     fn update_ai_api_key(
         &mut self,
         backend: shelldeck_core::ai::AiBackend,
-        value: String,
+        value: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let Some(provider) = backend.provider_key() else {
             return;
         };
+        self.ai_sheet = None;
+        self.refresh_command_palette(cx);
         let provider = provider.to_string();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let deleting = value.trim().is_empty();
+            let deleting = value.is_none();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    if deleting {
-                        shelldeck_core::config::keychain::delete_ai_api_key(&provider)
-                    } else {
-                        shelldeck_core::config::keychain::store_ai_api_key(&provider, value.trim())
+                    match value {
+                        None => shelldeck_core::config::keychain::delete_ai_api_key(&provider),
+                        Some(value) => shelldeck_core::config::keychain::store_ai_api_key(
+                            &provider,
+                            value.trim(),
+                        ),
                     }
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
-                Ok(()) => ws.show_toast(
-                    if deleting {
-                        t!("toast.ai.key_deleted").to_string()
-                    } else {
-                        t!("toast.ai.key_saved").to_string()
+                Ok(()) => {
+                    ws.settings.update(cx, |settings, cx| {
+                        settings.reset_ai_connection_state(cx);
+                    });
+                    ws.show_toast(
+                        if deleting {
+                            t!("toast.ai.key_deleted").to_string()
+                        } else {
+                            t!("toast.ai.key_saved").to_string()
+                        },
+                        ToastLevel::Info,
+                        cx,
+                    );
+                }
+                Err(error) => {
+                    let message = t!("toast.ai.key_failed", error = error.to_string()).to_string();
+                    ws.settings.update(cx, |settings, cx| {
+                        settings.set_ai_connection_result(Err(message.clone()), cx);
+                    });
+                    ws.show_toast(message, ToastLevel::Error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn test_ai_connection(&mut self, config: AppConfig, cx: &mut Context<Self>) {
+        let ai_config = config.ai;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let tested_config = ai_config.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { test_connection(&tested_config) })
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.app_config.ai != ai_config {
+                    workspace.settings.update(cx, |settings, cx| {
+                        settings.reset_ai_connection_state(cx);
+                    });
+                    return;
+                }
+                workspace.settings.update(cx, |settings, cx| {
+                    settings.set_ai_connection_result(result.clone(), cx);
+                });
+                workspace.refresh_command_palette(cx);
+                workspace.show_toast(
+                    match &result {
+                        Ok(()) => t!("toast.ai.test_ok").to_string(),
+                        Err(error) => t!("toast.ai.test_failed", error = error.clone()).to_string(),
                     },
-                    ToastLevel::Info,
+                    if result.is_ok() {
+                        ToastLevel::Success
+                    } else {
+                        ToastLevel::Error
+                    },
                     cx,
-                ),
-                Err(error) => ws.show_toast(
-                    t!("toast.ai.key_failed", error = error.to_string()).to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
+                );
+                cx.notify();
             });
         })
         .detach();
@@ -1519,7 +1609,7 @@ impl Workspace {
 
     fn open_ai_assistant(&mut self, cx: &mut Context<Self>) {
         let context = self.current_ai_context(cx);
-        if !self.app_config.ai.allows(context.surface) {
+        if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;
         }
         self.open_ai_assistant_with_context(context, cx);
@@ -1598,26 +1688,249 @@ impl Workspace {
         }
     }
 
+    fn ai_backend_available(&self) -> bool {
+        self.app_config.ai.is_configured()
+            && (!self.app_config.ai.backend.is_cli()
+                || configured_cli_available(&self.app_config.ai))
+    }
+
     fn ai_available_for_current_surface(&self, cx: &App) -> bool {
-        self.app_config
-            .ai
-            .allows(self.current_ai_context(cx).surface)
+        self.ai_backend_available()
+            && self
+                .app_config
+                .ai
+                .allows(self.current_ai_context(cx).surface)
+    }
+
+    fn sync_ai_affordances(&mut self, cx: &mut Context<Self>) {
+        let backend_ready = self.ai_backend_available();
+        self.support.update(cx, |view, cx| {
+            view.set_ai_reply_enabled(
+                backend_ready && self.app_config.ai.allows(AiSurface::Support),
+                cx,
+            );
+        });
+        self.scripts.update(cx, |view, cx| {
+            view.set_ai_generation_enabled(
+                backend_ready && self.app_config.ai.allows(AiSurface::Script),
+                cx,
+            );
+        });
+    }
+
+    fn close_ai_workflow(&mut self, cx: &mut Context<Self>) {
+        self.ai_workflow_sheet = None;
+        self.ai_workflow = None;
+        self._ai_workflow_sub = None;
+        cx.notify();
+    }
+
+    fn open_ai_workflow(&mut self, target: AiWorkflowTarget, cx: &mut Context<Self>) {
+        let surface = match &target {
+            AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
+            AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
+        };
+        if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
+            return;
+        }
+        let pending = self
+            .ai_drafts
+            .iter()
+            .rev()
+            .find(|draft| {
+                draft.capability == target.capability() && draft.target_id == target.target_id()
+            })
+            .cloned();
+        let should_generate =
+            matches!(&target, AiWorkflowTarget::SupportReply { .. }) && pending.is_none();
+        let title = match &target {
+            AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_title").to_string(),
+            AiWorkflowTarget::ScriptGenerate { .. } => t!("ai.workflow.script_title").to_string(),
+        };
+        let workflow = cx.new(|cx| {
+            AiWorkflowView::new(
+                target,
+                self.app_config.ai.backend,
+                self.app_config.ai.model.clone(),
+                pending,
+                cx,
+            )
+        });
+        let subscription = cx.subscribe(&workflow, |this, _view, event: &AiWorkflowEvent, cx| {
+            this.handle_ai_workflow_event(event.clone(), cx);
+        });
+        let sheet_workflow = workflow.clone();
+        let workspace = cx.entity().downgrade();
+        self.ai_workflow_sheet = Some(cx.new(move |sheet_cx| {
+            Sheet::new(sheet_cx)
+                .size(SheetSize::Assistant)
+                .variant(SheetVariant::Assistant)
+                .title(title)
+                .description(t!("ai.workflow.description").to_string())
+                .dynamic_content(move || sheet_workflow.clone())
+                .on_close(move |_window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| this.close_ai_workflow(cx));
+                    }
+                })
+        }));
+        self.ai_workflow = Some(workflow.clone());
+        self._ai_workflow_sub = Some(subscription);
+        if should_generate {
+            workflow.update(cx, |view, cx| view.generate(cx));
+        }
+        cx.notify();
+    }
+
+    fn ai_workflow_context(&self, target: &AiWorkflowTarget, cx: &App) -> AiContext {
+        match target {
+            AiWorkflowTarget::SupportReply { .. } => AiContext::new(
+                AiSurface::Support,
+                t!("ai.context.support").to_string(),
+                self.support.read(cx).ai_context_data(),
+            ),
+            AiWorkflowTarget::ScriptGenerate { .. } => AiContext::new(
+                AiSurface::Script,
+                t!("ai.context.script").to_string(),
+                self.scripts.read(cx).ai_context_data(),
+            ),
+        }
+    }
+
+    fn handle_ai_workflow_event(&mut self, event: AiWorkflowEvent, cx: &mut Context<Self>) {
+        match event {
+            AiWorkflowEvent::Generate {
+                request_id,
+                target,
+                instructions,
+            } => {
+                let base = match &target {
+                    AiWorkflowTarget::SupportReply { .. } => {
+                        t!("ai.prompt.support_reply").to_string()
+                    }
+                    AiWorkflowTarget::ScriptGenerate { .. } => {
+                        t!("ai.prompt.script_generate").to_string()
+                    }
+                };
+                let prompt = if instructions.trim().is_empty() {
+                    base
+                } else {
+                    format!(
+                        "{base}\n\n{}:\n{}",
+                        t!("ai.workflow.additional_instructions"),
+                        instructions.trim()
+                    )
+                };
+                let context = self.ai_workflow_context(&target, cx);
+                let config = self.app_config.ai.clone();
+                let workflow = self.ai_workflow.as_ref().map(|entity| entity.downgrade());
+                cx.spawn(async move |_this, cx: &mut AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let client = create_client(&config)?;
+                            client
+                                .complete(&prompt, context)
+                                .map(|response| response.text)
+                        })
+                        .await
+                        .map_err(|error| error.to_string());
+                    if let Some(workflow) = workflow.and_then(|workflow| workflow.upgrade()) {
+                        let _ = workflow.update(cx, |view, cx| {
+                            view.set_result(request_id, result, cx);
+                        });
+                    }
+                })
+                .detach();
+            }
+            AiWorkflowEvent::Accept { target, result } => {
+                match &target {
+                    AiWorkflowTarget::SupportReply { .. } => {
+                        self.support.update(cx, |view, cx| {
+                            view.set_composer_draft(result, cx);
+                        });
+                    }
+                    AiWorkflowTarget::ScriptGenerate { script_id } => {
+                        if let Ok(script_id) = Uuid::parse_str(script_id) {
+                            self.scripts.update(cx, |view, cx| {
+                                view.apply_generated_body(script_id, result, cx);
+                            });
+                        }
+                    }
+                }
+                self.ai_drafts.retain(|draft| {
+                    !(draft.capability == target.capability()
+                        && draft.target_id == target.target_id())
+                });
+                if let Err(error) = AiDraftStore::save(&self.ai_drafts) {
+                    tracing::warn!("Failed to save AI drafts after apply: {error}");
+                }
+                self.close_ai_workflow(cx);
+                self.show_toast(
+                    t!("toast.ai.draft_applied").to_string(),
+                    ToastLevel::Success,
+                    cx,
+                );
+            }
+            AiWorkflowEvent::Pending {
+                target,
+                instructions,
+                result,
+            } => {
+                self.ai_drafts.retain(|draft| {
+                    !(draft.capability == target.capability()
+                        && draft.target_id == target.target_id())
+                });
+                self.ai_drafts.push(AiDraft::new(
+                    target.capability(),
+                    match &target {
+                        AiWorkflowTarget::SupportReply { .. } => AiSurface::Support,
+                        AiWorkflowTarget::ScriptGenerate { .. } => AiSurface::Script,
+                    },
+                    target.target_id(),
+                    self.app_config.ai.backend,
+                    instructions,
+                    result,
+                ));
+                match AiDraftStore::save(&self.ai_drafts) {
+                    Ok(()) => self.show_toast(
+                        t!("toast.ai.draft_pending").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    ),
+                    Err(error) => self.show_toast(
+                        t!("toast.ai.draft_save_failed", error = error.to_string()).to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+                self.close_ai_workflow(cx);
+            }
+            AiWorkflowEvent::Cancel => self.close_ai_workflow(cx),
+        }
     }
 
     fn open_ai_assistant_with_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
-        if !self.app_config.ai.is_configured() {
+        if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;
         }
-        self.ai_assistant
-            .update(cx, |assistant, cx| assistant.set_context(context, cx));
-        let assistant = self.ai_assistant.clone();
+        self.ai_assistant.update(cx, |assistant, cx| {
+            assistant.set_backend(
+                self.app_config.ai.backend,
+                self.app_config.ai.model.clone(),
+                cx,
+            );
+            assistant.set_context(context, cx);
+        });
+        let sheet_assistant = self.ai_assistant.clone();
         let workspace = cx.entity().downgrade();
         self.ai_sheet = Some(cx.new(move |sheet_cx| {
             Sheet::new(sheet_cx)
-                .size(SheetSize::Lg)
+                .size(SheetSize::Assistant)
+                .variant(SheetVariant::Assistant)
                 .title(t!("ai.assistant.title").to_string())
                 .description(t!("ai.assistant.description").to_string())
-                .content(assistant)
+                .dynamic_content(move || sheet_assistant.clone())
                 .on_close(move |_window, cx| {
                     if let Some(workspace) = workspace.upgrade() {
                         workspace.update(cx, |this, cx| {
@@ -1631,10 +1944,12 @@ impl Workspace {
     }
 
     fn handle_ai_assistant_event(&mut self, event: AiAssistantEvent, cx: &mut Context<Self>) {
-        let AiAssistantEvent::Submit { prompt, context } = event;
+        let AiAssistantEvent::Submit {
+            request_id,
+            prompt,
+            context,
+        } = event;
         let config = self.app_config.ai.clone();
-        self.ai_assistant
-            .update(cx, |assistant, cx| assistant.set_loading(true, cx));
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1648,7 +1963,7 @@ impl Workspace {
                 .map_err(|error| error.to_string());
             let _ = this.update(cx, |workspace, cx| {
                 workspace.ai_assistant.update(cx, |assistant, cx| {
-                    assistant.set_result(result, cx);
+                    assistant.set_result(request_id, result, cx);
                 });
             });
         })
@@ -2918,8 +3233,10 @@ impl Workspace {
     /// the active site's manage areas. Called when the site directory loads or
     /// the active site changes.
     fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
-        let mut actions =
-            Self::base_palette_actions(self.can_switch_mode(), self.app_config.ai.is_configured());
+        let mut actions = Self::base_palette_actions(
+            self.can_switch_mode(),
+            self.ai_available_for_current_surface(cx),
+        );
         if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
             let label = site.display_label();
             for area in &dir.areas {
@@ -3197,6 +3514,9 @@ impl Workspace {
         match event {
             SupportViewEvent::Refresh => self.refresh_support(cx),
             SupportViewEvent::SelectTicket(id) => self.select_support_ticket(id, cx),
+            SupportViewEvent::SuggestReply(ticket_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::SupportReply { ticket_id }, cx)
+            }
             SupportViewEvent::Send { id, text, note } => {
                 self.support_action(cx, move |base, token| {
                     if note {
@@ -4207,8 +4527,7 @@ impl Workspace {
     /// widget clamps it on next input.
     fn reset_input(state: &Entity<InputState>, cx: &mut Context<Self>) {
         state.update(cx, |s, cx| {
-            s.content = "".into();
-            cx.notify();
+            s.reset(cx);
         });
     }
 
@@ -5589,6 +5908,7 @@ impl Workspace {
         self.sync_jean_poll(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_bext_poll(cx);
+        self.refresh_command_palette(cx);
     }
 
     fn sync_terminal_tab_count(&self, cx: &mut Context<Self>) {
@@ -6211,6 +6531,7 @@ impl Workspace {
 
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
+            let workspace = handle.clone();
             div()
                 .id("titlebar-ai")
                 .flex()
@@ -6218,22 +6539,27 @@ impl Workspace {
                 .justify_center()
                 .size(px(28.0))
                 .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.40))
+                .bg(ShellDeckColors::primary().opacity(0.12))
                 .cursor_pointer()
-                .hover(|el| el.bg(btn_hover_bg))
+                .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.22)))
                 .tooltip(move |_, cx| {
                     cx.new(|_| WorkspaceTooltip {
                         label: tooltip.clone(),
                     })
                     .into()
                 })
-                .on_click(cx.listener(|_this, _, _window, cx| {
-                    cx.dispatch_action(&OpenAiAssistant);
-                }))
+                .on_click(move |_, _, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| this.open_ai_assistant(cx));
+                    }
+                })
                 .child(
                     svg()
-                        .path(lucide_path("zap"))
-                        .size(px(13.0))
-                        .text_color(btn_text),
+                        .path(lucide_path("sparkles"))
+                        .size(px(14.0))
+                        .text_color(ShellDeckColors::primary()),
                 )
         });
 
@@ -9647,6 +9973,9 @@ impl Render for Workspace {
         root = root.child(self.command_palette.clone());
 
         if let Some(sheet) = &self.ai_sheet {
+            root = root.child(sheet.clone());
+        }
+        if let Some(sheet) = &self.ai_workflow_sheet {
             root = root.child(sheet.clone());
         }
 

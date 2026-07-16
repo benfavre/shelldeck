@@ -31,6 +31,7 @@ Existing: **0 tests.**
 | SDTEST-1001 | `command_palette.rs::subsequence_must_appear_in_order` | SDUC-300 | Green | Added 2026-07-09. |
 | SDTEST-1002 | `command_palette.rs::haystack_case_folded_but_needle_taken_as_is` | SDUC-300 | Green | Added 2026-07-09. **Contract correction** — the fn only lowercases the haystack; the caller must pre-lowercase the needle. Not "double-sided case-insensitive" as my original inventory claimed. |
 | SDTEST-1003 | `command_palette.rs::utf8_accented_chars_match` | SDUC-300 | Green | Added 2026-07-09. Comparison is by unicode `char`; `é` and `e` are distinct. |
+| SDTEST-1343 | `command_palette.rs::recent_actions_are_deduplicated_capped_and_followed_by_the_full_list` | SDUC-417 | Green | Recent commands are ordered newest-first, missing actions are dropped, the cap is enforced, and the remaining full list contains no duplicates. |
 | SDTEST-1004 | *to write* — CommandPalette::set_actions replaces the action list wholesale | SDUC-303 | **Red / P1** | No accidental append. |
 | SDTEST-1005 | *to write* — update_filter is deterministic for identical input | SDUC-303 | **Red / P1** | Idempotent guarantee. |
 | SDTEST-1006 | *to write* — select_next / select_prev wrap at bounds | SDUC-305 | **Red / P1** | |
@@ -215,6 +216,16 @@ parallel `cargo test`.
 |---|---|---|---|---|
 | SDTEST-1336 | `tray::tests::pinned_menu_id_routes_to_connection` | SDUC-412 | Green | A tray id containing a valid UUID routes to that exact pinned connection. |
 | SDTEST-1337 | `tray::tests::unknown_or_malformed_menu_id_is_ignored` | SDUC-412 | Green | Counter rows, unknown actions and malformed UUIDs cannot trigger a connection. |
+
+---
+
+## 8c. `shelldeck-ui/ai_assistant.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1341 | `ai_assistant.rs::stale_ai_response_is_rejected_after_context_invalidation` | SDUC-414 | Green | Pure request-generation gate extracted from the GPUI view; a response from a closed/previous context cannot overwrite the current draft. |
+| SDTEST-1345 | *to write* — integrated AI affordances follow backend and per-surface availability | SDUC-413, SDUC-418 | **Red / P1** | GPUI wiring: Support/Script buttons stay hidden when disabled and emit the exact selected target when enabled. |
+| SDTEST-1346 | *to write* — accepting an integrated draft prepares but never finalizes the action | SDUC-414, SDUC-418 | **Red / P0** | GPUI workflow: Support fills the reply composer without sending; Scripts fills the inline buffer without saving or executing. |
 
 ---
 

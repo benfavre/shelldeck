@@ -1,4 +1,5 @@
 pub mod ai_assistant;
+pub mod ai_workflow;
 pub mod bext_cloud_view;
 pub mod brand;
 pub mod command_palette;

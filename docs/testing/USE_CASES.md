@@ -1284,6 +1284,58 @@ the sidebar connection action. Unknown and malformed menu ids are ignored.
 
 ---
 
+## 22. Contextual AI assistant
+
+### SDUC-413 — Provider configuration and real connection test
+
+Settings → IA selects one local CLI (Claude Code, Codex, Aider) or API
+provider (OpenAI, Anthropic), an optional model, and per-surface opt-outs. API
+keys live only in the OS keychain. The assistant affordance remains hidden
+when AI or the current surface is disabled, or when a selected local CLI is
+not executable. The explicit connection test sends a real minimal completion
+and reports the provider/model result, but does not become a per-launch lock.
+
+### SDUC-414 — Contextual drafts never execute automatically
+
+The shared AI sheet receives bounded structured context from Support,
+requests, scripts, terminal, Jean, naming, or recent activity. Every call is
+explicit and every result remains a draft: ShellDeck never sends a reply,
+executes a terminal command, mutates a request, or overwrites a script from an
+AI response.
+
+### SDUC-415 — AI context and API privacy boundaries
+
+Sensitive named fields are recursively redacted and serialized context is
+capped before transmission. Provider system guardrails are sent separately
+from untrusted context on OpenAI/Anthropic, and OpenAI Responses requests set
+`store=false`.
+
+### SDUC-416 — Local CLI isolation
+
+Local AI subprocesses run outside the project by default with tools, project
+rules, persistence, MCP servers, repository writes, and analytics disabled
+where the provider supports those controls. Claude defaults to the `sonnet`
+alias instead of inheriting a potentially expensive user-selected model.
+
+### SDUC-417 — Recently used command-palette actions
+
+With an empty search, the command palette shows up to five commands used most
+recently in the current session, newest first, followed by the remaining full
+command list without duplicates. Executing the same command moves it back to
+the top. A non-empty search ignores sections and filters all available
+commands normally.
+
+### SDUC-418 — Integrated AI drafts for Support and Scripts
+
+When the configured provider and matching surface are enabled, Support exposes
+an explicit reply-suggestion action and Scripts exposes an explicit generation
+action. Generated text remains editable and is never sent, saved, or executed
+automatically: accepting fills the Support composer or opens the selected
+script in its unsaved inline editor. A draft put on hold is persisted, capped
+to the latest 100 entries, and restored when the same target is reopened.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1292,6 +1344,14 @@ the sidebar connection action. Unknown and malformed menu ids are ignored.
 
 ## Change log
 
+- **2026-07-16** — Added § 22 contextual AI assistant (SDUC-413..416) and
+  SDTEST-1338..1342 for fake-CLI connection tests, provider payload privacy,
+  executable validation, stale-response rejection, and credential-free config.
+  The connection test is diagnostic rather than a volatile per-process gate.
+- **2026-07-16** — Added command-palette recently used ordering (SDUC-417,
+  SDTEST-1343), capped at five commands per session.
+- **2026-07-16** — Added integrated Support/Script AI draft workflows and
+  persistent per-target pending drafts (SDUC-418, SDTEST-1344).
 - **2026-07-15** — Added § 21 Pinned connections (SDUC-411 persistence/sidebar,
   SDUC-412 dynamic tray routing). Tests SDTEST-1335..1337 cover backward
   compatibility and tray menu-id dispatch.

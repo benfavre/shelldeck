@@ -1,6 +1,7 @@
 use crate::icons::lucide_icon;
 use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::app_config::ThemePreference;
@@ -10,6 +11,8 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 
 actions!(shelldeck, [ToggleCommandPalette]);
+
+const RECENT_ACTION_LIMIT: usize = 5;
 
 /// Apply a terminal color theme by name. Carried as data so a single action
 /// type can drive every built-in theme entry in the command palette.
@@ -108,6 +111,8 @@ pub struct CommandPalette {
     pub query: String,
     pub actions: Vec<PaletteAction>,
     pub filtered: Vec<usize>,
+    recent_action_names: Vec<String>,
+    recent_visible_count: usize,
     pub selected_index: usize,
     pub focus_handle: FocusHandle,
 }
@@ -120,6 +125,8 @@ impl CommandPalette {
             query: String::new(),
             actions: Vec::new(),
             filtered: Vec::new(),
+            recent_action_names: Vec::new(),
+            recent_visible_count: 0,
             selected_index: 0,
             focus_handle: cx.focus_handle(),
         }
@@ -130,8 +137,7 @@ impl CommandPalette {
     /// `content` field directly and let the widget re-read on next paint.
     fn reset_input(&self, cx: &mut Context<Self>) {
         self.query_state.update(cx, |s, cx| {
-            s.content = "".into();
-            cx.notify();
+            s.reset(cx);
         });
     }
 
@@ -157,13 +163,18 @@ impl CommandPalette {
 
     pub fn set_actions(&mut self, actions: Vec<PaletteAction>) {
         self.actions = actions;
+        self.recent_action_names
+            .retain(|name| self.actions.iter().any(|action| action.name == *name));
         self.update_filter();
     }
 
     fn update_filter(&mut self) {
         let query_lower = self.query.to_lowercase();
         if query_lower.is_empty() {
-            self.filtered = (0..self.actions.len()).collect();
+            let (filtered, recent_count) =
+                recent_action_order(&self.actions, &self.recent_action_names);
+            self.filtered = filtered;
+            self.recent_visible_count = recent_count;
         } else {
             self.filtered = self
                 .actions
@@ -172,8 +183,15 @@ impl CommandPalette {
                 .filter(|(_, a)| fuzzy_match(&a.name, &query_lower))
                 .map(|(i, _)| i)
                 .collect();
+            self.recent_visible_count = 0;
         }
         self.selected_index = 0;
+    }
+
+    fn mark_recent(&mut self, name: String) {
+        self.recent_action_names.retain(|recent| recent != &name);
+        self.recent_action_names.insert(0, name);
+        self.recent_action_names.truncate(RECENT_ACTION_LIMIT);
     }
 
     pub fn select_next(&mut self) {
@@ -210,10 +228,12 @@ impl CommandPalette {
 
     /// Confirm the currently selected action.
     fn confirm(&mut self, cx: &mut Context<Self>) {
-        if let Some(action) = self.selected_action() {
-            cx.emit(CommandPaletteEvent::ActionSelected(
-                action.action.boxed_clone(),
-            ));
+        if let Some((name, action)) = self
+            .selected_action()
+            .map(|action| (action.name.clone(), action.action.boxed_clone()))
+        {
+            self.mark_recent(name);
+            cx.emit(CommandPaletteEvent::ActionSelected(action));
         }
         self.dismiss(cx);
         cx.notify();
@@ -260,6 +280,21 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     true
 }
 
+fn recent_action_order(actions: &[PaletteAction], recent_names: &[String]) -> (Vec<usize>, usize) {
+    let mut ordered = Vec::with_capacity(actions.len());
+    for recent in recent_names.iter().take(RECENT_ACTION_LIMIT) {
+        if let Some(index) = actions.iter().position(|action| action.name == *recent) {
+            ordered.push(index);
+        }
+    }
+    let recent_count = ordered.len();
+    let remaining = (0..actions.len())
+        .filter(|index| !ordered.contains(index))
+        .collect::<Vec<_>>();
+    ordered.extend(remaining);
+    (ordered, recent_count)
+}
+
 /// Lucide slug for a palette row — stable per action, independent of locale.
 fn palette_icon_for(action: &PaletteAction) -> &'static str {
     action.icon
@@ -271,7 +306,7 @@ impl Render for CommandPalette {
             return div().id("palette-hidden");
         }
 
-        let mut list = div().flex().flex_col().max_h(px(400.0)).overflow_hidden();
+        let mut list = div().id("palette-results").flex().flex_col().py(px(4.0));
 
         if self.filtered.is_empty() && !self.query.is_empty() {
             list = list.child(
@@ -285,8 +320,12 @@ impl Render for CommandPalette {
         }
 
         for (fi, &action_idx) in self.filtered.iter().enumerate() {
-            if fi > 20 {
-                break; // Limit display
+            if self.query.is_empty() && self.recent_visible_count > 0 {
+                if fi == 0 {
+                    list = list.child(section_label(t!("palette.recent").as_ref()));
+                } else if fi == self.recent_visible_count {
+                    list = list.child(section_label(t!("palette.all_commands").as_ref()));
+                }
             }
             let action = &self.actions[action_idx];
             let is_selected = fi == self.selected_index;
@@ -335,6 +374,7 @@ impl Render for CommandPalette {
             }));
 
             let name = action.name.clone();
+            let recent_name = name.clone();
             let action_clone = action.action.boxed_clone();
             item = item
                 .child(
@@ -354,6 +394,7 @@ impl Render for CommandPalette {
                         ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    this.mark_recent(recent_name.clone());
                     cx.emit(CommandPaletteEvent::ActionSelected(
                         action_clone.boxed_clone(),
                     ));
@@ -441,14 +482,40 @@ impl Render for CommandPalette {
                             ),
                     )
                     // Results list
-                    .child(list),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_hidden()
+                            .child(scrollable_vertical(list)),
+                    ),
             )
     }
 }
 
+fn section_label(label: &str) -> Div {
+    div()
+        .px(px(14.0))
+        .pt(px(8.0))
+        .pb(px(4.0))
+        .text_size(px(10.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ShellDeckColors::text_muted())
+        .child(label.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::fuzzy_match;
+    use super::{fuzzy_match, recent_action_order, PaletteAction, RECENT_ACTION_LIMIT};
+    use gpui::Action;
+
+    #[derive(Clone, PartialEq, Debug, Action)]
+    #[action(namespace = shelldeck_test)]
+    struct TestAction;
+
+    fn action(name: &str) -> PaletteAction {
+        PaletteAction::new(name, None, "x", Box::new(TestAction))
+    }
 
     // SDTEST-1000 — empty needle matches every haystack, including empty.
     #[test]
@@ -488,5 +555,22 @@ mod tests {
         assert!(fuzzy_match("Créer une connexion", "créer"));
         assert!(fuzzy_match("créer", "cé"));
         assert!(!fuzzy_match("creer", "cré")); // no 'é' anywhere in haystack
+    }
+
+    // SDTEST-1343
+    #[test]
+    fn recent_actions_are_deduplicated_capped_and_followed_by_the_full_list() {
+        let actions = ["one", "two", "three", "four", "five", "six"]
+            .into_iter()
+            .map(action)
+            .collect::<Vec<_>>();
+        let recent = ["six", "two", "missing", "five", "four", "three"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let (order, recent_count) = recent_action_order(&actions, &recent);
+        assert_eq!(recent_count, RECENT_ACTION_LIMIT - 1);
+        assert_eq!(order, vec![5, 1, 4, 3, 0, 2]);
     }
 }

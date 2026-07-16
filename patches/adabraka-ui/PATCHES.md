@@ -230,6 +230,7 @@ carries no marker of its own — see its entry).
   - `src/components/input_state.rs` — `InputState` (fields
     `on_change_cb`, `on_enter_cb`, `on_focus_cb`, `on_blur_cb`,
     `on_validate_cb`), `InputState::new` (init the slots),
+    `InputState::reset` (windowless clear with coherent cursor/IME ranges),
     `InputState::replace_text_in_range` (fires `on_change_cb`),
     `InputState::enter` (fires `on_enter_cb`),
     `InputState::escape` (fires `on_blur_cb`),
@@ -242,6 +243,8 @@ carries no marker of its own — see its entry).
   - `src/components/input_state.rs:193` — `// ShellDeck patch: SDPATCH-011 — direct callback slots for the Input`
   - `src/components/input_state.rs:260` — `// ShellDeck patch: SDPATCH-011 — initialise the direct callback`
   - `src/components/input_state.rs:395` — `// ShellDeck patch: SDPATCH-011 — direct callback slot fires exactly`
+  - `src/components/input_state.rs:410` — `// ShellDeck patch: SDPATCH-011 — direct \`content = ""\` resets leave the`
+  - `src/components/input_state.rs:1225` — `// ShellDeck patch: SDPATCH-011 — a stale external reset or IME range`
   - `src/components/input_state.rs:937` — `// ShellDeck patch: SDPATCH-011 — invoke the direct callback`
   - `src/components/input_state.rs:950` — `// ShellDeck patch: SDPATCH-011 — direct callback slot fires here so`
   - `src/components/input_state.rs:969` — `// ShellDeck patch: SDPATCH-011 — direct callback slot.`
@@ -258,7 +261,10 @@ carries no marker of its own — see its entry).
   five Rc-boxed callback slots on `InputState`; each render calls
   `state.update` to write the current wrapper closures into the slots
   (replace, not append), and the InputState action handlers invoke the
-  slot directly, exactly once per event. Existing subscribers to
+  slot directly, exactly once per event. The `on_change` slot runs from
+  `replace_text_in_range`, the shared native path for typing, paste,
+  deletion, and `set_value`; dispatching only from `set_value` leaves
+  keyboard edits visible but invisible to live filters. Existing subscribers to
   `InputEvent::*` still work — we did not drop the `cx.emit(...)` calls,
   only added the direct call alongside.
 - **Upstream status**: not filed yet — clear bug with a small repro,
@@ -286,6 +292,83 @@ carries no marker of its own — see its entry).
   once above the `.map()` so the animated and static branches stay in
   sync (previously both branches redeclared the same buggy formula).
 - **Upstream status**: not filed yet — small, clean reproducer, worth a PR.
+
+### SDPATCH-013 — persistent Sheet content survives re-renders
+
+- **Files / symbols**:
+  - `src/overlays/sheet.rs` — `Sheet::dynamic_content`, `Sheet::render`
+- **Markers**:
+  - `src/overlays/sheet.rs:116` — `// ShellDeck patch: SDPATCH-013 — persistent Sheet entities re-render, but`
+- **Why**: `Sheet::render` consumes ordinary `AnyElement` content with
+  `self.content.take()`. A persistent Sheet entity therefore shows its body
+  only on the first frame and becomes empty after a focus or child repaint.
+  `dynamic_content` stores a factory for live child entities and remounts the
+  element on every render while preserving the original one-shot API.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-014 — windowless full-content replacement
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState::replace_content`
+- **Markers**:
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-014`
+- **Why**: contextual AI completions and other background workflows need to
+  prepare an existing input without a `Window`. Directly assigning `content`
+  leaves the private selection and IME ranges stale, so the next keystroke can
+  insert at the start or panic while slicing. The helper replaces the whole
+  buffer, moves the cursor to the end, clears composition state, and dispatches
+  the normal change callback.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-015 — shared AI button variant
+
+- **Files / symbols**:
+  - `src/components/button.rs` — `ButtonVariant::Ai`
+  - `src/components/icon_button.rs` — `ButtonVariant::Ai`
+- **Markers**:
+  - `src/components/button.rs` — `ShellDeck patch: SDPATCH-015`
+- **Why**: integrated assistant actions must be recognizable before reading
+  their labels. A shared variant keeps the tinted background, primary border,
+  foreground, hover state, and disabled behavior identical in every surface.
+- **Upstream status**: ShellDeck-specific product language; not planned.
+
+### SDPATCH-016 — vertical scroll content fills its viewport
+
+- **Files / symbols**:
+  - `src/components/scrollable.rs` — `Scrollable::request_layout`
+- **Markers**:
+  - `src/components/scrollable.rs` — `ShellDeck patch: SDPATCH-016`
+- **Why**: the inner scroll content wrapper had no width constraint. Children
+  such as full-width Inputs therefore collapsed to their minimum intrinsic
+  width inside sheets, rendering as narrow vertical bars. Vertical and
+  bidirectional scroll content now fills the viewport while horizontal-only
+  scrolling keeps its intrinsic width.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-017 — single-line Input cannot crash on embedded newlines
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputTextElement::prepaint`
+- **Markers**:
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-017`
+- **Why**: GPUI `shape_line` debug-panics when its text contains `\n`.
+  Single-line native paste normally normalizes line breaks, but restored or
+  programmatically assigned state can bypass that path. The renderer now
+  replaces embedded newlines with spaces before shaping, keeping malformed
+  external text from crashing the entire desktop application.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-018 — capped multi-line Input with internal scrolling
+
+- **Files / symbols**:
+  - `src/components/input.rs` — `Input::max_rows`, multi-line container
+- **Markers**:
+  - `src/components/input.rs` — `ShellDeck patch: SDPATCH-018`
+- **Why**: multi-line Inputs previously grew to every visual line. Large
+  Support or AI drafts could therefore push actions and status bars outside
+  the window. `max_rows` caps the visible viewport while the text element
+  retains its natural height inside a vertically scrollable child.
+- **Upstream status**: not filed yet.
 
 ## Preserved files (do not overwrite on sync)
 
@@ -323,6 +406,23 @@ carries no marker of its own — see its entry).
   border on each side (border-box), but `max_x` didn't subtract it, so
   the checked position pushed the thumb 4 px past the right border.
   Marker count 38 → 39.
+- **2026-07-16** — SDPATCH-011: moved `on_change_cb` dispatch from
+  `set_value` to `replace_text_in_range`, restoring live filters for
+  typing, paste, and deletion without reintroducing duplicate callbacks.
+  Added `InputState::reset` so windowless clears also reset cursor and IME
+  ranges instead of crashing on the next edit.
+- **2026-07-16** — added SDPATCH-013: persistent Sheet entities can use
+  `dynamic_content`, so the assistant body survives focus and child repaints.
+- **2026-07-16** — added SDPATCH-014: `InputState::replace_content` supports
+  safe windowless draft insertion while keeping cursor and IME state coherent.
+- **2026-07-16** — added SDPATCH-015: shared `ButtonVariant::Ai` gives every
+  integrated assistant action the same recognizable visual treatment.
+- **2026-07-16** — added SDPATCH-016: vertical scroll content stretches to the
+  viewport width, preventing Inputs and panels from collapsing in sheets.
+- **2026-07-16** — added SDPATCH-017: single-line Inputs sanitize embedded
+  newlines before GPUI shaping instead of allowing an application-wide panic.
+- **2026-07-16** — added SDPATCH-018: multi-line Inputs support a maximum
+  visible row count and scroll internally once the content exceeds it.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past

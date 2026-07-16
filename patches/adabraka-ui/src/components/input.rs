@@ -133,6 +133,7 @@ pub struct Input {
     // textarea (defaults to 3 rows so opting into `multi_line` is enough).
     multi_line: bool,
     min_rows: usize,
+    max_rows: Option<usize>,
 }
 
 impl Input {
@@ -180,6 +181,7 @@ impl Input {
             // `.multi_line(true)`, tune the visible height via `.min_rows(n)`.
             multi_line: false,
             min_rows: 3,
+            max_rows: None,
         }
     }
 
@@ -196,6 +198,13 @@ impl Input {
     /// line-heights. Ignored when `multi_line` is false.
     pub fn min_rows(mut self, rows: usize) -> Self {
         self.min_rows = rows.max(1);
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-018 — cap a multi-line input's visible
+    /// height and scroll its text viewport once content exceeds the cap.
+    pub fn max_rows(mut self, rows: usize) -> Self {
+        self.max_rows = Some(rows.max(self.min_rows).max(1));
         self
     }
 
@@ -685,6 +694,20 @@ impl RenderOnce for Input {
         let error_ring_unfocused = theme.tokens.error_ring();
         let ring_color = theme.tokens.ring;
         let destructive_color = theme.tokens.destructive;
+        let text_scroll_handle = if self.multi_line && self.max_rows.is_some() {
+            Some(
+                window
+                    .use_keyed_state(
+                        ("input-text-scroll-state", self.state.entity_id()),
+                        cx,
+                        |_, _| ScrollHandle::new(),
+                    )
+                    .read(cx)
+                    .clone(),
+            )
+        } else {
+            None
+        };
 
         let user_style = self.style;
 
@@ -723,8 +746,12 @@ impl RenderOnce for Input {
                             // ShellDeck patch: word-level actions.
                             .on_action(window.listener_for(&self.state, InputState::left_word))
                             .on_action(window.listener_for(&self.state, InputState::right_word))
-                            .on_action(window.listener_for(&self.state, InputState::select_left_word))
-                            .on_action(window.listener_for(&self.state, InputState::select_right_word))
+                            .on_action(
+                                window.listener_for(&self.state, InputState::select_left_word),
+                            )
+                            .on_action(
+                                window.listener_for(&self.state, InputState::select_right_word),
+                            )
                             .on_action(window.listener_for(&self.state, InputState::backspace_word))
                             .on_action(window.listener_for(&self.state, InputState::delete_word))
                     })
@@ -742,10 +769,15 @@ impl RenderOnce for Input {
                                 let box_h_px: f32 = height.into();
                                 let line_h = fs_px * 1.4;
                                 let padding_y = (box_h_px - line_h).max(8.0);
-                                h.min_h(gpui::px(
-                                    line_h * self.min_rows as f32 + padding_y,
-                                ))
-                                .py(gpui::px(padding_y / 2.0))
+                                let h = h
+                                    .min_h(gpui::px(line_h * self.min_rows as f32 + padding_y))
+                                    .py(gpui::px(padding_y / 2.0));
+                                if let Some(max_rows) = self.max_rows {
+                                    h.max_h(gpui::px(line_h * max_rows as f32 + padding_y))
+                                        .overflow_hidden()
+                                } else {
+                                    h
+                                }
                             })
                             .w_full()
                             .px(padding_x)
@@ -783,7 +815,18 @@ impl RenderOnce for Input {
                                 h.shadow(smallvec::smallvec![error_ring_unfocused])
                             })
                             .children(self.prefix)
-                            .child(div().flex_1().overflow_hidden().child(self.state.clone()))
+                            .child({
+                                let text = div()
+                                    .id(("input-text-scroll", self.state.entity_id()))
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .child(self.state.clone());
+                                if let Some(handle) = text_scroll_handle.as_ref() {
+                                    text.h_full().track_scroll(handle).overflow_y_scroll()
+                                } else {
+                                    text.overflow_hidden()
+                                }
+                            })
                             .when(show_clear, |h| {
                                 let state_entity_id = self.state.entity_id();
                                 h.child(

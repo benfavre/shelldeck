@@ -12,6 +12,7 @@ use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
+use adabraka_ui::components::editor::{Editor, EditorState};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
@@ -181,6 +182,7 @@ enum SupportMenuKind {
 pub enum SupportViewEvent {
     Refresh,
     SelectTicket(String),
+    SuggestReply(String),
     /// Send the composer text as a reply (note=false) or internal note (note=true).
     Send {
         id: String,
@@ -275,9 +277,10 @@ pub struct SupportView {
     adv_draft_sla_only: bool,
     /// Assignee picker inside the filter dialog (adabraka-ui `Select`).
     assignee_draft_select: Entity<Select<String>>,
-    /// Real `Input` state backing the reply / internal-note composer.
-    composer_state: Entity<InputState>,
+    /// Full editor state backing ticket replies and request comments.
+    composer_state: Entity<EditorState>,
     compose_note: bool,
+    ai_reply_enabled: bool,
     loading: bool,
     error: Option<String>,
     assign_menu_open: bool,
@@ -367,8 +370,13 @@ impl SupportView {
             adv_draft_assignee: None,
             adv_draft_sla_only: false,
             assignee_draft_select,
-            composer_state: cx.new(InputState::new),
+            composer_state: cx.new(|cx| {
+                let mut state = EditorState::new(cx);
+                state.show_line_numbers = false;
+                state
+            }),
             compose_note: false,
+            ai_reply_enabled: false,
             loading: false,
             error: None,
             assign_menu_open: false,
@@ -849,8 +857,7 @@ impl SupportView {
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
         self.composer_state.update(cx, |s, cx| {
-            s.content = "".into();
-            cx.notify();
+            s.set_content("", cx);
         });
     }
 
@@ -865,6 +872,18 @@ impl SupportView {
 
     pub fn selected_id(&self) -> Option<String> {
         self.selected_id.clone()
+    }
+
+    pub fn set_ai_reply_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_reply_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn set_composer_draft(&mut self, text: String, cx: &mut Context<Self>) {
+        self.compose_note = false;
+        self.composer_state
+            .update(cx, |state, cx| state.set_content(&text, cx));
+        cx.notify();
     }
 
     pub fn ai_context_data(&self) -> serde_json::Value {
@@ -1162,8 +1181,8 @@ impl SupportView {
     }
 
     /// Read the composer content once and, if non-empty, emit the right event
-    /// (reply / note / issue comment). Called from `Input::on_enter` and the
-    /// send button.
+    /// (reply / note / issue comment). Multiline composers send explicitly
+    /// through their button so Enter remains available for new lines.
     pub fn send_composer(&mut self, cx: &mut Context<Self>) {
         let text = self.composer_state.read(cx).content().trim().to_string();
         if text.is_empty() {
@@ -2710,6 +2729,7 @@ impl SupportView {
     }
 
     fn render_composer(&self, _ticket_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = adabraka_ui::theme::use_theme();
         let is_note = self.compose_note;
         let toggle =
             |label: &str, icon: &'static str, active: bool, note: bool, cx: &mut Context<Self>| {
@@ -2752,6 +2772,7 @@ impl SupportView {
 
         let reply_label = t!("support.compose.reply").to_string();
         let note_label = t!("support.note_internal").to_string();
+        let ai_enabled = self.ai_reply_enabled && !is_note;
 
         // 2-row composer: (1) mode toggle Réponse / Note interne (small
         // chips), (2) the Input widget flex_1 with the send button pinned
@@ -2772,54 +2793,62 @@ impl SupportView {
                     .items_center()
                     .gap(px(4.0))
                     .child(toggle(&reply_label, "reply", !is_note, false, cx))
-                    .child(toggle(&note_label, "sticky-note", is_note, true, cx)),
+                    .child(toggle(&note_label, "sticky-note", is_note, true, cx))
+                    .when(ai_enabled, |row| {
+                        row.child(
+                            Button::new(
+                                "support-ai-reply",
+                                t!("ai.workflow.support_reply").to_string(),
+                            )
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("sparkles"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(id) = this.selected_id.clone() {
+                                    cx.emit(SupportViewEvent::SuggestReply(id));
+                                }
+                            })),
+                        )
+                    }),
             )
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&self.composer_state)
-                                .size(InputSize::Md)
-                                .placeholder(placeholder)
-                                .on_enter({
-                                    let entity = cx.entity();
-                                    move |_v, cx| {
-                                        entity.update(cx, |this, cx| this.send_composer(cx));
-                                    }
-                                }),
-                        ),
-                    )
+                    .flex_col()
+                    .gap(px(2.0))
                     .child(
                         div()
-                            .id("support-send")
-                            .flex_shrink_0()
-                            .px(px(14.0))
-                            .py(px(7.0))
-                            .rounded(px(6.0))
-                            .bg(if is_note {
-                                ShellDeckColors::warning()
-                            } else {
-                                ShellDeckColors::primary()
-                            })
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(lucide_icon("send", 13.0, white()))
-                            .child(if is_note {
-                                t!("support.compose.add_note").to_string()
-                            } else {
-                                t!("support.send").to_string()
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            .w_full()
+                            .min_w(px(0.0))
+                            .h(px(80.0))
+                            .overflow_hidden()
+                            .child(
+                                Editor::new(&self.composer_state)
+                                    .placeholder(placeholder)
+                                    .font_family(theme.tokens.font_family.clone())
+                                    .min_lines(4)
+                                    .max_lines(4)
+                                    .show_horizontal_scrollbar(false)
+                                    .current_line_color(transparent_black()),
+                            ),
+                    )
+                    .child(
+                        div().flex().justify_end().child(
+                            Button::new(
+                                "support-send",
+                                if is_note {
+                                    t!("support.compose.add_note").to_string()
+                                } else {
+                                    t!("support.send").to_string()
+                                },
+                            )
+                            .variant(ButtonVariant::Default)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("send"))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.send_composer(cx);
                             })),
+                        ),
                     ),
             )
     }
@@ -4429,39 +4458,44 @@ impl SupportView {
     }
 
     fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = adabraka_ui::theme::use_theme();
         let entity = cx.entity();
         div()
             .flex()
-            .items_center()
-            .gap(px(8.0))
+            .flex_col()
+            .gap(px(2.0))
             .px(px(14.0))
             .py(px(10.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
             .child(
-                div().flex_1().child(
-                    Input::new(&self.composer_state)
-                        .size(InputSize::Sm)
-                        .placeholder(t!("support.issue_comment_placeholder").to_string())
-                        .prefix(lucide_icon("reply", 14.0, ShellDeckColors::text_muted()))
-                        .on_enter({
-                            let entity = entity.clone();
-                            move |_v, cx| {
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .h(px(80.0))
+                    .overflow_hidden()
+                    .child(
+                        Editor::new(&self.composer_state)
+                            .placeholder(t!("support.issue_comment_placeholder").to_string())
+                            .font_family(theme.tokens.font_family.clone())
+                            .min_lines(4)
+                            .max_lines(4)
+                            .show_horizontal_scrollbar(false)
+                            .current_line_color(transparent_black()),
+                    ),
+            )
+            .child(
+                div().flex().justify_end().child(
+                    Button::new("sup-issue-send", t!("support.send").to_string())
+                        .size(ButtonSize::Sm)
+                        .h(gpui::px(32.0))
+                        .icon(IconSource::from("send"))
+                        .on_click({
+                            move |_, _, cx| {
                                 entity.update(cx, |this, cx| this.send_composer(cx));
                             }
                         }),
                 ),
-            )
-            .child(
-                Button::new("sup-issue-send", t!("support.send").to_string())
-                    .size(ButtonSize::Sm)
-                    .h(gpui::px(32.0))
-                    .icon(IconSource::from("send"))
-                    .on_click({
-                        move |_, _, cx| {
-                            entity.update(cx, |this, cx| this.send_composer(cx));
-                        }
-                    }),
             )
     }
 }
