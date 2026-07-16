@@ -74,6 +74,9 @@ impl AutostartHandle {
         // No CLI args on startup — we always launch the app cold. If a
         // future release wants to pass e.g. `--minimized` (once tray
         // exists), plumb it through here.
+        #[cfg(target_os = "macos")]
+        let inner = AutoLaunch::new(APP_NAME, exe_str, true, &[] as &[&str]);
+        #[cfg(not(target_os = "macos"))]
         let inner = AutoLaunch::new(APP_NAME, exe_str, &[] as &[&str]);
         Ok(Self { inner })
     }

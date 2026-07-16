@@ -346,6 +346,14 @@ Existing: **0 tests**.
 
 ---
 
+## 21. `config/autostart.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1352 | `.github/workflows/release.yml::Build (macos-aarch64)` | SDUC-419 | Green | The release matrix compiles the macOS-only `AutoLaunch::new(app, path, use_launch_agent, args)` branch; Linux CI cannot type-check this platform-specific signature. |
+
+---
+
 ## Retired tests
 
 *(none yet)*
