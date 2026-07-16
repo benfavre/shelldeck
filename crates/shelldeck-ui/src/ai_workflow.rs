@@ -362,13 +362,16 @@ impl Render for AiWorkflowView {
                             }),
                     )
                     .child(
-                        Input::new(&self.instructions_state)
-                            .size(InputSize::Sm)
-                            .multi_line(true)
-                            .min_rows(3)
-                            .max_rows(6)
-                            .placeholder(instructions_placeholder)
-                            .disabled(self.loading),
+                        div().w_full().min_w(px(0.0)).child(
+                            Input::new(&self.instructions_state)
+                                .w_full()
+                                .size(InputSize::Sm)
+                                .multi_line(true)
+                                .min_rows(3)
+                                .max_rows(6)
+                                .placeholder(instructions_placeholder)
+                                .disabled(self.loading),
+                        ),
                     ),
             );
 
@@ -456,8 +459,9 @@ impl Render for AiWorkflowView {
                     );
                 } else {
                     body = body.child(
-                        div().w_full().child(
+                        div().w_full().min_w(px(0.0)).child(
                             Input::new(&self.result_state)
+                                .w_full()
                                 .size(InputSize::Sm)
                                 .multi_line(true)
                                 .min_rows(9)
