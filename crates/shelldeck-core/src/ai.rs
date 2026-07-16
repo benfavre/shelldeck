@@ -1089,7 +1089,11 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{output}'\n"),
+            )
+            .unwrap();
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
             permissions.set_mode(0o700);
             std::fs::set_permissions(&path, permissions).unwrap();
