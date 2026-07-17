@@ -1965,28 +1965,19 @@ impl SupportView {
                 )
                 .child(kebab),
         );
-        // Line 2: contact + preview
+        // Line 2: contact only. Message previews made compact virtualized rows
+        // visually unstable at narrow widths; the full message remains in the
+        // selected ticket detail.
         row = row.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t.contact.display()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t.last_preview.clone()),
-                ),
+            div().flex().items_center().child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t.contact.display()),
+            ),
         );
         row
     }
