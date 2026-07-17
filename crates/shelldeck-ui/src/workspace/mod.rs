@@ -8966,6 +8966,7 @@ impl Workspace {
                 iss.id
             ))))
             .group(group_name.clone())
+            .w_full()
             .flex()
             .items_center()
             .gap(px(8.0))
@@ -9090,7 +9091,6 @@ impl Workspace {
                                 .map(|issue| {
                                     div()
                                         .w_full()
-                                        .h(px(USER_REQUEST_ROW_H))
                                         .pb(px(4.0))
                                         .child(this.render_user_request_row(issue, cx))
                                         .into_any_element()

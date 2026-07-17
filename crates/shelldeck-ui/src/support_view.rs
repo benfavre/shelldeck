@@ -39,11 +39,6 @@ pub enum SupportSection {
     Requests,
 }
 
-/// Tickets and requests share the same two-line density. Keeping an explicit
-/// uniform extent lets GPUI virtualize both lists instead of laying out every
-/// server row on each frame.
-const SUPPORT_LIST_ROW_H: f32 = 56.0;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
     All,
@@ -1869,9 +1864,9 @@ impl SupportView {
         let mut row = div()
             .id(ElementId::from(SharedString::from(format!("tk-{}", t.id))))
             .group(group_name.clone())
+            .w_full()
             .flex()
             .flex_col()
-            .h(px(SUPPORT_LIST_ROW_H))
             .gap(px(2.0))
             .px(px(10.0))
             .py(px(8.0))
@@ -3158,9 +3153,9 @@ impl SupportView {
                 iss.id
             ))))
             .group(group_name.clone())
+            .w_full()
             .flex()
             .flex_col()
-            .h(px(SUPPORT_LIST_ROW_H))
             .gap(px(2.0))
             .px(px(10.0))
             .py(px(8.0))
