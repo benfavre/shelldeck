@@ -436,7 +436,9 @@ La phase 1 est terminée.
 - Fait: convertir un ticket Support ouvre un brouillon Nouvelle demande
   prérempli et marqué `source=support`; aucune création n'a lieu avant le clic
   explicite sur Créer et le panneau IA peut encore ajuster le brouillon.
-- Restant: création de demande depuis une erreur Terminal.
+- Fait: la toolbar Terminal ouvre un brouillon de demande `source=shelldeck`
+  depuis la sélection ou, à défaut, les 120 lignes visibles bornées, avec la
+  session et le répertoire; aucune demande n'est créée automatiquement.
 - Nommage des entites.
 
 ### Phase 3 - executions confirmees

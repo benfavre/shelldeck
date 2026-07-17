@@ -1413,6 +1413,13 @@ description prefilled and source set to `support`. The user may edit or use AI,
 and only the existing Create action sends the request. Closing the sheet resets
 the source so a later ordinary request remains `user`.
 
+### SDUC-425 — Terminal output becomes a bounded unsent request draft
+
+With diagnostic context available, the Terminal AI toolbar can open New
+Request with session, working directory, and the current selection or latest
+120 visible lines. The draft source is `shelldeck`; no command runs and no
+request is created until the existing Create action is confirmed.
+
 ---
 
 ## Retired use cases
@@ -1426,6 +1433,7 @@ the source so a later ordinary request remains `user`.
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.
+- **2026-07-17** — Added SDUC-425 for bounded Terminal-to-request drafts.
 - **2026-07-17** — Added SDUC-422 and SDTEST-1356/1357 for structured,
   non-submitting AI preparation in the New Request sheet.
 - **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support

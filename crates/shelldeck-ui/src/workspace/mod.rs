@@ -1424,6 +1424,50 @@ impl Workspace {
                     cx,
                 );
             }
+            TerminalEvent::CreateIssueFromContext(session_id) => {
+                let context = self.terminal.read(cx).ai_context_data();
+                let expected_session = session_id.to_string();
+                if context
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(expected_session.as_str())
+                {
+                    return;
+                }
+                let title = context
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Terminal");
+                let cwd = context
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let selection = context
+                    .get("selection")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let output = selection.unwrap_or_else(|| {
+                    context
+                        .get("visible_output")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                });
+                let body = format!(
+                    "{}: {}\n{}: {}\n\n{}:\n{}",
+                    t!("terminal.issue.session"),
+                    title,
+                    t!("terminal.issue.cwd"),
+                    cwd,
+                    t!("terminal.issue.output"),
+                    output
+                );
+                self.open_prefilled_request(
+                    t!("terminal.issue.title", terminal = title).to_string(),
+                    body,
+                    "shelldeck",
+                    cx,
+                );
+            }
         }
     }
 

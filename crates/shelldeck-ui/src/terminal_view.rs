@@ -652,6 +652,7 @@ pub enum TerminalEvent {
     TogglePinScript(Uuid),
     GenerateCommandWithAi(Uuid),
     DiagnoseWithAi(Uuid),
+    CreateIssueFromContext(Uuid),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -2375,6 +2376,7 @@ impl TerminalView {
         let lbl_recent = t!("terminal.toolbar.recent");
         let lbl_ai_command = t!("terminal.toolbar.ai_command");
         let lbl_ai_diagnose = t!("terminal.toolbar.ai_diagnose");
+        let lbl_ai_issue = t!("terminal.toolbar.ai_issue");
 
         let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
             if cfg!(target_os = "macos") {
@@ -2587,7 +2589,16 @@ impl TerminalView {
                 } else {
                     diagnose = diagnose.opacity(0.42).cursor_default();
                 }
-                toolbar = toolbar.child(diagnose).child(
+                let mut create_issue =
+                    ai_toolbar_icon("tb-ai-issue", "file-plus-2", lbl_ai_issue.to_string());
+                if has_diagnostic_context {
+                    create_issue = create_issue.on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TerminalEvent::CreateIssueFromContext(session_id));
+                    }));
+                } else {
+                    create_issue = create_issue.opacity(0.42).cursor_default();
+                }
+                toolbar = toolbar.child(diagnose).child(create_issue).child(
                     div()
                         .w(px(1.0))
                         .h(px(16.0))
