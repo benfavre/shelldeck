@@ -22,6 +22,7 @@ use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use gpui::prelude::*;
 use gpui::*;
+use std::ops::Range;
 
 use shelldeck_core::config::issues::{Issue, IssueInstance};
 use shelldeck_core::config::manage_support::{
@@ -37,6 +38,11 @@ pub enum SupportSection {
     Tickets,
     Requests,
 }
+
+/// Tickets and requests share the same two-line density. Keeping an explicit
+/// uniform extent lets GPUI virtualize both lists instead of laying out every
+/// server row on each frame.
+const SUPPORT_LIST_ROW_H: f32 = 56.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
@@ -1865,6 +1871,7 @@ impl SupportView {
             .group(group_name.clone())
             .flex()
             .flex_col()
+            .h(px(SUPPORT_LIST_ROW_H))
             .gap(px(2.0))
             .px(px(10.0))
             .py(px(8.0))
@@ -3065,34 +3072,54 @@ impl SupportView {
             filter_bar = filter_bar.child(self.render_applied_issues_filter_chips(cx));
         }
 
-        let mut list = div()
-            .id("sup-issues-list")
-            .flex_1()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col();
         // Staff (super-admin) sees every in-scope request the server hands
         // back; a non-staff caller only ever files their own, but we still
         // filter defensively to `is_my_issue` in case tenant scope surfaces
         // a peer's request through Support.
-        let visible: Vec<&Issue> = if self.issues_staff {
-            self.issues.iter().collect()
+        let visible_count = if self.issues_staff {
+            self.issues.len()
         } else {
-            self.issues.iter().filter(|i| self.is_my_issue(i)).collect()
+            self.issues
+                .iter()
+                .filter(|issue| self.is_my_issue(issue))
+                .count()
         };
-        if visible.is_empty() {
-            list = list.child(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.requests").to_string()),
-            );
+        let list = if visible_count == 0 {
+            div()
+                .id("sup-issues-list-empty")
+                .flex_1()
+                .child(
+                    div()
+                        .p(px(16.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("support.empty.requests").to_string()),
+                )
+                .into_any_element()
         } else {
-            for iss in visible.iter().copied() {
-                list = list.child(self.render_issue_row(iss, cx));
-            }
-        }
+            uniform_list(
+                "sup-issues-list",
+                visible_count,
+                cx.processor(|this, range: Range<usize>, _window, cx| {
+                    let visible_indices = this
+                        .issues
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, issue)| this.issues_staff || this.is_my_issue(issue))
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>();
+                    range
+                        .filter_map(|index| visible_indices.get(index).copied())
+                        .filter_map(|index| this.issues.get(index))
+                        .map(|issue| this.render_issue_row(issue, cx).into_any_element())
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .into_any_element()
+        };
 
         let left = div()
             .w(px(340.0))
@@ -3133,6 +3160,7 @@ impl SupportView {
             .group(group_name.clone())
             .flex()
             .flex_col()
+            .h(px(SUPPORT_LIST_ROW_H))
             .gap(px(2.0))
             .px(px(10.0))
             .py(px(8.0))
@@ -4586,12 +4614,11 @@ impl SupportView {
 impl Render for SupportView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search_query(cx);
-        let filtered: Vec<SupportTicket> = self
+        let filtered_count = self
             .tickets
             .iter()
             .filter(|t| self.passes_filter(t) && self.passes_advanced(t, &query))
-            .cloned()
-            .collect();
+            .count();
 
         // Left column: header (title + refresh) + filters + list.
         let header = div()
@@ -4649,29 +4676,49 @@ impl Render for SupportView {
                     })),
             );
 
-        let mut list = div()
-            .id("support-ticket-list")
-            .flex_1()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col();
-        if filtered.is_empty() {
-            list = list.child(
-                div()
-                    .p(px(16.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(if self.has_list_constraints(cx) {
-                        t!("support.empty.tickets_filtered").to_string()
-                    } else {
-                        t!("support.empty.tickets_view").to_string()
-                    }),
-            );
+        let list = if filtered_count == 0 {
+            div()
+                .id("support-ticket-list-empty")
+                .flex_1()
+                .child(
+                    div()
+                        .p(px(16.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(if self.has_list_constraints(cx) {
+                            t!("support.empty.tickets_filtered").to_string()
+                        } else {
+                            t!("support.empty.tickets_view").to_string()
+                        }),
+                )
+                .into_any_element()
         } else {
-            for t in &filtered {
-                list = list.child(self.render_ticket_row(t, cx));
-            }
-        }
+            uniform_list(
+                "support-ticket-list",
+                filtered_count,
+                cx.processor(|this, range: Range<usize>, _window, cx| {
+                    let query = this.search_query(cx);
+                    let filtered_indices = this
+                        .tickets
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ticket)| {
+                            this.passes_filter(ticket) && this.passes_advanced(ticket, &query)
+                        })
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>();
+                    range
+                        .filter_map(|index| filtered_indices.get(index).copied())
+                        .filter_map(|index| this.tickets.get(index))
+                        .map(|ticket| this.render_ticket_row(ticket, cx).into_any_element())
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .into_any_element()
+        };
 
         let mut left = div()
             .w(px(340.0))

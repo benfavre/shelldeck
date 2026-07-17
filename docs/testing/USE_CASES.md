@@ -1371,6 +1371,19 @@ the unsaved replacement.
 
 ---
 
+## 24. Virtualized operational lists
+
+### SDUC-421 — Large request and support lists render only visible rows
+
+User-mode requests, Support requests, and Support tickets use uniform virtual
+lists. Loading hundreds of records must construct and paint only the visible
+range while preserving filters, selection, row actions, contextual menus, and
+scrolling. User-mode requests retain the same four-pixel visual separation
+between compact rows and cap their nested viewport at 600 pixels, matching the
+existing virtualized sites list.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1379,6 +1392,8 @@ the unsaved replacement.
 
 ## Change log
 
+- **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support
+  request and ticket lists.
 - **2026-07-16** — Added SDUC-419 and SDTEST-1352 after the macOS release
   matrix caught the platform-specific fourth `auto-launch` constructor
   argument.

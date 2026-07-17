@@ -229,6 +229,7 @@ parallel `cargo test`.
 | SDTEST-1349 | *to write* — Script form AI generation populates only unsaved form fields | SDUC-414, SDUC-418 | **Red / P1** | GPUI wiring: explicit prompt → loading state → validated name/description/language/category/body insertion; target/host unchanged, no save and no execution. |
 | SDTEST-1351 | *to write* — failed latest Script execution exposes correction without auto-run | SDUC-414, SDUC-418 | **Red / P0** | GPUI wiring: button hidden for running/success/no-history, visible for the selected script's latest non-zero exit, accepting opens unsaved inline editing only. |
 | SDTEST-1354 | *to write* — request AI actions use the selected issue and never submit | SDUC-414, SDUC-420 | **Red / P0** | GPUI wiring: reply/summary/triage target the selected request; accepting a reply fills the composer without posting a comment. |
+| SDTEST-1355 | *to write* — large User and Support lists preserve row routing while virtualized | SDUC-421 | **Red / P1** | GPUI integration: with 250 mixed records, scroll/filter/select/context-menu/delete still target the exact visible record while only the viewport range is rendered. |
 
 ---
 

@@ -6294,6 +6294,11 @@ impl Workspace {
 /// `others_count * SITE_ROW_H` calc in `render_user_home`.
 const SITE_ROW_H: f32 = 64.0;
 
+/// Uniform slot for User-mode request rows. The inner row occupies 38px and
+/// the remaining 4px preserves the existing visual gap while allowing GPUI
+/// to render only the visible range.
+const USER_REQUEST_ROW_H: f32 = 42.0;
+
 /// Lucide slug for a Manage area key. Kept in one place so the User-home
 /// site cards and any future palette entries share the same visual vocab.
 /// Return `None` for area keys we ship with no dedicated icon — the chip
@@ -9043,24 +9048,61 @@ impl Workspace {
         // (The server hands staff every in-scope request without a
         // `requested_by` filter — cf. `issuesInScope` in the manage repo — so
         // the "Mes demandes" label would otherwise be misleading.)
-        let mine: Vec<&Issue> = self
+        let mine_count = self
             .issues_list
             .iter()
             .filter(|i| self.is_my_issue(i))
-            .collect();
-        let mut list = div().flex().flex_col().gap(px(4.0)).mt(px(8.0));
-        if mine.is_empty() {
-            list = list.child(
-                div()
-                    .py(px(8.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("user.requests.empty").to_string()),
-            );
-        }
-        for iss in mine.iter().copied() {
-            list = list.child(self.render_user_request_row(iss, cx));
-        }
+            .count();
+        let list = if mine_count == 0 {
+            div()
+                .mt(px(8.0))
+                .child(
+                    div()
+                        .py(px(8.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("user.requests.empty").to_string()),
+                )
+                .into_any_element()
+        } else {
+            const MAX_LIST_H: f32 = 600.0;
+            const MIN_LIST_H: f32 = 120.0;
+            let visible_h = (mine_count as f32 * USER_REQUEST_ROW_H).clamp(MIN_LIST_H, MAX_LIST_H);
+            div()
+                .w_full()
+                .h(px(visible_h))
+                .mt(px(8.0))
+                .child(
+                    uniform_list(
+                        "user-requests-virt",
+                        mine_count,
+                        cx.processor(|this, range: Range<usize>, _window, cx| {
+                            let mine_indices = this
+                                .issues_list
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, issue)| this.is_my_issue(issue))
+                                .map(|(index, _)| index)
+                                .collect::<Vec<_>>();
+                            range
+                                .filter_map(|index| mine_indices.get(index).copied())
+                                .filter_map(|index| this.issues_list.get(index))
+                                .map(|issue| {
+                                    div()
+                                        .w_full()
+                                        .h(px(USER_REQUEST_ROW_H))
+                                        .pb(px(4.0))
+                                        .child(this.render_user_request_row(issue, cx))
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .w_full()
+                    .h_full(),
+                )
+                .into_any_element()
+        };
 
         // Section header: title + "Nouvelle demande" button.
         let header = div()
