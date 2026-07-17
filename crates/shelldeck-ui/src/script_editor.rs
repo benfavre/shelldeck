@@ -378,6 +378,13 @@ impl ScriptEditorView {
         })
     }
 
+    pub fn script_body(&self, script_id: Uuid) -> Option<String> {
+        self.scripts
+            .iter()
+            .find(|script| script.id == script_id)
+            .map(|script| script.body.clone())
+    }
+
     fn selected_failed_execution(&self) -> Option<&ExecutionRecord> {
         let script_id = self.selected_script?;
         self.history

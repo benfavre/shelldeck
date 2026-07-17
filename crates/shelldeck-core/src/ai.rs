@@ -285,12 +285,82 @@ pub enum AiCapability {
     SupportReply,
     SupportSummary,
     SupportTriage,
+    IssueReply,
+    IssueSummary,
+    IssueTriage,
     ScriptGenerate,
     ScriptExplain,
     ScriptReview,
     ScriptFix,
     TerminalCommand,
     TerminalDiagnose,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiDiffLine {
+    Context(String),
+    Removed(String),
+    Added(String),
+}
+
+/// Produce a line-oriented diff for the review UI without adding a diff
+/// engine to the terminal hot path. Large inputs fall back to a linear
+/// before/after block to keep rendering work bounded.
+pub fn ai_line_diff(before: &str, after: &str) -> Vec<AiDiffLine> {
+    let before: Vec<&str> = before.lines().collect();
+    let after: Vec<&str> = after.lines().collect();
+    const MAX_LCS_CELLS: usize = 250_000;
+
+    if before.len().saturating_mul(after.len()) > MAX_LCS_CELLS {
+        return before
+            .into_iter()
+            .map(|line| AiDiffLine::Removed(line.to_string()))
+            .chain(
+                after
+                    .into_iter()
+                    .map(|line| AiDiffLine::Added(line.to_string())),
+            )
+            .collect();
+    }
+
+    let width = after.len() + 1;
+    let mut lcs = vec![0usize; (before.len() + 1) * width];
+    for i in (0..before.len()).rev() {
+        for j in (0..after.len()).rev() {
+            lcs[i * width + j] = if before[i] == after[j] {
+                1 + lcs[(i + 1) * width + j + 1]
+            } else {
+                lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+            };
+        }
+    }
+
+    let mut result = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < before.len() && j < after.len() {
+        if before[i] == after[j] {
+            result.push(AiDiffLine::Context(before[i].to_string()));
+            i += 1;
+            j += 1;
+        } else if lcs[(i + 1) * width + j] >= lcs[i * width + j + 1] {
+            result.push(AiDiffLine::Removed(before[i].to_string()));
+            i += 1;
+        } else {
+            result.push(AiDiffLine::Added(after[j].to_string()));
+            j += 1;
+        }
+    }
+    result.extend(
+        before[i..]
+            .iter()
+            .map(|line| AiDiffLine::Removed((*line).to_string())),
+    );
+    result.extend(
+        after[j..]
+            .iter()
+            .map(|line| AiDiffLine::Added((*line).to_string())),
+    );
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1187,6 +1257,9 @@ mod tests {
         let capabilities = [
             (AiCapability::SupportSummary, "\"support_summary\""),
             (AiCapability::SupportTriage, "\"support_triage\""),
+            (AiCapability::IssueReply, "\"issue_reply\""),
+            (AiCapability::IssueSummary, "\"issue_summary\""),
+            (AiCapability::IssueTriage, "\"issue_triage\""),
             (AiCapability::ScriptExplain, "\"script_explain\""),
             (AiCapability::ScriptReview, "\"script_review\""),
             (AiCapability::ScriptFix, "\"script_fix\""),
@@ -1236,5 +1309,24 @@ mod tests {
         assert_eq!(draft.language, ScriptLanguage::Shell);
         assert_eq!(draft.category, ScriptCategory::System);
         assert_eq!(draft.body, "#!/bin/bash\ndf -h");
+    }
+
+    // SDTEST-1353
+    #[test]
+    fn script_review_diff_preserves_context_and_marks_replacements() {
+        let diff = ai_line_diff(
+            "#!/bin/sh\necho old\necho stable",
+            "#!/bin/sh\necho new\necho stable",
+        );
+
+        assert_eq!(
+            diff,
+            vec![
+                AiDiffLine::Context("#!/bin/sh".into()),
+                AiDiffLine::Removed("echo old".into()),
+                AiDiffLine::Added("echo new".into()),
+                AiDiffLine::Context("echo stable".into()),
+            ]
+        );
     }
 }

@@ -185,6 +185,9 @@ pub enum SupportViewEvent {
     SuggestReply(String),
     SummarizeTicket(String),
     TriageTicket(String),
+    SuggestIssueReply(String),
+    SummarizeIssue(String),
+    TriageIssue(String),
     /// Send the composer text as a reply (note=false) or internal note (note=true).
     Send {
         id: String,
@@ -283,6 +286,7 @@ pub struct SupportView {
     composer_state: Entity<EditorState>,
     compose_note: bool,
     ai_reply_enabled: bool,
+    ai_issue_enabled: bool,
     loading: bool,
     error: Option<String>,
     assign_menu_open: bool,
@@ -379,6 +383,7 @@ impl SupportView {
             }),
             compose_note: false,
             ai_reply_enabled: false,
+            ai_issue_enabled: false,
             loading: false,
             error: None,
             assign_menu_open: false,
@@ -878,6 +883,11 @@ impl SupportView {
 
     pub fn set_ai_reply_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.ai_reply_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn set_ai_issue_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_issue_enabled = enabled;
         cx.notify();
     }
 
@@ -4362,6 +4372,30 @@ impl SupportView {
                             .text_color(ShellDeckColors::text_primary())
                             .child(iss.title.clone()),
                     )
+                    .when(self.ai_issue_enabled, |row| {
+                        let summary_id = iss.id.clone();
+                        let triage_id = iss.id.clone();
+                        row.child(
+                            Button::new("issue-ai-summary", "")
+                                .variant(ButtonVariant::Ai)
+                                .size(ButtonSize::Sm)
+                                .tooltip(t!("ai.workflow.issue_summary").to_string())
+                                .icon(IconSource::from("info"))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(SupportViewEvent::SummarizeIssue(summary_id.clone()));
+                                })),
+                        )
+                        .child(
+                            Button::new("issue-ai-triage", "")
+                                .variant(ButtonVariant::Ai)
+                                .size(ButtonSize::Sm)
+                                .tooltip(t!("ai.workflow.issue_triage").to_string())
+                                .icon(IconSource::from("flag"))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(SupportViewEvent::TriageIssue(triage_id.clone()));
+                                })),
+                        )
+                    })
                     .child({
                         let entity = cx.entity();
                         let iid = iss.id.clone();
@@ -4494,6 +4528,7 @@ impl SupportView {
     fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = adabraka_ui::theme::use_theme();
         let entity = cx.entity();
+        let issue_id = self.issue_selected.clone();
         div()
             .flex()
             .flex_col()
@@ -4502,6 +4537,20 @@ impl SupportView {
             .py(px(10.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
+            .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
+                let issue_id = issue_id.clone().unwrap_or_default();
+                composer.child(
+                    div().flex().items_center().pb(px(6.0)).child(
+                        Button::new("issue-ai-reply", t!("ai.workflow.issue_reply").to_string())
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("sparkles"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+                            })),
+                    ),
+                )
+            })
             .child(
                 div()
                     .w_full()

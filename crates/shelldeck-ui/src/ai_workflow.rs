@@ -6,7 +6,7 @@ use adabraka_ui::prelude::{
 };
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{AiBackend, AiCapability, AiDraft, AiSurface};
+use shelldeck_core::ai::{ai_line_diff, AiBackend, AiCapability, AiDiffLine, AiDraft, AiSurface};
 
 use crate::icons::{ai_provider_badge, lucide_icon};
 use crate::scale::px;
@@ -18,6 +18,9 @@ pub enum AiWorkflowTarget {
     SupportReply { ticket_id: String },
     SupportSummary { ticket_id: String },
     SupportTriage { ticket_id: String },
+    IssueReply { issue_id: String },
+    IssueSummary { issue_id: String },
+    IssueTriage { issue_id: String },
     ScriptGenerate { script_id: String },
     ScriptExplain { script_id: String },
     ScriptReview { script_id: String },
@@ -32,6 +35,9 @@ impl AiWorkflowTarget {
             Self::SupportReply { .. } => AiCapability::SupportReply,
             Self::SupportSummary { .. } => AiCapability::SupportSummary,
             Self::SupportTriage { .. } => AiCapability::SupportTriage,
+            Self::IssueReply { .. } => AiCapability::IssueReply,
+            Self::IssueSummary { .. } => AiCapability::IssueSummary,
+            Self::IssueTriage { .. } => AiCapability::IssueTriage,
             Self::ScriptGenerate { .. } => AiCapability::ScriptGenerate,
             Self::ScriptExplain { .. } => AiCapability::ScriptExplain,
             Self::ScriptReview { .. } => AiCapability::ScriptReview,
@@ -46,6 +52,9 @@ impl AiWorkflowTarget {
             Self::SupportReply { ticket_id }
             | Self::SupportSummary { ticket_id }
             | Self::SupportTriage { ticket_id } => ticket_id,
+            Self::IssueReply { issue_id }
+            | Self::IssueSummary { issue_id }
+            | Self::IssueTriage { issue_id } => issue_id,
             Self::ScriptGenerate { script_id }
             | Self::ScriptExplain { script_id }
             | Self::ScriptReview { script_id }
@@ -61,6 +70,9 @@ impl AiWorkflowTarget {
             Self::SupportReply { .. }
             | Self::SupportSummary { .. }
             | Self::SupportTriage { .. } => AiSurface::Support,
+            Self::IssueReply { .. } | Self::IssueSummary { .. } | Self::IssueTriage { .. } => {
+                AiSurface::Issue
+            }
             Self::ScriptGenerate { .. }
             | Self::ScriptExplain { .. }
             | Self::ScriptReview { .. }
@@ -81,6 +93,8 @@ impl AiWorkflowTarget {
             self,
             Self::SupportSummary { .. }
                 | Self::SupportTriage { .. }
+                | Self::IssueSummary { .. }
+                | Self::IssueTriage { .. }
                 | Self::ScriptExplain { .. }
                 | Self::ScriptReview { .. }
                 | Self::TerminalDiagnose { .. }
@@ -119,6 +133,7 @@ pub struct AiWorkflowView {
     backend: AiBackend,
     model: String,
     restored: bool,
+    comparison_original: Option<String>,
 }
 
 impl AiWorkflowView {
@@ -127,6 +142,7 @@ impl AiWorkflowView {
         backend: AiBackend,
         model: String,
         pending: Option<AiDraft>,
+        comparison_original: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
         let pending_instructions = pending
@@ -161,6 +177,7 @@ impl AiWorkflowView {
             backend,
             model,
             restored: pending.is_some(),
+            comparison_original,
         }
     }
 
@@ -254,6 +271,15 @@ impl Render for AiWorkflowView {
             }
             AiWorkflowTarget::SupportTriage { .. } => {
                 t!("ai.workflow.support_triage_guidance").to_string()
+            }
+            AiWorkflowTarget::IssueReply { .. } => {
+                t!("ai.workflow.issue_reply_guidance").to_string()
+            }
+            AiWorkflowTarget::IssueSummary { .. } => {
+                t!("ai.workflow.issue_summary_guidance").to_string()
+            }
+            AiWorkflowTarget::IssueTriage { .. } => {
+                t!("ai.workflow.issue_triage_guidance").to_string()
             }
             AiWorkflowTarget::ScriptGenerate { .. } => {
                 t!("ai.workflow.script_instructions").to_string()
@@ -393,11 +419,14 @@ impl Render for AiWorkflowView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
                             .child(match self.target {
-                                AiWorkflowTarget::SupportReply { .. } => {
+                                AiWorkflowTarget::SupportReply { .. }
+                                | AiWorkflowTarget::IssueReply { .. } => {
                                     t!("ai.workflow.guidance_label").to_string()
                                 }
                                 AiWorkflowTarget::SupportSummary { .. }
                                 | AiWorkflowTarget::SupportTriage { .. }
+                                | AiWorkflowTarget::IssueSummary { .. }
+                                | AiWorkflowTarget::IssueTriage { .. }
                                 | AiWorkflowTarget::ScriptExplain { .. }
                                 | AiWorkflowTarget::ScriptReview { .. }
                                 | AiWorkflowTarget::TerminalDiagnose { .. } => {
@@ -509,6 +538,74 @@ impl Render for AiWorkflowView {
                         ),
                     );
                 }
+                if let Some(original) = self.comparison_original.as_deref() {
+                    let proposed = self.result_state.read(cx).content().to_string();
+                    let mut diff = div()
+                        .flex()
+                        .flex_col()
+                        .font_family("monospace")
+                        .text_size(px(11.0));
+                    for line in ai_line_diff(original, &proposed) {
+                        let (prefix, color, bg, text) = match line {
+                            AiDiffLine::Context(text) => (
+                                " ",
+                                ShellDeckColors::text_muted(),
+                                gpui::transparent_black(),
+                                text,
+                            ),
+                            AiDiffLine::Removed(text) => (
+                                "-",
+                                ShellDeckColors::error(),
+                                ShellDeckColors::error().opacity(0.08),
+                                text,
+                            ),
+                            AiDiffLine::Added(text) => (
+                                "+",
+                                ShellDeckColors::success(),
+                                ShellDeckColors::success().opacity(0.08),
+                                text,
+                            ),
+                        };
+                        diff = diff.child(
+                            div()
+                                .flex()
+                                .min_w(px(0.0))
+                                .gap(px(8.0))
+                                .px(px(8.0))
+                                .py(px(2.0))
+                                .bg(bg)
+                                .text_color(color)
+                                .child(div().flex_shrink_0().w(px(10.0)).child(prefix))
+                                .child(div().min_w(px(0.0)).max_w(px(640.0)).child(
+                                    if text.is_empty() {
+                                        " ".to_string()
+                                    } else {
+                                        text
+                                    },
+                                )),
+                        );
+                    }
+                    body = body
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("ai.workflow.diff_preview").to_string()),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(220.0))
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(ShellDeckColors::border())
+                                .bg(ShellDeckColors::bg_primary())
+                                .child(scrollable_vertical(diff)),
+                        );
+                }
             }
         }
 
@@ -550,6 +647,8 @@ impl Render for AiWorkflowView {
                                 }
                                 AiWorkflowTarget::SupportSummary { .. }
                                 | AiWorkflowTarget::SupportTriage { .. }
+                                | AiWorkflowTarget::IssueSummary { .. }
+                                | AiWorkflowTarget::IssueTriage { .. }
                                 | AiWorkflowTarget::ScriptExplain { .. }
                                 | AiWorkflowTarget::ScriptReview { .. }
                                 | AiWorkflowTarget::TerminalDiagnose { .. } => {

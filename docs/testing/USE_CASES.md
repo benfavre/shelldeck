@@ -1359,6 +1359,16 @@ the backend must compile against each platform-specific `auto-launch` API;
 macOS explicitly selects the Launch Agent path and never falls back to an
 AppleScript login item.
 
+### SDUC-420 — Requests expose contextual AI drafts and scripts show changes
+
+When the Issues surface is enabled, the selected request exposes explicit AI
+actions to draft a reply, summarize the thread, and propose triage. Accepting
+a reply only fills the unsent comment composer; summaries and triage remain
+read-only analyses copied explicitly. Every capability keeps a distinct
+persistent pending draft. Script generation and correction show a bounded,
+scrollable line diff against the current saved body before the user accepts
+the unsaved replacement.
+
 ---
 
 ## Retired use cases

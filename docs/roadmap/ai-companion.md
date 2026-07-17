@@ -413,8 +413,13 @@ La phase 1 est terminée.
   sortie propose une correction IA basée sur le code de sortie et le log. La
   proposition ouvre le buffer d'édition non sauvegardé et n'est jamais exécutée
   automatiquement.
+- Fait: les remplacements de scripts générés ou corrigés affichent un diff
+  scrollable et borné contre le corps actuellement sauvegardé avant insertion
+  dans le buffer non sauvegardé.
+- Fait: Demandes, réponse, résumé et triage directement depuis le détail; la
+  réponse remplit uniquement le composer et les analyses restent copiées
+  explicitement. Les trois capacités restaurent leurs brouillons par demande.
 - Restant: autres formulaires et surfaces.
-- Diff de script.
 - Tags, priorite, assignation.
 - Creation de demande.
 - Nommage des entites.

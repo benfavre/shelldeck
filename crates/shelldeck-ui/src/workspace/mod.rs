@@ -617,6 +617,10 @@ impl Workspace {
                 ai_backend_ready && app_config.ai.allows(AiSurface::Support),
                 cx,
             );
+            view.set_ai_issue_enabled(
+                ai_backend_ready && app_config.ai.allows(AiSurface::Issue),
+                cx,
+            );
         });
         scripts.update(cx, |view, cx| {
             view.set_ai_generation_enabled(
@@ -1744,6 +1748,10 @@ impl Workspace {
                 backend_ready && self.app_config.ai.allows(AiSurface::Support),
                 cx,
             );
+            view.set_ai_issue_enabled(
+                backend_ready && self.app_config.ai.allows(AiSurface::Issue),
+                cx,
+            );
         });
         self.scripts.update(cx, |view, cx| {
             view.set_ai_generation_enabled(
@@ -1792,6 +1800,9 @@ impl Workspace {
             AiWorkflowTarget::SupportReply { .. }
                 | AiWorkflowTarget::SupportSummary { .. }
                 | AiWorkflowTarget::SupportTriage { .. }
+                | AiWorkflowTarget::IssueReply { .. }
+                | AiWorkflowTarget::IssueSummary { .. }
+                | AiWorkflowTarget::IssueTriage { .. }
                 | AiWorkflowTarget::ScriptExplain { .. }
                 | AiWorkflowTarget::ScriptReview { .. }
                 | AiWorkflowTarget::ScriptFix { .. }
@@ -1804,6 +1815,13 @@ impl Workspace {
             }
             AiWorkflowTarget::SupportTriage { .. } => {
                 t!("ai.workflow.support_triage_title").to_string()
+            }
+            AiWorkflowTarget::IssueReply { .. } => t!("ai.workflow.issue_reply_title").to_string(),
+            AiWorkflowTarget::IssueSummary { .. } => {
+                t!("ai.workflow.issue_summary_title").to_string()
+            }
+            AiWorkflowTarget::IssueTriage { .. } => {
+                t!("ai.workflow.issue_triage_title").to_string()
             }
             AiWorkflowTarget::ScriptGenerate { .. } => t!("ai.workflow.script_title").to_string(),
             AiWorkflowTarget::ScriptExplain { .. } => {
@@ -1820,12 +1838,20 @@ impl Workspace {
                 t!("ai.workflow.terminal_diagnose_title").to_string()
             }
         };
+        let comparison_original = match &target {
+            AiWorkflowTarget::ScriptGenerate { script_id }
+            | AiWorkflowTarget::ScriptFix { script_id } => Uuid::parse_str(script_id)
+                .ok()
+                .and_then(|id| self.scripts.read(cx).script_body(id)),
+            _ => None,
+        };
         let workflow = cx.new(|cx| {
             AiWorkflowView::new(
                 target,
                 self.app_config.ai.backend,
                 self.app_config.ai.model.clone(),
                 pending,
+                comparison_original,
                 cx,
             )
         });
@@ -1862,6 +1888,13 @@ impl Workspace {
             | AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
                 AiSurface::Support,
                 t!("ai.context.support").to_string(),
+                self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
+            ),
+            AiWorkflowTarget::IssueReply { .. }
+            | AiWorkflowTarget::IssueSummary { .. }
+            | AiWorkflowTarget::IssueTriage { .. } => AiContext::new(
+                AiSurface::Issue,
+                t!("ai.context.issue").to_string(),
                 self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
             ),
             AiWorkflowTarget::ScriptGenerate { .. }
@@ -1904,6 +1937,13 @@ impl Workspace {
                     }
                     AiWorkflowTarget::SupportTriage { .. } => {
                         t!("ai.prompt.support_triage").to_string()
+                    }
+                    AiWorkflowTarget::IssueReply { .. } => t!("ai.prompt.issue_reply").to_string(),
+                    AiWorkflowTarget::IssueSummary { .. } => {
+                        t!("ai.prompt.issue_summary").to_string()
+                    }
+                    AiWorkflowTarget::IssueTriage { .. } => {
+                        t!("ai.prompt.issue_triage").to_string()
                     }
                     AiWorkflowTarget::ScriptGenerate { .. } => {
                         t!("ai.prompt.script_generate").to_string()
@@ -1958,6 +1998,8 @@ impl Workspace {
                     &target,
                     AiWorkflowTarget::SupportSummary { .. }
                         | AiWorkflowTarget::SupportTriage { .. }
+                        | AiWorkflowTarget::IssueSummary { .. }
+                        | AiWorkflowTarget::IssueTriage { .. }
                         | AiWorkflowTarget::ScriptExplain { .. }
                         | AiWorkflowTarget::ScriptReview { .. }
                         | AiWorkflowTarget::TerminalDiagnose { .. }
@@ -1968,8 +2010,15 @@ impl Workspace {
                             view.set_composer_draft(result, cx);
                         });
                     }
+                    AiWorkflowTarget::IssueReply { .. } => {
+                        self.support.update(cx, |view, cx| {
+                            view.set_composer_draft(result, cx);
+                        });
+                    }
                     AiWorkflowTarget::SupportSummary { .. }
                     | AiWorkflowTarget::SupportTriage { .. }
+                    | AiWorkflowTarget::IssueSummary { .. }
+                    | AiWorkflowTarget::IssueTriage { .. }
                     | AiWorkflowTarget::ScriptExplain { .. }
                     | AiWorkflowTarget::ScriptReview { .. } => {
                         cx.write_to_clipboard(ClipboardItem::new_string(result));
@@ -3674,6 +3723,15 @@ impl Workspace {
             }
             SupportViewEvent::TriageTicket(ticket_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::SupportTriage { ticket_id }, cx)
+            }
+            SupportViewEvent::SuggestIssueReply(issue_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::IssueReply { issue_id }, cx)
+            }
+            SupportViewEvent::SummarizeIssue(issue_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::IssueSummary { issue_id }, cx)
+            }
+            SupportViewEvent::TriageIssue(issue_id) => {
+                self.open_ai_workflow(AiWorkflowTarget::IssueTriage { issue_id }, cx)
             }
             SupportViewEvent::Send { id, text, note } => {
                 self.support_action(cx, move |base, token| {
