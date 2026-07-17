@@ -908,6 +908,29 @@ impl SupportView {
         }
     }
 
+    pub fn issue_triage_context_data(&self) -> serde_json::Value {
+        serde_json::json!({
+            "issue": self.issue_detail,
+            "agents": self.agents.iter().take(50).map(|agent| serde_json::json!({
+                "name": agent.name,
+                "email": agent.email,
+            })).collect::<Vec<_>>(),
+            "current_user": {
+                "name": self.me.name,
+                "email": self.me.email,
+            },
+        })
+    }
+
+    pub fn is_known_issue_assignee(&self, assignee: &str) -> bool {
+        let assignee = assignee.trim();
+        assignee.is_empty()
+            || self
+                .agents
+                .iter()
+                .any(|agent| agent.email.eq_ignore_ascii_case(assignee))
+    }
+
     pub fn ai_surface(&self) -> shelldeck_core::ai::AiSurface {
         match self.section {
             SupportSection::Tickets => shelldeck_core::ai::AiSurface::Support,
@@ -4388,7 +4411,6 @@ impl SupportView {
                     )
                     .when(self.ai_issue_enabled, |row| {
                         let summary_id = iss.id.clone();
-                        let triage_id = iss.id.clone();
                         row.child(
                             Button::new("issue-ai-summary", "")
                                 .variant(ButtonVariant::Ai)
@@ -4399,7 +4421,10 @@ impl SupportView {
                                     cx.emit(SupportViewEvent::SummarizeIssue(summary_id.clone()));
                                 })),
                         )
-                        .child(
+                    })
+                    .when(self.ai_issue_enabled && self.issues_staff, |row| {
+                        let triage_id = iss.id.clone();
+                        row.child(
                             Button::new("issue-ai-triage", "")
                                 .variant(ButtonVariant::Ai)
                                 .size(ButtonSize::Sm)

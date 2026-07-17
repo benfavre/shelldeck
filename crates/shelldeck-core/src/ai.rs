@@ -196,6 +196,117 @@ pub struct AiGeneratedScriptDraft {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiGeneratedIssueDraft {
+    pub title: String,
+    pub description: String,
+    pub priority: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiIssueTriageProposal {
+    pub priority: Option<String>,
+    pub assignee: Option<String>,
+    pub rationale: String,
+    pub next_actions: Vec<String>,
+}
+
+impl AiIssueTriageProposal {
+    pub fn has_changes(&self) -> bool {
+        self.priority.is_some() || self.assignee.is_some()
+    }
+}
+
+pub fn parse_issue_triage_proposal(raw: &str) -> Result<AiIssueTriageProposal> {
+    let json_text = strip_markdown_fence(raw);
+    let value: Value = serde_json::from_str(json_text).map_err(|error| {
+        ShellDeckError::Serialization(format!("invalid issue triage JSON: {error}"))
+    })?;
+    let optional_string = |name: &str| -> Result<Option<String>> {
+        match value.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.trim().to_string())),
+            Some(_) => Err(ShellDeckError::Serialization(format!(
+                "issue triage {name} must be a string or null"
+            ))),
+        }
+    };
+    let priority = optional_string("priority")?.map(|value| value.to_ascii_lowercase());
+    if priority
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "low" | "normal" | "high" | "urgent"))
+    {
+        return Err(ShellDeckError::Serialization(
+            "issue triage priority must be low, normal, high, urgent, or null".to_string(),
+        ));
+    }
+    let assignee = optional_string("assignee")?;
+    let rationale = value
+        .get("rationale")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if rationale.is_empty() {
+        return Err(ShellDeckError::Serialization(
+            "issue triage requires a non-empty rationale".to_string(),
+        ));
+    }
+    let next_actions = value
+        .get("next_actions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ShellDeckError::Serialization("issue triage next_actions must be an array".to_string())
+        })?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|action| !action.is_empty())
+        .take(6)
+        .map(str::to_string)
+        .collect();
+
+    Ok(AiIssueTriageProposal {
+        priority,
+        assignee,
+        rationale,
+        next_actions,
+    })
+}
+
+pub fn parse_generated_issue_draft(raw: &str) -> Result<AiGeneratedIssueDraft> {
+    let json_text = strip_markdown_fence(raw);
+    let value: Value = serde_json::from_str(json_text).map_err(|error| {
+        ShellDeckError::Serialization(format!("invalid generated request JSON: {error}"))
+    })?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+    };
+    let title = field("title");
+    let description = field("description");
+    if title.is_empty() || description.is_empty() {
+        return Err(ShellDeckError::Serialization(
+            "generated request requires non-empty title and description".to_string(),
+        ));
+    }
+    let priority = field("priority").to_ascii_lowercase();
+    if !matches!(priority.as_str(), "low" | "normal" | "high" | "urgent") {
+        return Err(ShellDeckError::Serialization(
+            "generated request priority must be low, normal, high, or urgent".to_string(),
+        ));
+    }
+
+    Ok(AiGeneratedIssueDraft {
+        title: title.to_string(),
+        description: description.to_string(),
+        priority,
+    })
+}
+
 pub fn parse_generated_script_draft(raw: &str) -> Result<AiGeneratedScriptDraft> {
     let json_text = strip_markdown_fence(raw);
     let value: Value = serde_json::from_str(json_text).map_err(|error| {
@@ -288,6 +399,7 @@ pub enum AiCapability {
     IssueReply,
     IssueSummary,
     IssueTriage,
+    IssueCompose,
     ScriptGenerate,
     ScriptExplain,
     ScriptReview,
@@ -1260,6 +1372,7 @@ mod tests {
             (AiCapability::IssueReply, "\"issue_reply\""),
             (AiCapability::IssueSummary, "\"issue_summary\""),
             (AiCapability::IssueTriage, "\"issue_triage\""),
+            (AiCapability::IssueCompose, "\"issue_compose\""),
             (AiCapability::ScriptExplain, "\"script_explain\""),
             (AiCapability::ScriptReview, "\"script_review\""),
             (AiCapability::ScriptFix, "\"script_fix\""),
@@ -1309,6 +1422,57 @@ mod tests {
         assert_eq!(draft.language, ScriptLanguage::Shell);
         assert_eq!(draft.category, ScriptCategory::System);
         assert_eq!(draft.body, "#!/bin/bash\ndf -h");
+    }
+
+    // SDTEST-1356
+    #[test]
+    fn generated_request_json_populates_reviewable_form_fields() {
+        let draft = parse_generated_issue_draft(
+            r#"```json
+{
+  "title": "Échec de déploiement sur production",
+  "description": "Contexte : déploiement du site principal.\n\nReproduction : lancer le job release.\n\nRésultat attendu : le job se termine sans erreur.\n\nEnvironnement : host production.",
+  "priority": "high"
+}
+```"#,
+        )
+        .unwrap();
+
+        assert_eq!(draft.title, "Échec de déploiement sur production");
+        assert!(draft.description.contains("Résultat attendu"));
+        assert_eq!(draft.priority, "high");
+    }
+
+    // SDTEST-1358
+    #[test]
+    fn issue_triage_json_preserves_explicit_changes_and_validates_priority() {
+        let proposal = parse_issue_triage_proposal(
+            r#"```json
+{
+  "priority": "urgent",
+  "assignee": "agent@example.com",
+  "rationale": "Le service de production est indisponible.",
+  "next_actions": ["Vérifier les logs", "Contacter le demandeur"]
+}
+```"#,
+        )
+        .unwrap();
+
+        assert_eq!(proposal.priority.as_deref(), Some("urgent"));
+        assert_eq!(proposal.assignee.as_deref(), Some("agent@example.com"));
+        assert!(proposal.has_changes());
+        assert_eq!(proposal.next_actions.len(), 2);
+
+        let no_change = parse_issue_triage_proposal(
+            r#"{"priority":null,"assignee":null,"rationale":"Aucun changement.","next_actions":[]}"#,
+        )
+        .unwrap();
+        assert!(!no_change.has_changes());
+
+        assert!(parse_issue_triage_proposal(
+            r#"{"priority":"critical","assignee":null,"rationale":"Urgent.","next_actions":[]}"#
+        )
+        .is_err());
     }
 
     // SDTEST-1353

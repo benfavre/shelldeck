@@ -419,9 +419,21 @@ La phase 1 est terminée.
 - Fait: Demandes, réponse, résumé et triage directement depuis le détail; la
   réponse remplit uniquement le composer et les analyses restent copiées
   explicitement. Les trois capacités restaurent leurs brouillons par demande.
+- Fait: le formulaire Nouvelle demande propose une préparation IA structurée
+  (titre, description avec contexte/reproduction/résultat attendu/environnement,
+  priorité) dans un panneau replié par défaut. Le résultat validé remplit
+  uniquement le brouillon local, avec une tentative corrective si le provider
+  ne respecte pas le schéma; aucune demande n'est créée automatiquement et les
+  hosts ne sont utilisés que comme contexte.
 - Restant: autres formulaires et surfaces.
-- Tags, priorite, assignation.
-- Creation de demande.
+- Fait: le triage Demandes produit une proposition structurée, validée puis
+  réparée une fois si nécessaire. Le staff prévisualise priorité et assignation
+  en avant/après, la justification et les prochaines actions; un second clic
+  applique uniquement les changements confirmés. La cible, le rôle et l'agent
+  proposé sont revérifiés avant mutation.
+- Restant: tags de demandes, bloqués tant que l'API Issues n'expose pas de
+  mutation dédiée.
+- Création de demande depuis un ticket Support ou une erreur Terminal.
 - Nommage des entites.
 
 ### Phase 3 - executions confirmees

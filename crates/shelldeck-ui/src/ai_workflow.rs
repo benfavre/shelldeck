@@ -2,14 +2,19 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Spinner,
+    SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
-use shelldeck_core::ai::{ai_line_diff, AiBackend, AiCapability, AiDiffLine, AiDraft, AiSurface};
+use shelldeck_core::ai::{
+    ai_line_diff, parse_issue_triage_proposal, AiBackend, AiCapability, AiDiffLine, AiDraft,
+    AiIssueTriageProposal, AiSurface,
+};
 
 use crate::icons::{ai_provider_badge, lucide_icon};
 use crate::scale::px;
+use crate::support_view::{assignee_display, priority_badge};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -123,6 +128,143 @@ pub enum AiWorkflowEvent {
 
 impl EventEmitter<AiWorkflowEvent> for AiWorkflowView {}
 
+fn render_issue_triage_proposal(
+    proposal: &AiIssueTriageProposal,
+    current: Option<&(String, String)>,
+) -> impl IntoElement {
+    let mut changes = div().flex().items_center().gap(px(8.0)).flex_wrap();
+    if let Some(priority) = &proposal.priority {
+        changes = changes.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("ai.workflow.triage.priority").to_string()),
+                )
+                .when_some(current, |row, (current_priority, _)| {
+                    row.child(priority_badge(current_priority))
+                        .child(lucide_icon(
+                            "arrow-right",
+                            12.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                })
+                .child(priority_badge(priority)),
+        );
+    }
+    if let Some(assignee) = &proposal.assignee {
+        let label = if assignee.is_empty() {
+            t!("support.assignee.none").to_string()
+        } else {
+            assignee.clone()
+        };
+        changes = changes.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("ai.workflow.triage.assignee").to_string()),
+                )
+                .when_some(current, |row, (_, current_assignee)| {
+                    row.child(
+                        Badge::new(assignee_display(current_assignee, None))
+                            .variant(BadgeVariant::Outline),
+                    )
+                    .child(lucide_icon(
+                        "arrow-right",
+                        12.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                })
+                .child(Badge::new(label).variant(BadgeVariant::Outline)),
+        );
+    }
+    if !proposal.has_changes() {
+        changes = changes.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(t!("ai.workflow.triage.no_changes").to_string()),
+        );
+    }
+
+    let mut actions = div().flex().flex_col().gap(px(5.0));
+    for action in &proposal.next_actions {
+        actions = actions.child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(7.0))
+                .child(lucide_icon(
+                    "arrow-right",
+                    12.0,
+                    ShellDeckColors::text_muted(),
+                ))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(action.clone()),
+                ),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .p(px(12.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(ShellDeckColors::border())
+        .bg(ShellDeckColors::bg_primary())
+        .child(changes)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("ai.workflow.triage.rationale").to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(proposal.rationale.clone()),
+                ),
+        )
+        .when(!proposal.next_actions.is_empty(), |content| {
+            content.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("ai.workflow.triage.next_actions").to_string()),
+                    )
+                    .child(actions),
+            )
+        })
+}
+
 pub struct AiWorkflowView {
     target: AiWorkflowTarget,
     instructions_state: Entity<InputState>,
@@ -134,6 +276,7 @@ pub struct AiWorkflowView {
     model: String,
     restored: bool,
     comparison_original: Option<String>,
+    issue_triage_current: Option<(String, String)>,
 }
 
 impl AiWorkflowView {
@@ -143,6 +286,7 @@ impl AiWorkflowView {
         model: String,
         pending: Option<AiDraft>,
         comparison_original: Option<String>,
+        issue_triage_current: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) -> Self {
         let pending_instructions = pending
@@ -179,6 +323,7 @@ impl AiWorkflowView {
             model,
             restored: pending.is_some(),
             comparison_original,
+            issue_triage_current,
         }
     }
 
@@ -300,6 +445,16 @@ impl Render for AiWorkflowView {
             }
         };
         let has_result = !self.result_state.read(cx).content().trim().is_empty();
+        let issue_triage_proposal =
+            if has_result && matches!(&self.target, AiWorkflowTarget::IssueTriage { .. }) {
+                parse_issue_triage_proposal(self.result_state.read(cx).content()).ok()
+            } else {
+                None
+            };
+        let triage_accept_disabled = matches!(&self.target, AiWorkflowTarget::IssueTriage { .. })
+            && issue_triage_proposal
+                .as_ref()
+                .is_none_or(|proposal| !proposal.has_changes());
 
         let instructions_input = if self.target.result_is_read_only() {
             let entity = cx.entity();
@@ -311,8 +466,9 @@ impl Render for AiWorkflowView {
                 .gap(px(8.0))
                 .child(
                     div()
-                        .flex_1()
+                        .w_full()
                         .min_w(px(0.0))
+                        .flex_initial()
                         .h(px(32.0))
                         .overflow_hidden()
                         .child(
@@ -330,6 +486,8 @@ impl Render for AiWorkflowView {
                     Button::new("ai-workflow-adjust", t!("ai.workflow.adjust").to_string())
                         .variant(ButtonVariant::Ai)
                         .size(ButtonSize::Sm)
+                        .min_w(px(96.0))
+                        .flex_shrink_0()
                         .icon(IconSource::from("sparkles"))
                         .disabled(self.loading)
                         .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
@@ -505,34 +663,41 @@ impl Render for AiWorkflowView {
                         }),
                 );
                 if self.target.result_is_read_only() {
-                    let result = self.result_state.read(cx).content().to_string();
-                    let mut content = div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .p(px(12.0))
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_primary());
-                    for line in result.split('\n') {
-                        let display: SharedString = if line.is_empty() {
-                            " ".into()
-                        } else {
-                            line.to_string().into()
-                        };
-                        content = content.child(div().max_w(px(680.0)).child(display));
+                    if let Some(proposal) = issue_triage_proposal.as_ref() {
+                        body = body.child(render_issue_triage_proposal(
+                            proposal,
+                            self.issue_triage_current.as_ref(),
+                        ));
+                    } else {
+                        let result = self.result_state.read(cx).content().to_string();
+                        let mut content = div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .p(px(12.0))
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_primary());
+                        for line in result.split('\n') {
+                            let display: SharedString = if line.is_empty() {
+                                " ".into()
+                            } else {
+                                line.to_string().into()
+                            };
+                            content = content.child(div().max_w(px(680.0)).child(display));
+                        }
+                        body = body.child(
+                            div()
+                                .w_full()
+                                .h(px(280.0))
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(ShellDeckColors::border())
+                                .bg(ShellDeckColors::bg_primary())
+                                .child(scrollable_vertical(content)),
+                        );
                     }
-                    body = body.child(
-                        div()
-                            .w_full()
-                            .h(px(280.0))
-                            .min_h(px(0.0))
-                            .overflow_hidden()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(ShellDeckColors::border())
-                            .bg(ShellDeckColors::bg_primary())
-                            .child(scrollable_vertical(content)),
-                    );
                 } else {
                     body = body.child(
                         div().w_full().min_w(px(0.0)).child(
@@ -652,10 +817,12 @@ impl Render for AiWorkflowView {
                                 AiWorkflowTarget::TerminalCommand { .. } => {
                                     t!("ai.workflow.insert").to_string()
                                 }
+                                AiWorkflowTarget::IssueTriage { .. } => {
+                                    t!("ai.workflow.triage.apply").to_string()
+                                }
                                 AiWorkflowTarget::SupportSummary { .. }
                                 | AiWorkflowTarget::SupportTriage { .. }
                                 | AiWorkflowTarget::IssueSummary { .. }
-                                | AiWorkflowTarget::IssueTriage { .. }
                                 | AiWorkflowTarget::ScriptExplain { .. }
                                 | AiWorkflowTarget::ScriptReview { .. }
                                 | AiWorkflowTarget::TerminalDiagnose { .. } => {
@@ -666,6 +833,7 @@ impl Render for AiWorkflowView {
                         )
                         .variant(ButtonVariant::Default)
                         .size(ButtonSize::Sm)
+                        .disabled(triage_accept_disabled)
                         .icon(IconSource::from("check"))
                         .on_click(cx.listener(|this, _, _, cx| this.accept(cx))),
                     )

@@ -1384,6 +1384,30 @@ existing virtualized sites list.
 
 ---
 
+## 25. AI-assisted request creation
+
+### SDUC-422 — AI prepares but never submits a new request
+
+When Issues AI is enabled, the New Request sheet accepts explicit instructions
+from an AI panel that is collapsed by default and asks the configured provider
+for a validated JSON draft containing title, structured description, and
+priority. Existing form values and the bounded host directory are context only.
+Valid output replaces the local unsent form fields; malformed output receives
+one schema-repair attempt. Closing the sheet collapses the panel, invalidates
+the pending response, and neither generation nor insertion creates the request.
+
+### SDUC-423 — Staff explicitly applies structured AI triage
+
+From the selected Support request, staff may ask AI for a strict triage proposal
+containing an optional supported priority, an optional exact agent email, a
+rationale, and bounded next actions. The review shows current and proposed
+values. Applying is a separate explicit action and revalidates staff access,
+request identity, schema, and agent availability before sequential API writes.
+Non-staff users never see the applicable triage action. Tags remain excluded
+until the Issues API exposes a dedicated mutation.
+
+---
+
 ## Retired use cases
 
 *(none yet)*
@@ -1392,6 +1416,10 @@ existing virtualized sites list.
 
 ## Change log
 
+- **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
+  explicitly confirmed AI priority and assignment triage.
+- **2026-07-17** — Added SDUC-422 and SDTEST-1356/1357 for structured,
+  non-submitting AI preparation in the New Request sheet.
 - **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support
   request and ticket lists.
 - **2026-07-16** — Added SDUC-419 and SDTEST-1352 after the macOS release

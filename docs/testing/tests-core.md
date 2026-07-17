@@ -344,6 +344,8 @@ Existing: **0 tests**.
 | SDTEST-1348 | `ai.rs::host_context_exposes_identity_without_credential_paths` | SDUC-415 | Green | The host directory contains the alias/address/user/port needed for contextual references but excludes SSH identity-file paths. |
 | SDTEST-1350 | `ai.rs::generated_script_json_populates_metadata_and_strips_markdown_fences` | SDUC-418 | Green | Structured Script-form output maps language/category, requires name/body, and tolerates accidental outer JSON or inner code fences without leaking them into the editor. |
 | SDTEST-1353 | `ai.rs::script_review_diff_preserves_context_and_marks_replacements` | SDUC-420 | Green | The bounded line diff keeps unchanged lines and marks removed/added script lines for review before replacement. |
+| SDTEST-1356 | `ai.rs::generated_request_json_populates_reviewable_form_fields` | SDUC-422 | Green | Structured request output requires title/description, validates the supported priority enum, and tolerates an accidental outer JSON fence before filling the unsent form. |
+| SDTEST-1358 | `ai.rs::issue_triage_json_preserves_explicit_changes_and_validates_priority` | SDUC-423 | Green | Strict triage JSON preserves nullable priority/assignee mutations, validates the supported priority enum, bounds next actions, and distinguishes analysis-only output from applicable changes. |
 
 ---
 

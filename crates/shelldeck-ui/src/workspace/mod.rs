@@ -1,13 +1,17 @@
-use crate::icons::{lucide_icon, lucide_path};
+use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
-use adabraka_ui::prelude::{install_theme, scrollable_vertical, use_theme, Button, ButtonVariant};
+use adabraka_ui::prelude::{
+    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Button, ButtonSize,
+    ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+};
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    configured_cli_available, create_client, host_context, test_connection, AiContext, AiDraft,
-    AiDraftStore, AiSurface,
+    configured_cli_available, create_client, host_context, parse_generated_issue_draft,
+    parse_issue_triage_proposal, test_connection, AiContext, AiDraft, AiDraftStore,
+    AiIssueTriageProposal, AiSurface,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -381,6 +385,11 @@ pub struct Workspace {
     issue_title_state: Entity<InputState>,
     issue_body_state: Entity<InputState>,
     issue_comment_state: Entity<InputState>,
+    issue_ai_prompt_state: Entity<InputState>,
+    issue_ai_expanded: bool,
+    issue_ai_loading: bool,
+    issue_ai_error: Option<String>,
+    issue_ai_request_id: u64,
     issue_new_priority: String,
     /// User-home "Mes sites" search — filters the compact rows client-side
     /// by label + host + tenant_name. The query is read live from the input
@@ -911,6 +920,11 @@ impl Workspace {
             issue_title_state: cx.new(InputState::new),
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_comment_state: cx.new(InputState::new),
+            issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            issue_ai_expanded: false,
+            issue_ai_loading: false,
+            issue_ai_error: None,
+            issue_ai_request_id: 0,
             user_sites_search_state: cx.new(InputState::new),
             issue_new_priority: "normal".to_string(),
             bext_view,
@@ -1845,6 +1859,14 @@ impl Workspace {
                 .and_then(|id| self.scripts.read(cx).script_body(id)),
             _ => None,
         };
+        let issue_triage_current = match &target {
+            AiWorkflowTarget::IssueTriage { issue_id } => self
+                .issue_detail
+                .as_ref()
+                .filter(|issue| &issue.id == issue_id)
+                .map(|issue| (issue.priority.clone(), issue.assignee.clone())),
+            _ => None,
+        };
         let workflow = cx.new(|cx| {
             AiWorkflowView::new(
                 target,
@@ -1852,6 +1874,7 @@ impl Workspace {
                 self.app_config.ai.model.clone(),
                 pending,
                 comparison_original,
+                issue_triage_current,
                 cx,
             )
         });
@@ -1890,12 +1913,17 @@ impl Workspace {
                 t!("ai.context.support").to_string(),
                 self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
             ),
-            AiWorkflowTarget::IssueReply { .. }
-            | AiWorkflowTarget::IssueSummary { .. }
-            | AiWorkflowTarget::IssueTriage { .. } => AiContext::new(
+            AiWorkflowTarget::IssueReply { .. } | AiWorkflowTarget::IssueSummary { .. } => {
+                AiContext::new(
+                    AiSurface::Issue,
+                    t!("ai.context.issue").to_string(),
+                    self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
+                )
+            }
+            AiWorkflowTarget::IssueTriage { .. } => AiContext::new(
                 AiSurface::Issue,
                 t!("ai.context.issue").to_string(),
-                self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
+                self.ai_context_data_with_hosts(self.support.read(cx).issue_triage_context_data()),
             ),
             AiWorkflowTarget::ScriptGenerate { .. }
             | AiWorkflowTarget::ScriptExplain { .. }
@@ -1973,15 +2001,33 @@ impl Workspace {
                 };
                 let context = self.ai_workflow_context(&target, cx);
                 let config = self.app_config.ai.clone();
+                let structured_issue_triage =
+                    matches!(&target, AiWorkflowTarget::IssueTriage { .. });
+                let issue_triage_repair =
+                    t!("ai.prompt.issue_triage_repair", error = "__TRIAGE_ERROR__").to_string();
                 let workflow = self.ai_workflow.as_ref().map(|entity| entity.downgrade());
                 cx.spawn(async move |_this, cx: &mut AsyncApp| {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
                             let client = create_client(&config)?;
-                            client
-                                .complete(&prompt, context)
-                                .map(|response| response.text)
+                            let response = client.complete(&prompt, context.clone())?;
+                            if !structured_issue_triage {
+                                return Ok::<String, shelldeck_core::ShellDeckError>(response.text);
+                            }
+                            match parse_issue_triage_proposal(&response.text) {
+                                Ok(_) => {
+                                    Ok::<String, shelldeck_core::ShellDeckError>(response.text)
+                                }
+                                Err(first_error) => {
+                                    let repair = issue_triage_repair
+                                        .replace("__TRIAGE_ERROR__", &first_error.to_string());
+                                    let repaired = client
+                                        .complete(&format!("{prompt}\n\n{repair}"), context)?;
+                                    parse_issue_triage_proposal(&repaired.text)?;
+                                    Ok::<String, shelldeck_core::ShellDeckError>(repaired.text)
+                                }
+                            }
                         })
                         .await
                         .map_err(|error| error.to_string());
@@ -1994,12 +2040,36 @@ impl Workspace {
                 .detach();
             }
             AiWorkflowEvent::Accept { target, result } => {
+                if let AiWorkflowTarget::IssueTriage { issue_id } = &target {
+                    let proposal = match parse_issue_triage_proposal(&result) {
+                        Ok(proposal) => proposal,
+                        Err(error) => {
+                            self.show_toast(
+                                t!("toast.ai.triage_invalid", error = error.to_string())
+                                    .to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        }
+                    };
+                    self.ai_drafts.retain(|draft| {
+                        !(draft.capability == target.capability()
+                            && draft.target_id == target.target_id())
+                    });
+                    if let Err(error) = AiDraftStore::save(&self.ai_drafts) {
+                        tracing::warn!("Failed to save AI drafts after triage apply: {error}");
+                    }
+                    let issue_id = issue_id.clone();
+                    self.close_ai_workflow(cx);
+                    self.apply_issue_triage(issue_id, proposal, cx);
+                    return;
+                }
                 let copied = matches!(
                     &target,
                     AiWorkflowTarget::SupportSummary { .. }
                         | AiWorkflowTarget::SupportTriage { .. }
                         | AiWorkflowTarget::IssueSummary { .. }
-                        | AiWorkflowTarget::IssueTriage { .. }
                         | AiWorkflowTarget::ScriptExplain { .. }
                         | AiWorkflowTarget::ScriptReview { .. }
                         | AiWorkflowTarget::TerminalDiagnose { .. }
@@ -2018,11 +2088,11 @@ impl Workspace {
                     AiWorkflowTarget::SupportSummary { .. }
                     | AiWorkflowTarget::SupportTriage { .. }
                     | AiWorkflowTarget::IssueSummary { .. }
-                    | AiWorkflowTarget::IssueTriage { .. }
                     | AiWorkflowTarget::ScriptExplain { .. }
                     | AiWorkflowTarget::ScriptReview { .. } => {
                         cx.write_to_clipboard(ClipboardItem::new_string(result));
                     }
+                    AiWorkflowTarget::IssueTriage { .. } => unreachable!(),
                     AiWorkflowTarget::ScriptGenerate { script_id } => {
                         if let Ok(script_id) = Uuid::parse_str(script_id) {
                             self.scripts.update(cx, |view, cx| {
@@ -4755,6 +4825,10 @@ impl Workspace {
             return;
         }
         self.user_new_request_sheet_dismissing = true;
+        self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
+        self.issue_ai_expanded = false;
+        self.issue_ai_loading = false;
+        self.issue_ai_error = None;
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -4765,6 +4839,7 @@ impl Workspace {
                 ws.user_new_request_sheet_dismissing = false;
                 Self::reset_input(&ws.issue_title_state.clone(), cx);
                 Self::reset_input(&ws.issue_body_state.clone(), cx);
+                Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
                 cx.notify();
             });
         })
@@ -5018,6 +5093,11 @@ impl Workspace {
                     ws.user_new_request_sheet_open = false;
                     Self::reset_input(&ws.issue_title_state.clone(), cx);
                     Self::reset_input(&ws.issue_body_state.clone(), cx);
+                    Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
+                    ws.issue_ai_request_id = ws.issue_ai_request_id.wrapping_add(1);
+                    ws.issue_ai_expanded = false;
+                    ws.issue_ai_loading = false;
+                    ws.issue_ai_error = None;
                     ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss.clone());
                     ws.issue_selected = Some(iss.id.clone());
@@ -5139,6 +5219,122 @@ impl Workspace {
         .detach();
     }
 
+    fn apply_issue_triage(
+        &mut self,
+        issue_id: String,
+        proposal: AiIssueTriageProposal,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.issues_staff {
+            self.show_toast(
+                t!("toast.ai.triage_staff_only").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let Some(current) = self
+            .issue_detail
+            .as_ref()
+            .filter(|issue| issue.id == issue_id)
+            .or_else(|| self.issues_list.iter().find(|issue| issue.id == issue_id))
+        else {
+            self.show_toast(
+                t!("toast.ai.triage_obsolete").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        };
+        if let Some(assignee) = proposal.assignee.as_deref() {
+            if !self.support.read(cx).is_known_issue_assignee(assignee) {
+                self.show_toast(
+                    t!("toast.ai.triage_unknown_assignee", assignee = assignee).to_string(),
+                    ToastLevel::Error,
+                    cx,
+                );
+                return;
+            }
+        }
+        let priority = proposal
+            .priority
+            .filter(|priority| priority != &current.priority);
+        let assignee = proposal
+            .assignee
+            .filter(|assignee| !assignee.eq_ignore_ascii_case(current.assignee.trim()));
+        let change_count = usize::from(priority.is_some()) + usize::from(assignee.is_some());
+        if change_count == 0 {
+            self.show_toast(
+                t!("toast.ai.triage_no_changes").to_string(),
+                ToastLevel::Info,
+                cx,
+            );
+            return;
+        }
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        self.show_toast(
+            t!("toast.ai.triage_applying").to_string(),
+            ToastLevel::Info,
+            cx,
+        );
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut updated = None;
+                    if let Some(priority) = priority {
+                        updated = Some(issues::set_priority(&base, &token, &issue_id, &priority)?);
+                    }
+                    if let Some(assignee) = assignee {
+                        updated = Some(issues::assign(&base, &token, &issue_id, &assignee)?);
+                    }
+                    updated.ok_or_else(|| {
+                        shelldeck_core::ShellDeckError::Config(
+                            "issue triage has no applicable changes".to_string(),
+                        )
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(issue) => {
+                    ws.upsert_issue_in_list(issue.clone());
+                    ws.issue_detail = Some(issue.clone());
+                    ws.push_issues_to_support(cx);
+                    ws.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Issue,
+                            t!("activity.issue.updated", title = issue.title.as_str()).to_string(),
+                        )
+                        .with_target(issue.id, issue.title)
+                        .with_action(ActivityAction::OpenIssue),
+                        cx,
+                    );
+                    ws.show_toast(
+                        t!("toast.ai.triage_applied", count = change_count).to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(error) => {
+                    ws.show_toast(
+                        t!(
+                            "toast.ai.triage_failed",
+                            error = cloud_account::user_message(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    ws.refresh_issues(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Soft-delete a request (owner-or-staff). On success the row is
     /// removed from the local list, the detail pane closed, and any drift
     /// is caught by the 15 s issues poll.
@@ -5248,6 +5444,95 @@ impl Workspace {
     /// Submit the "Nouvelle demande" composer sheet: read the Input states,
     /// hand them to `create_issue_now`. Called from the "Créer" button and
     /// from the Title `Input::on_enter`.
+    fn generate_new_request_with_ai(&mut self, cx: &mut Context<Self>) {
+        if self.issue_ai_loading
+            || !self.ai_backend_available()
+            || !self.app_config.ai.allows(AiSurface::Issue)
+        {
+            return;
+        }
+        let instructions = self
+            .issue_ai_prompt_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        if instructions.is_empty() {
+            self.issue_ai_error = Some(t!("user.requests.ai.required").to_string());
+            cx.notify();
+            return;
+        }
+
+        self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
+        let request_id = self.issue_ai_request_id;
+        self.issue_ai_loading = true;
+        self.issue_ai_error = None;
+        let context = AiContext::new(
+            AiSurface::Issue,
+            t!("ai.context.issue_form").to_string(),
+            serde_json::json!({
+                "draft": {
+                    "title": self.issue_title_state.read(cx).content().to_string(),
+                    "description": self.issue_body_state.read(cx).content().to_string(),
+                    "priority": self.issue_new_priority.clone(),
+                },
+                "hosts": self.ai_hosts_context_data(),
+            }),
+        );
+        let prompt = format!(
+            "{}\n\n{}:\n{}",
+            t!("ai.prompt.issue_generate_form"),
+            t!("ai.workflow.additional_instructions"),
+            instructions
+        );
+        let config = self.app_config.ai.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let client = create_client(&config)?;
+                    let response = client.complete(&prompt, context.clone())?;
+                    match parse_generated_issue_draft(&response.text) {
+                        Ok(draft) => Ok(draft),
+                        Err(first_error) => {
+                            let repair_prompt = format!(
+                                "{}\n\n{}",
+                                prompt,
+                                t!(
+                                    "ai.prompt.issue_generate_repair",
+                                    error = first_error.to_string()
+                                )
+                            );
+                            let repaired = client.complete(&repair_prompt, context)?;
+                            parse_generated_issue_draft(&repaired.text)
+                        }
+                    }
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = this.update(cx, |ws, cx| {
+                if request_id != ws.issue_ai_request_id || !ws.user_new_request_sheet_open {
+                    return;
+                }
+                ws.issue_ai_loading = false;
+                match result {
+                    Ok(draft) => {
+                        ws.issue_title_state
+                            .update(cx, |state, cx| state.replace_content(draft.title, cx));
+                        ws.issue_body_state
+                            .update(cx, |state, cx| state.replace_content(draft.description, cx));
+                        ws.issue_new_priority = draft.priority;
+                        ws.issue_ai_error = None;
+                    }
+                    Err(error) => ws.issue_ai_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn submit_new_request(&mut self, cx: &mut Context<Self>) {
         let title = self.issue_title_state.read(cx).content().to_string();
         let body = self.issue_body_state.read(cx).content().to_string();
@@ -9355,36 +9640,168 @@ impl Workspace {
             .multi_line(true)
             .min_rows(4);
 
-        let inner = div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .child(title_input)
-            .child(body_input)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .mt(px(4.0))
-                    .child(prio_row)
-                    .child(
-                        div()
-                            .id("iss-create")
-                            .px(px(14.0))
-                            .py(px(8.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary())
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .child(t!("user.requests.create").to_string())
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_new_request(cx);
+        let ai_enabled = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Issue);
+        let mut inner = div().flex().flex_col().gap(px(10.0));
+        if ai_enabled {
+            let model = if self.app_config.ai.model.trim().is_empty() {
+                self.app_config.ai.backend.default_model().to_string()
+            } else {
+                self.app_config.ai.model.clone()
+            };
+            let expanded = self.issue_ai_expanded;
+            let trigger = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .min_w(px(0.0))
+                        .child(lucide_icon("sparkles", 14.0, ShellDeckColors::primary()))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::primary())
+                                .child(t!("user.requests.ai.title").to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .flex_shrink_0()
+                        .child(ai_provider_badge(self.app_config.ai.backend, &model))
+                        .child(
+                            svg()
+                                .path(lucide_path("chevron-down"))
+                                .size(px(13.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                    if expanded {
+                                        0.0
+                                    } else {
+                                        -std::f32::consts::FRAC_PI_2
+                                    },
+                                ))),
+                        ),
+                );
+
+            let mut content = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .pb(px(10.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap(px(8.0))
+                        .child(
+                            div().flex_1().min_w(px(0.0)).child(
+                                Input::new(&self.issue_ai_prompt_state)
+                                    .size(InputSize::Sm)
+                                    .multi_line(true)
+                                    .min_rows(2)
+                                    .max_rows(4)
+                                    .placeholder(t!("user.requests.ai.placeholder").to_string())
+                                    .disabled(self.issue_ai_loading),
+                            ),
+                        )
+                        .child(
+                            Button::new(
+                                "user-request-ai-generate",
+                                t!("user.requests.ai.generate").to_string(),
+                            )
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .min_w(px(104.0))
+                            .disabled(self.issue_ai_loading)
+                            .icon(IconSource::from("sparkles"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.generate_new_request_with_ai(cx);
                             })),
-                    ),
-            );
+                        ),
+                );
+            if self.issue_ai_loading {
+                content = content.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(
+                            Spinner::new()
+                                .size(SpinnerSize::Xs)
+                                .variant(SpinnerVariant::Primary),
+                        )
+                        .child(t!("user.requests.ai.generating").to_string()),
+                );
+            }
+            if let Some(error) = &self.issue_ai_error {
+                content = content.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::error())
+                        .child(error.clone()),
+                );
+            }
+
+            let entity = cx.entity();
+            let mut ai_block = AnimatedCollapsible::new()
+                .open(expanded)
+                .show_icon(false)
+                .trigger(trigger)
+                .on_toggle(move |open, _, cx| {
+                    entity.update(cx, |workspace, cx| {
+                        workspace.issue_ai_expanded = open;
+                        cx.notify();
+                    });
+                })
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.35))
+                .bg(ShellDeckColors::primary().opacity(0.07));
+            if expanded {
+                ai_block = ai_block.content(content);
+            }
+            inner = inner.child(ai_block);
+        }
+
+        inner = inner.child(title_input).child(body_input).child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .mt(px(4.0))
+                .child(prio_row)
+                .child(
+                    div()
+                        .id("iss-create")
+                        .px(px(14.0))
+                        .py(px(8.0))
+                        .rounded(px(6.0))
+                        .bg(ShellDeckColors::primary())
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(white())
+                        .cursor_pointer()
+                        .child(t!("user.requests.create").to_string())
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.submit_new_request(cx);
+                        })),
+                ),
+        );
 
         self.render_user_sheet(
             "user-new-request-sheet",
@@ -9474,12 +9891,16 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap(px(8.0))
-                    .child(issue_status_badge(&iss.status))
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(div().flex_shrink_0().child(issue_status_badge(&iss.status)))
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.0))
+                            .line_clamp(3)
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
@@ -9488,6 +9909,7 @@ impl Workspace {
                     .children(iss.github.as_ref().map(|g| {
                         div()
                             .id("uiss-gh")
+                            .flex_shrink_0()
                             .text_size(px(11.0))
                             .text_color(ShellDeckColors::primary())
                             .cursor_pointer()
