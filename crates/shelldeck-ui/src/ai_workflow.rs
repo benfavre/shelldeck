@@ -153,8 +153,9 @@ impl AiWorkflowView {
             .as_ref()
             .map(|draft| draft.result.clone())
             .unwrap_or_default();
+        let instructions_multiline = !target.result_is_read_only();
         let instructions_state = cx.new(move |cx| {
-            let mut state = InputState::new(cx).multi_line(true);
+            let mut state = InputState::new(cx).multi_line(instructions_multiline);
             if !pending_instructions.is_empty() {
                 state.replace_content(pending_instructions, cx);
             }
@@ -309,15 +310,21 @@ impl Render for AiWorkflowView {
                 .min_w(px(0.0))
                 .gap(px(8.0))
                 .child(
-                    div().flex_1().min_w(px(0.0)).child(
-                        Input::new(&self.instructions_state)
-                            .size(InputSize::Sm)
-                            .placeholder(instructions_placeholder)
-                            .disabled(self.loading)
-                            .on_enter(move |_, cx| {
-                                entity.update(cx, |this, cx| this.generate(cx));
-                            }),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h(px(32.0))
+                        .overflow_hidden()
+                        .child(
+                            Input::new(&self.instructions_state)
+                                .w_full()
+                                .size(InputSize::Sm)
+                                .placeholder(instructions_placeholder)
+                                .disabled(self.loading)
+                                .on_enter(move |_, cx| {
+                                    entity.update(cx, |this, cx| this.generate(cx));
+                                }),
+                        ),
                 )
                 .child(
                     Button::new("ai-workflow-adjust", t!("ai.workflow.adjust").to_string())
