@@ -419,6 +419,8 @@ pub struct AiResponse {
 #[serde(rename_all = "snake_case")]
 pub enum AiCapability {
     Naming,
+    JeanDispatch,
+    FleetDispatch,
     SupportReply,
     SupportSummary,
     SupportTriage,
@@ -432,6 +434,151 @@ pub enum AiCapability {
     ScriptFix,
     TerminalCommand,
     TerminalDiagnose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiActionKind {
+    TerminalCommand,
+    ScriptExecution,
+    SupportSend,
+    JeanDispatch,
+    FleetDispatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiActionRisk {
+    Low,
+    Moderate,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiActionPayload {
+    TerminalCommand {
+        command: String,
+    },
+    ScriptExecution {
+        body: String,
+    },
+    SupportSend {
+        body: String,
+    },
+    JeanDispatch {
+        prompt: String,
+    },
+    FleetDispatch {
+        issue_id: String,
+        instance_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiActionPlan {
+    pub id: Uuid,
+    pub capability: AiCapability,
+    pub kind: AiActionKind,
+    pub risk: AiActionRisk,
+    pub target_id: String,
+    pub target_label: String,
+    pub backend: AiBackend,
+    pub model: String,
+    pub timeout_secs: u64,
+    pub payload: AiActionPayload,
+}
+
+impl AiActionPlan {
+    pub fn new(
+        capability: AiCapability,
+        kind: AiActionKind,
+        risk: AiActionRisk,
+        target_id: impl Into<String>,
+        target_label: impl Into<String>,
+        backend: AiBackend,
+        model: impl Into<String>,
+        timeout_secs: u64,
+        payload: AiActionPayload,
+    ) -> Result<Self> {
+        let target_id = target_id.into();
+        let target_label = target_label.into();
+        if target_id.trim().is_empty() || target_label.trim().is_empty() {
+            return Err(ShellDeckError::Config(
+                "AI action requires an explicit target".to_string(),
+            ));
+        }
+        let payload_matches = matches!(
+            (kind, &payload),
+            (
+                AiActionKind::TerminalCommand,
+                AiActionPayload::TerminalCommand { .. }
+            ) | (
+                AiActionKind::ScriptExecution,
+                AiActionPayload::ScriptExecution { .. }
+            ) | (
+                AiActionKind::SupportSend,
+                AiActionPayload::SupportSend { .. }
+            ) | (
+                AiActionKind::JeanDispatch,
+                AiActionPayload::JeanDispatch { .. }
+            ) | (
+                AiActionKind::FleetDispatch,
+                AiActionPayload::FleetDispatch { .. }
+            )
+        );
+        if !payload_matches {
+            return Err(ShellDeckError::Config(
+                "AI action payload does not match its kind".to_string(),
+            ));
+        }
+        let content = match &payload {
+            AiActionPayload::TerminalCommand { command } => command,
+            AiActionPayload::ScriptExecution { body } => body,
+            AiActionPayload::SupportSend { body } => body,
+            AiActionPayload::JeanDispatch { prompt } => prompt,
+            AiActionPayload::FleetDispatch {
+                issue_id,
+                instance_id,
+            } => {
+                if issue_id.trim().is_empty() || instance_id.trim().is_empty() {
+                    return Err(ShellDeckError::Config(
+                        "AI fleet dispatch requires issue and instance targets".to_string(),
+                    ));
+                }
+                issue_id
+            }
+        };
+        if content.trim().is_empty() {
+            return Err(ShellDeckError::Config(
+                "AI action content cannot be empty".to_string(),
+            ));
+        }
+        Ok(Self {
+            id: Uuid::new_v4(),
+            capability,
+            kind,
+            risk,
+            target_id,
+            target_label,
+            backend,
+            model: model.into(),
+            timeout_secs: timeout_secs.max(1),
+            payload,
+        })
+    }
+
+    pub fn audit_detail(&self, status: &str) -> String {
+        format!(
+            "action_id={} capability={:?} kind={:?} risk={:?} target={} provider={} model={} timeout_secs={} status={}",
+            self.id,
+            self.capability,
+            self.kind,
+            self.risk,
+            self.target_id,
+            self.backend.display_name(),
+            self.model,
+            self.timeout_secs,
+            status
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1482,6 +1629,44 @@ mod tests {
 
         assert!(parse_generated_name(r#"{"name":"first\nsecond"}"#).is_err());
         assert!(parse_generated_name(&format!(r#"{{"name":"{}"}}"#, "x".repeat(81))).is_err());
+    }
+
+    // SDTEST-1364
+    #[test]
+    fn action_plan_rejects_mismatched_payload_and_redacts_content_from_audit() {
+        let mismatch = AiActionPlan::new(
+            AiCapability::TerminalCommand,
+            AiActionKind::TerminalCommand,
+            AiActionRisk::High,
+            "session-1",
+            "Production shell",
+            AiBackend::CodexCli,
+            "gpt",
+            60,
+            AiActionPayload::SupportSend {
+                body: "secret reply".into(),
+            },
+        );
+        assert!(mismatch.is_err());
+
+        let plan = AiActionPlan::new(
+            AiCapability::TerminalCommand,
+            AiActionKind::TerminalCommand,
+            AiActionRisk::High,
+            "session-1",
+            "Production shell",
+            AiBackend::CodexCli,
+            "gpt",
+            60,
+            AiActionPayload::TerminalCommand {
+                command: "echo super-secret".into(),
+            },
+        )
+        .unwrap();
+        let audit = plan.audit_detail("confirmed");
+        assert!(audit.contains("session-1"));
+        assert!(audit.contains("status=confirmed"));
+        assert!(!audit.contains("echo super-secret"));
     }
 
     // SDTEST-1358

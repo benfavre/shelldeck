@@ -144,6 +144,16 @@ impl AiWorkflowTarget {
                 | Self::TerminalDiagnose { .. }
         )
     }
+
+    fn can_prepare_action(&self) -> bool {
+        matches!(
+            self,
+            Self::TerminalCommand { .. }
+                | Self::ScriptGenerate { .. }
+                | Self::ScriptFix { .. }
+                | Self::SupportReply { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +170,10 @@ pub enum AiWorkflowEvent {
     Pending {
         target: AiWorkflowTarget,
         instructions: String,
+        result: String,
+    },
+    PrepareAction {
+        target: AiWorkflowTarget,
         result: String,
     },
     Cancel,
@@ -439,6 +453,16 @@ impl AiWorkflowView {
                 .to_string(),
             result,
         });
+    }
+
+    fn prepare_action(&mut self, cx: &mut Context<Self>) {
+        let result = self.result_state.read(cx).content().trim().to_string();
+        if !result.is_empty() {
+            cx.emit(AiWorkflowEvent::PrepareAction {
+                target: self.target.clone(),
+                result,
+            });
+        }
     }
 }
 
@@ -853,6 +877,21 @@ impl Render for AiWorkflowView {
                         .icon(IconSource::from("sparkles"))
                         .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
                     )
+                    .when(self.target.can_prepare_action(), |actions| {
+                        let label = match self.target {
+                            AiWorkflowTarget::SupportReply { .. } => {
+                                t!("ai.action.send").to_string()
+                            }
+                            _ => t!("ai.action.execute").to_string(),
+                        };
+                        actions.child(
+                            Button::new("ai-workflow-prepare-action", label)
+                                .variant(ButtonVariant::Destructive)
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("play"))
+                                .on_click(cx.listener(|this, _, _, cx| this.prepare_action(cx))),
+                        )
+                    })
                     .child(
                         Button::new(
                             "ai-workflow-accept",

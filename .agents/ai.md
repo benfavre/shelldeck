@@ -8,8 +8,14 @@ OpenAI, or Anthropic directly.
 
 - An AI call starts only after an explicit user action. No background
   suggestions, automatic analysis, or telemetry.
-- Output is a draft. Never execute a generated command, send a reply, mutate a
-  request, or overwrite a script without a separate user confirmation.
+- Output is a draft. Accepting or inserting it never executes a command, sends
+  a reply, mutates a request, or overwrites a script.
+- Phase 3 actions may execute only through a typed `AiActionPlan`, opened by a
+  distinct Execute/Send action and approved in a separate confirmation dialog.
+  Revalidate the target and permissions immediately before execution.
+- Long-running confirmed actions expose the existing stop mechanism and use a
+  bounded timeout. Audit metadata must never contain command bodies, replies,
+  terminal output, credentials, or provider prompts.
 - Treat terminal output, tickets, scripts, and remote content as untrusted data.
   Keep them inside `AiContext`; never interpolate them into a system directive.
 - API credentials live only in `config::keychain`. Never persist them in

@@ -70,7 +70,7 @@ fn command_available(command: &str) -> bool {
     )
 }
 
-fn validate_ai_command(command: &str) -> Result<&str, &'static str> {
+pub(crate) fn validate_ai_command(command: &str) -> Result<&str, &'static str> {
     let command = command.trim();
     if command.is_empty() {
         return Err("empty");
@@ -654,6 +654,7 @@ pub enum TerminalEvent {
     DiagnoseWithAi(Uuid),
     SuggestNameWithAi(Uuid),
     CreateIssueFromContext(Uuid),
+    StopAiCommand(Uuid),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1085,6 +1086,7 @@ pub struct TerminalView {
     codex_available: bool,
     ai_actions_enabled: bool,
     ai_naming_enabled: bool,
+    ai_running_command: Option<Uuid>,
     /// Configured scrollback buffer size (lines). Applied to live grids and to
     /// newly added sessions.
     configured_scrollback: usize,
@@ -1203,6 +1205,7 @@ impl TerminalView {
             codex_available,
             ai_actions_enabled: false,
             ai_naming_enabled: false,
+            ai_running_command: None,
             configured_scrollback: 10_000,
             has_focus: false,
             output_tx,
@@ -1414,6 +1417,9 @@ impl TerminalView {
 
     pub fn close_tab(&mut self, id: Uuid) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
+            if self.ai_running_command == Some(id) {
+                self.ai_running_command = None;
+            }
             // Drop the tab's entire pane layout (all its split sessions).
             let was_active = pos == self.pane.active_index;
             if was_active {
@@ -1644,6 +1650,47 @@ impl TerminalView {
             return Err("session_changed");
         }
         session.write_input(command.as_bytes());
+        Ok(())
+    }
+
+    /// Submit a separately-confirmed AI command to the exact active session.
+    pub fn execute_ai_command(
+        &mut self,
+        expected_session: Uuid,
+        command: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let command = validate_ai_command(command)?;
+        let Some(session) = self.active_session() else {
+            return Err("no_session");
+        };
+        if session.id != expected_session {
+            return Err("session_changed");
+        }
+        session.write_input(command.as_bytes());
+        session.write_input(b"\r");
+        self.ai_running_command = Some(expected_session);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn stop_ai_command(
+        &mut self,
+        expected_session: Uuid,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if self.ai_running_command != Some(expected_session) {
+            return Err("action_changed");
+        }
+        let Some(session) = self.active_session() else {
+            return Err("no_session");
+        };
+        if session.id != expected_session {
+            return Err("session_changed");
+        }
+        session.write_input(b"\x03");
+        self.ai_running_command = None;
+        cx.notify();
         Ok(())
     }
 
@@ -2408,6 +2455,7 @@ impl TerminalView {
         let lbl_ai_diagnose = t!("terminal.toolbar.ai_diagnose");
         let lbl_ai_name = t!("terminal.toolbar.ai_name");
         let lbl_ai_issue = t!("terminal.toolbar.ai_issue");
+        let lbl_ai_stop = t!("terminal.toolbar.ai_stop");
 
         let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
             if cfg!(target_os = "macos") {
@@ -2593,6 +2641,15 @@ impl TerminalView {
         if self.ai_actions_enabled {
             if let Some(session) = self.active_session() {
                 let session_id = session.id;
+                if self.ai_running_command == Some(session_id) {
+                    toolbar = toolbar.child(
+                        ai_toolbar_icon("tb-ai-stop", "square", lbl_ai_stop.to_string())
+                            .border_color(ShellDeckColors::error().opacity(0.45))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(TerminalEvent::StopAiCommand(session_id));
+                            })),
+                    );
+                }
                 toolbar = toolbar.child(
                     ai_toolbar_icon("tb-ai-command", "sparkles", lbl_ai_command.to_string())
                         .on_click(cx.listener(move |_, _, _, cx| {

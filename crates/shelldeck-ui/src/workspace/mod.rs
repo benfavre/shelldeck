@@ -10,8 +10,9 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
     configured_cli_available, create_client, host_context, parse_generated_issue_draft,
-    parse_generated_name, parse_issue_triage_proposal, test_connection, AiContext, AiDraft,
-    AiDraftStore, AiIssueTriageProposal, AiSurface,
+    parse_generated_name, parse_issue_triage_proposal, test_connection, AiActionKind,
+    AiActionPayload, AiActionPlan, AiActionRisk, AiContext, AiDraft, AiDraftStore,
+    AiIssueTriageProposal, AiSurface,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -36,6 +37,7 @@ use std::collections::HashMap;
 use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
+use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
 use crate::ai_workflow::{AiNamingKind, AiWorkflowEvent, AiWorkflowTarget, AiWorkflowView};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
@@ -251,6 +253,9 @@ pub struct Workspace {
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
     ai_drafts: Vec<AiDraft>,
+    ai_action_confirmation: Option<AiActionPlan>,
+    ai_script_runs: HashMap<Uuid, AiActionPlan>,
+    ai_terminal_runs: HashMap<Uuid, AiActionPlan>,
     status_bar: Entity<StatusBar>,
     command_palette: Entity<CommandPalette>,
     toasts: Entity<ToastContainer>,
@@ -840,6 +845,9 @@ impl Workspace {
             ai_workflow: None,
             ai_workflow_sheet: None,
             ai_drafts,
+            ai_action_confirmation: None,
+            ai_script_runs: HashMap::new(),
+            ai_terminal_runs: HashMap::new(),
             status_bar,
             command_palette,
             toasts,
@@ -1333,6 +1341,9 @@ impl Workspace {
             }
             TerminalEvent::TabClosed(id) => {
                 tracing::info!("Terminal tab closed: {}", id);
+                if let Some(plan) = self.ai_terminal_runs.remove(id) {
+                    self.audit_ai_action(&plan, "target_closed", cx);
+                }
                 self.add_activity(
                     t!("activity.terminal_closed").to_string(),
                     ActivityKind::Terminal,
@@ -1480,6 +1491,22 @@ impl Workspace {
                     "shelldeck",
                     cx,
                 );
+            }
+            TerminalEvent::StopAiCommand(session_id) => {
+                let stopped = self
+                    .terminal
+                    .update(cx, |terminal, cx| terminal.stop_ai_command(*session_id, cx))
+                    .is_ok();
+                if stopped {
+                    if let Some(plan) = self.ai_terminal_runs.remove(session_id) {
+                        self.audit_ai_action(&plan, "cancelled", cx);
+                    }
+                    self.show_toast(
+                        t!("toast.ai.command_stopped").to_string(),
+                        ToastLevel::Info,
+                        cx,
+                    );
+                }
             }
         }
     }
@@ -2045,6 +2072,528 @@ impl Workspace {
         }
     }
 
+    fn prepare_ai_action(
+        &mut self,
+        target: AiWorkflowTarget,
+        result: String,
+        cx: &mut Context<Self>,
+    ) {
+        let model = if self.app_config.ai.model.trim().is_empty() {
+            self.app_config.ai.backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
+        let plan = match &target {
+            AiWorkflowTarget::TerminalCommand { session_id } => {
+                if crate::terminal_view::validate_ai_command(&result).is_err() {
+                    self.show_toast(
+                        t!("toast.ai.command_invalid").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                }
+                let context = self.terminal.read(cx).ai_context_data();
+                if context
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(session_id.as_str())
+                {
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                }
+                let label = context
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Terminal");
+                AiActionPlan::new(
+                    target.capability(),
+                    AiActionKind::TerminalCommand,
+                    AiActionRisk::High,
+                    session_id,
+                    label,
+                    self.app_config.ai.backend,
+                    model,
+                    1_800,
+                    AiActionPayload::TerminalCommand { command: result },
+                )
+            }
+            AiWorkflowTarget::ScriptGenerate { script_id }
+            | AiWorkflowTarget::ScriptFix { script_id } => {
+                let Some(script) = Uuid::parse_str(script_id).ok().and_then(|id| {
+                    self.scripts
+                        .read(cx)
+                        .scripts
+                        .iter()
+                        .find(|script| script.id == id)
+                        .cloned()
+                }) else {
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                };
+                AiActionPlan::new(
+                    target.capability(),
+                    AiActionKind::ScriptExecution,
+                    AiActionRisk::High,
+                    script.id.to_string(),
+                    script.name,
+                    self.app_config.ai.backend,
+                    model,
+                    1_800,
+                    AiActionPayload::ScriptExecution {
+                        body: shelldeck_core::ai::clean_generated_script_body(&result),
+                    },
+                )
+            }
+            AiWorkflowTarget::SupportReply { ticket_id } => {
+                let Some((selected_id, label)) = self.support.read(cx).selected_ticket_identity()
+                else {
+                    return;
+                };
+                if &selected_id != ticket_id {
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                }
+                AiActionPlan::new(
+                    target.capability(),
+                    AiActionKind::SupportSend,
+                    AiActionRisk::Moderate,
+                    ticket_id,
+                    label,
+                    self.app_config.ai.backend,
+                    model,
+                    30,
+                    AiActionPayload::SupportSend { body: result },
+                )
+            }
+            _ => return,
+        };
+        match plan {
+            Ok(plan) => {
+                self.ai_action_confirmation = Some(plan);
+                cx.notify();
+            }
+            Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
+        }
+    }
+
+    fn prepare_jean_dispatch(&mut self, prompt: String, cx: &mut Context<Self>) {
+        if self.effective_jean_config().is_none() || prompt.trim().is_empty() {
+            return;
+        }
+        let model = if self.app_config.ai.model.trim().is_empty() {
+            self.app_config.ai.backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
+        let (target_id, target_label) = self
+            .support
+            .read(cx)
+            .selected_ticket_identity()
+            .unwrap_or_else(|| ("jean".to_string(), "JeanClaude".to_string()));
+        match AiActionPlan::new(
+            shelldeck_core::ai::AiCapability::JeanDispatch,
+            AiActionKind::JeanDispatch,
+            AiActionRisk::Moderate,
+            target_id,
+            target_label,
+            self.app_config.ai.backend,
+            model,
+            30,
+            AiActionPayload::JeanDispatch { prompt },
+        ) {
+            Ok(plan) => {
+                self.ai_action_confirmation = Some(plan);
+                cx.notify();
+            }
+            Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
+        }
+    }
+
+    fn prepare_fleet_dispatch(
+        &mut self,
+        issue_id: String,
+        instance_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.issues_staff
+            || !self
+                .issues_instances
+                .iter()
+                .any(|instance| instance.id == instance_id)
+        {
+            self.show_toast(
+                t!("toast.ai.action_target_changed").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let Some(issue) = self
+            .issues_list
+            .iter()
+            .find(|issue| issue.id == issue_id)
+            .cloned()
+        else {
+            return;
+        };
+        let model = if self.app_config.ai.model.trim().is_empty() {
+            self.app_config.ai.backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
+        match AiActionPlan::new(
+            shelldeck_core::ai::AiCapability::FleetDispatch,
+            AiActionKind::FleetDispatch,
+            AiActionRisk::High,
+            issue.id.clone(),
+            issue.title,
+            self.app_config.ai.backend,
+            model,
+            30,
+            AiActionPayload::FleetDispatch {
+                issue_id: issue.id,
+                instance_id,
+            },
+        ) {
+            Ok(plan) => {
+                self.ai_action_confirmation = Some(plan);
+                cx.notify();
+            }
+            Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
+        }
+    }
+
+    fn audit_ai_action(&mut self, plan: &AiActionPlan, status: &str, cx: &mut Context<Self>) {
+        let kind = match plan.kind {
+            AiActionKind::TerminalCommand => ActivityKind::Terminal,
+            AiActionKind::ScriptExecution => ActivityKind::Script,
+            AiActionKind::SupportSend => ActivityKind::Support,
+            AiActionKind::JeanDispatch => ActivityKind::Jean,
+            AiActionKind::FleetDispatch => ActivityKind::Fleet,
+        };
+        let actor = self
+            .app_config
+            .account
+            .as_ref()
+            .map(|account| account.email.as_str())
+            .filter(|email| !email.trim().is_empty())
+            .unwrap_or("local-session");
+        self.add_activity_entry(
+            ActivityEntry::new(
+                kind,
+                t!(
+                    "activity.ai.action",
+                    status = status,
+                    target = plan.target_label.as_str()
+                )
+                .to_string(),
+            )
+            .with_target(plan.target_id.clone(), plan.target_label.clone())
+            .with_detail(format!("actor={actor} {}", plan.audit_detail(status))),
+            cx,
+        );
+    }
+
+    fn track_ai_script_run(&mut self, script_id: Uuid, plan: AiActionPlan, cx: &mut Context<Self>) {
+        self.audit_ai_action(&plan, "started", cx);
+        let action_id = plan.id;
+        let timeout = std::time::Duration::from_secs(plan.timeout_secs);
+        self.ai_script_runs.insert(script_id, plan);
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor().timer(timeout).await;
+            let _ = this.update(cx, |workspace, cx| {
+                let still_same_action = workspace
+                    .ai_script_runs
+                    .get(&script_id)
+                    .is_some_and(|plan| plan.id == action_id);
+                let still_running = workspace.scripts.read(cx).running_script_id == Some(script_id);
+                if still_same_action && still_running {
+                    if let Some(plan) = workspace.ai_script_runs.remove(&script_id) {
+                        workspace.audit_ai_action(&plan, "timed_out", cx);
+                    }
+                    workspace.handle_script_event(&ScriptEvent::StopScript, cx);
+                    workspace.show_toast(
+                        t!("toast.ai.action_timed_out").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn finish_ai_script_run(
+        &mut self,
+        script_id: Uuid,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(plan) = self.ai_script_runs.remove(&script_id) {
+            self.audit_ai_action(&plan, status, cx);
+        }
+    }
+
+    fn confirm_ai_action(&mut self, cx: &mut Context<Self>) {
+        let Some(plan) = self.ai_action_confirmation.take() else {
+            return;
+        };
+        self.audit_ai_action(&plan, "confirmed", cx);
+        let payload = plan.payload.clone();
+        match payload {
+            AiActionPayload::TerminalCommand { command } => {
+                let executed = Uuid::parse_str(&plan.target_id)
+                    .ok()
+                    .is_some_and(|session_id| {
+                        self.terminal
+                            .update(cx, |terminal, cx| {
+                                terminal.execute_ai_command(session_id, &command, cx)
+                            })
+                            .is_ok()
+                    });
+                if executed {
+                    self.audit_ai_action(&plan, "submitted", cx);
+                    if let Ok(session_id) = Uuid::parse_str(&plan.target_id) {
+                        self.ai_terminal_runs.insert(session_id, plan.clone());
+                    }
+                    self.close_ai_workflow(cx);
+                    self.show_toast(
+                        t!("toast.ai.action_submitted").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                } else {
+                    self.audit_ai_action(&plan, "target_changed", cx);
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                }
+            }
+            AiActionPayload::ScriptExecution { body } => {
+                let Some(mut script) = Uuid::parse_str(&plan.target_id).ok().and_then(|id| {
+                    self.scripts
+                        .read(cx)
+                        .scripts
+                        .iter()
+                        .find(|script| script.id == id)
+                        .cloned()
+                }) else {
+                    self.audit_ai_action(&plan, "target_changed", cx);
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                };
+                script.body = body;
+                let script_id = script.id;
+                self.close_ai_workflow(cx);
+                self.handle_script_event(&ScriptEvent::RunScript(script), cx);
+                if self.scripts.read(cx).running_script_id == Some(script_id) {
+                    self.track_ai_script_run(script_id, plan, cx);
+                }
+            }
+            AiActionPayload::SupportSend { body } => {
+                let selected = self.support.read(cx).selected_ticket_identity();
+                if selected.as_ref().map(|(id, _)| id.as_str()) != Some(plan.target_id.as_str()) {
+                    self.audit_ai_action(&plan, "target_changed", cx);
+                    self.show_toast(
+                        t!("toast.ai.action_target_changed").to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                    return;
+                }
+                self.close_ai_workflow(cx);
+                self.execute_ai_support_send(plan, body, cx);
+            }
+            AiActionPayload::JeanDispatch { prompt } => {
+                self.execute_ai_jean_dispatch(plan, prompt, cx);
+            }
+            AiActionPayload::FleetDispatch {
+                issue_id,
+                instance_id,
+            } => {
+                self.execute_ai_fleet_dispatch(plan, issue_id, instance_id, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn execute_ai_support_send(
+        &mut self,
+        plan: AiActionPlan,
+        body: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        let ticket_id = plan.target_id.clone();
+        self.support.update(cx, |view, cx| {
+            view.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { manage_support::support_reply(&base, &token, &ticket_id, &body) },
+                )
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(ticket) => {
+                    workspace.support.update(cx, |view, cx| {
+                        view.set_detail(ticket, cx);
+                        cx.notify();
+                    });
+                    workspace.audit_ai_action(&plan, "succeeded", cx);
+                    workspace.refresh_support(cx);
+                    workspace.show_toast(
+                        t!("toast.ai.action_succeeded").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                }
+                Err(error) => {
+                    workspace.audit_ai_action(&plan, "failed", cx);
+                    let message = cloud_account::user_message(&error);
+                    workspace.support.update(cx, |view, cx| {
+                        view.set_error(message.clone());
+                        cx.notify();
+                    });
+                    workspace.show_toast(message, ToastLevel::Error, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn execute_ai_jean_dispatch(
+        &mut self,
+        plan: AiActionPlan,
+        prompt: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.effective_jean_config() else {
+            self.audit_ai_action(&plan, "target_changed", cx);
+            return;
+        };
+        self.audit_ai_action(&plan, "started", cx);
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { jeanclaude::say(&config, &prompt) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                match result {
+                    Ok(_) => {
+                        workspace.audit_ai_action(&plan, "succeeded", cx);
+                        workspace.show_toast(
+                            t!("toast.jean.sent").to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        workspace.audit_ai_action(&plan, "failed", cx);
+                        workspace.show_toast(
+                            t!(
+                                "toast.jean.error",
+                                error = cloud_account::user_message(&error)
+                            )
+                            .to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
+                    }
+                }
+                workspace.refresh_jean_state(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn execute_ai_fleet_dispatch(
+        &mut self,
+        plan: AiActionPlan,
+        issue_id: String,
+        instance_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.issues_staff
+            || !self
+                .issues_instances
+                .iter()
+                .any(|instance| instance.id == instance_id)
+            || !self.issues_list.iter().any(|issue| issue.id == issue_id)
+        {
+            self.audit_ai_action(&plan, "target_changed", cx);
+            self.show_toast(
+                t!("toast.ai.action_target_changed").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        self.audit_ai_action(&plan, "started", cx);
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { issues::dispatch_issue(&base, &token, &issue_id, &instance_id) },
+                )
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(issue) => {
+                    workspace.audit_ai_action(&plan, "succeeded", cx);
+                    workspace.upsert_issue_in_list(issue.clone());
+                    workspace.issue_detail = Some(issue);
+                    workspace.push_issues_to_support(cx);
+                    workspace.show_toast(
+                        t!("toast.ai.action_succeeded").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                }
+                Err(error) => {
+                    workspace.audit_ai_action(&plan, "failed", cx);
+                    workspace.show_toast(
+                        t!(
+                            "toast.issue.staff_failed",
+                            error = cloud_account::user_message(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
     fn handle_ai_workflow_event(&mut self, event: AiWorkflowEvent, cx: &mut Context<Self>) {
         match event {
             AiWorkflowEvent::Generate {
@@ -2314,6 +2863,9 @@ impl Workspace {
                     ToastLevel::Success,
                     cx,
                 );
+            }
+            AiWorkflowEvent::PrepareAction { target, result } => {
+                self.prepare_ai_action(target, result, cx);
             }
             AiWorkflowEvent::Pending {
                 target,
@@ -4001,7 +4553,7 @@ impl Workspace {
             SupportViewEvent::JeanReject(thread) => {
                 self.jean_action(cx, move |c| jeanclaude::reject(&c, &thread));
             }
-            SupportViewEvent::SendToJean(text) => self.jean_say(text, cx),
+            SupportViewEvent::SendToJean(text) => self.prepare_jean_dispatch(text, cx),
             SupportViewEvent::ConvertToIssue { title, body } => {
                 self.open_prefilled_request(title, body, "support", cx)
             }
@@ -4016,10 +4568,9 @@ impl Workspace {
             }
             SupportViewEvent::IssuePriority { id, priority } => self
                 .issue_staff_action(cx, move |b, t| issues::set_priority(&b, &t, &id, &priority)),
-            SupportViewEvent::IssueDispatch { id, instance_id } => self
-                .issue_staff_action(cx, move |b, t| {
-                    issues::dispatch_issue(&b, &t, &id, &instance_id)
-                }),
+            SupportViewEvent::IssueDispatch { id, instance_id } => {
+                self.prepare_fleet_dispatch(id, instance_id, cx)
+            }
             SupportViewEvent::IssueGithubPush(id) => {
                 self.issue_staff_action(cx, move |b, t| issues::github_push(&b, &t, &id))
             }
@@ -10939,6 +11490,27 @@ impl Render for Workspace {
         // since UiDialog provides its own backdrop + occlude).
         if let Some(id) = self.confirm_issue_delete.clone() {
             root = root.child(self.render_delete_issue_modal(id, _cx));
+        }
+
+        if let Some(plan) = self.ai_action_confirmation.clone() {
+            let workspace = _cx.entity().downgrade();
+            let close_workspace = workspace.clone();
+            root = root.child(render_ai_action_dialog(
+                plan,
+                move |cx| {
+                    if let Some(workspace) = close_workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.ai_action_confirmation = None;
+                            cx.notify();
+                        });
+                    }
+                },
+                move |cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| workspace.confirm_ai_action(cx));
+                    }
+                },
+            ));
         }
 
         root

@@ -444,11 +444,26 @@ La phase 1 est terminée.
 
 ### Phase 3 - executions confirmees
 
-- `AiActionPlan`.
-- Confirmation generique.
-- Execution terminal et scripts.
-- Envoi Support et dispatch Jean/Fleet.
-- Annulation, timeout et audit.
+- Fait: `AiActionPlan` type la capacité, l'action, le risque, la cible exacte,
+  le provider/modèle, le délai et le payload en mémoire. Son détail d'audit est
+  expurgé du contenu, des commandes et des prompts.
+- Fait: un dialogue adabraka commun affiche cible, risque et contenu complet;
+  l'action nécessite un bouton Exécuter/Envoyer distinct puis une seconde
+  confirmation. La cible et les permissions sont revérifiées au dernier clic.
+- Fait: les commandes Terminal confirmées sont soumises à la session exacte;
+  les scripts générés/corrigés s'exécutent sans sauvegarder le brouillon et
+  réutilisent la sortie et le bouton Arrêter existants.
+- Fait: réponse Support, envoi à Jean et dispatch d'une demande vers Fleet
+  passent par le même plan confirmé; les rôles, tickets, demandes et instances
+  sont revérifiés avant l'appel réseau.
+- Fait: les scripts IA sont suivis jusqu'au succès, échec, arrêt ou timeout de
+  30 minutes. Les appels réseau gardent leurs timeouts clients. L'audit durable
+  journalise l'acteur du compte ou la session locale, capacité, cible, provider/modèle,
+  risque, délai et statut, jamais le payload. Une commande PTY reste suivie
+  manuellement et interrompue avec Ctrl+C, sa fin n'étant pas observable de
+  façon fiable par ShellDeck.
+
+La phase 3 est terminée.
 
 ### Phase 4 - autonomie bornee
 

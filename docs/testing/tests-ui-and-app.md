@@ -236,6 +236,9 @@ parallel `cargo test`.
 | SDTEST-1361 | *to write* — Terminal diagnostic context opens a bounded request draft | SDUC-425 | **Red / P0** | GPUI wiring: selection wins over visible output, session identity is revalidated, source is `shelldeck`, and opening/AI adjustment never executes or creates anything. |
 | SDTEST-1362 | `ai.rs::generated_name_json_is_short_single_line_text` | SDUC-426 | Green | Strict JSON naming accepts a short one-line name and rejects multiline or over-80-character output. |
 | SDTEST-1363 | *to write* — naming actions apply only to their still-open entity | SDUC-426 | **Red / P0** | GPUI wiring: Script/Tunnel/Request fields and Terminal title change only after Accept; disabled Naming hides actions, stale targets and Cancel leave state untouched, and no persistence or execution is triggered. |
+| SDTEST-1364 | `ai.rs::action_plan_rejects_mismatched_payload_and_redacts_content_from_audit` | SDUC-427, SDUC-428 | Green | Rejects kind/payload mismatches and proves audit metadata excludes the executable payload. |
+| SDTEST-1365 | *to write* — executable AI drafts require a second target-safe confirmation | SDUC-427 | **Red / P0** | GPUI wiring: Accept still only inserts; Execute/Send opens the shared plan dialog, Cancel is inert, and final confirmation rejects a changed session/ticket/issue/instance. |
+| SDTEST-1366 | *to write* — AI script tracking cannot stop a later execution | SDUC-428 | **Red / P0** | Fake-clock/process wiring: success/failure/cancel remove the matching action ID; only the still-current action times out and invokes the existing Stop path. |
 
 ---
 

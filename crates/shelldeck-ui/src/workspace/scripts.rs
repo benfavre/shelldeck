@@ -160,6 +160,7 @@ impl Workspace {
             ScriptEvent::StopScript => {
                 let script_id = self.scripts.read(cx).running_script_id;
                 if let Some(sid) = script_id {
+                    self.finish_ai_script_run(sid, "cancelled", cx);
                     if let Some(active) = self.active_scripts.remove(&sid) {
                         active.stop();
                     }
@@ -565,6 +566,15 @@ impl Workspace {
                         });
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
+                            ws.finish_ai_script_run(
+                                script_id,
+                                if exit_code == Some(0) {
+                                    "succeeded"
+                                } else {
+                                    "failed"
+                                },
+                                cx,
+                            );
                             ws.update_dashboard_stats(cx);
                             let code = exit_code.unwrap_or(-1);
                             let (activity_message, level) = match exit_code {
@@ -651,6 +661,7 @@ impl Workspace {
                         });
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
+                            ws.finish_ai_script_run(script_id, "failed", cx);
                             ws.update_dashboard_stats(cx);
                         });
                         break;
@@ -806,6 +817,15 @@ impl Workspace {
                         });
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
+                            ws.finish_ai_script_run(
+                                script_id,
+                                if exit_code == Some(0) {
+                                    "succeeded"
+                                } else {
+                                    "failed"
+                                },
+                                cx,
+                            );
                             ws.update_dashboard_stats(cx);
                             let code = exit_code.unwrap_or(-1);
                             let activity_message = match exit_code {
@@ -873,6 +893,7 @@ impl Workspace {
                         });
                         let _ = _this.update(cx, |ws, cx| {
                             ws.active_scripts.remove(&script_id);
+                            ws.finish_ai_script_run(script_id, "failed", cx);
                             ws.update_dashboard_stats(cx);
                         });
                         break;

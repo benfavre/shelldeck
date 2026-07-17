@@ -1243,6 +1243,19 @@ impl SupportView {
         }
     }
 
+    pub fn selected_ticket_identity(&self) -> Option<(String, String)> {
+        let id = self.selected_id.as_ref()?;
+        let label = self
+            .detail
+            .as_ref()
+            .filter(|ticket| &ticket.id == id)
+            .map(|ticket| ticket.subject.trim())
+            .filter(|subject| !subject.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        Some((id.clone(), label))
+    }
+
     // ── render helpers ───────────────────────────────────────────────────
 
     /// Compact JeanClaude strip: pending confirmations (confirm/reject inline)

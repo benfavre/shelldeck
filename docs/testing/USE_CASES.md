@@ -1430,6 +1430,27 @@ workflow previews the proposal; only Accept updates the still-local field or
 session title. Cancelling, closing, or losing the original target changes
 nothing and never saves, creates, connects, or executes an entity.
 
+### SDUC-427 — AI actions require a typed plan and separate confirmation
+
+An executable AI result remains a draft after generation and after the normal
+Accept/Insert action. Execute or Send creates an in-memory `AiActionPlan` with
+the exact target, action kind, risk, provider/model, timeout, and payload, then
+opens a second confirmation dialog showing what will affect the real system.
+The final click revalidates target and permissions. Terminal commands target
+the exact active session; generated/fixed scripts run without saving; Support
+replies, Jean sends, and Fleet dispatches reuse their existing service clients.
+
+### SDUC-428 — Confirmed AI actions are stoppable and safely audited
+
+Confirmed script executions reuse the existing Stop control and are forcibly
+stopped after 30 minutes. Completion, failure, manual cancellation, and timeout
+remove the action-specific tracker so stale timers cannot affect later runs.
+Network actions retain their bounded client timeouts. Durable activity entries
+record action ID, capability, kind, risk, target, provider/model, timeout, and
+status, but never command bodies, replies, prompts, terminal output, or secrets.
+Terminal submission is audited as submitted; completion remains observable in
+the PTY and is interrupted manually with Ctrl+C.
+
 ---
 
 ## Retired use cases
@@ -1446,6 +1467,8 @@ nothing and never saves, creates, connects, or executes an entity.
 - **2026-07-17** — Added SDUC-425 for bounded Terminal-to-request drafts.
 - **2026-07-17** — Added SDUC-426 and SDTEST-1362/1363 for explicit,
   schema-validated naming of scripts, sessions, tunnels, and requests.
+- **2026-07-17** — Added SDUC-427/428 and SDTEST-1364..1366 for typed,
+  separately confirmed, bounded, and redacted AI actions.
 - **2026-07-17** — Added SDUC-422 and SDTEST-1356/1357 for structured,
   non-submitting AI preparation in the New Request sheet.
 - **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support
