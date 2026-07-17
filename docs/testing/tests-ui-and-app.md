@@ -232,6 +232,7 @@ parallel `cargo test`.
 | SDTEST-1355 | *to write* — large User and Support lists preserve row routing while virtualized | SDUC-421 | **Red / P1** | GPUI integration: with 250 mixed records, scroll/filter/select/context-menu/delete still target the exact visible record while only the viewport range is rendered. |
 | SDTEST-1357 | *to write* — New Request AI generation only fills the current unsent sheet | SDUC-414, SDUC-422 | **Red / P0** | GPUI wiring: AI panel starts collapsed and resets on close; explicit instructions show loading, valid structured output fills title/body/priority without submitting, and a response arriving after close cannot overwrite a later draft. |
 | SDTEST-1359 | *to write* — structured request triage requires explicit staff confirmation | SDUC-414, SDUC-423 | **Red / P0** | GPUI wiring: staff sees before/after priority and assignee plus rationale/actions; apply revalidates target and agent, non-staff cannot emit mutations, and no-change/invalid proposals keep Apply disabled. |
+| SDTEST-1360 | *to write* — Support conversion opens a source-aware unsent draft | SDUC-424 | **Red / P0** | GPUI wiring: Convert pre-fills title/body and `source=support`, does not call create, and close followed by New Request resets the source to `user`. |
 
 ---
 

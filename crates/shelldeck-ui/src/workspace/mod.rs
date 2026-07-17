@@ -391,6 +391,7 @@ pub struct Workspace {
     issue_ai_error: Option<String>,
     issue_ai_request_id: u64,
     issue_new_priority: String,
+    issue_new_source: &'static str,
     /// User-home "Mes sites" search — filters the compact rows client-side
     /// by label + host + tenant_name. The query is read live from the input
     /// state at render time (same pattern as `SupportView::search_query` —
@@ -927,6 +928,7 @@ impl Workspace {
             issue_ai_request_id: 0,
             user_sites_search_state: cx.new(InputState::new),
             issue_new_priority: "normal".to_string(),
+            issue_new_source: "user",
             bext_view,
             _bext_sub: bext_sub,
             bext_user: None,
@@ -3834,7 +3836,7 @@ impl Workspace {
             }
             SupportViewEvent::SendToJean(text) => self.jean_say(text, cx),
             SupportViewEvent::ConvertToIssue { title, body } => {
-                self.create_issue_now(title, body, "normal".to_string(), "support", cx)
+                self.open_prefilled_request(title, body, "support", cx)
             }
             SupportViewEvent::IssuesRefresh => self.refresh_issues(cx),
             SupportViewEvent::SelectIssue(id) => self.select_issue(id, cx),
@@ -4800,6 +4802,36 @@ impl Workspace {
         if self.can_switch_mode() {
             self.set_mode(AppMode::User, cx);
         }
+        self.issue_new_source = "user";
+        self.user_new_request_sheet_open = true;
+        self.sync_issues_poll(cx);
+        cx.notify();
+    }
+
+    fn open_prefilled_request(
+        &mut self,
+        title: String,
+        body: String,
+        source: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.app_config.cloud_sync.is_configured() {
+            return;
+        }
+        self.issue_title_state
+            .update(cx, |state, cx| state.replace_content(title, cx));
+        self.issue_body_state
+            .update(cx, |state, cx| state.replace_content(body, cx));
+        Self::reset_input(&self.issue_ai_prompt_state.clone(), cx);
+        self.issue_new_priority = "normal".to_string();
+        self.issue_new_source = source;
+        self.issue_ai_expanded = false;
+        self.issue_ai_loading = false;
+        self.issue_ai_error = None;
+        self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
+        if self.can_switch_mode() {
+            self.set_mode(AppMode::User, cx);
+        }
         self.user_new_request_sheet_open = true;
         self.sync_issues_poll(cx);
         cx.notify();
@@ -4840,6 +4872,7 @@ impl Workspace {
                 Self::reset_input(&ws.issue_title_state.clone(), cx);
                 Self::reset_input(&ws.issue_body_state.clone(), cx);
                 Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
+                ws.issue_new_source = "user";
                 cx.notify();
             });
         })
@@ -5098,6 +5131,7 @@ impl Workspace {
                     ws.issue_ai_expanded = false;
                     ws.issue_ai_loading = false;
                     ws.issue_ai_error = None;
+                    ws.issue_new_source = "user";
                     ws.upsert_issue_in_list(iss.clone());
                     ws.issue_detail = Some(iss.clone());
                     ws.issue_selected = Some(iss.id.clone());
@@ -5537,7 +5571,8 @@ impl Workspace {
         let title = self.issue_title_state.read(cx).content().to_string();
         let body = self.issue_body_state.read(cx).content().to_string();
         let prio = self.issue_new_priority.clone();
-        self.create_issue_now(title, body, prio, "user", cx);
+        let source = self.issue_new_source;
+        self.create_issue_now(title, body, prio, source, cx);
     }
 
     /// Submit the comment composer on the currently-open detail sheet.

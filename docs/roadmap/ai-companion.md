@@ -433,7 +433,10 @@ La phase 1 est terminée.
   proposé sont revérifiés avant mutation.
 - Restant: tags de demandes, bloqués tant que l'API Issues n'expose pas de
   mutation dédiée.
-- Création de demande depuis un ticket Support ou une erreur Terminal.
+- Fait: convertir un ticket Support ouvre un brouillon Nouvelle demande
+  prérempli et marqué `source=support`; aucune création n'a lieu avant le clic
+  explicite sur Créer et le panneau IA peut encore ajuster le brouillon.
+- Restant: création de demande depuis une erreur Terminal.
 - Nommage des entites.
 
 ### Phase 3 - executions confirmees

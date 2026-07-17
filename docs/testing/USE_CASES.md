@@ -1406,6 +1406,13 @@ request identity, schema, and agent availability before sequential API writes.
 Non-staff users never see the applicable triage action. Tags remain excluded
 until the Issues API exposes a dedicated mutation.
 
+### SDUC-424 — Support conversion opens an unsent request draft
+
+Converting a Support ticket switches to the New Request sheet with title and
+description prefilled and source set to `support`. The user may edit or use AI,
+and only the existing Create action sends the request. Closing the sheet resets
+the source so a later ordinary request remains `user`.
+
 ---
 
 ## Retired use cases
@@ -1418,6 +1425,7 @@ until the Issues API exposes a dedicated mutation.
 
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
+- **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.
 - **2026-07-17** — Added SDUC-422 and SDTEST-1356/1357 for structured,
   non-submitting AI preparation in the New Request sheet.
 - **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support
