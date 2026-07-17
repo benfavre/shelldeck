@@ -1,6 +1,8 @@
 use crate::scale::px;
 use adabraka_ui::components::combobox::Combobox;
+use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -14,6 +16,7 @@ use crate::theme::ShellDeckColors;
 #[derive(Debug, Clone)]
 pub enum PortForwardFormEvent {
     Save(PortForward),
+    SuggestNameWithAi,
     Cancel,
 }
 
@@ -71,6 +74,7 @@ pub struct PortForwardForm {
     local_port_state: Entity<InputState>,
     remote_host_state: Entity<InputState>,
     remote_port_state: Entity<InputState>,
+    ai_enabled: bool,
     error: Option<String>,
     error_field: Option<FormField>,
     focus_handle: FocusHandle,
@@ -122,7 +126,11 @@ impl PortForwardForm {
         combobox
     }
 
-    pub fn new(connections: Vec<(Uuid, String, String)>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        connections: Vec<(Uuid, String, String)>,
+        ai_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let connection_combobox = Self::init_connection_combobox(&connections, 0, cx);
         Self {
             editing_id: None,
@@ -134,6 +142,7 @@ impl PortForwardForm {
             local_port_state: new_input_state(cx, ""),
             remote_host_state: new_input_state(cx, "127.0.0.1"),
             remote_port_state: new_input_state(cx, ""),
+            ai_enabled,
             error: None,
             error_field: None,
             focus_handle: cx.focus_handle(),
@@ -145,6 +154,7 @@ impl PortForwardForm {
     pub fn from_port_forward(
         forward: &PortForward,
         connections: Vec<(Uuid, String, String)>,
+        ai_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let selected_idx = connections
@@ -162,6 +172,7 @@ impl PortForwardForm {
             local_port_state: new_input_state(cx, &forward.local_port.to_string()),
             remote_host_state: new_input_state(cx, &forward.remote_host),
             remote_port_state: new_input_state(cx, &forward.remote_port.to_string()),
+            ai_enabled,
             error: None,
             error_field: None,
             focus_handle: cx.focus_handle(),
@@ -174,8 +185,32 @@ impl PortForwardForm {
         self.focus_handle.focus(window);
     }
 
-    fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
+    fn field_value(state: &Entity<InputState>, cx: &App) -> String {
         state.read(cx).content().to_string()
+    }
+
+    pub fn ai_context_data(&self, cx: &App) -> serde_json::Value {
+        let connection = self.connections.get(self.selected_connection_idx);
+        serde_json::json!({
+            "tunnel": {
+                "current_label": Self::field_value(&self.label_state, cx),
+                "direction": format!("{:?}", self.direction),
+                "local_host": Self::field_value(&self.local_host_state, cx),
+                "local_port": Self::field_value(&self.local_port_state, cx),
+                "remote_host": Self::field_value(&self.remote_host_state, cx),
+                "remote_port": Self::field_value(&self.remote_port_state, cx),
+                "connection": connection.map(|(_, alias, hostname)| serde_json::json!({
+                    "alias": alias,
+                    "hostname": hostname,
+                })),
+            }
+        })
+    }
+
+    pub fn apply_ai_name(&mut self, name: String, cx: &mut Context<Self>) {
+        self.label_state
+            .update(cx, |state, cx| state.replace_content(name, cx));
+        cx.notify();
     }
 
     fn is_valid(&self, cx: &Context<Self>) -> bool {
@@ -429,13 +464,30 @@ impl Render for PortForwardForm {
             .p(px(20.0))
             // Connection picker
             .child(self.render_connection_picker(cx))
-            .child(self.render_text_field(
-                None,
-                t!("forward_form.field.label").to_string(),
-                &self.label_state,
-                t!("forward_form.field.label_placeholder").to_string(),
-                cx,
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(px(8.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(self.render_text_field(
+                        None,
+                        t!("forward_form.field.label").to_string(),
+                        &self.label_state,
+                        t!("forward_form.field.label_placeholder").to_string(),
+                        cx,
+                    )))
+                    .when(self.ai_enabled, |row| {
+                        row.child(
+                            Button::new("tunnel-ai-name", t!("ai.naming.action").to_string())
+                                .variant(ButtonVariant::Ai)
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("sparkles"))
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(PortForwardFormEvent::SuggestNameWithAi);
+                                })),
+                        )
+                    }),
+            )
             .child(self.render_direction_chips(cx))
             .child(
                 div()

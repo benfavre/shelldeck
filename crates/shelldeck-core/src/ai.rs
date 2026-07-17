@@ -204,6 +204,11 @@ pub struct AiGeneratedIssueDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiGeneratedName {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiIssueTriageProposal {
     pub priority: Option<String>,
     pub assignee: Option<String>,
@@ -307,6 +312,26 @@ pub fn parse_generated_issue_draft(raw: &str) -> Result<AiGeneratedIssueDraft> {
     })
 }
 
+pub fn parse_generated_name(raw: &str) -> Result<AiGeneratedName> {
+    let json_text = strip_markdown_fence(raw);
+    let value: Value = serde_json::from_str(json_text).map_err(|error| {
+        ShellDeckError::Serialization(format!("invalid generated name JSON: {error}"))
+    })?;
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty() || name.contains(['\n', '\r']) || name.chars().count() > 80 {
+        return Err(ShellDeckError::Serialization(
+            "generated name must contain 1 to 80 characters on one line".to_string(),
+        ));
+    }
+    Ok(AiGeneratedName {
+        name: name.to_string(),
+    })
+}
+
 pub fn parse_generated_script_draft(raw: &str) -> Result<AiGeneratedScriptDraft> {
     let json_text = strip_markdown_fence(raw);
     let value: Value = serde_json::from_str(json_text).map_err(|error| {
@@ -393,6 +418,7 @@ pub struct AiResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiCapability {
+    Naming,
     SupportReply,
     SupportSummary,
     SupportTriage,
@@ -1441,6 +1467,21 @@ mod tests {
         assert_eq!(draft.title, "Échec de déploiement sur production");
         assert!(draft.description.contains("Résultat attendu"));
         assert_eq!(draft.priority, "high");
+    }
+
+    // SDTEST-1362
+    #[test]
+    fn generated_name_json_is_short_single_line_text() {
+        let generated = parse_generated_name(
+            r#"```json
+{"name":"Production database tunnel"}
+```"#,
+        )
+        .unwrap();
+        assert_eq!(generated.name, "Production database tunnel");
+
+        assert!(parse_generated_name(r#"{"name":"first\nsecond"}"#).is_err());
+        assert!(parse_generated_name(&format!(r#"{{"name":"{}"}}"#, "x".repeat(81))).is_err());
     }
 
     // SDTEST-1358

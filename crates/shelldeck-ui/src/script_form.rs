@@ -1,5 +1,6 @@
 use crate::scale::px;
 use adabraka_ui::components::combobox::Combobox;
+use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::prelude::{
     Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
@@ -36,6 +37,7 @@ fn script_form_error(err: ValidationError) -> String {
 pub enum ScriptFormEvent {
     Save(Script),
     GenerateWithAi { instructions: String },
+    SuggestNameWithAi,
     Cancel,
 }
 
@@ -77,6 +79,7 @@ pub struct ScriptForm {
     description_state: Entity<InputState>,
     ai_prompt_state: Entity<InputState>,
     ai_enabled: bool,
+    ai_naming_enabled: bool,
     ai_loading: bool,
     ai_error: Option<String>,
     language: ScriptLanguage,
@@ -141,6 +144,7 @@ impl ScriptForm {
     pub fn new(
         connections: Vec<(Uuid, String, String)>,
         ai_enabled: bool,
+        ai_naming_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let connection_combobox = Self::init_connection_combobox(&connections, 0, cx);
@@ -152,6 +156,7 @@ impl ScriptForm {
             description_state: new_input_state_sf(cx, ""),
             ai_prompt_state: new_input_state_sf(cx, ""),
             ai_enabled,
+            ai_naming_enabled,
             ai_loading: false,
             ai_error: None,
             language: ScriptLanguage::Shell,
@@ -171,6 +176,7 @@ impl ScriptForm {
         script: &Script,
         connections: Vec<(Uuid, String, String)>,
         ai_enabled: bool,
+        ai_naming_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let (target, selected_idx) = match &script.target {
@@ -192,6 +198,7 @@ impl ScriptForm {
             description_state: new_input_state_sf(cx, script.description.as_deref().unwrap_or("")),
             ai_prompt_state: new_input_state_sf(cx, ""),
             ai_enabled,
+            ai_naming_enabled,
             ai_loading: false,
             ai_error: None,
             language: script.language.clone(),
@@ -213,6 +220,11 @@ impl ScriptForm {
 
     pub fn set_ai_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.ai_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn set_ai_naming_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_naming_enabled = enabled;
         cx.notify();
     }
 
@@ -263,6 +275,12 @@ impl ScriptForm {
                 "current_body": self.body.text(),
             }
         })
+    }
+
+    pub fn apply_ai_name(&mut self, name: String, cx: &mut Context<Self>) {
+        self.name_state
+            .update(cx, |state, cx| state.replace_content(name, cx));
+        cx.notify();
     }
 
     fn request_ai_generation(&mut self, cx: &mut Context<Self>) {
@@ -1058,13 +1076,30 @@ impl Render for ScriptForm {
 
         form_fields = form_fields
             // Name
-            .child(self.render_text_field(
-                Some(FormField::Name),
-                t!("script_form.field.name").to_string(),
-                &self.name_state,
-                t!("script_form.field.name_placeholder").to_string(),
-                cx,
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(px(8.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(self.render_text_field(
+                        Some(FormField::Name),
+                        t!("script_form.field.name").to_string(),
+                        &self.name_state,
+                        t!("script_form.field.name_placeholder").to_string(),
+                        cx,
+                    )))
+                    .when(self.ai_naming_enabled, |row| {
+                        row.child(
+                            Button::new("script-ai-name", t!("ai.naming.action").to_string())
+                                .variant(ButtonVariant::Ai)
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("sparkles"))
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(ScriptFormEvent::SuggestNameWithAi);
+                                })),
+                        )
+                    }),
+            )
             .child(self.render_text_field(
                 None,
                 t!("script_form.field.description").to_string(),

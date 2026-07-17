@@ -652,6 +652,7 @@ pub enum TerminalEvent {
     TogglePinScript(Uuid),
     GenerateCommandWithAi(Uuid),
     DiagnoseWithAi(Uuid),
+    SuggestNameWithAi(Uuid),
     CreateIssueFromContext(Uuid),
 }
 
@@ -1083,6 +1084,7 @@ pub struct TerminalView {
     claude_available: bool,
     codex_available: bool,
     ai_actions_enabled: bool,
+    ai_naming_enabled: bool,
     /// Configured scrollback buffer size (lines). Applied to live grids and to
     /// newly added sessions.
     configured_scrollback: usize,
@@ -1200,6 +1202,7 @@ impl TerminalView {
             claude_available,
             codex_available,
             ai_actions_enabled: false,
+            ai_naming_enabled: false,
             configured_scrollback: 10_000,
             has_focus: false,
             output_tx,
@@ -1598,6 +1601,33 @@ impl TerminalView {
     pub fn set_ai_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.ai_actions_enabled = enabled;
         cx.notify();
+    }
+
+    pub fn set_ai_naming_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ai_naming_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn apply_ai_name(
+        &mut self,
+        expected_session: Uuid,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let Some(index) = self
+            .pane
+            .sessions
+            .iter()
+            .position(|session| session.id == expected_session)
+        else {
+            return Err("session_changed");
+        };
+        self.pane.sessions[index].title = name.clone();
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == expected_session) {
+            tab.title = name;
+        }
+        cx.notify();
+        Ok(())
     }
 
     /// Insert a reviewed AI command without submitting it.
@@ -2376,6 +2406,7 @@ impl TerminalView {
         let lbl_recent = t!("terminal.toolbar.recent");
         let lbl_ai_command = t!("terminal.toolbar.ai_command");
         let lbl_ai_diagnose = t!("terminal.toolbar.ai_diagnose");
+        let lbl_ai_name = t!("terminal.toolbar.ai_name");
         let lbl_ai_issue = t!("terminal.toolbar.ai_issue");
 
         let (primary, copy_keys, paste_keys, split_h_keys, split_v_keys) =
@@ -2604,6 +2635,18 @@ impl TerminalView {
                         .h(px(16.0))
                         .mx(px(6.0))
                         .bg(ShellDeckColors::border()),
+                );
+            }
+        }
+
+        if self.ai_naming_enabled {
+            if let Some(session) = self.active_session() {
+                let session_id = session.id;
+                toolbar = toolbar.child(
+                    ai_toolbar_icon("tb-ai-name", "wand-sparkles", lbl_ai_name.to_string())
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(TerminalEvent::SuggestNameWithAi(session_id));
+                        })),
                 );
             }
         }

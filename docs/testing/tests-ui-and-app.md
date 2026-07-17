@@ -234,6 +234,8 @@ parallel `cargo test`.
 | SDTEST-1359 | *to write* — structured request triage requires explicit staff confirmation | SDUC-414, SDUC-423 | **Red / P0** | GPUI wiring: staff sees before/after priority and assignee plus rationale/actions; apply revalidates target and agent, non-staff cannot emit mutations, and no-change/invalid proposals keep Apply disabled. |
 | SDTEST-1360 | *to write* — Support conversion opens a source-aware unsent draft | SDUC-424 | **Red / P0** | GPUI wiring: Convert pre-fills title/body and `source=support`, does not call create, and close followed by New Request resets the source to `user`. |
 | SDTEST-1361 | *to write* — Terminal diagnostic context opens a bounded request draft | SDUC-425 | **Red / P0** | GPUI wiring: selection wins over visible output, session identity is revalidated, source is `shelldeck`, and opening/AI adjustment never executes or creates anything. |
+| SDTEST-1362 | `ai.rs::generated_name_json_is_short_single_line_text` | SDUC-426 | Green | Strict JSON naming accepts a short one-line name and rejects multiline or over-80-character output. |
+| SDTEST-1363 | *to write* — naming actions apply only to their still-open entity | SDUC-426 | **Red / P0** | GPUI wiring: Script/Tunnel/Request fields and Terminal title change only after Accept; disabled Naming hides actions, stale targets and Cancel leave state untouched, and no persistence or execution is triggered. |
 
 ---
 

@@ -18,25 +18,62 @@ use crate::support_view::{assignee_display, priority_badge};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiNamingKind {
+    Script,
+    Terminal,
+    Tunnel,
+    Issue,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiWorkflowTarget {
-    SupportReply { ticket_id: String },
-    SupportSummary { ticket_id: String },
-    SupportTriage { ticket_id: String },
-    IssueReply { issue_id: String },
-    IssueSummary { issue_id: String },
-    IssueTriage { issue_id: String },
-    ScriptGenerate { script_id: String },
-    ScriptExplain { script_id: String },
-    ScriptReview { script_id: String },
-    ScriptFix { script_id: String },
-    TerminalCommand { session_id: String },
-    TerminalDiagnose { session_id: String },
+    EntityNaming {
+        kind: AiNamingKind,
+        target_id: String,
+    },
+    SupportReply {
+        ticket_id: String,
+    },
+    SupportSummary {
+        ticket_id: String,
+    },
+    SupportTriage {
+        ticket_id: String,
+    },
+    IssueReply {
+        issue_id: String,
+    },
+    IssueSummary {
+        issue_id: String,
+    },
+    IssueTriage {
+        issue_id: String,
+    },
+    ScriptGenerate {
+        script_id: String,
+    },
+    ScriptExplain {
+        script_id: String,
+    },
+    ScriptReview {
+        script_id: String,
+    },
+    ScriptFix {
+        script_id: String,
+    },
+    TerminalCommand {
+        session_id: String,
+    },
+    TerminalDiagnose {
+        session_id: String,
+    },
 }
 
 impl AiWorkflowTarget {
     pub fn capability(&self) -> AiCapability {
         match self {
+            Self::EntityNaming { .. } => AiCapability::Naming,
             Self::SupportReply { .. } => AiCapability::SupportReply,
             Self::SupportSummary { .. } => AiCapability::SupportSummary,
             Self::SupportTriage { .. } => AiCapability::SupportTriage,
@@ -54,6 +91,7 @@ impl AiWorkflowTarget {
 
     pub fn target_id(&self) -> &str {
         match self {
+            Self::EntityNaming { target_id, .. } => target_id,
             Self::SupportReply { ticket_id }
             | Self::SupportSummary { ticket_id }
             | Self::SupportTriage { ticket_id } => ticket_id,
@@ -72,6 +110,7 @@ impl AiWorkflowTarget {
 
     pub fn surface(&self) -> AiSurface {
         match self {
+            Self::EntityNaming { .. } => AiSurface::Naming,
             Self::SupportReply { .. }
             | Self::SupportSummary { .. }
             | Self::SupportTriage { .. } => AiSurface::Support,
@@ -411,6 +450,7 @@ impl Render for AiWorkflowView {
             self.model.clone()
         };
         let instructions_placeholder = match self.target {
+            AiWorkflowTarget::EntityNaming { .. } => t!("ai.workflow.naming_guidance").to_string(),
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_guidance").to_string(),
             AiWorkflowTarget::SupportSummary { .. } => {
                 t!("ai.workflow.support_summary_guidance").to_string()
@@ -584,6 +624,9 @@ impl Render for AiWorkflowView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_muted())
                             .child(match self.target {
+                                AiWorkflowTarget::EntityNaming { .. } => {
+                                    t!("ai.workflow.adjust_label").to_string()
+                                }
                                 AiWorkflowTarget::SupportReply { .. }
                                 | AiWorkflowTarget::IssueReply { .. } => {
                                     t!("ai.workflow.guidance_label").to_string()

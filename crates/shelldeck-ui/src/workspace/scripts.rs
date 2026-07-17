@@ -9,6 +9,7 @@ use shelldeck_core::models::templates::all_templates;
 use shelldeck_ssh::client::SshClient;
 use uuid::Uuid;
 
+use crate::ai_workflow::{AiNamingKind, AiWorkflowTarget};
 use crate::script_editor::ScriptEvent;
 use crate::script_form::{ScriptForm, ScriptFormEvent};
 use crate::t;
@@ -1113,7 +1114,10 @@ impl Workspace {
 
         let ai_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
-        let form = cx.new(|form_cx| ScriptForm::new(connections, ai_enabled, form_cx));
+        let ai_naming_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let form =
+            cx.new(|form_cx| ScriptForm::new(connections, ai_enabled, ai_naming_enabled, form_cx));
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
             match event {
@@ -1154,6 +1158,15 @@ impl Workspace {
                 ScriptFormEvent::GenerateWithAi { instructions } => {
                     this.generate_script_form_with_ai(instructions.clone(), cx);
                 }
+                ScriptFormEvent::SuggestNameWithAi => {
+                    this.open_ai_workflow(
+                        AiWorkflowTarget::EntityNaming {
+                            kind: AiNamingKind::Script,
+                            target_id: "script-form".to_string(),
+                        },
+                        cx,
+                    );
+                }
                 ScriptFormEvent::Cancel => {
                     this.script_form = None;
                     this._script_form_sub = None;
@@ -1181,8 +1194,11 @@ impl Workspace {
         let script = script.clone();
         let ai_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
-        let form =
-            cx.new(|form_cx| ScriptForm::from_script(&script, connections, ai_enabled, form_cx));
+        let ai_naming_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let form = cx.new(|form_cx| {
+            ScriptForm::from_script(&script, connections, ai_enabled, ai_naming_enabled, form_cx)
+        });
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
             match event {
@@ -1241,6 +1257,15 @@ impl Workspace {
                 }
                 ScriptFormEvent::GenerateWithAi { instructions } => {
                     this.generate_script_form_with_ai(instructions.clone(), cx);
+                }
+                ScriptFormEvent::SuggestNameWithAi => {
+                    this.open_ai_workflow(
+                        AiWorkflowTarget::EntityNaming {
+                            kind: AiNamingKind::Script,
+                            target_id: "script-form".to_string(),
+                        },
+                        cx,
+                    );
                 }
                 ScriptFormEvent::Cancel => {
                     this.script_form = None;

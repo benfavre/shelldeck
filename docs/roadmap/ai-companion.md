@@ -425,7 +425,9 @@ La phase 1 est terminée.
   uniquement le brouillon local, avec une tentative corrective si le provider
   ne respecte pas le schéma; aucune demande n'est créée automatiquement et les
   hosts ne sont utilisés que comme contexte.
-- Restant: autres formulaires et surfaces.
+- Fait: nommage contextuel des scripts, sessions terminal, tunnels et nouvelles
+  demandes. Chaque bouton ouvre le workflow IA commun, valide un nom JSON court
+  sur une ligne et ne remplace le champ local qu'après acceptation explicite.
 - Fait: le triage Demandes produit une proposition structurée, validée puis
   réparée une fois si nécessaire. Le staff prévisualise priorité et assignation
   en avant/après, la justification et les prochaines actions; un second clic
@@ -439,7 +441,6 @@ La phase 1 est terminée.
 - Fait: la toolbar Terminal ouvre un brouillon de demande `source=shelldeck`
   depuis la sélection ou, à défaut, les 120 lignes visibles bornées, avec la
   session et le répertoire; aucune demande n'est créée automatiquement.
-- Nommage des entites.
 
 ### Phase 3 - executions confirmees
 

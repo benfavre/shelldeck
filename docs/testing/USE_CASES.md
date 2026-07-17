@@ -1420,6 +1420,16 @@ Request with session, working directory, and the current selection or latest
 120 visible lines. The draft source is `shelldeck`; no command runs and no
 request is created until the existing Create action is confirmed.
 
+### SDUC-426 — AI proposes reviewable entity names
+
+When Naming AI is enabled, the Script form, Terminal toolbar, Tunnel form, and
+New Request sheet expose a visually consistent AI naming action. The provider
+receives only the current entity context plus the bounded host directory and
+must return a strict one-line JSON name of at most 80 characters. The shared
+workflow previews the proposal; only Accept updates the still-local field or
+session title. Cancelling, closing, or losing the original target changes
+nothing and never saves, creates, connects, or executes an entity.
+
 ---
 
 ## Retired use cases
@@ -1434,6 +1444,8 @@ request is created until the existing Create action is confirmed.
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.
 - **2026-07-17** — Added SDUC-425 for bounded Terminal-to-request drafts.
+- **2026-07-17** — Added SDUC-426 and SDTEST-1362/1363 for explicit,
+  schema-validated naming of scripts, sessions, tunnels, and requests.
 - **2026-07-17** — Added SDUC-422 and SDTEST-1356/1357 for structured,
   non-submitting AI preparation in the New Request sheet.
 - **2026-07-17** — Added SDUC-421 and SDTEST-1355 for virtualized User/Support

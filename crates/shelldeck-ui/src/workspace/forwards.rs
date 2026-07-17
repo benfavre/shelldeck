@@ -1,11 +1,13 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::ai::AiSurface;
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus};
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::tunnel::TunnelHandle;
 use uuid::Uuid;
 
+use crate::ai_workflow::{AiNamingKind, AiWorkflowTarget};
 use crate::port_forward_form::{PortForwardForm, PortForwardFormEvent};
 use crate::port_forward_view::PortForwardEvent;
 use crate::t;
@@ -500,7 +502,9 @@ impl Workspace {
             .map(|c| (c.id, c.display_name().to_string(), c.hostname.clone()))
             .collect();
 
-        let form = cx.new(|form_cx| PortForwardForm::new(connections, form_cx));
+        let ai_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let form = cx.new(|form_cx| PortForwardForm::new(connections, ai_enabled, form_cx));
 
         let sub = cx.subscribe(&form, |this, _form, event: &PortForwardFormEvent, cx| {
             match event {
@@ -543,6 +547,15 @@ impl Workspace {
                     this._pf_form_sub = None;
                     cx.notify();
                 }
+                PortForwardFormEvent::SuggestNameWithAi => {
+                    this.open_ai_workflow(
+                        AiWorkflowTarget::EntityNaming {
+                            kind: AiNamingKind::Tunnel,
+                            target_id: "tunnel-form".to_string(),
+                        },
+                        cx,
+                    );
+                }
                 PortForwardFormEvent::Cancel => {
                     this.port_forward_form = None;
                     this._pf_form_sub = None;
@@ -568,8 +581,11 @@ impl Workspace {
             .collect();
 
         let forward = forward.clone();
-        let form =
-            cx.new(|form_cx| PortForwardForm::from_port_forward(&forward, connections, form_cx));
+        let ai_enabled =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let form = cx.new(|form_cx| {
+            PortForwardForm::from_port_forward(&forward, connections, ai_enabled, form_cx)
+        });
 
         let sub = cx.subscribe(&form, |this, _form, event: &PortForwardFormEvent, cx| {
             match event {
@@ -630,6 +646,15 @@ impl Workspace {
                     this.port_forward_form = None;
                     this._pf_form_sub = None;
                     cx.notify();
+                }
+                PortForwardFormEvent::SuggestNameWithAi => {
+                    this.open_ai_workflow(
+                        AiWorkflowTarget::EntityNaming {
+                            kind: AiNamingKind::Tunnel,
+                            target_id: "tunnel-form".to_string(),
+                        },
+                        cx,
+                    );
                 }
                 PortForwardFormEvent::Cancel => {
                     this.port_forward_form = None;

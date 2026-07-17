@@ -10,8 +10,8 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
     configured_cli_available, create_client, host_context, parse_generated_issue_draft,
-    parse_issue_triage_proposal, test_connection, AiContext, AiDraft, AiDraftStore,
-    AiIssueTriageProposal, AiSurface,
+    parse_generated_name, parse_issue_triage_proposal, test_connection, AiContext, AiDraft,
+    AiDraftStore, AiIssueTriageProposal, AiSurface,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -37,7 +37,7 @@ use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
-use crate::ai_workflow::{AiWorkflowEvent, AiWorkflowTarget, AiWorkflowView};
+use crate::ai_workflow::{AiNamingKind, AiWorkflowEvent, AiWorkflowTarget, AiWorkflowView};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
@@ -641,6 +641,10 @@ impl Workspace {
         terminal.update(cx, |view, cx| {
             view.set_ai_actions_enabled(
                 ai_backend_ready && app_config.ai.allows(AiSurface::Terminal),
+                cx,
+            );
+            view.set_ai_naming_enabled(
+                ai_backend_ready && app_config.ai.allows(AiSurface::Naming),
                 cx,
             );
         });
@@ -1424,6 +1428,15 @@ impl Workspace {
                     cx,
                 );
             }
+            TerminalEvent::SuggestNameWithAi(session_id) => {
+                self.open_ai_workflow(
+                    AiWorkflowTarget::EntityNaming {
+                        kind: AiNamingKind::Terminal,
+                        target_id: session_id.to_string(),
+                    },
+                    cx,
+                );
+            }
             TerminalEvent::CreateIssueFromContext(session_id) => {
                 let context = self.terminal.read(cx).ai_context_data();
                 let expected_session = session_id.to_string();
@@ -1825,11 +1838,19 @@ impl Workspace {
                     backend_ready && self.app_config.ai.allows(AiSurface::Script),
                     cx,
                 );
+                form.set_ai_naming_enabled(
+                    backend_ready && self.app_config.ai.allows(AiSurface::Naming),
+                    cx,
+                );
             });
         }
         self.terminal.update(cx, |view, cx| {
             view.set_ai_actions_enabled(
                 backend_ready && self.app_config.ai.allows(AiSurface::Terminal),
+                cx,
+            );
+            view.set_ai_naming_enabled(
+                backend_ready && self.app_config.ai.allows(AiSurface::Naming),
                 cx,
             );
         });
@@ -1857,7 +1878,8 @@ impl Workspace {
             .cloned();
         let should_generate = matches!(
             &target,
-            AiWorkflowTarget::SupportReply { .. }
+            AiWorkflowTarget::EntityNaming { .. }
+                | AiWorkflowTarget::SupportReply { .. }
                 | AiWorkflowTarget::SupportSummary { .. }
                 | AiWorkflowTarget::SupportTriage { .. }
                 | AiWorkflowTarget::IssueReply { .. }
@@ -1869,6 +1891,7 @@ impl Workspace {
                 | AiWorkflowTarget::TerminalDiagnose { .. }
         ) && pending.is_none();
         let title = match &target {
+            AiWorkflowTarget::EntityNaming { .. } => t!("ai.naming.title").to_string(),
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_title").to_string(),
             AiWorkflowTarget::SupportSummary { .. } => {
                 t!("ai.workflow.support_summary_title").to_string()
@@ -1952,6 +1975,33 @@ impl Workspace {
 
     fn ai_workflow_context(&self, target: &AiWorkflowTarget, cx: &App) -> AiContext {
         match target {
+            AiWorkflowTarget::EntityNaming { kind, .. } => {
+                let entity = match kind {
+                    AiNamingKind::Script => self
+                        .script_form
+                        .as_ref()
+                        .map(|form| form.read(cx).ai_context_data(cx))
+                        .unwrap_or_else(|| self.script_ai_context_data(cx)),
+                    AiNamingKind::Terminal => self.terminal.read(cx).ai_context_data(),
+                    AiNamingKind::Tunnel => self
+                        .port_forward_form
+                        .as_ref()
+                        .map(|form| form.read(cx).ai_context_data(cx))
+                        .unwrap_or_else(|| serde_json::json!({ "tunnel": null })),
+                    AiNamingKind::Issue => serde_json::json!({
+                        "request": {
+                            "current_title": self.issue_title_state.read(cx).content().to_string(),
+                            "description": self.issue_body_state.read(cx).content().to_string(),
+                            "priority": self.issue_new_priority,
+                        }
+                    }),
+                };
+                AiContext::new(
+                    AiSurface::Naming,
+                    t!("ai.context.entity_naming").to_string(),
+                    self.ai_context_data_with_hosts(entity),
+                )
+            }
             AiWorkflowTarget::SupportReply { .. }
             | AiWorkflowTarget::SupportSummary { .. }
             | AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
@@ -2003,6 +2053,9 @@ impl Workspace {
                 instructions,
             } => {
                 let base = match &target {
+                    AiWorkflowTarget::EntityNaming { .. } => {
+                        t!("ai.prompt.entity_name").to_string()
+                    }
                     AiWorkflowTarget::SupportReply { .. } => {
                         t!("ai.prompt.support_reply").to_string()
                     }
@@ -2049,6 +2102,7 @@ impl Workspace {
                 let config = self.app_config.ai.clone();
                 let structured_issue_triage =
                     matches!(&target, AiWorkflowTarget::IssueTriage { .. });
+                let structured_name = matches!(&target, AiWorkflowTarget::EntityNaming { .. });
                 let issue_triage_repair =
                     t!("ai.prompt.issue_triage_repair", error = "__TRIAGE_ERROR__").to_string();
                 let workflow = self.ai_workflow.as_ref().map(|entity| entity.downgrade());
@@ -2058,6 +2112,10 @@ impl Workspace {
                         .spawn(async move {
                             let client = create_client(&config)?;
                             let response = client.complete(&prompt, context.clone())?;
+                            if structured_name {
+                                parse_generated_name(&response.text)?;
+                                return Ok::<String, shelldeck_core::ShellDeckError>(response.text);
+                            }
                             if !structured_issue_triage {
                                 return Ok::<String, shelldeck_core::ShellDeckError>(response.text);
                             }
@@ -2086,6 +2144,70 @@ impl Workspace {
                 .detach();
             }
             AiWorkflowEvent::Accept { target, result } => {
+                if let AiWorkflowTarget::EntityNaming { kind, target_id } = &target {
+                    let generated = match parse_generated_name(&result) {
+                        Ok(generated) => generated,
+                        Err(error) => {
+                            self.show_toast(
+                                t!("toast.ai.name_invalid", error = error.to_string()).to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        }
+                    };
+                    let applied = match kind {
+                        AiNamingKind::Script => self.script_form.as_ref().is_some_and(|form| {
+                            form.update(cx, |form, cx| form.apply_ai_name(generated.name, cx));
+                            true
+                        }),
+                        AiNamingKind::Terminal => {
+                            Uuid::parse_str(target_id).ok().is_some_and(|id| {
+                                self.terminal
+                                    .update(cx, |view, cx| {
+                                        view.apply_ai_name(id, generated.name, cx)
+                                    })
+                                    .is_ok()
+                            })
+                        }
+                        AiNamingKind::Tunnel => {
+                            self.port_forward_form.as_ref().is_some_and(|form| {
+                                form.update(cx, |form, cx| form.apply_ai_name(generated.name, cx));
+                                true
+                            })
+                        }
+                        AiNamingKind::Issue => {
+                            if self.user_new_request_sheet_open {
+                                self.issue_title_state.update(cx, |state, cx| {
+                                    state.replace_content(generated.name, cx)
+                                });
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    };
+                    if !applied {
+                        self.show_toast(
+                            t!("toast.ai.name_target_missing").to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        );
+                        return;
+                    }
+                    self.ai_drafts.retain(|draft| {
+                        !(draft.capability == target.capability()
+                            && draft.target_id == target.target_id())
+                    });
+                    let _ = AiDraftStore::save(&self.ai_drafts);
+                    self.close_ai_workflow(cx);
+                    self.show_toast(
+                        t!("toast.ai.name_applied").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    return;
+                }
                 if let AiWorkflowTarget::IssueTriage { issue_id } = &target {
                     let proposal = match parse_issue_triage_proposal(&result) {
                         Ok(proposal) => proposal,
@@ -2121,6 +2243,7 @@ impl Workspace {
                         | AiWorkflowTarget::TerminalDiagnose { .. }
                 );
                 match &target {
+                    AiWorkflowTarget::EntityNaming { .. } => unreachable!(),
                     AiWorkflowTarget::SupportReply { .. } => {
                         self.support.update(cx, |view, cx| {
                             view.set_composer_draft(result, cx);
@@ -9857,30 +9980,59 @@ impl Workspace {
             inner = inner.child(ai_block);
         }
 
-        inner = inner.child(title_input).child(body_input).child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .mt(px(4.0))
-                .child(prio_row)
-                .child(
-                    div()
-                        .id("iss-create")
-                        .px(px(14.0))
-                        .py(px(8.0))
-                        .rounded(px(6.0))
-                        .bg(ShellDeckColors::primary())
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(white())
-                        .cursor_pointer()
-                        .child(t!("user.requests.create").to_string())
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.submit_new_request(cx);
-                        })),
-                ),
-        );
+        inner = inner
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(title_input))
+                    .when(
+                        self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming),
+                        |row| {
+                            row.child(
+                                Button::new("request-ai-name", t!("ai.naming.action").to_string())
+                                    .variant(ButtonVariant::Ai)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("sparkles"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_ai_workflow(
+                                            AiWorkflowTarget::EntityNaming {
+                                                kind: AiNamingKind::Issue,
+                                                target_id: "new-request".to_string(),
+                                            },
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        },
+                    ),
+            )
+            .child(body_input)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .mt(px(4.0))
+                    .child(prio_row)
+                    .child(
+                        div()
+                            .id("iss-create")
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .rounded(px(6.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white())
+                            .cursor_pointer()
+                            .child(t!("user.requests.create").to_string())
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.submit_new_request(cx);
+                            })),
+                    ),
+            );
 
         self.render_user_sheet(
             "user-new-request-sheet",
