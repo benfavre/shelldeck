@@ -286,6 +286,7 @@ Existing: **0 tests**.
 | SDTEST-293 | `issues.rs::staff_actions_surface_403` | SDUC-225 | Green | |
 | SDTEST-294 | `issues.rs::missing_bearer_surfaces_401` | SDUC-226 | Green | |
 | SDTEST-295 | `issues.rs::create_issue_source_field_is_omitted_when_empty_and_present_when_support` | SDUC-222, SDUC-169 | Green | Added 2026-07-09. Complementary edges to `create_and_comment_bodies`: source="" ⇒ the field is OMITTED from the wire body (not sent as `""`), source="support" ⇒ present as a JSON string. Server default of "user" applies only when the key is absent. |
+| SDTEST-1373 | `issues.rs::attachment_receipt_bodies_match_manage_contract` + `attachment_upload_rejects_spoofed_image_bytes` + `upload_issue_attachments_uses_ticket_and_multipart` | SDUC-432 | Green | Pins receipts on request/comment actions, rejects extension/MIME spoofing, and traverses the real ticket → Bearer multipart upload client path against a local mock. |
 | SDTEST-296 | *to write* — set_status / assign / set_priority body shapes (mock-asserted) | SDUC-225 | **Red / P1** | Table-driven. |
 | SDTEST-297 | *to write* — github_push / github_refresh route shapes (not the GitHub call itself) | SDUC-225 | **Red / P2** | Mock only; the real GH call is out-of-scope. |
 | SDTEST-298 | `issues.rs::dispatch_issue_body_carries_id_and_instance_id` | SDUC-225 | Green | Added 2026-07-09. Fleet routing is never exercised live (would fire a real claude job), so this mock-only body assertion is the only guard against a rename like `target_instance`/`instanceId` silently 400ing in prod. The existing mock returns 403 on `dispatch` (non-staff path) but records the POST body BEFORE the 403 fires — assertion happens on the recorder. Snake_case field name `instance_id` is pinned. |
@@ -346,6 +347,9 @@ Existing: **0 tests**.
 | SDTEST-1353 | `ai.rs::script_review_diff_preserves_context_and_marks_replacements` | SDUC-420 | Green | The bounded line diff keeps unchanged lines and marks removed/added script lines for review before replacement. |
 | SDTEST-1356 | `ai.rs::generated_request_json_populates_reviewable_form_fields` | SDUC-422 | Green | Structured request output requires title/description, validates the supported priority enum, and tolerates an accidental outer JSON fence before filling the unsent form. |
 | SDTEST-1358 | `ai.rs::issue_triage_json_preserves_explicit_changes_and_validates_priority` | SDUC-423 | Green | Strict triage JSON preserves nullable priority/assignee mutations, validates the supported priority enum, bounds next actions, and distinguishes analysis-only output from applicable changes. |
+| SDTEST-1367 | `ai.rs::legacy_ai_drafts_load_as_pending_tasks_and_status_changes_persist` | SDUC-418, SDUC-429 | Green | Proves old draft JSON remains readable as a pending task and that the new durable lifecycle status survives the same bounded store. |
+| SDTEST-1369 | `ai.rs::ai_action_policies_default_to_confirmation_and_map_exact_capabilities` | SDUC-430 | Green | Pins safe defaults, exact capability mapping, moderate automatic execution, and forced confirmation for every high-risk plan. |
+| SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
 
 ---
 

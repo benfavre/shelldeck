@@ -1451,6 +1451,55 @@ status, but never command bodies, replies, prompts, terminal output, or secrets.
 Terminal submission is audited as submitted; completion remains observable in
 the PTY and is interrupted manually with Ctrl+C.
 
+### SDUC-429 — AI tasks remain visible outside their originating workflow
+
+Integrated AI generations and confirmed actions appear in a shared Tasks tab
+inside the assistant sheet. The durable task state distinguishes generation,
+ready and pending drafts, confirmation, execution, application, success,
+failure, and cancellation. Legacy persisted drafts load as pending tasks.
+Actionable tasks contribute to the titlebar assistant badge; a task can reopen
+its exact workflow or target, and active Terminal/Script actions reuse their
+existing Stop path. A generation completed after its workflow closes produces
+one in-app result notification. Restarted active states become cancelled rather
+than pretending that a lost process or request is still running.
+
+### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
+
+Settings exposes `Prepare`, `Confirm`, and `Automatic` policies for Support
+send, Terminal execution, Script execution, Jean dispatch, and Fleet dispatch;
+surface toggles remain the single disabled state. Older configurations default
+every executable capability to confirmation. Preparation hides or blocks the
+final executable action. Automatic skips the second dialog only for low or
+moderate risk; high-risk Terminal, Script, and Fleet plans always require the
+dialog. The exact effective policy is frozen into `AiActionPlan`, target and
+permissions are still revalidated, and redacted audit metadata records the
+autonomy used without recording executable content.
+
+### SDUC-431 — Terminal diagnosis produces bounded executable steps
+
+Terminal diagnosis returns a strict structured plan containing a concise
+summary and one to five distinct steps. Core validation accepts only bounded,
+read-only commands from an explicit executable and subcommand allowlist; shell
+operators, elevation, mutation, continuous follow modes, and duplicate steps
+are rejected. The workflow renders each command and explanation separately.
+Running a step revalidates both the command and exact active terminal session,
+then stages a high-risk Terminal action, so confirmation remains mandatory
+under every autonomy policy. Steps are not auto-chained because PTY command
+completion is not yet reliably observable; Ctrl+C remains the stop path.
+
+### SDUC-432 — User requests accept image evidence through every desktop path
+
+The New Request and request-comment composers accept up to five PNG, JPEG, or
+WebP images (10 Mo each) from an image URL, the native file picker,
+Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
+drafts show a removable preview and are not uploaded until submission.
+ShellDeck obtains a short-lived, single-use, issue-scoped ticket from Manage,
+uploads the bytes directly to Inklura Share, and sends only opaque receipts
+back to Manage. Manage validates tenant and issue scope before persisting
+structured attachments; request and comment attachments remain visible to
+User and Support surfaces and are mirrored as image links to GitHub/Jean.
+Issue uploads never appear in the uploader's personal Share gallery.
+
 ---
 
 ## Retired use cases
@@ -1461,6 +1510,15 @@ the PTY and is interrupted manually with Ctrl+C.
 
 ## Change log
 
+- **2026-07-20** — Added SDUC-432 and SDTEST-1373..1375 for request image
+  attachments, byte-signature validation, Share receipts, and the five desktop
+  intake paths.
+- **2026-07-20** — Added SDUC-429 and SDTEST-1367/1368 for the durable AI task
+  center, legacy-draft migration, titlebar badge, target routing, and stop path.
+- **2026-07-20** — Added SDUC-430 and SDTEST-1369/1370 for persisted
+  per-capability autonomy and the non-bypassable high-risk confirmation rule.
+- **2026-07-20** — Added SDUC-431 and SDTEST-1371/1372 for strict bounded
+  Terminal diagnostic plans and separately confirmed read-only steps.
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.

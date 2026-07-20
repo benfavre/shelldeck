@@ -194,6 +194,7 @@ rules loader.
 @.agents/testing.md
 @.agents/i18n.md
 @.agents/ai.md
+@.agents/github.md
 
 <!-- Add one @-import per rule file above this comment. Example:
 @.agents/gpui-patterns.md

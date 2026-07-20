@@ -232,6 +232,9 @@ pub struct TrayConfig {
     /// Show an OS notification when a Fleet job finishes (either
     /// success or failure). Especially useful in `auto` runtime mode.
     pub notify_fleet_done: bool,
+    /// Show an OS notification when an AI task completes while the
+    /// ShellDeck window is not active.
+    pub notify_ai_tasks: bool,
 }
 
 impl Default for TrayConfig {
@@ -245,6 +248,7 @@ impl Default for TrayConfig {
             notify_jean_pending: true,
             notify_ssh_disconnect: true,
             notify_fleet_done: true,
+            notify_ai_tasks: true,
         }
     }
 }

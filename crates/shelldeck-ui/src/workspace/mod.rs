@@ -9,10 +9,11 @@ use adabraka_ui::prelude::{
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    configured_cli_available, create_client, host_context, parse_generated_issue_draft,
-    parse_generated_name, parse_issue_triage_proposal, test_connection, AiActionKind,
-    AiActionPayload, AiActionPlan, AiActionRisk, AiContext, AiDraft, AiDraftStore,
-    AiIssueTriageProposal, AiSurface,
+    ai_action_disposition, configured_cli_available, create_client, host_context,
+    parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
+    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
+    AiActionKind, AiActionPayload, AiActionPlan, AiActionRisk, AiContext, AiIssueTriageProposal,
+    AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -49,6 +50,7 @@ use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::{DashboardEvent, DashboardView};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
+use crate::issue_attachments::{capture_region, draft_from_clipboard_image, AttachmentDraft};
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
@@ -90,6 +92,12 @@ pub enum AccountStatus {
     Rejected,
     /// whoami failed on a network error — can't tell.
     Offline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueAttachmentTarget {
+    NewRequest,
+    Comment,
 }
 
 impl AccountStatus {
@@ -252,7 +260,7 @@ pub struct Workspace {
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
-    ai_drafts: Vec<AiDraft>,
+    ai_tasks: Vec<AiTask>,
     ai_action_confirmation: Option<AiActionPlan>,
     ai_script_runs: HashMap<Uuid, AiActionPlan>,
     ai_terminal_runs: HashMap<Uuid, AiActionPlan>,
@@ -273,6 +281,7 @@ pub struct Workspace {
     ui_font_family: String,
     /// Application UI base font size in pixels.
     ui_font_size: f32,
+    window_active: bool,
     /// Newest-first durable activity cache, mirrored to Dashboard + RecentView.
     recent_activity: Vec<ActivityEntry>,
     pub focus_handle: FocusHandle,
@@ -390,6 +399,11 @@ pub struct Workspace {
     issue_title_state: Entity<InputState>,
     issue_body_state: Entity<InputState>,
     issue_comment_state: Entity<InputState>,
+    issue_attachment_url_state: Entity<InputState>,
+    issue_new_attachments: Vec<AttachmentDraft>,
+    issue_comment_attachments: Vec<AttachmentDraft>,
+    issue_attachment_busy: bool,
+    issue_attachment_generation: u64,
     issue_ai_prompt_state: Entity<InputState>,
     issue_ai_expanded: bool,
     issue_ai_loading: bool,
@@ -485,6 +499,9 @@ pub enum TrayNotification {
     /// A Fleet job finished. `success = false` means the executor
     /// returned a non-zero exit or an error surfaced to the toast.
     FleetJobDone { success: bool },
+    /// An AI generation or executable action finished while the main window
+    /// was not active.
+    AiTaskDone { success: bool },
 }
 
 impl Workspace {
@@ -621,10 +638,21 @@ impl Workspace {
         let jean_view = cx.new(JeanView::new);
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
-        let ai_drafts = AiDraftStore::load().unwrap_or_else(|error| {
-            tracing::warn!("Failed to load AI drafts: {error}");
+        let mut ai_tasks = AiTaskStore::load().unwrap_or_else(|error| {
+            tracing::warn!("Failed to load AI tasks: {error}");
             Vec::new()
         });
+        let mut recovered = false;
+        for task in &mut ai_tasks {
+            if task.status.is_active() {
+                task.set_status(AiTaskStatus::Cancelled, None);
+                recovered = true;
+            }
+        }
+        if recovered {
+            let _ = AiTaskStore::save(&ai_tasks);
+        }
+        ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
         let ai_backend_ready = app_config.ai.is_configured()
             && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
         support.update(cx, |view, cx| {
@@ -844,7 +872,7 @@ impl Workspace {
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,
-            ai_drafts,
+            ai_tasks,
             ai_action_confirmation: None,
             ai_script_runs: HashMap::new(),
             ai_terminal_runs: HashMap::new(),
@@ -863,6 +891,7 @@ impl Workspace {
             sidebar_width: initial_sidebar_width,
             ui_font_family,
             ui_font_size,
+            window_active: true,
             recent_activity,
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
@@ -933,6 +962,11 @@ impl Workspace {
             issue_title_state: cx.new(InputState::new),
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_comment_state: cx.new(InputState::new),
+            issue_attachment_url_state: cx.new(InputState::new),
+            issue_new_attachments: Vec::new(),
+            issue_comment_attachments: Vec::new(),
+            issue_attachment_busy: false,
+            issue_attachment_generation: 0,
             issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_ai_expanded: false,
             issue_ai_loading: false,
@@ -1890,17 +1924,180 @@ impl Workspace {
         cx.notify();
     }
 
+    fn sync_ai_tasks(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = AiTaskStore::save(&self.ai_tasks) {
+            tracing::warn!("Failed to save AI tasks: {error}");
+        }
+        let tasks = self.ai_tasks.clone();
+        self.ai_assistant
+            .update(cx, |view, cx| view.set_tasks(tasks, cx));
+        cx.notify();
+    }
+
+    fn begin_ai_workflow_task(
+        &mut self,
+        target: &AiWorkflowTarget,
+        instructions: String,
+        cx: &mut Context<Self>,
+    ) -> Uuid {
+        let context_title = self.ai_workflow_context(target, cx).title;
+        let model = if self.app_config.ai.model.trim().is_empty() {
+            self.app_config.ai.backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
+        if let Some(task) = self.ai_tasks.iter_mut().rev().find(|task| {
+            task.capability == target.capability()
+                && task.target_id == target.target_id()
+                && (!task.status.is_finished() || task.status == AiTaskStatus::Failed)
+        }) {
+            task.instructions = instructions;
+            task.result.clear();
+            task.target_kind = Some(target.storage_kind().to_string());
+            task.target_label = context_title;
+            task.model = model;
+            task.set_status(AiTaskStatus::Generating, None);
+            let id = task.id;
+            self.sync_ai_tasks(cx);
+            return id;
+        }
+
+        let mut task = AiTask::new(
+            target.capability(),
+            target.surface(),
+            target.target_id(),
+            self.app_config.ai.backend,
+            instructions,
+            String::new(),
+        );
+        task.target_kind = Some(target.storage_kind().to_string());
+        task.target_label = context_title;
+        task.model = model;
+        task.set_status(AiTaskStatus::Generating, None);
+        let id = task.id;
+        self.ai_tasks.push(task);
+        self.sync_ai_tasks(cx);
+        id
+    }
+
+    fn finish_ai_workflow_task(
+        &mut self,
+        task_id: Uuid,
+        result: &Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let completed_in_background = self.ai_workflow.is_none();
+        if let Some(task) = self.ai_tasks.iter_mut().find(|task| task.id == task_id) {
+            match result {
+                Ok(output) => {
+                    task.result = output.clone();
+                    task.set_status(AiTaskStatus::Ready, None);
+                }
+                Err(error) => task.set_status(AiTaskStatus::Failed, Some(error.clone())),
+            }
+            self.sync_ai_tasks(cx);
+            if completed_in_background {
+                self.show_toast(
+                    if result.is_ok() {
+                        t!("toast.ai.task_ready").to_string()
+                    } else {
+                        t!("toast.ai.task_failed").to_string()
+                    },
+                    if result.is_ok() {
+                        ToastLevel::Success
+                    } else {
+                        ToastLevel::Error
+                    },
+                    cx,
+                );
+                if !self.window_active && self.app_config.tray.notify_ai_tasks {
+                    self.emit_tray_notification(TrayNotification::AiTaskDone {
+                        success: result.is_ok(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn set_ai_workflow_task_status(
+        &mut self,
+        target: &AiWorkflowTarget,
+        status: AiTaskStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(task) = self.ai_tasks.iter_mut().rev().find(|task| {
+            task.capability == target.capability() && task.target_id == target.target_id()
+        }) {
+            task.set_status(status, None);
+            self.sync_ai_tasks(cx);
+        }
+    }
+
+    fn set_ai_action_task_status(
+        &mut self,
+        plan: &AiActionPlan,
+        status: AiTaskStatus,
+        message: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let task_index = self.ai_tasks.iter().rposition(|task| {
+            task.id == plan.id
+                || (task.capability == plan.capability
+                    && task.target_id == plan.target_id
+                    && !task.status.is_finished())
+        });
+        if let Some(index) = task_index {
+            let task = &mut self.ai_tasks[index];
+            task.id = plan.id;
+            task.target_label = plan.target_label.clone();
+            task.model = plan.model.clone();
+            task.set_status(status, message);
+        } else {
+            let mut task = AiTask::from_action(plan, status);
+            task.status_message = message;
+            self.ai_tasks.push(task);
+        }
+        self.sync_ai_tasks(cx);
+    }
+
+    fn stage_ai_action(&mut self, mut plan: AiActionPlan, cx: &mut Context<Self>) {
+        let level = self.app_config.ai.policies.level_for(plan.capability);
+        plan.autonomy = level;
+        match ai_action_disposition(level, plan.risk) {
+            AiActionDisposition::DraftOnly => {
+                self.set_ai_action_task_status(&plan, AiTaskStatus::Ready, None, cx);
+                self.show_toast(
+                    t!("toast.ai.policy_preparation_only").to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
+            }
+            AiActionDisposition::Confirm => {
+                self.set_ai_action_task_status(&plan, AiTaskStatus::AwaitingConfirmation, None, cx);
+                self.ai_action_confirmation = Some(plan);
+                cx.notify();
+            }
+            AiActionDisposition::Execute => {
+                self.set_ai_action_task_status(&plan, AiTaskStatus::AwaitingConfirmation, None, cx);
+                self.ai_action_confirmation = Some(plan);
+                self.confirm_ai_action(cx);
+            }
+        }
+    }
+
     fn open_ai_workflow(&mut self, target: AiWorkflowTarget, cx: &mut Context<Self>) {
         let surface = target.surface();
         if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
             return;
         }
         let pending = self
-            .ai_drafts
+            .ai_tasks
             .iter()
             .rev()
             .find(|draft| {
-                draft.capability == target.capability() && draft.target_id == target.target_id()
+                draft.capability == target.capability()
+                    && draft.target_id == target.target_id()
+                    && matches!(draft.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
             })
             .cloned();
         let should_generate = matches!(
@@ -1963,6 +2160,7 @@ impl Workspace {
                 .map(|issue| (issue.priority.clone(), issue.assignee.clone())),
             _ => None,
         };
+        let action_policy = self.app_config.ai.policies.level_for(target.capability());
         let workflow = cx.new(|cx| {
             AiWorkflowView::new(
                 target,
@@ -1971,6 +2169,7 @@ impl Workspace {
                 pending,
                 comparison_original,
                 issue_triage_current,
+                action_policy,
                 cx,
             )
         });
@@ -2181,10 +2380,62 @@ impl Workspace {
             _ => return,
         };
         match plan {
-            Ok(plan) => {
-                self.ai_action_confirmation = Some(plan);
-                cx.notify();
-            }
+            Ok(plan) => self.stage_ai_action(plan, cx),
+            Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
+        }
+    }
+
+    fn prepare_ai_diagnostic_step(
+        &mut self,
+        target: AiWorkflowTarget,
+        command: String,
+        cx: &mut Context<Self>,
+    ) {
+        let AiWorkflowTarget::TerminalDiagnose { session_id } = &target else {
+            return;
+        };
+        if validate_diagnostic_command(&command).is_err() {
+            self.show_toast(
+                t!("toast.ai.command_invalid").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let context = self.terminal.read(cx).ai_context_data();
+        if context
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(session_id.as_str())
+        {
+            self.show_toast(
+                t!("toast.ai.action_target_changed").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let label = context
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Terminal");
+        let model = if self.app_config.ai.model.trim().is_empty() {
+            self.app_config.ai.backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
+        match AiActionPlan::new(
+            target.capability(),
+            AiActionKind::TerminalCommand,
+            AiActionRisk::High,
+            session_id,
+            label,
+            self.app_config.ai.backend,
+            model,
+            1_800,
+            AiActionPayload::TerminalCommand { command },
+        ) {
+            Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
     }
@@ -2214,10 +2465,7 @@ impl Workspace {
             30,
             AiActionPayload::JeanDispatch { prompt },
         ) {
-            Ok(plan) => {
-                self.ai_action_confirmation = Some(plan);
-                cx.notify();
-            }
+            Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
     }
@@ -2268,15 +2516,30 @@ impl Workspace {
                 instance_id,
             },
         ) {
-            Ok(plan) => {
-                self.ai_action_confirmation = Some(plan);
-                cx.notify();
-            }
+            Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
     }
 
     fn audit_ai_action(&mut self, plan: &AiActionPlan, status: &str, cx: &mut Context<Self>) {
+        let task_status = match status {
+            "confirmed" | "automatic" | "started" | "submitted" => Some(AiTaskStatus::Executing),
+            "succeeded" => Some(AiTaskStatus::Succeeded),
+            "failed" | "timed_out" => Some(AiTaskStatus::Failed),
+            "cancelled" | "target_changed" | "target_closed" => Some(AiTaskStatus::Cancelled),
+            _ => None,
+        };
+        if let Some(task_status) = task_status {
+            self.set_ai_action_task_status(plan, task_status, None, cx);
+        }
+        if !self.window_active
+            && self.app_config.tray.notify_ai_tasks
+            && matches!(status, "succeeded" | "failed" | "timed_out")
+        {
+            self.emit_tray_notification(TrayNotification::AiTaskDone {
+                success: status == "succeeded",
+            });
+        }
         let kind = match plan.kind {
             AiActionKind::TerminalCommand => ActivityKind::Terminal,
             AiActionKind::ScriptExecution => ActivityKind::Script,
@@ -2305,6 +2568,27 @@ impl Workspace {
             .with_detail(format!("actor={actor} {}", plan.audit_detail(status))),
             cx,
         );
+    }
+
+    fn cancel_ai_action_confirmation(&mut self, cx: &mut Context<Self>) {
+        if let Some(plan) = self.ai_action_confirmation.take() {
+            let resumable = self
+                .ai_tasks
+                .iter()
+                .find(|task| task.id == plan.id)
+                .is_some_and(|task| !task.result.trim().is_empty());
+            self.set_ai_action_task_status(
+                &plan,
+                if resumable {
+                    AiTaskStatus::Ready
+                } else {
+                    AiTaskStatus::Cancelled
+                },
+                None,
+                cx,
+            );
+        }
+        cx.notify();
     }
 
     fn track_ai_script_run(&mut self, script_id: Uuid, plan: AiActionPlan, cx: &mut Context<Self>) {
@@ -2351,7 +2635,15 @@ impl Workspace {
         let Some(plan) = self.ai_action_confirmation.take() else {
             return;
         };
-        self.audit_ai_action(&plan, "confirmed", cx);
+        self.audit_ai_action(
+            &plan,
+            if plan.autonomy == shelldeck_core::ai::AiAutonomyLevel::Automatic {
+                "automatic"
+            } else {
+                "confirmed"
+            },
+            cx,
+        );
         let payload = plan.payload.clone();
         match payload {
             AiActionPayload::TerminalCommand { command } => {
@@ -2635,7 +2927,7 @@ impl Workspace {
                         t!("ai.prompt.terminal_command_strict").to_string()
                     }
                     AiWorkflowTarget::TerminalDiagnose { .. } => {
-                        t!("ai.prompt.terminal_error").to_string()
+                        t!("ai.prompt.terminal_diagnostic_plan").to_string()
                     }
                 };
                 let prompt = if instructions.trim().is_empty() {
@@ -2652,10 +2944,18 @@ impl Workspace {
                 let structured_issue_triage =
                     matches!(&target, AiWorkflowTarget::IssueTriage { .. });
                 let structured_name = matches!(&target, AiWorkflowTarget::EntityNaming { .. });
+                let structured_diagnostic =
+                    matches!(&target, AiWorkflowTarget::TerminalDiagnose { .. });
                 let issue_triage_repair =
                     t!("ai.prompt.issue_triage_repair", error = "__TRIAGE_ERROR__").to_string();
+                let diagnostic_repair = t!(
+                    "ai.prompt.terminal_diagnostic_repair",
+                    error = "__DIAGNOSTIC_ERROR__"
+                )
+                .to_string();
                 let workflow = self.ai_workflow.as_ref().map(|entity| entity.downgrade());
-                cx.spawn(async move |_this, cx: &mut AsyncApp| {
+                let task_id = self.begin_ai_workflow_task(&target, instructions, cx);
+                cx.spawn(async move |this, cx: &mut AsyncApp| {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
@@ -2664,6 +2964,25 @@ impl Workspace {
                             if structured_name {
                                 parse_generated_name(&response.text)?;
                                 return Ok::<String, shelldeck_core::ShellDeckError>(response.text);
+                            }
+                            if structured_diagnostic {
+                                return match parse_diagnostic_plan(&response.text) {
+                                    Ok(_) => {
+                                        Ok::<String, shelldeck_core::ShellDeckError>(response.text)
+                                    }
+                                    Err(first_error) => {
+                                        let repair = diagnostic_repair.replace(
+                                            "__DIAGNOSTIC_ERROR__",
+                                            &first_error.to_string(),
+                                        );
+                                        let repaired = client.complete(
+                                            &format!("{prompt}\n\n{repair}"),
+                                            context.clone(),
+                                        )?;
+                                        parse_diagnostic_plan(&repaired.text)?;
+                                        Ok::<String, shelldeck_core::ShellDeckError>(repaired.text)
+                                    }
+                                };
                             }
                             if !structured_issue_triage {
                                 return Ok::<String, shelldeck_core::ShellDeckError>(response.text);
@@ -2684,6 +3003,9 @@ impl Workspace {
                         })
                         .await
                         .map_err(|error| error.to_string());
+                    let _ = this.update(cx, |workspace, cx| {
+                        workspace.finish_ai_workflow_task(task_id, &result, cx);
+                    });
                     if let Some(workflow) = workflow.and_then(|workflow| workflow.upgrade()) {
                         let _ = workflow.update(cx, |view, cx| {
                             view.set_result(request_id, result, cx);
@@ -2744,11 +3066,7 @@ impl Workspace {
                         );
                         return;
                     }
-                    self.ai_drafts.retain(|draft| {
-                        !(draft.capability == target.capability()
-                            && draft.target_id == target.target_id())
-                    });
-                    let _ = AiDraftStore::save(&self.ai_drafts);
+                    self.set_ai_workflow_task_status(&target, AiTaskStatus::Applied, cx);
                     self.close_ai_workflow(cx);
                     self.show_toast(
                         t!("toast.ai.name_applied").to_string(),
@@ -2770,13 +3088,7 @@ impl Workspace {
                             return;
                         }
                     };
-                    self.ai_drafts.retain(|draft| {
-                        !(draft.capability == target.capability()
-                            && draft.target_id == target.target_id())
-                    });
-                    if let Err(error) = AiDraftStore::save(&self.ai_drafts) {
-                        tracing::warn!("Failed to save AI drafts after triage apply: {error}");
-                    }
+                    self.set_ai_workflow_task_status(&target, AiTaskStatus::Applied, cx);
                     let issue_id = issue_id.clone();
                     self.close_ai_workflow(cx);
                     self.apply_issue_triage(issue_id, proposal, cx);
@@ -2812,19 +3124,39 @@ impl Workspace {
                     }
                     AiWorkflowTarget::IssueTriage { .. } => unreachable!(),
                     AiWorkflowTarget::ScriptGenerate { script_id } => {
-                        if let Ok(script_id) = Uuid::parse_str(script_id) {
-                            self.scripts.update(cx, |view, cx| {
-                                view.apply_generated_body(script_id, result, cx);
-                            });
-                        }
+                        let Some(script_id) = Uuid::parse_str(script_id).ok().filter(|script_id| {
+                            self.scripts.read(cx).script_body(*script_id).is_some()
+                        }) else {
+                            self.show_toast(
+                                t!("toast.ai.action_target_changed").to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        };
+                        self.active_view = ActiveView::Scripts;
+                        self.ai_sheet = None;
+                        self.scripts.update(cx, |view, cx| {
+                            view.apply_generated_body(script_id, result, cx);
+                        });
                     }
                     AiWorkflowTarget::ScriptFix { script_id } => {
-                        if let Ok(script_id) = Uuid::parse_str(script_id) {
-                            let body = shelldeck_core::ai::clean_generated_script_body(&result);
-                            self.scripts.update(cx, |view, cx| {
-                                view.apply_generated_body(script_id, body, cx);
-                            });
-                        }
+                        let Some(script_id) = Uuid::parse_str(script_id).ok().filter(|script_id| {
+                            self.scripts.read(cx).script_body(*script_id).is_some()
+                        }) else {
+                            self.show_toast(
+                                t!("toast.ai.action_target_changed").to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        };
+                        let body = shelldeck_core::ai::clean_generated_script_body(&result);
+                        self.active_view = ActiveView::Scripts;
+                        self.ai_sheet = None;
+                        self.scripts.update(cx, |view, cx| {
+                            view.apply_generated_body(script_id, body, cx);
+                        });
                     }
                     AiWorkflowTarget::TerminalCommand { session_id } => {
                         let applied = Uuid::parse_str(session_id).ok().is_some_and(|session_id| {
@@ -2843,16 +3175,17 @@ impl Workspace {
                         }
                     }
                     AiWorkflowTarget::TerminalDiagnose { .. } => {
-                        cx.write_to_clipboard(ClipboardItem::new_string(result));
+                        let display = match parse_diagnostic_plan(&result) {
+                            Ok(plan) => plan.display_text(),
+                            Err(error) => {
+                                self.show_toast(error.to_string(), ToastLevel::Error, cx);
+                                return;
+                            }
+                        };
+                        cx.write_to_clipboard(ClipboardItem::new_string(display));
                     }
                 }
-                self.ai_drafts.retain(|draft| {
-                    !(draft.capability == target.capability()
-                        && draft.target_id == target.target_id())
-                });
-                if let Err(error) = AiDraftStore::save(&self.ai_drafts) {
-                    tracing::warn!("Failed to save AI drafts after apply: {error}");
-                }
+                self.set_ai_workflow_task_status(&target, AiTaskStatus::Applied, cx);
                 self.close_ai_workflow(cx);
                 self.show_toast(
                     if copied {
@@ -2867,35 +3200,39 @@ impl Workspace {
             AiWorkflowEvent::PrepareAction { target, result } => {
                 self.prepare_ai_action(target, result, cx);
             }
+            AiWorkflowEvent::PrepareDiagnosticStep { target, command } => {
+                self.prepare_ai_diagnostic_step(target, command, cx);
+            }
             AiWorkflowEvent::Pending {
                 target,
                 instructions,
                 result,
             } => {
-                self.ai_drafts.retain(|draft| {
-                    !(draft.capability == target.capability()
-                        && draft.target_id == target.target_id())
-                });
-                self.ai_drafts.push(AiDraft::new(
-                    target.capability(),
-                    target.surface(),
-                    target.target_id(),
-                    self.app_config.ai.backend,
-                    instructions,
-                    result,
-                ));
-                match AiDraftStore::save(&self.ai_drafts) {
-                    Ok(()) => self.show_toast(
-                        t!("toast.ai.draft_pending").to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    ),
-                    Err(error) => self.show_toast(
-                        t!("toast.ai.draft_save_failed", error = error.to_string()).to_string(),
-                        ToastLevel::Error,
-                        cx,
-                    ),
+                if let Some(task) = self.ai_tasks.iter_mut().rev().find(|task| {
+                    task.capability == target.capability() && task.target_id == target.target_id()
+                }) {
+                    task.instructions = instructions;
+                    task.result = result;
+                    task.target_kind = Some(target.storage_kind().to_string());
+                    task.set_status(AiTaskStatus::Pending, None);
+                } else {
+                    let mut task = AiTask::new(
+                        target.capability(),
+                        target.surface(),
+                        target.target_id(),
+                        self.app_config.ai.backend,
+                        instructions,
+                        result,
+                    );
+                    task.target_kind = Some(target.storage_kind().to_string());
+                    self.ai_tasks.push(task);
                 }
+                self.sync_ai_tasks(cx);
+                self.show_toast(
+                    t!("toast.ai.draft_pending").to_string(),
+                    ToastLevel::Success,
+                    cx,
+                );
                 self.close_ai_workflow(cx);
             }
             AiWorkflowEvent::Cancel => self.close_ai_workflow(cx),
@@ -2935,31 +3272,170 @@ impl Workspace {
     }
 
     fn handle_ai_assistant_event(&mut self, event: AiAssistantEvent, cx: &mut Context<Self>) {
-        let AiAssistantEvent::Submit {
-            request_id,
-            conversation_id,
-            prompt,
-            context,
-        } = event;
-        let config = self.app_config.ai.clone();
-        cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let client = create_client(&config)?;
-                    client
-                        .complete(&prompt, context)
-                        .map(|response| response.text)
+        match event {
+            AiAssistantEvent::Submit {
+                request_id,
+                conversation_id,
+                prompt,
+                context,
+            } => {
+                let config = self.app_config.ai.clone();
+                cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let client = create_client(&config)?;
+                            client
+                                .complete(&prompt, context)
+                                .map(|response| response.text)
+                        })
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = this.update(cx, |workspace, cx| {
+                        workspace.ai_assistant.update(cx, |assistant, cx| {
+                            assistant.set_result(request_id, conversation_id, result, cx);
+                        });
+                    });
                 })
-                .await
-                .map_err(|error| error.to_string());
-            let _ = this.update(cx, |workspace, cx| {
-                workspace.ai_assistant.update(cx, |assistant, cx| {
-                    assistant.set_result(request_id, conversation_id, result, cx);
+                .detach();
+            }
+            AiAssistantEvent::ResumeTask(task_id) => {
+                let target = self
+                    .ai_tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .and_then(AiWorkflowTarget::from_task);
+                if let Some(target) = target {
+                    self.ai_sheet = None;
+                    self.open_ai_workflow(target, cx);
+                } else {
+                    self.show_toast(
+                        t!("toast.ai.task_unavailable").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+            }
+            AiAssistantEvent::OpenTaskTarget(task_id) => {
+                self.open_ai_task_target(task_id, cx);
+            }
+            AiAssistantEvent::StopTask(task_id) => {
+                self.stop_ai_task(task_id, cx);
+            }
+            AiAssistantEvent::DeleteTask(task_id) => {
+                let active = self
+                    .ai_tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .is_some_and(|task| task.status.is_active());
+                if !active {
+                    self.ai_tasks.retain(|task| task.id != task_id);
+                    self.sync_ai_tasks(cx);
+                }
+            }
+        }
+    }
+
+    fn open_ai_task_target(&mut self, task_id: Uuid, cx: &mut Context<Self>) {
+        let Some(task) = self
+            .ai_tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.ai_sheet = None;
+        match task.surface {
+            AiSurface::Support => {
+                if self.can_switch_mode() {
+                    self.set_mode(AppMode::Support, cx);
+                }
+                self.support.update(cx, |view, cx| {
+                    view.set_section(crate::support_view::SupportSection::Tickets);
+                    cx.notify();
                 });
-            });
-        })
-        .detach();
+                self.select_support_ticket(task.target_id, cx);
+            }
+            AiSurface::Issue => {
+                self.open_support_requests(cx);
+                self.select_issue(task.target_id, cx);
+            }
+            AiSurface::Script => {
+                if let Ok(script_id) = Uuid::parse_str(&task.target_id) {
+                    self.active_view = ActiveView::Scripts;
+                    self.scripts.update(cx, |view, cx| {
+                        view.selected_script = Some(script_id);
+                        cx.notify();
+                    });
+                }
+            }
+            AiSurface::Terminal => {
+                if let Ok(session_id) = Uuid::parse_str(&task.target_id) {
+                    self.active_view = ActiveView::Terminal;
+                    self.terminal.update(cx, |view, cx| {
+                        view.select_tab(session_id);
+                        cx.notify();
+                    });
+                }
+            }
+            AiSurface::Jean => {
+                self.active_view = ActiveView::JeanConsole;
+            }
+            AiSurface::Naming => {
+                if task.target_kind.as_deref() == Some("naming_terminal") {
+                    if let Ok(session_id) = Uuid::parse_str(&task.target_id) {
+                        self.active_view = ActiveView::Terminal;
+                        self.terminal.update(cx, |view, cx| {
+                            view.select_tab(session_id);
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+            AiSurface::Recent | AiSurface::Global => {}
+        }
+        cx.notify();
+    }
+
+    fn stop_ai_task(&mut self, task_id: Uuid, cx: &mut Context<Self>) {
+        if let Some((script_id, _)) = self
+            .ai_script_runs
+            .iter()
+            .find(|(_, plan)| plan.id == task_id)
+            .map(|(script_id, plan)| (*script_id, plan.clone()))
+        {
+            if self.scripts.read(cx).running_script_id == Some(script_id) {
+                self.handle_script_event(&ScriptEvent::StopScript, cx);
+                return;
+            }
+        }
+        if let Some((session_id, plan)) = self
+            .ai_terminal_runs
+            .iter()
+            .find(|(_, plan)| plan.id == task_id)
+            .map(|(session_id, plan)| (*session_id, plan.clone()))
+        {
+            let stopped = self
+                .terminal
+                .update(cx, |terminal, cx| terminal.stop_ai_command(session_id, cx))
+                .is_ok();
+            if stopped {
+                self.ai_terminal_runs.remove(&session_id);
+                self.audit_ai_action(&plan, "cancelled", cx);
+                self.show_toast(
+                    t!("toast.ai.command_stopped").to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
+                return;
+            }
+        }
+        self.show_toast(
+            t!("toast.ai.task_stop_unavailable").to_string(),
+            ToastLevel::Warning,
+            cx,
+        );
     }
 
     /// Apply an autostart toggle change: try the OS-level write on a
@@ -5567,6 +6043,238 @@ impl Workspace {
         });
     }
 
+    fn attachment_drafts(&self, target: IssueAttachmentTarget) -> &Vec<AttachmentDraft> {
+        match target {
+            IssueAttachmentTarget::NewRequest => &self.issue_new_attachments,
+            IssueAttachmentTarget::Comment => &self.issue_comment_attachments,
+        }
+    }
+
+    fn attachment_drafts_mut(
+        &mut self,
+        target: IssueAttachmentTarget,
+    ) -> &mut Vec<AttachmentDraft> {
+        match target {
+            IssueAttachmentTarget::NewRequest => &mut self.issue_new_attachments,
+            IssueAttachmentTarget::Comment => &mut self.issue_comment_attachments,
+        }
+    }
+
+    fn add_attachment_draft(
+        &mut self,
+        target: IssueAttachmentTarget,
+        draft: AttachmentDraft,
+        cx: &mut Context<Self>,
+    ) {
+        let drafts = self.attachment_drafts_mut(target);
+        if drafts.len() >= issues::ISSUE_ATTACHMENT_MAX_COUNT {
+            self.show_toast(
+                t!(
+                    "toast.issue.attachment_limit",
+                    count = issues::ISSUE_ATTACHMENT_MAX_COUNT
+                )
+                .to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        drafts.push(draft);
+        cx.notify();
+    }
+
+    fn import_attachment_paths(
+        &mut self,
+        target: IssueAttachmentTarget,
+        paths: Vec<std::path::PathBuf>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.issue_attachment_generation {
+            return;
+        }
+        let remaining =
+            issues::ISSUE_ATTACHMENT_MAX_COUNT.saturating_sub(self.attachment_drafts(target).len());
+        if remaining == 0 {
+            self.show_toast(
+                t!(
+                    "toast.issue.attachment_limit",
+                    count = issues::ISSUE_ATTACHMENT_MAX_COUNT
+                )
+                .to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        self.issue_attachment_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .into_iter()
+                        .take(remaining)
+                        .map(|path| AttachmentDraft::from_path(&path))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_attachment_busy = false;
+                if generation != ws.issue_attachment_generation {
+                    cx.notify();
+                    return;
+                }
+                for result in loaded {
+                    match result {
+                        Ok(draft) => ws.add_attachment_draft(target, draft, cx),
+                        Err(error) => ws.show_toast(
+                            t!("toast.issue.attachment_failed", error = error).to_string(),
+                            ToastLevel::Error,
+                            cx,
+                        ),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn pick_issue_attachments(
+        &mut self,
+        target: IssueAttachmentTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(t!("user.requests.attachments.choose").to_string().into()),
+            starting_directory: None,
+        });
+        let generation = self.issue_attachment_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let _ = this.update(cx, |ws, cx| {
+                ws.import_attachment_paths(target, paths, generation, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn paste_issue_attachment(
+        &mut self,
+        target: IssueAttachmentTarget,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let image = item.entries().iter().find_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(image),
+            _ => None,
+        });
+        let Some(image) = image else { return false };
+        match draft_from_clipboard_image(image) {
+            Ok(draft) => self.add_attachment_draft(target, draft, cx),
+            Err(error) => self.show_toast(
+                t!("toast.issue.attachment_failed", error = error).to_string(),
+                ToastLevel::Error,
+                cx,
+            ),
+        }
+        true
+    }
+
+    fn import_issue_attachment_url(
+        &mut self,
+        target: IssueAttachmentTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let url = self
+            .issue_attachment_url_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        if url.is_empty() || self.issue_attachment_busy {
+            return;
+        }
+        self.issue_attachment_busy = true;
+        let generation = self.issue_attachment_generation;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { issues::download_issue_image_url(&url) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_attachment_busy = false;
+                if generation != ws.issue_attachment_generation {
+                    cx.notify();
+                    return;
+                }
+                match result.and_then(|upload| {
+                    AttachmentDraft::from_bytes(upload.filename, upload.bytes)
+                        .map_err(shelldeck_core::ShellDeckError::Connection)
+                }) {
+                    Ok(draft) => {
+                        ws.add_attachment_draft(target, draft, cx);
+                        Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                    }
+                    Err(error) => ws.show_toast(
+                        t!(
+                            "toast.issue.attachment_failed",
+                            error = cloud_account::user_message(&error)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn capture_issue_attachment(&mut self, target: IssueAttachmentTarget, cx: &mut Context<Self>) {
+        if self.issue_attachment_busy {
+            return;
+        }
+        self.issue_attachment_busy = true;
+        let generation = self.issue_attachment_generation;
+        cx.notify();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async { capture_region() })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_attachment_busy = false;
+                if generation != ws.issue_attachment_generation {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(draft) => ws.add_attachment_draft(target, draft, cx),
+                    Err(error) => ws.show_toast(
+                        t!("toast.issue.attachment_failed", error = error).to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Close the "Nouvelle demande" sheet. Plays the exit animation first
     /// (sheet is kept mounted with `dismissing = true`), then clears the state
     /// once the animation duration has elapsed.
@@ -5575,6 +6283,7 @@ impl Workspace {
             return;
         }
         self.user_new_request_sheet_dismissing = true;
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         self.issue_ai_request_id = self.issue_ai_request_id.wrapping_add(1);
         self.issue_ai_expanded = false;
         self.issue_ai_loading = false;
@@ -5590,6 +6299,8 @@ impl Workspace {
                 Self::reset_input(&ws.issue_title_state.clone(), cx);
                 Self::reset_input(&ws.issue_body_state.clone(), cx);
                 Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
+                Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                ws.issue_new_attachments.clear();
                 ws.issue_new_source = "user";
                 cx.notify();
             });
@@ -5604,6 +6315,7 @@ impl Workspace {
             return;
         }
         self.user_issue_detail_dismissing = true;
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -5614,6 +6326,8 @@ impl Workspace {
                 ws.issue_detail = None;
                 ws.user_issue_detail_dismissing = false;
                 Self::reset_input(&ws.issue_comment_state.clone(), cx);
+                Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                ws.issue_comment_attachments.clear();
                 cx.notify();
             });
         })
@@ -5748,6 +6462,11 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
+        if self.issue_selected.as_deref() != Some(id.as_str()) {
+            self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+            self.issue_comment_attachments.clear();
+            Self::reset_input(&self.issue_attachment_url_state.clone(), cx);
+        }
         self.issue_selected = Some(id.clone());
         self.add_activity_entry(
             ActivityEntry::new(
@@ -5807,6 +6526,7 @@ impl Workspace {
         body: String,
         priority: String,
         source: &'static str,
+        attachments: Vec<AttachmentDraft>,
         cx: &mut Context<Self>,
     ) {
         let title = title.trim().to_string();
@@ -5820,11 +6540,27 @@ impl Workspace {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    issues::create_issue(&base, &token, &title, &body, &priority, source)
+                    let created =
+                        issues::create_issue(&base, &token, &title, &body, &priority, source)?;
+                    if attachments.is_empty() {
+                        return Ok::<_, shelldeck_core::ShellDeckError>((created, None));
+                    }
+                    let uploads = attachments
+                        .iter()
+                        .map(AttachmentDraft::upload)
+                        .collect::<Vec<_>>();
+                    match issues::upload_issue_attachments(&base, &token, &created.id, &uploads)
+                        .and_then(|receipts| {
+                            issues::attach_issue_images(&base, &token, &created.id, &receipts)
+                        }) {
+                        Ok(updated) => Ok((updated, None)),
+                        Err(error) => Ok((created, Some(error))),
+                    }
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
-                Ok(iss) => {
+                Ok((iss, attachment_error)) => {
+                    let preserve_attachments = attachment_error.is_some();
                     ws.show_toast(
                         t!("toast.issue.created").to_string(),
                         ToastLevel::Success,
@@ -5845,6 +6581,13 @@ impl Workspace {
                     Self::reset_input(&ws.issue_title_state.clone(), cx);
                     Self::reset_input(&ws.issue_body_state.clone(), cx);
                     Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
+                    Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                    if preserve_attachments {
+                        ws.issue_comment_attachments =
+                            std::mem::take(&mut ws.issue_new_attachments);
+                    } else {
+                        ws.issue_new_attachments.clear();
+                    }
                     ws.issue_ai_request_id = ws.issue_ai_request_id.wrapping_add(1);
                     ws.issue_ai_expanded = false;
                     ws.issue_ai_loading = false;
@@ -5854,6 +6597,17 @@ impl Workspace {
                     ws.issue_detail = Some(iss.clone());
                     ws.issue_selected = Some(iss.id.clone());
                     ws.push_issues_to_support(cx);
+                    if let Some(error) = attachment_error {
+                        ws.show_toast(
+                            t!(
+                                "toast.issue.attachment_failed_after_create",
+                                error = cloud_account::user_message(&error)
+                            )
+                            .to_string(),
+                            ToastLevel::Warning,
+                            cx,
+                        );
+                    }
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
@@ -5872,8 +6626,18 @@ impl Workspace {
 
     /// Comment on the selected issue (users can comment on their own requests).
     pub fn comment_issue_now(&mut self, id: String, body: String, cx: &mut Context<Self>) {
+        self.comment_issue_with_images(id, body, Vec::new(), cx);
+    }
+
+    fn comment_issue_with_images(
+        &mut self,
+        id: String,
+        body: String,
+        attachments: Vec<AttachmentDraft>,
+        cx: &mut Context<Self>,
+    ) {
         let body = body.trim().to_string();
-        if body.is_empty() {
+        if body.is_empty() && attachments.is_empty() {
             return;
         }
         let Some((base, token)) = self.fleet_base_token() else {
@@ -5882,7 +6646,19 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { issues::comment_issue(&base, &token, &id, &body) })
+                .spawn(async move {
+                    if attachments.is_empty() {
+                        issues::comment_issue(&base, &token, &id, &body)
+                    } else {
+                        let uploads = attachments
+                            .iter()
+                            .map(AttachmentDraft::upload)
+                            .collect::<Vec<_>>();
+                        let receipts =
+                            issues::upload_issue_attachments(&base, &token, &id, &uploads)?;
+                        issues::comment_issue_with_attachments(&base, &token, &id, &body, &receipts)
+                    }
+                })
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(iss) => {
@@ -5904,6 +6680,9 @@ impl Workspace {
                         );
                     }
                     ws.push_issues_to_support(cx);
+                    Self::reset_input(&ws.issue_comment_state.clone(), cx);
+                    Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                    ws.issue_comment_attachments.clear();
                     cx.notify();
                 }
                 Err(e) => ws.show_toast(
@@ -6290,7 +7069,8 @@ impl Workspace {
         let body = self.issue_body_state.read(cx).content().to_string();
         let prio = self.issue_new_priority.clone();
         let source = self.issue_new_source;
-        self.create_issue_now(title, body, prio, source, cx);
+        let attachments = self.issue_new_attachments.clone();
+        self.create_issue_now(title, body, prio, source, attachments, cx);
     }
 
     /// Submit the comment composer on the currently-open detail sheet.
@@ -6299,11 +7079,11 @@ impl Workspace {
             return;
         };
         let body = self.issue_comment_state.read(cx).content().to_string();
-        if body.trim().is_empty() {
+        let attachments = self.issue_comment_attachments.clone();
+        if body.trim().is_empty() && attachments.is_empty() {
             return;
         }
-        Self::reset_input(&self.issue_comment_state.clone(), cx);
-        self.comment_issue_now(id, body, cx);
+        self.comment_issue_with_images(id, body, attachments, cx);
     }
 
     // --- bext Cloud (control plane + single-instance SDK) ---
@@ -7407,6 +8187,7 @@ impl Workspace {
         mode_switch: Option<AppMode>,
         ui_font_size: f32,
         ai_configured: bool,
+        ai_task_count: usize,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -7796,7 +8577,13 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(28.0))
+                .h(px(28.0))
+                .w(if ai_task_count == 0 {
+                    px(28.0)
+                } else {
+                    px(44.0)
+                })
+                .gap(px(4.0))
                 .rounded(px(6.0))
                 .border_1()
                 .border_color(ShellDeckColors::primary().opacity(0.40))
@@ -7820,6 +8607,27 @@ impl Workspace {
                         .size(px(14.0))
                         .text_color(ShellDeckColors::primary()),
                 )
+                .when(ai_task_count > 0, |button| {
+                    button.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .min_w(px(14.0))
+                            .h(px(14.0))
+                            .px(px(3.0))
+                            .rounded_full()
+                            .bg(ShellDeckColors::primary())
+                            .text_size(px(9.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(white())
+                            .child(if ai_task_count > 99 {
+                                "99+".to_string()
+                            } else {
+                                ai_task_count.to_string()
+                            }),
+                    )
+                })
         });
 
         // Subtle vertical divider between the chrome control clusters.
@@ -10343,6 +11151,235 @@ impl Workspace {
     }
 
     /// The "Nouvelle demande" composer rendered as a right-side sheet.
+    fn render_issue_attachment_picker(
+        &self,
+        target: IssueAttachmentTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let drafts = self.attachment_drafts(target).clone();
+        let mut previews = div().flex().flex_wrap().gap(px(8.0));
+        for (index, draft) in drafts.iter().enumerate() {
+            let filename = draft.filename.clone();
+            previews = previews.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "issue-attachment-{target:?}-{index}"
+                    ))))
+                    .relative()
+                    .w(px(76.0))
+                    .h(px(76.0))
+                    .rounded(px(7.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .tooltip(move |_window, cx| {
+                        cx.new(|_| WorkspaceTooltip {
+                            label: filename.clone().into(),
+                        })
+                        .into()
+                    })
+                    .child(
+                        img(draft.image.clone())
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(
+                        div()
+                            .id(ElementId::from(SharedString::from(format!(
+                                "issue-attachment-remove-{target:?}-{index}"
+                            ))))
+                            .absolute()
+                            .top(px(4.0))
+                            .right(px(4.0))
+                            .size(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(ShellDeckColors::backdrop())
+                            .cursor_pointer()
+                            .child(lucide_icon("x", 12.0, white()))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                let drafts = this.attachment_drafts_mut(target);
+                                if index < drafts.len() {
+                                    drafts.remove(index);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        let url_input = Input::new(&self.issue_attachment_url_state)
+            .size(InputSize::Sm)
+            .placeholder(t!("user.requests.attachments.url_placeholder").to_string())
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| {
+                    entity.update(cx, |ws, cx| ws.import_issue_attachment_url(target, cx))
+                }
+            });
+
+        div()
+            .id(ElementId::from(SharedString::from(format!(
+                "issue-attachment-picker-{target:?}"
+            ))))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(10.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_primary().opacity(0.55))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                let mods = event.keystroke.modifiers;
+                if event.keystroke.key.eq_ignore_ascii_case("v")
+                    && (mods.control || mods.platform)
+                    && this.paste_issue_attachment(target, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                let generation = this.issue_attachment_generation;
+                this.import_attachment_paths(target, paths.paths().to_vec(), generation, cx);
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("user.requests.attachments.title").to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("user.requests.attachments.drop_hint").to_string()),
+                    ),
+            )
+            .when(!drafts.is_empty(), |el| el.child(previews))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("issue-file-{target:?}")),
+                            t!("user.requests.attachments.file").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("upload"))
+                        .disabled(self.issue_attachment_busy)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.pick_issue_attachments(target, window, cx);
+                            },
+                        )),
+                    )
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("issue-paste-{target:?}")),
+                            t!("user.requests.attachments.paste").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("clipboard-paste"))
+                        .disabled(self.issue_attachment_busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.paste_issue_attachment(target, cx) {
+                                this.show_toast(
+                                    t!("toast.issue.clipboard_no_image").to_string(),
+                                    ToastLevel::Warning,
+                                    cx,
+                                );
+                            }
+                        })),
+                    )
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("issue-capture-{target:?}")),
+                            t!("user.requests.attachments.capture").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("plus"))
+                        .disabled(self.issue_attachment_busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.capture_issue_attachment(target, cx);
+                        })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(url_input))
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("issue-url-{target:?}")),
+                            t!("user.requests.attachments.add_url").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("globe"))
+                        .disabled(self.issue_attachment_busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.import_issue_attachment_url(target, cx);
+                        })),
+                    ),
+            )
+    }
+
+    fn render_stored_attachments(
+        &self,
+        attachments: &[issues::IssueAttachment],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = div().flex().flex_wrap().gap(px(6.0));
+        for attachment in attachments {
+            let url = if attachment.viewer_url.is_empty() {
+                attachment.url.clone()
+            } else {
+                attachment.viewer_url.clone()
+            };
+            row = row.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "stored-attachment-{}",
+                        attachment.id
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .max_w(px(210.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::primary())
+                    .cursor_pointer()
+                    .child(lucide_icon("globe", 12.0, ShellDeckColors::primary()))
+                    .child(div().truncate().child(attachment.filename.clone()))
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, _| {
+                        let _ = cloud_account::open_in_browser(&url);
+                    })),
+            );
+        }
+        row.into_any_element()
+    }
+
     fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let priorities = ["low", "normal", "high", "urgent"];
         let mut prio_row = div().flex().items_center().gap(px(6.0));
@@ -10560,6 +11597,7 @@ impl Workspace {
                     ),
             )
             .child(body_input)
+            .child(self.render_issue_attachment_picker(IssueAttachmentTarget::NewRequest, cx))
             .child(
                 div()
                     .flex()
@@ -10629,6 +11667,9 @@ impl Workspace {
                     .child(iss.body.clone()),
             );
         }
+        if !iss.attachments.is_empty() {
+            thread = thread.child(self.render_stored_attachments(&iss.attachments, cx));
+        }
         for c in &iss.comments {
             thread = thread.child(
                 div()
@@ -10660,6 +11701,9 @@ impl Workspace {
                             .child(c.body.clone()),
                     ),
             );
+            if !c.attachments.is_empty() {
+                thread = thread.child(self.render_stored_attachments(&c.attachments, cx));
+            }
         }
 
         // Detail content flows directly inside the sheet chrome — no inner box
@@ -10705,6 +11749,7 @@ impl Workspace {
                     })),
             )
             .child(thread)
+            .child(self.render_issue_attachment_picker(IssueAttachmentTarget::Comment, cx))
             .child(
                 div()
                     .flex()
@@ -10908,6 +11953,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.window_active = _window.is_window_active();
         _window.set_client_inset(px(5.0));
 
         // Drive proportional UI scaling from the App Font Size setting. Every
@@ -11387,6 +12433,13 @@ impl Render for Workspace {
             },
             self.ui_font_size,
             self.ai_available_for_current_surface(_cx),
+            self.ai_tasks
+                .iter()
+                .filter(|task| {
+                    task.status.is_active()
+                        || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
+                })
+                .count(),
             &handle,
             _cx,
         );
@@ -11500,8 +12553,7 @@ impl Render for Workspace {
                 move |cx| {
                     if let Some(workspace) = close_workspace.upgrade() {
                         workspace.update(cx, |workspace, cx| {
-                            workspace.ai_action_confirmation = None;
-                            cx.notify();
+                            workspace.cancel_ai_action_confirmation(cx);
                         });
                     }
                 },

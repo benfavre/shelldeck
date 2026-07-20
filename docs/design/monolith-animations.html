@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShellDeck — Monolith · animations "assistant"</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 2rem;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0a0a0a; color: #eee;
+    }
+    a.back { color: #2EC4A8; text-decoration: none; font-size: 0.9rem; }
+    a.back:hover { text-decoration: underline; }
+    h1 { font-weight: 600; margin: 0.75rem 0 0.2rem; }
+    p.sub { color: #777; margin: 0 0 0.75rem; max-width: 720px; line-height: 1.5; }
+    p.note { color: #555; margin: 0 0 1.5rem; max-width: 720px; font-size: 0.85rem; line-height: 1.55; }
+    p.note code { color: #2EC4A8; }
+
+    section h2 { font-size: 0.9rem; color: #999; text-transform: uppercase; letter-spacing: 0.08em; margin: 2.25rem 0 0.75rem; font-weight: 500; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1.25rem;
+    }
+    .card {
+      background: #141414; border: 1px solid #2a2a2a;
+      border-radius: 14px; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .preview {
+      width: 100%; aspect-ratio: 1;
+      background: #000;
+      padding: 1.5rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .preview svg { width: 100%; height: 100%; display: block; }
+    figcaption { padding: 0.9rem 1.1rem 1.1rem; }
+    figcaption strong { display: block; font-size: 0.95rem; margin-bottom: 0.3rem; }
+    figcaption span { color: #777; font-size: 0.82rem; line-height: 1.45; }
+    figcaption code { color: #2EC4A8; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #1 — Breathe (idle vivant)
+       Le cadre teal respire, aucune interruption de la face.
+    */
+    @keyframes sd1-breathe {
+      0%,100% { fill: #2ec4a8; }
+      50%     { fill: #1e9077; }
+    }
+    @keyframes sd1-scale {
+      0%,100% { transform: scale(1); }
+      50%     { transform: scale(0.98); }
+    }
+    .sd1-frame  { animation: sd1-breathe 3.6s ease-in-out infinite; }
+    .sd1-group  { animation: sd1-scale 3.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #2 — Wink (clin d'œil périodique, ~5s)
+       Face neutre → clin → neutre. Le seul état déjà exporté
+       en assets par le générateur Python.
+    */
+    @keyframes sd2-open { 0%, 96%, 100% { opacity: 1 } 97%, 99% { opacity: 0 } }
+    @keyframes sd2-shut { 0%, 96%, 100% { opacity: 0 } 97%, 99% { opacity: 1 } }
+    .sd2-open { animation: sd2-open 5s step-end infinite; }
+    .sd2-shut { animation: sd2-shut 5s step-end infinite; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #3 — Blink lent (paupière qui descend)
+       Alternative douce au wink : le "bar" mouth passe de plein
+       à fin, comme si les yeux se fermaient (le >_ devient >‾).
+    */
+    @keyframes sd3-blink { 0%, 90%, 100% { transform: scaleY(1) } 94%, 96% { transform: scaleY(0.25) } }
+    .sd3-bar { animation: sd3-blink 3.2s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #4 — Thinking (le curseur scanne)
+       Le "cursor bar" glisse gauche-droite sous le >, comme
+       un scanner / une réflexion en cours.
+    */
+    @keyframes sd4-scan {
+      0%,100% { transform: translateX(0) }
+      50%     { transform: translateX(-100px) }
+    }
+    .sd4-bar { animation: sd4-scan 1.4s ease-in-out infinite; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #5 — Working / busy (cadre pulse fort + halo)
+       Le cadre teal devient très brillant par pulses, avec un
+       halo intérieur qui grandit et s'estompe. Signale une
+       tâche en cours (Jean, SSH connect, script run…).
+    */
+    @keyframes sd5-glow-outer {
+      0%,100% { fill: #2ec4a8; }
+      50%     { fill: #6be9d0; }
+    }
+    @keyframes sd5-halo {
+      0%,100% { opacity: 0; transform: scale(0.6); }
+      50%     { opacity: 0.35; transform: scale(1.05); }
+    }
+    .sd5-outer { animation: sd5-glow-outer 1.1s ease-in-out infinite; }
+    .sd5-halo  { animation: sd5-halo 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #6 — Success (face devient sourire, cadre flashe vert)
+       La barre-bouche se courbe vers le haut brièvement + un
+       flash accent. À déclencher sur "job done" / "connected".
+    */
+    @keyframes sd6-flash {
+      0%,90%,100% { fill: #2ec4a8; }
+      92%,98%     { fill: #6be9d0; }
+    }
+    @keyframes sd6-mouth-neutral {
+      0%, 90%, 100% { opacity: 1; }
+      92%, 98%      { opacity: 0; }
+    }
+    @keyframes sd6-mouth-smile {
+      0%, 90%, 100% { opacity: 0; }
+      92%, 98%      { opacity: 1; }
+    }
+    .sd6-frame  { animation: sd6-flash 3s ease-in-out infinite; }
+    .sd6-neutral { animation: sd6-mouth-neutral 3s step-end infinite; }
+    .sd6-smile   { animation: sd6-mouth-smile 3s step-end infinite; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #7 — Alert / stress (>_< qui secoue, cadre passe orange)
+       Trigger : erreur SSH, timeout, quota IA, ticket urgent…
+    */
+    @keyframes sd7-shake {
+      0%, 88%, 100% { transform: translateX(0) rotate(0); }
+      90%           { transform: translateX(-6px) rotate(-1deg); }
+      92%           { transform: translateX(6px) rotate(1deg); }
+      94%           { transform: translateX(-4px) rotate(-0.5deg); }
+      96%           { transform: translateX(4px) rotate(0.5deg); }
+    }
+    @keyframes sd7-alert-frame {
+      0%, 85%, 100% { fill: #2ec4a8; }
+      90%, 96%      { fill: #ff8a3d; }
+    }
+    .sd7-face  { animation: sd7-shake 4s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+    .sd7-frame { animation: sd7-alert-frame 4s ease-in-out infinite; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #8 — Speaking (bouche qui parle)
+       La barre-bouche oscille en largeur rapidement, comme une
+       forme d'onde. Pour un état "IA parle" / "Jean répond".
+    */
+    @keyframes sd8-talk {
+      0%,100% { transform: scaleX(1); }
+      15%     { transform: scaleX(0.5); }
+      30%     { transform: scaleX(1.05); }
+      45%     { transform: scaleX(0.7); }
+      60%     { transform: scaleX(0.95); }
+      75%     { transform: scaleX(0.55); }
+      90%     { transform: scaleX(1.1); }
+    }
+    .sd8-mouth { animation: sd8-talk 0.9s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #9 — Scan line (ligne qui balaye l'intérieur)
+       Trigger : sync, indexation, scan de configuration…
+    */
+    @keyframes sd9-sweep {
+      0%   { transform: translateY(-320px); opacity: 0; }
+      10%  { opacity: 0.9; }
+      90%  { opacity: 0.9; }
+      100% { transform: translateY(320px); opacity: 0; }
+    }
+    .sd9-line { animation: sd9-sweep 2.4s linear infinite; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #10 — Boot / startup (le logo se compose)
+       À l'ouverture de l'app : cadre trace, puis face apparaît.
+       Boucle ici pour la démo, sinon oneshot en prod.
+    */
+    @keyframes sd10-outer {
+      0%,100% { opacity: 1; transform: scale(1); }
+      0%      { opacity: 0; transform: scale(0.7); }
+      25%     { opacity: 1; transform: scale(1); }
+    }
+    @keyframes sd10-inner {
+      0%, 25%, 100% { opacity: 1; }
+      0%, 20%       { opacity: 0; }
+    }
+    @keyframes sd10-face {
+      0%, 55%, 100% { opacity: 1; transform: translateY(0); }
+      0%, 45%       { opacity: 0; transform: translateY(20px); }
+    }
+    .sd10-outer { animation: sd10-outer 3.2s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+    .sd10-inner { animation: sd10-inner 3.2s ease-out infinite; }
+    .sd10-face  { animation: sd10-face 3.2s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #11 — Dots (loading indéterminé, classique)
+       Trois points teal sous la face pulsent en cascade.
+       Universel : tout le monde reconnaît "…"
+    */
+    @keyframes sd11-pulse {
+      0%, 60%, 100% { opacity: 0.25; transform: scale(0.7); }
+      30%           { opacity: 1;    transform: scale(1.1); }
+    }
+    .sd11-d1 { animation: sd11-pulse 1.4s ease-in-out infinite;         transform-origin: center; transform-box: fill-box; }
+    .sd11-d2 { animation: sd11-pulse 1.4s ease-in-out 0.2s infinite;    transform-origin: center; transform-box: fill-box; }
+    .sd11-d3 { animation: sd11-pulse 1.4s ease-in-out 0.4s infinite;    transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #12 — Progress ring (arc qui tourne, indéterminé)
+       Arc teal partiel autour du centre. Face conservée mais
+       légèrement plus petite pour laisser respirer l'anneau.
+    */
+    @keyframes sd12-spin { to { transform: rotate(360deg); } }
+    .sd12-ring { animation: sd12-spin 1.1s linear infinite; transform-origin: center; transform-box: fill-box; }
+    .sd12-face-shrink { transform: scale(0.72); transform-origin: center; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #13 — Progress bar (progression déterminée)
+       Barre teal en bas de l'intérieur, se remplit de gauche
+       à droite. Ici en boucle pour la démo, en prod pilotée
+       par un pourcentage réel (téléchargement, backup, etc.).
+    */
+    @keyframes sd13-fill {
+      0%, 100% { transform: scaleX(0); }
+      10%      { transform: scaleX(0); }
+      90%      { transform: scaleX(1); }
+    }
+    .sd13-bar { animation: sd13-fill 2.6s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #14 — Terminal typing (le prompt "écrit")
+       La barre-bouche se remplit de gauche à droite (typing),
+       un curseur teal avance en synchro, puis efface + loop.
+       Très ShellDeck : c'est LE geste terminal.
+    */
+    @keyframes sd14-type {
+      0%, 100% { transform: scaleX(0); }
+      10%      { transform: scaleX(0); }
+      55%      { transform: scaleX(1); }
+      85%      { transform: scaleX(1); }
+    }
+    @keyframes sd14-caret {
+      0%, 100% { transform: translateX(0); }
+      10%      { transform: translateX(0); }
+      55%      { transform: translateX(155px); }
+      85%      { transform: translateX(155px); }
+    }
+    @keyframes sd14-blink {
+      0%, 49%   { opacity: 1; }
+      50%, 100% { opacity: 0.25; }
+    }
+    .sd14-typed { animation: sd14-type 2.4s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
+    .sd14-caret { animation: sd14-caret 2.4s ease-in-out infinite, sd14-blink 1s step-end infinite; transform-box: fill-box; }
+
+    /* ─────────────────────────────────────────────────────────
+       Card #15 — Chevron rain (Matrix-style, geeky)
+       Des `>` teal tombent depuis le haut, clipés par le cadre
+       intérieur. 5 colonnes avec délais/vitesses décalées pour
+       éviter la régularité mécanique. Face à 40% opacity pour
+       laisser voir la pluie derrière.
+    */
+    @keyframes sd15-fall {
+      0%   { transform: translateY(-60px); opacity: 0; }
+      8%   { opacity: 0.9; }
+      92%  { opacity: 0.9; }
+      100% { transform: translateY(640px); opacity: 0; }
+    }
+    .sd15-r1 { animation: sd15-fall 2.4s linear infinite;      transform-box: fill-box; }
+    .sd15-r2 { animation: sd15-fall 2.0s linear 0.4s infinite; transform-box: fill-box; }
+    .sd15-r3 { animation: sd15-fall 2.8s linear 0.8s infinite; transform-box: fill-box; }
+    .sd15-r4 { animation: sd15-fall 1.9s linear 1.2s infinite; transform-box: fill-box; }
+    .sd15-r5 { animation: sd15-fall 2.5s linear 1.7s infinite; transform-box: fill-box; }
+  </style>
+</head>
+<body>
+  <h1>Monolith — animations "assistant"</h1>
+  <p class="sub">Prototypes CSS + SVG sur la piste 04 (le logo retenu). Référence vivante des pistes d'animation "assistant" pour le Monolith, à faire évoluer avant de choisir ce qui sera branché dans l'app.</p>
+  <p class="note">Ce fichier est une <strong>référence visuelle versionnée</strong> — 100&nbsp;% autonome (SVG inline + CSS <code>@keyframes</code>, zéro dépendance externe), ouvrable directement au navigateur (<code>xdg-open docs/design/monolith-animations.html</code>). Les 3 expressions produites par le script Python (<code>default</code>, <code>neutral</code>, <code>wink</code>) sont réutilisées ici, et de nouvelles pistes (smile, shake, mouth-talk, scan-line, boot, dots, ring, bar, typing, chevron rain) sont composées directement en CSS pour l'exploration — aucune n'est encore exportée en asset ni branchée côté app.</p>
+
+  <section>
+    <h2>Vie de fond (toujours ON, ne dérange pas)</h2>
+    <div class="grid">
+
+      <!-- 1 · Breathe -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <g class="sd1-group">
+              <path class="sd1-frame" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+              <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+              <path fill="#e6e6e6" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
+              <path fill="#e6e6e6" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
+              <rect x="417" y="624" width="190" height="40" rx="6" fill="#e6e6e6"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>1 · Breathe (idle)</strong>
+          <span>Le cadre teal respire lentement + micro-scale. Face static <code>&gt;_&lt;</code>. Signale "vivant" sans distraire.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 2 · Wink -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <g class="sd2-open"><rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/></g>
+            <g class="sd2-shut"><rect x="547" y="656" width="173" height="20" rx="4" fill="#e6e6e6"/></g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>2 · Wink périodique</strong>
+          <span>Face neutre → clin toutes les 5s (~150ms). Réutilise les 3 expressions déjà exportées par le générateur.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 3 · Blink lent -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect class="sd3-bar" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>3 · Blink continu</strong>
+          <span>Alternative douce : la bouche se pince périodiquement au lieu de basculer sur une frame séparée.</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>États d'activité (déclenchés par une tâche)</h2>
+    <div class="grid">
+
+      <!-- 4 · Thinking -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect class="sd4-bar" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>4 · Thinking (curseur scanne)</strong>
+          <span>La barre-bouche glisse gauche/droite en boucle. Pour "IA rédige", "Jean réfléchit", "scan de config"…</span>
+        </figcaption>
+      </figure>
+
+      <!-- 5 · Working / busy -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <circle class="sd5-halo" cx="512" cy="512" r="380" fill="#2ec4a8" opacity="0"/>
+            <path class="sd5-outer" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>5 · Working / busy</strong>
+          <span>Le cadre teal pulse fort + halo intérieur. Signale une tâche longue (SSH connect, script en cours, sync fleet).</span>
+        </figcaption>
+      </figure>
+
+      <!-- 9 · Scan line -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <!-- Sweep line, clipped by the inner dark area -->
+            <clipPath id="sd9-clip"><rect x="246" y="189" width="572" height="638" rx="32"/></clipPath>
+            <g clip-path="url(#sd9-clip)">
+              <rect class="sd9-line" x="246" y="500" width="572" height="6" fill="#2ec4a8" opacity="0.9"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>9 · Scan line</strong>
+          <span>Une ligne teal balaye verticalement l'intérieur, clipée par le cadre. Pour indexation, scan config, diagnostic.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 8 · Speaking -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect class="sd8-mouth" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>8 · Speaking (bouche qui parle)</strong>
+          <span>Largeur de la bouche oscille comme une forme d'onde. Pour "IA parle", streaming Jean, réponse en cours.</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Loading &amp; progression (indéterminé + déterminé)</h2>
+    <div class="grid">
+
+      <!-- 11 · Dots -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <circle class="sd11-d1" cx="440" cy="770" r="20" fill="#2ec4a8"/>
+            <circle class="sd11-d2" cx="512" cy="770" r="20" fill="#2ec4a8"/>
+            <circle class="sd11-d3" cx="584" cy="770" r="20" fill="#2ec4a8"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>11 · Dots (…)</strong>
+          <span>Trois points teal pulsent en cascade sous la face. Universel : chargement indéterminé "je bosse, patiente".</span>
+        </figcaption>
+      </figure>
+
+      <!-- 12 · Progress ring -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <g class="sd12-face-shrink">
+              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            </g>
+            <!-- Track (faint) + rotating partial arc -->
+            <circle cx="512" cy="512" r="290" fill="none" stroke="#2ec4a8" stroke-width="12" opacity="0.15"/>
+            <circle class="sd12-ring" cx="512" cy="512" r="290" fill="none" stroke="#2ec4a8" stroke-width="16" stroke-linecap="round" stroke-dasharray="450 1372"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>12 · Progress ring</strong>
+          <span>Arc teal tourne autour d'une face réduite. Spinner classique lisible partout. Idéal pour tâche longue.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 13 · Progress bar -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <!-- Track + fill in the bottom band -->
+            <rect x="280" y="770" width="464" height="18" rx="9" fill="#2ec4a8" opacity="0.18"/>
+            <rect class="sd13-bar" x="280" y="770" width="464" height="18" rx="9" fill="#2ec4a8"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>13 · Progress bar</strong>
+          <span>Barre teal en bas se remplit gauche→droite. Pour progression <em>déterminée</em> (download, backup, install %).</span>
+        </figcaption>
+      </figure>
+
+      <!-- 14 · Terminal typing -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <!-- Chevron only, no static mouth -->
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <!-- Empty typing track -->
+            <rect x="547" y="640" width="164" height="64" rx="6" fill="none" stroke="#2ec4a8" stroke-width="3" opacity="0.3"/>
+            <!-- Typed fill grows left→right -->
+            <rect class="sd14-typed" x="547" y="640" width="164" height="64" rx="6" fill="#2ec4a8"/>
+            <!-- Blinking caret follows the fill -->
+            <rect class="sd14-caret" x="547" y="626" width="8" height="92" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>14 · Terminal typing</strong>
+          <span>La bouche "s'écrit" caractère par caractère + curseur teal qui clignote. Signature ShellDeck : c'est LE geste terminal.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 15 · Chevron rain -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <defs>
+              <clipPath id="sd15-clip">
+                <path d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+              </clipPath>
+            </defs>
+            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <!-- Rain sits BEHIND the face (paint order), clipped by inner frame -->
+            <g clip-path="url(#sd15-clip)">
+              <path class="sd15-r1" fill="#2ec4a8" d="M 280 200 L 300 214 L 280 228 L 288 228 L 308 214 L 288 200 Z"/>
+              <path class="sd15-r2" fill="#2ec4a8" d="M 380 250 L 400 264 L 380 278 L 388 278 L 408 264 L 388 250 Z"/>
+              <path class="sd15-r3" fill="#2ec4a8" d="M 500 220 L 520 234 L 500 248 L 508 248 L 528 234 L 508 220 Z"/>
+              <path class="sd15-r4" fill="#2ec4a8" d="M 620 240 L 640 254 L 620 268 L 628 268 L 648 254 L 628 240 Z"/>
+              <path class="sd15-r5" fill="#2ec4a8" d="M 720 210 L 740 224 L 720 238 L 728 238 L 748 224 L 728 210 Z"/>
+            </g>
+            <!-- Face at reduced opacity so rain shows through -->
+            <g opacity="0.45">
+              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>15 · Chevron rain</strong>
+          <span>Des <code>&gt;</code> teal tombent dans l'intérieur (Matrix-style). Face à 45% pour laisser voir la pluie. Geek, très terminal.</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>États ponctuels (feedback court)</h2>
+    <div class="grid">
+
+      <!-- 6 · Success -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path class="sd6-frame" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <!-- neutre -->
+            <rect class="sd6-neutral" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <!-- sourire (arc bombé vers le bas) -->
+            <path class="sd6-smile" d="M 547 640 Q 633 730 720 640 L 720 668 Q 633 758 547 668 Z" fill="#e6e6e6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>6 · Success</strong>
+          <span>Cadre flashe teal clair + la bouche se courbe en sourire ~300ms. Pour "connecté", "job done", "sync OK".</span>
+        </figcaption>
+      </figure>
+
+      <!-- 7 · Alert -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path class="sd7-frame" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <g class="sd7-face">
+              <path fill="#e6e6e6" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
+              <path fill="#e6e6e6" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
+              <rect x="417" y="624" width="190" height="40" rx="6" fill="#e6e6e6"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>7 · Alert / stress</strong>
+          <span>Face <code>&gt;_&lt;</code> secoue + cadre passe orange briévement. Erreur SSH, timeout API, ticket P0.</span>
+        </figcaption>
+      </figure>
+
+      <!-- 10 · Boot -->
+      <figure class="card">
+        <div class="preview">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
+            <path class="sd10-outer" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+            <path class="sd10-inner" fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <g class="sd10-face">
+              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <strong>10 · Boot / startup</strong>
+          <span>Cadre apparaît, intérieur se noircit, face monte. Version boucle ici pour la démo — en prod, oneshot au lancement.</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <p class="note" style="margin-top:2.5rem">
+    <strong>Note perf</strong> — toutes ces anims sont du CSS <code>@keyframes</code> pur, rendues par le compositor du navigateur. Une fois branchées côté app (GPUI ne rejoue pas les <code>&lt;style&gt;</code> inline dans un SVG chargé via <code>img()</code>), il faudra probablement passer par un état Rust qui bascule entre plusieurs assets SVG statiques (comme le fait déjà le générateur pour <code>default</code>/<code>neutral</code>/<code>wink</code>), ou animer via <code>with_animation</code> côté GPUI en swap de source. C'est une décision d'implémentation à prendre après avoir choisi ce qu'on veut animer.
+  </p>
+</body>
+</html>

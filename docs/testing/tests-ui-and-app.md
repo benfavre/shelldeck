@@ -239,6 +239,11 @@ parallel `cargo test`.
 | SDTEST-1364 | `ai.rs::action_plan_rejects_mismatched_payload_and_redacts_content_from_audit` | SDUC-427, SDUC-428 | Green | Rejects kind/payload mismatches and proves audit metadata excludes the executable payload. |
 | SDTEST-1365 | *to write* — executable AI drafts require a second target-safe confirmation | SDUC-427 | **Red / P0** | GPUI wiring: Accept still only inserts; Execute/Send opens the shared plan dialog, Cancel is inert, and final confirmation rejects a changed session/ticket/issue/instance. |
 | SDTEST-1366 | *to write* — AI script tracking cannot stop a later execution | SDUC-428 | **Red / P0** | Fake-clock/process wiring: success/failure/cancel remove the matching action ID; only the still-current action times out and invokes the existing Stop path. |
+| SDTEST-1368 | *to write* — AI task center routes exact targets and only exposes valid actions | SDUC-429 | **Red / P0** | GPUI wiring: actionable count matches the titlebar badge; resume/open/stop/delete route by task ID, active tasks survive sheet closure, and stale active states recover as cancelled after restart. |
+| SDTEST-1370 | *to write* — AI policy controls drive the executable workflow action | SDUC-430 | **Red / P0** | GPUI wiring: Settings persists each capability independently; Prepare hides/blocks Execute, Confirm opens the second dialog, Automatic executes moderate actions directly, and High risk still opens confirmation. |
+| SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each Run action revalidates the active session and opens high-risk confirmation, copy exports readable text, and Ctrl+C remains available after submission. |
+| SDTEST-1374 | `issue_attachments.rs::rejects_extension_spoofing` + `recognizes_png_magic` | SDUC-432 | Green | Pure local intake guard: accepted formats are identified by bytes, never filename alone. |
+| SDTEST-1375 | *to write* — request attachment picker routes URL/paste/drop/file/capture drafts to the exact composer | SDUC-432 | **Red / P0** | GPUI integration: each source adds one removable preview to the active New Request or Comment target; closing clears drafts; submission uploads once and preserves drafts on failure. |
 
 ---
 

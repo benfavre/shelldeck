@@ -180,14 +180,21 @@ impl RenderOnce for Alert {
             })
             .when(has_content, |this| {
                 this.child(
+                    // ShellDeck patch: SDPATCH-019 — alert copy must shrink to the
+                    // width left by its icon instead of imposing its intrinsic width.
                     div()
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
                         .gap(px(4.0))
                         .when_some(self.title.clone(), |this, title| {
                             this.child(
                                 div()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.tokens.foreground)
@@ -197,6 +204,9 @@ impl RenderOnce for Alert {
                         .when_some(self.description.clone(), |this, desc| {
                             this.child(
                                 div()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
                                     .text_sm()
                                     .text_color(theme.tokens.muted_foreground)
                                     .child(desc),

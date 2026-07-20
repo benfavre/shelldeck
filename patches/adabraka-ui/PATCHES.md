@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **39**
+Total markers in code: **51**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -370,6 +370,18 @@ carries no marker of its own — see its entry).
   retains its natural height inside a vertically scrollable child.
 - **Upstream status**: not filed yet.
 
+### SDPATCH-019 — Alert text stays inside narrow flex containers
+
+- **Files / symbols**:
+  - `src/components/alert.rs` — `Alert::render`
+- **Markers**:
+  - `src/components/alert.rs` — `ShellDeck patch: SDPATCH-019`
+- **Why**: the alert's text column used `flex_1` without a zero minimum width,
+  so long descriptions kept their intrinsic width and painted through adjacent
+  panes. The content column can now shrink, and its title and description receive
+  the definite available width GPUI needs to wrap text.
+- **Upstream status**: not filed yet — small generic flex containment fix.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -423,6 +435,8 @@ carries no marker of its own — see its entry).
   newlines before GPUI shaping instead of allowing an application-wide panic.
 - **2026-07-16** — added SDPATCH-018: multi-line Inputs support a maximum
   visible row count and scroll internally once the content exceeds it.
+- **2026-07-20** — added SDPATCH-019: Alert title and description columns now
+  shrink and wrap inside narrow panels instead of bleeding through siblings.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past

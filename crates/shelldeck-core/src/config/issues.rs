@@ -8,7 +8,11 @@
 
 use crate::error::{Result, ShellDeckError};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::time::Duration;
+
+pub const ISSUE_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
+pub const ISSUE_ATTACHMENT_MAX_COUNT: usize = 5;
 
 fn de_nullable_string<'de, D>(d: D) -> std::result::Result<String, D::Error>
 where
@@ -66,12 +70,40 @@ pub struct IssueComment {
     pub kind: String,
     #[serde(default, deserialize_with = "de_flex_millis")]
     pub at: f64,
+    #[serde(default)]
+    pub attachments: Vec<IssueAttachment>,
 }
 
 impl IssueComment {
     pub fn is_note(&self) -> bool {
         matches!(self.kind.as_str(), "status" | "system" | "github")
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct IssueAttachment {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub id: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub share_id: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub url: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub viewer_url: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub filename: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub content_type: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub created_by: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub created_at: f64,
 }
 
 /// An issue. Slim in the list response; the `?action=issue` detail adds `body`,
@@ -106,6 +138,8 @@ pub struct Issue {
     #[serde(default)]
     pub comment_count: i64,
     #[serde(default)]
+    pub attachment_count: i64,
+    #[serde(default)]
     pub github: Option<IssueGithub>,
     #[serde(default)]
     pub job_count: i64,
@@ -118,6 +152,8 @@ pub struct Issue {
     pub body: String,
     #[serde(default)]
     pub comments: Vec<IssueComment>,
+    #[serde(default)]
+    pub attachments: Vec<IssueAttachment>,
     #[serde(default)]
     pub job_ids: Vec<String>,
 }
@@ -165,6 +201,135 @@ struct IssueResponse {
     issue: Issue,
     #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentTicketResponse {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    ticket: String,
+    #[serde(default)]
+    upload_url: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentUploadResponse {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    receipt: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IssueAttachmentUpload {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl IssueAttachmentUpload {
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(
+            self.content_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp"
+        ) {
+            return Err(ShellDeckError::Connection(
+                "type image non pris en charge".to_string(),
+            ));
+        }
+        if self.bytes.is_empty() || self.bytes.len() > ISSUE_ATTACHMENT_MAX_BYTES {
+            return Err(ShellDeckError::Connection(
+                "taille image invalide".to_string(),
+            ));
+        }
+        if issue_image_content_type(&self.bytes) != Some(self.content_type.as_str()) {
+            return Err(ShellDeckError::Connection(
+                "contenu image invalide".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn issue_image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Download an image URL with bounded redirects, time and size, then identify
+/// it from its bytes rather than trusting its extension or Content-Type.
+pub fn download_issue_image_url(url: &str) -> Result<IssueAttachmentUpload> {
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|_| ShellDeckError::Connection("URL image invalide".to_string()))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ShellDeckError::Connection(
+            "URL HTTP(S) requise".to_string(),
+        ));
+    }
+    let filename_hint = parsed
+        .path_segments()
+        .and_then(|mut parts| parts.next_back())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("image")
+        .to_string();
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| ShellDeckError::Connection(format!("failed to build HTTP client: {}", e)))?;
+    let response = client.get(parsed).send().map_err(|e| {
+        ShellDeckError::Connection(format!("téléchargement image impossible : {}", e))
+    })?;
+    check_status(response.status().as_u16())?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > ISSUE_ATTACHMENT_MAX_BYTES as u64)
+    {
+        return Err(ShellDeckError::Connection(
+            "L’image dépasse la limite de 10 Mo.".to_string(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((ISSUE_ATTACHMENT_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| ShellDeckError::Connection(format!("lecture image impossible : {}", e)))?;
+    if bytes.len() > ISSUE_ATTACHMENT_MAX_BYTES {
+        return Err(ShellDeckError::Connection(
+            "L’image dépasse la limite de 10 Mo.".to_string(),
+        ));
+    }
+    let content_type = issue_image_content_type(&bytes).ok_or_else(|| {
+        ShellDeckError::Connection("Format non pris en charge (PNG, JPEG ou WebP).".to_string())
+    })?;
+    let extension = match content_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        _ => "webp",
+    };
+    let filename = if filename_hint.contains('.') {
+        filename_hint
+    } else {
+        format!("{filename_hint}.{extension}")
+    };
+    Ok(IssueAttachmentUpload {
+        filename,
+        content_type: content_type.to_string(),
+        bytes,
+    })
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
@@ -343,6 +508,110 @@ pub fn comment_issue(base_url: &str, token: &str, id: &str, body: &str) -> Resul
         base_url,
         token,
         serde_json::json!({ "action": "comment", "id": id, "body": body }),
+    )
+}
+
+/// Upload images to Inklura Share through short-lived issue-scoped tickets,
+/// then return the receipts that Manage will validate while attaching them.
+pub fn upload_issue_attachments(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    uploads: &[IssueAttachmentUpload],
+) -> Result<Vec<String>> {
+    if uploads.len() > ISSUE_ATTACHMENT_MAX_COUNT {
+        return Err(ShellDeckError::Connection(format!(
+            "{} images maximum par envoi",
+            ISSUE_ATTACHMENT_MAX_COUNT
+        )));
+    }
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| ShellDeckError::Connection(format!("failed to build HTTP client: {}", e)))?;
+    let mut receipts = Vec::with_capacity(uploads.len());
+    for upload in uploads {
+        upload.validate()?;
+        let ticket_resp = client
+            .post(issues_url(base_url))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "action": "attachment-ticket", "id": id,
+                "filename": upload.filename, "content_type": upload.content_type,
+                "bytes": upload.bytes.len(),
+            }))
+            .send()
+            .map_err(|e| ShellDeckError::Connection(format!("attachment ticket failed: {}", e)))?;
+        check_status(ticket_resp.status().as_u16())?;
+        let ticket: AttachmentTicketResponse = ticket_resp.json().map_err(|e| {
+            ShellDeckError::Serialization(format!("invalid attachment ticket: {}", e))
+        })?;
+        if !ticket.ok || ticket.ticket.is_empty() || ticket.upload_url.is_empty() {
+            return Err(ShellDeckError::Connection(
+                ticket
+                    .error
+                    .unwrap_or_else(|| "ticket image refusé".to_string()),
+            ));
+        }
+
+        let part = reqwest::blocking::multipart::Part::bytes(upload.bytes.clone())
+            .file_name(upload.filename.clone())
+            .mime_str(&upload.content_type)
+            .map_err(|e| ShellDeckError::Connection(format!("invalid image type: {}", e)))?;
+        let upload_resp = client
+            .post(&ticket.upload_url)
+            .bearer_auth(&ticket.ticket)
+            .multipart(reqwest::blocking::multipart::Form::new().part("file", part))
+            .send()
+            .map_err(|e| ShellDeckError::Connection(format!("image upload failed: {}", e)))?;
+        check_status(upload_resp.status().as_u16())?;
+        let uploaded: AttachmentUploadResponse = upload_resp.json().map_err(|e| {
+            ShellDeckError::Serialization(format!("invalid image upload response: {}", e))
+        })?;
+        if !uploaded.ok || uploaded.receipt.is_empty() {
+            return Err(ShellDeckError::Connection(
+                uploaded
+                    .error
+                    .unwrap_or_else(|| "upload image refusé".to_string()),
+            ));
+        }
+        receipts.push(uploaded.receipt);
+    }
+    Ok(receipts)
+}
+
+/// Attach uploaded images to the main request body.
+pub fn attach_issue_images(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    receipts: &[String],
+) -> Result<Issue> {
+    post_issue(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "attachment-attach", "id": id, "attachment_receipts": receipts,
+        }),
+    )
+}
+
+/// Add a text and/or image comment (mirrors both to GitHub when linked).
+pub fn comment_issue_with_attachments(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    body: &str,
+    receipts: &[String],
+) -> Result<Issue> {
+    post_issue(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "comment", "id": id, "body": body,
+            "attachment_receipts": receipts,
+        }),
     )
 }
 
@@ -541,8 +810,9 @@ mod tests {
         "github":{"url":"https://github.com/o/r/issues/7","number":7,"state":"open"},
         "created_at":"2026-07-02T20:00:00.000Z", "updated_at":"2026-07-02T20:30:00.000Z",
         "body":"le hero est cassé", "job_ids":["j1"],
+        "attachments":[{"id":"a1","share_id":"sh1","url":"https://share.inklura.fr/u/a1.png","viewer_url":"https://share.inklura.fr/s/a1","filename":"hero.png","content_type":"image/png","bytes":42,"created_by":"ben","created_at":"2026-07-02T20:04:00.000Z"}],
         "comments":[
-          {"id":"c1","author":"ben","body":"des détails","kind":"comment","at":"2026-07-02T20:05:00.000Z"},
+          {"id":"c1","author":"ben","body":"des détails","kind":"comment","at":"2026-07-02T20:05:00.000Z","attachments":[{"id":"a2","url":"https://share.inklura.fr/u/a2.webp","filename":"detail.webp","content_type":"image/webp","bytes":84,"created_at":"2026-07-02T20:05:00.000Z"}]},
           {"id":"c2","author":"système","body":"statut → in_progress","kind":"status","at":"2026-07-02T20:10:00.000Z"}
         ] }
     }"#;
@@ -574,6 +844,9 @@ mod tests {
         let iss = get_issue(&b, &t, "iss_1").expect("detail");
         assert_eq!(iss.body, "le hero est cassé");
         assert_eq!(iss.comments.len(), 2);
+        assert_eq!(iss.attachments.len(), 1);
+        assert_eq!(iss.attachments[0].filename, "hero.png");
+        assert_eq!(iss.comments[0].attachments.len(), 1);
         assert!(!iss.comments[0].is_note());
         assert!(iss.comments[1].is_note()); // "status" kind
         assert_eq!(iss.job_ids, vec!["j1".to_string()]);
@@ -592,6 +865,127 @@ mod tests {
             && p.contains("\"source\":\"support\"")
             && p.contains("\"priority\":\"high\"")));
         assert!(posts.iter().any(|p| p.contains("\"action\":\"comment\"")));
+    }
+
+    // SDTEST-1373 — Manage validates Share receipts server-side. The Rust
+    // client must keep the receipt array in snake_case for both attachment
+    // placement paths (request body and comment).
+    #[test]
+    fn attachment_receipt_bodies_match_manage_contract() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+        let receipts = vec!["receipt-a".to_string(), "receipt-b".to_string()];
+        attach_issue_images(&b, &t, "iss_1", &receipts).expect("attach");
+        comment_issue_with_attachments(&b, &t, "iss_1", "voir capture", &receipts)
+            .expect("comment with images");
+
+        let posts = m.posts.lock().unwrap();
+        let attach: serde_json::Value = serde_json::from_str(
+            posts
+                .iter()
+                .find(|p| p.contains("attachment-attach"))
+                .expect("attach body"),
+        )
+        .unwrap();
+        assert_eq!(attach["id"], "iss_1");
+        assert_eq!(attach["attachment_receipts"][1], "receipt-b");
+        let comment: serde_json::Value = serde_json::from_str(
+            posts
+                .iter()
+                .find(|p| p.contains("voir capture"))
+                .expect("comment body"),
+        )
+        .unwrap();
+        assert_eq!(comment["attachment_receipts"][0], "receipt-a");
+    }
+
+    #[test]
+    fn attachment_upload_rejects_spoofed_image_bytes() {
+        let upload = IssueAttachmentUpload {
+            filename: "fake.png".into(),
+            content_type: "image/png".into(),
+            bytes: b"nope".to_vec(),
+        };
+        assert!(upload.validate().is_err());
+    }
+
+    #[test]
+    fn upload_issue_attachments_uses_ticket_and_multipart() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_thread = seen.clone();
+        let upload_url = format!("{base}/upload");
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut content_length = 0usize;
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                    headers.push_str(&line);
+                }
+                let mut body = vec![0u8; content_length];
+                reader.read_exact(&mut body).unwrap();
+                seen_thread.lock().unwrap().push(format!(
+                    "{request}{headers}{}",
+                    String::from_utf8_lossy(&body)
+                ));
+                let response_body = if index == 0 {
+                    format!(
+                        r#"{{"ok":true,"ticket":"{}","upload_url":"{}"}}"#,
+                        "a".repeat(64),
+                        upload_url
+                    )
+                } else {
+                    r#"{"ok":true,"receipt":"receipt-1"}"#.to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(), response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend_from_slice(&[0; 8]);
+        let receipts = upload_issue_attachments(
+            &base,
+            TOKEN,
+            "iss_1",
+            &[IssueAttachmentUpload {
+                filename: "capture.png".into(),
+                content_type: "image/png".into(),
+                bytes: png,
+            }],
+        )
+        .expect("ticket + multipart upload");
+        assert_eq!(receipts, vec!["receipt-1"]);
+        handle.join().unwrap();
+        let requests = seen.lock().unwrap();
+        assert!(requests[0].contains("\"action\":\"attachment-ticket\""));
+        assert!(requests[0].contains("\"bytes\":16"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data"));
+        assert!(requests[1].contains("name=\"file\""));
+        assert!(requests[1].contains("filename=\"capture.png\""));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {}", "a".repeat(64))));
     }
 
     #[test]

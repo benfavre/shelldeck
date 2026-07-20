@@ -24,7 +24,7 @@ use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
 
-use shelldeck_core::config::issues::{Issue, IssueInstance};
+use shelldeck_core::config::issues::{Issue, IssueAttachment, IssueInstance};
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
 };
@@ -3338,6 +3338,7 @@ impl SupportView {
     fn render_issue_comment(
         &self,
         c: &shelldeck_core::config::issues::IssueComment,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_note = c.is_note();
         let author_matches_me = !c.author.trim().is_empty() && {
@@ -3433,12 +3434,55 @@ impl SupportView {
                     body = body.child(div().max_w(px(540.0)).child(display));
                 }
                 body
+            })
+            .when(!c.attachments.is_empty(), |el| {
+                el.child(self.render_issue_attachment_links(&c.attachments, cx))
             });
         let mut wrap = div().w_full().flex();
         if align_end {
             wrap = wrap.justify_end();
         }
         wrap.child(bubble)
+    }
+
+    fn render_issue_attachment_links(
+        &self,
+        attachments: &[IssueAttachment],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = div().flex().flex_wrap().gap(px(6.0)).pt(px(4.0));
+        for attachment in attachments {
+            let url = if attachment.viewer_url.is_empty() {
+                attachment.url.clone()
+            } else {
+                attachment.viewer_url.clone()
+            };
+            row = row.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "support-attachment-{}",
+                        attachment.id
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .max_w(px(220.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::primary())
+                    .cursor_pointer()
+                    .child(lucide_icon("globe", 12.0, ShellDeckColors::primary()))
+                    .child(div().truncate().child(attachment.filename.clone()))
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, _| {
+                        let _ = shelldeck_core::config::cloud_account::open_in_browser(&url);
+                    })),
+            );
+        }
+        row.into_any_element()
     }
 
     fn close_issue_popover_menu(&mut self, cx: &mut Context<Self>) {
@@ -4553,7 +4597,7 @@ impl SupportView {
                         body
                     }),
             );
-        } else if iss.comments.is_empty() {
+        } else if iss.comments.is_empty() && iss.attachments.is_empty() {
             thread = thread.child(
                 div()
                     .text_size(px(12.0))
@@ -4561,8 +4605,11 @@ impl SupportView {
                     .child(t!("support.empty.comments").to_string()),
             );
         }
+        if !iss.attachments.is_empty() {
+            thread = thread.child(self.render_issue_attachment_links(&iss.attachments, cx));
+        }
         for c in &iss.comments {
-            thread = thread.child(self.render_issue_comment(c));
+            thread = thread.child(self.render_issue_comment(c, cx));
         }
 
         div()

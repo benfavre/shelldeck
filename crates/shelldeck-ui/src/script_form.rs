@@ -3,18 +3,20 @@ use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::prelude::{
-    Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    AnimatedCollapsible, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 
-use shelldeck_core::ai::AiGeneratedScriptDraft;
+use shelldeck_core::ai::{AiBackend, AiGeneratedScriptDraft};
 use shelldeck_core::models::script::{Script, ScriptCategory, ScriptLanguage, ScriptTarget};
 use uuid::Uuid;
 
 use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
 use crate::editor_buffer::EditorBuffer;
-use crate::icons::{script_category_chip, script_language_chip};
+use crate::icons::{
+    ai_provider_badge, lucide_icon, lucide_path, script_category_chip, script_language_chip,
+};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -79,6 +81,9 @@ pub struct ScriptForm {
     description_state: Entity<InputState>,
     ai_prompt_state: Entity<InputState>,
     ai_enabled: bool,
+    ai_backend: AiBackend,
+    ai_model: String,
+    ai_expanded: bool,
     ai_naming_enabled: bool,
     ai_loading: bool,
     ai_error: Option<String>,
@@ -144,6 +149,8 @@ impl ScriptForm {
     pub fn new(
         connections: Vec<(Uuid, String, String)>,
         ai_enabled: bool,
+        ai_backend: AiBackend,
+        ai_model: String,
         ai_naming_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -156,6 +163,9 @@ impl ScriptForm {
             description_state: new_input_state_sf(cx, ""),
             ai_prompt_state: new_input_state_sf(cx, ""),
             ai_enabled,
+            ai_backend,
+            ai_model,
+            ai_expanded: false,
             ai_naming_enabled,
             ai_loading: false,
             ai_error: None,
@@ -176,6 +186,8 @@ impl ScriptForm {
         script: &Script,
         connections: Vec<(Uuid, String, String)>,
         ai_enabled: bool,
+        ai_backend: AiBackend,
+        ai_model: String,
         ai_naming_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -198,6 +210,9 @@ impl ScriptForm {
             description_state: new_input_state_sf(cx, script.description.as_deref().unwrap_or("")),
             ai_prompt_state: new_input_state_sf(cx, ""),
             ai_enabled,
+            ai_backend,
+            ai_model,
+            ai_expanded: false,
             ai_naming_enabled,
             ai_loading: false,
             ai_error: None,
@@ -998,22 +1013,59 @@ impl Render for ScriptForm {
         let mut form_fields = div().flex().flex_col().gap(px(12.0));
 
         if self.ai_enabled {
-            let mut ai_block = div()
+            let expanded = self.ai_expanded;
+            let trigger = div()
                 .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .p(px(10.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(ShellDeckColors::primary().opacity(0.35))
-                .bg(ShellDeckColors::primary().opacity(0.07))
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::primary())
-                        .child(t!("script_form.ai.title").to_string()),
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .min_w(px(0.0))
+                        .child(lucide_icon("sparkles", 14.0, ShellDeckColors::primary()))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::primary())
+                                .child(t!("script_form.ai.title").to_string()),
+                        ),
                 )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .flex_shrink_0()
+                        .child(ai_provider_badge(self.ai_backend, &self.ai_model))
+                        .child(
+                            svg()
+                                .path(lucide_path("chevron-down"))
+                                .size(px(13.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                    if expanded {
+                                        0.0
+                                    } else {
+                                        -std::f32::consts::FRAC_PI_2
+                                    },
+                                ))),
+                        ),
+                );
+
+            let mut content = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .pb(px(10.0))
                 .child(
                     div()
                         .flex()
@@ -1048,7 +1100,7 @@ impl Render for ScriptForm {
                         ),
                 );
             if self.ai_loading {
-                ai_block = ai_block.child(
+                content = content.child(
                     div()
                         .flex()
                         .items_center()
@@ -1064,12 +1116,31 @@ impl Render for ScriptForm {
                 );
             }
             if let Some(error) = &self.ai_error {
-                ai_block = ai_block.child(
+                content = content.child(
                     div()
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::error())
                         .child(error.clone()),
                 );
+            }
+
+            let entity = cx.entity();
+            let mut ai_block = AnimatedCollapsible::new()
+                .open(expanded)
+                .show_icon(false)
+                .trigger(trigger)
+                .on_toggle(move |open, _, cx| {
+                    entity.update(cx, |form, cx| {
+                        form.ai_expanded = open;
+                        cx.notify();
+                    });
+                })
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(ShellDeckColors::primary().opacity(0.35))
+                .bg(ShellDeckColors::primary().opacity(0.07));
+            if expanded {
+                ai_block = ai_block.content(content);
             }
             form_fields = form_fields.child(ai_block);
         }

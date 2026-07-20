@@ -75,9 +75,11 @@ lucide_assets!(
     "info",
     "key",
     "keyboard",
+    "list-checks",
     "lock",
     "mail",
     "maximize-2",
+    "messages-square",
     "minimize-2",
     "minus",
     "pencil",
@@ -85,6 +87,7 @@ lucide_assets!(
     "plus",
     "refresh-cw",
     "reply",
+    "rotate-ccw",
     "search",
     "scroll-text",
     "send",
@@ -93,6 +96,7 @@ lucide_assets!(
     "shield",
     "shield-check",
     "sparkles",
+    "square",
     "sticky-note",
     "table",
     "tag",
@@ -334,6 +338,14 @@ fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<(
                 "Job Fleet terminé".to_string()
             } else {
                 "Job Fleet échoué".to_string()
+            },
+        ),
+        TrayNotification::AiTaskDone { success } => (
+            "ShellDeck — Assistant IA".to_string(),
+            if success {
+                "Une tâche IA est terminée".to_string()
+            } else {
+                "Une tâche IA a échoué".to_string()
             },
         ),
     };

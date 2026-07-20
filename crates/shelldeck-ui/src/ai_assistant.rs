@@ -4,12 +4,13 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    AiBackend, AiChatRole, AiContext, AiConversation, AiConversationStore, AiSurface,
+    AiBackend, AiCapability, AiChatRole, AiContext, AiConversation, AiConversationStore, AiSurface,
+    AiTask, AiTaskStatus,
 };
 use uuid::Uuid;
 
@@ -26,6 +27,10 @@ pub enum AiAssistantEvent {
         prompt: String,
         context: AiContext,
     },
+    ResumeTask(Uuid),
+    OpenTaskTarget(Uuid),
+    StopTask(Uuid),
+    DeleteTask(Uuid),
 }
 
 impl EventEmitter<AiAssistantEvent> for AiAssistantView {}
@@ -50,6 +55,13 @@ impl AiRequestGate {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AiAssistantTab {
+    #[default]
+    Chat,
+    Tasks,
+}
+
 pub struct AiAssistantView {
     prompt_state: Entity<InputState>,
     context: AiContext,
@@ -62,9 +74,12 @@ pub struct AiAssistantView {
     active_conversation: Option<Uuid>,
     message_scroll: ScrollHandle,
     history_scroll: ScrollHandle,
+    task_scroll: ScrollHandle,
     history_open: bool,
+    active_tab: AiAssistantTab,
     show_archived: bool,
     pending_delete: Option<Uuid>,
+    tasks: Vec<AiTask>,
 }
 
 impl AiAssistantView {
@@ -89,10 +104,18 @@ impl AiAssistantView {
             conversations,
             message_scroll: ScrollHandle::new(),
             history_scroll: ScrollHandle::new(),
+            task_scroll: ScrollHandle::new(),
             history_open: true,
+            active_tab: AiAssistantTab::Chat,
             show_archived: false,
             pending_delete: None,
+            tasks: Vec::new(),
         }
+    }
+
+    pub fn set_tasks(&mut self, tasks: Vec<AiTask>, cx: &mut Context<Self>) {
+        self.tasks = tasks;
+        cx.notify();
     }
 
     pub fn set_backend(&mut self, backend: AiBackend, model: String, cx: &mut Context<Self>) {
@@ -664,6 +687,289 @@ impl AiAssistantView {
         let _ = cx;
         thread.into_any_element()
     }
+
+    fn capability_label(capability: AiCapability) -> String {
+        let key = match capability {
+            AiCapability::Naming => "ai.tasks.capability.naming",
+            AiCapability::JeanDispatch => "ai.tasks.capability.jean_dispatch",
+            AiCapability::FleetDispatch => "ai.tasks.capability.fleet_dispatch",
+            AiCapability::SupportReply => "ai.tasks.capability.support_reply",
+            AiCapability::SupportSummary => "ai.tasks.capability.support_summary",
+            AiCapability::SupportTriage => "ai.tasks.capability.support_triage",
+            AiCapability::IssueReply => "ai.tasks.capability.issue_reply",
+            AiCapability::IssueSummary => "ai.tasks.capability.issue_summary",
+            AiCapability::IssueTriage => "ai.tasks.capability.issue_triage",
+            AiCapability::IssueCompose => "ai.tasks.capability.issue_compose",
+            AiCapability::ScriptGenerate => "ai.tasks.capability.script_generate",
+            AiCapability::ScriptExplain => "ai.tasks.capability.script_explain",
+            AiCapability::ScriptReview => "ai.tasks.capability.script_review",
+            AiCapability::ScriptFix => "ai.tasks.capability.script_fix",
+            AiCapability::TerminalCommand => "ai.tasks.capability.terminal_command",
+            AiCapability::TerminalDiagnose => "ai.tasks.capability.terminal_diagnose",
+        };
+        t!(key).to_string()
+    }
+
+    fn status_label(status: AiTaskStatus) -> String {
+        let key = match status {
+            AiTaskStatus::Generating => "ai.tasks.status.generating",
+            AiTaskStatus::Ready => "ai.tasks.status.ready",
+            AiTaskStatus::Pending => "ai.tasks.status.pending",
+            AiTaskStatus::AwaitingConfirmation => "ai.tasks.status.awaiting_confirmation",
+            AiTaskStatus::Executing => "ai.tasks.status.executing",
+            AiTaskStatus::Applied => "ai.tasks.status.applied",
+            AiTaskStatus::Succeeded => "ai.tasks.status.succeeded",
+            AiTaskStatus::Failed => "ai.tasks.status.failed",
+            AiTaskStatus::Cancelled => "ai.tasks.status.cancelled",
+        };
+        t!(key).to_string()
+    }
+
+    fn status_color(status: AiTaskStatus) -> Hsla {
+        match status {
+            AiTaskStatus::Ready | AiTaskStatus::Pending | AiTaskStatus::AwaitingConfirmation => {
+                ShellDeckColors::warning()
+            }
+            AiTaskStatus::Generating | AiTaskStatus::Executing => ShellDeckColors::primary(),
+            AiTaskStatus::Applied | AiTaskStatus::Succeeded => ShellDeckColors::success(),
+            AiTaskStatus::Failed => ShellDeckColors::error(),
+            AiTaskStatus::Cancelled => ShellDeckColors::text_muted(),
+        }
+    }
+
+    fn render_task(&self, task: &AiTask, cx: &mut Context<Self>) -> AnyElement {
+        let task_id = task.id;
+        let target = if task.target_label.trim().is_empty() {
+            task.target_id.clone()
+        } else {
+            task.target_label.clone()
+        };
+        let status_color = Self::status_color(task.status);
+        let can_resume = task.status == AiTaskStatus::Failed
+            || (matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
+                && !task.result.trim().is_empty());
+        let can_stop = task.status == AiTaskStatus::Executing
+            && matches!(
+                task.capability,
+                AiCapability::TerminalCommand
+                    | AiCapability::ScriptGenerate
+                    | AiCapability::ScriptFix
+            );
+        let can_delete = !task.status.is_active();
+        let can_open_target = match task.surface {
+            AiSurface::Support
+            | AiSurface::Issue
+            | AiSurface::Script
+            | AiSurface::Terminal
+            | AiSurface::Jean => true,
+            AiSurface::Naming => task.target_kind.as_deref() == Some("naming_terminal"),
+            AiSurface::Recent | AiSurface::Global => false,
+        };
+        let detail = task
+            .status_message
+            .as_ref()
+            .filter(|message| !message.trim().is_empty())
+            .cloned()
+            .or_else(|| (!task.result.trim().is_empty()).then(|| task.result.trim().to_string()));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(9.0))
+            .min_w_0()
+            .p(px(12.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(Self::capability_label(task.capability)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(target),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .flex_shrink_0()
+                            .when(task.status.is_active(), |row| {
+                                row.child(
+                                    Spinner::new()
+                                        .size(SpinnerSize::Xs)
+                                        .variant(SpinnerVariant::Primary),
+                                )
+                            })
+                            .child(
+                                Badge::new(Self::status_label(task.status))
+                                    .variant(BadgeVariant::Outline)
+                                    .border_color(status_color)
+                                    .text_color(status_color),
+                            ),
+                    ),
+            )
+            .when_some(detail, |row, detail| {
+                row.child(
+                    div()
+                        .line_clamp(3)
+                        .overflow_hidden()
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(detail),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(crate::i18n::rel_time(
+                                task.updated_at.timestamp_millis() as f64
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when(can_open_target, |actions| {
+                                actions.child(
+                                    Button::new(
+                                        SharedString::from(format!("ai-task-target-{task_id}")),
+                                        "",
+                                    )
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .tooltip(t!("ai.tasks.open_target").to_string())
+                                    .icon(IconSource::from("external-link"))
+                                    .on_click(cx.listener(
+                                        move |_this, _, _, cx| {
+                                            cx.emit(AiAssistantEvent::OpenTaskTarget(task_id));
+                                        },
+                                    )),
+                                )
+                            })
+                            .when(can_resume, |actions| {
+                                actions.child(
+                                    Button::new(
+                                        SharedString::from(format!("ai-task-resume-{task_id}")),
+                                        t!("ai.tasks.resume").to_string(),
+                                    )
+                                    .variant(ButtonVariant::Secondary)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("rotate-ccw"))
+                                    .on_click(cx.listener(
+                                        move |_this, _, _, cx| {
+                                            cx.emit(AiAssistantEvent::ResumeTask(task_id));
+                                        },
+                                    )),
+                                )
+                            })
+                            .when(can_stop, |actions| {
+                                actions.child(
+                                    Button::new(
+                                        SharedString::from(format!("ai-task-stop-{task_id}")),
+                                        t!("ai.tasks.stop").to_string(),
+                                    )
+                                    .variant(ButtonVariant::Destructive)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("square"))
+                                    .on_click(cx.listener(
+                                        move |_this, _, _, cx| {
+                                            cx.emit(AiAssistantEvent::StopTask(task_id));
+                                        },
+                                    )),
+                                )
+                            })
+                            .when(can_delete, |actions| {
+                                actions.child(
+                                    Button::new(
+                                        SharedString::from(format!("ai-task-delete-{task_id}")),
+                                        "",
+                                    )
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .tooltip(t!("ai.tasks.delete").to_string())
+                                    .icon(IconSource::from("trash-2"))
+                                    .on_click(cx.listener(
+                                        move |_this, _, _, cx| {
+                                            cx.emit(AiAssistantEvent::DeleteTask(task_id));
+                                        },
+                                    )),
+                                )
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut tasks = self.tasks.clone();
+        tasks.sort_by_key(|task| {
+            (
+                !(task.status.is_active()
+                    || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)),
+                std::cmp::Reverse(task.updated_at),
+            )
+        });
+        if tasks.is_empty() {
+            return div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .child(
+                    EmptyState::new("ai-tasks-empty", t!("ai.tasks.empty_title").to_string())
+                        .icon(IconSource::from("list-checks"))
+                        .description(t!("ai.tasks.empty_description").to_string())
+                        .size(EmptyStateSize::Sm),
+                )
+                .into_any_element();
+        }
+
+        let mut list = div().flex().flex_col();
+        for task in &tasks {
+            list = list.child(self.render_task(task, cx));
+        }
+        div()
+            .id("ai-task-scroll")
+            .flex_1()
+            .w_full()
+            .min_w_0()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.task_scroll)
+            .child(list)
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]
@@ -873,18 +1179,84 @@ impl Render for AiAssistantView {
             )
             .child(composer);
 
+        let active_tasks = self
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.status.is_active()
+                    || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
+            })
+            .count();
+        let task_label = if active_tasks == 0 {
+            t!("ai.tasks.tab").to_string()
+        } else {
+            t!("ai.tasks.tab_count", count = active_tasks).to_string()
+        };
+        let tab_bar = div()
+            .flex()
+            .w_full()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(44.0))
+            .px(px(12.0))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                Button::new("ai-tab-chat", t!("ai.tasks.chat_tab").to_string())
+                    .variant(if self.active_tab == AiAssistantTab::Chat {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("messages-square"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.active_tab = AiAssistantTab::Chat;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("ai-tab-tasks", task_label)
+                    .variant(if self.active_tab == AiAssistantTab::Tasks {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("list-checks"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.active_tab = AiAssistantTab::Tasks;
+                        cx.notify();
+                    })),
+            );
+
+        let mut content = div()
+            .flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w_0()
+            .overflow_hidden();
+        if self.active_tab == AiAssistantTab::Chat {
+            if self.history_open {
+                content = content.child(self.render_history(cx));
+            }
+            content = content.child(chat);
+        } else {
+            content = content.child(self.render_tasks(cx));
+        }
+
         let mut root = div()
             .flex()
+            .flex_col()
             .w_full()
             .flex_1()
             .h_full()
             .min_h(px(0.0))
             .min_w_0()
-            .overflow_hidden();
-        if self.history_open {
-            root = root.child(self.render_history(cx));
-        }
-        root = root.child(chat);
+            .overflow_hidden()
+            .child(tab_bar)
+            .child(content);
 
         if let Some(delete_id) = self.pending_delete {
             root = root.child(

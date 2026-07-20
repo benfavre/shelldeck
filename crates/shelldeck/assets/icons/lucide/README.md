@@ -77,7 +77,7 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (65 icons)
+## Inventory (71 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
@@ -117,9 +117,11 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `info` | status | info banners |
 | `key` | ssh | SSH keys, credentials |
 | `keyboard` | dashboard | shortcuts section header |
+| `list-checks` | AI | assistant tasks tab and empty state |
 | `lock` | security | locked / auth required |
 | `mail` | support | email channel |
 | `maximize-2` | window | maximize (titlebar) |
+| `messages-square` | AI | assistant discussions tab |
 | `minimize-2` | window | minimize (titlebar) |
 | `minus` | chrome | zoom out, decrement |
 | `pencil` | action | edit |
@@ -127,6 +129,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `plus` | chrome | add, zoom in |
 | `refresh-cw` | action | **Support refresh**, reload lists |
 | `reply` | support | reply composer mode |
+| `rotate-ccw` | action | resume an AI task |
 | `search` | chrome | search inputs |
 | `scroll-text` | chrome | Dev sidebar — Scripts |
 | `send` | support | send message / reply |
@@ -135,6 +138,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `shield` | security | admin / super-admin |
 | `shield-check` | security | Sites — SSL-enabled row indicator |
 | `sparkles` | AI | assistant actions and AI surfaces |
+| `square` | action | stop a running AI task |
 | `sticky-note` | support | internal note mode |
 | `table` | view | Sites view — table mode toggle |
 | `tag` | support | tags, labels |

@@ -1135,10 +1135,24 @@ impl Workspace {
 
         let ai_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
+        let ai_backend = self.app_config.ai.backend;
+        let ai_model = if self.app_config.ai.model.trim().is_empty() {
+            ai_backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
         let ai_naming_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
-        let form =
-            cx.new(|form_cx| ScriptForm::new(connections, ai_enabled, ai_naming_enabled, form_cx));
+        let form = cx.new(|form_cx| {
+            ScriptForm::new(
+                connections,
+                ai_enabled,
+                ai_backend,
+                ai_model,
+                ai_naming_enabled,
+                form_cx,
+            )
+        });
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
             match event {
@@ -1215,10 +1229,24 @@ impl Workspace {
         let script = script.clone();
         let ai_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Script);
+        let ai_backend = self.app_config.ai.backend;
+        let ai_model = if self.app_config.ai.model.trim().is_empty() {
+            ai_backend.default_model().to_string()
+        } else {
+            self.app_config.ai.model.clone()
+        };
         let ai_naming_enabled =
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
         let form = cx.new(|form_cx| {
-            ScriptForm::from_script(&script, connections, ai_enabled, ai_naming_enabled, form_cx)
+            ScriptForm::from_script(
+                &script,
+                connections,
+                ai_enabled,
+                ai_backend,
+                ai_model,
+                ai_naming_enabled,
+                form_cx,
+            )
         });
 
         let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {

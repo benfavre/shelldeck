@@ -8,8 +8,8 @@ use adabraka_ui::prelude::{
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    ai_line_diff, parse_issue_triage_proposal, AiBackend, AiCapability, AiDiffLine, AiDraft,
-    AiIssueTriageProposal, AiSurface,
+    ai_line_diff, parse_diagnostic_plan, parse_issue_triage_proposal, AiAutonomyLevel, AiBackend,
+    AiCapability, AiDiagnosticPlan, AiDiffLine, AiDraft, AiIssueTriageProposal, AiSurface,
 };
 
 use crate::icons::{ai_provider_badge, lucide_icon};
@@ -71,6 +71,70 @@ pub enum AiWorkflowTarget {
 }
 
 impl AiWorkflowTarget {
+    pub fn from_task(task: &AiDraft) -> Option<Self> {
+        let target = task.target_id.clone();
+        Some(match task.capability {
+            AiCapability::Naming => Self::EntityNaming {
+                kind: match task.target_kind.as_deref()? {
+                    "naming_script" => AiNamingKind::Script,
+                    "naming_terminal" => AiNamingKind::Terminal,
+                    "naming_tunnel" => AiNamingKind::Tunnel,
+                    "naming_issue" => AiNamingKind::Issue,
+                    _ => return None,
+                },
+                target_id: target,
+            },
+            AiCapability::SupportReply => Self::SupportReply { ticket_id: target },
+            AiCapability::SupportSummary => Self::SupportSummary { ticket_id: target },
+            AiCapability::SupportTriage => Self::SupportTriage { ticket_id: target },
+            AiCapability::IssueReply => Self::IssueReply { issue_id: target },
+            AiCapability::IssueSummary => Self::IssueSummary { issue_id: target },
+            AiCapability::IssueTriage => Self::IssueTriage { issue_id: target },
+            AiCapability::ScriptGenerate => Self::ScriptGenerate { script_id: target },
+            AiCapability::ScriptExplain => Self::ScriptExplain { script_id: target },
+            AiCapability::ScriptReview => Self::ScriptReview { script_id: target },
+            AiCapability::ScriptFix => Self::ScriptFix { script_id: target },
+            AiCapability::TerminalCommand => Self::TerminalCommand { session_id: target },
+            AiCapability::TerminalDiagnose => Self::TerminalDiagnose { session_id: target },
+            AiCapability::IssueCompose
+            | AiCapability::JeanDispatch
+            | AiCapability::FleetDispatch => return None,
+        })
+    }
+
+    pub fn storage_kind(&self) -> &'static str {
+        match self {
+            Self::EntityNaming {
+                kind: AiNamingKind::Script,
+                ..
+            } => "naming_script",
+            Self::EntityNaming {
+                kind: AiNamingKind::Terminal,
+                ..
+            } => "naming_terminal",
+            Self::EntityNaming {
+                kind: AiNamingKind::Tunnel,
+                ..
+            } => "naming_tunnel",
+            Self::EntityNaming {
+                kind: AiNamingKind::Issue,
+                ..
+            } => "naming_issue",
+            Self::SupportReply { .. } => "support_reply",
+            Self::SupportSummary { .. } => "support_summary",
+            Self::SupportTriage { .. } => "support_triage",
+            Self::IssueReply { .. } => "issue_reply",
+            Self::IssueSummary { .. } => "issue_summary",
+            Self::IssueTriage { .. } => "issue_triage",
+            Self::ScriptGenerate { .. } => "script_generate",
+            Self::ScriptExplain { .. } => "script_explain",
+            Self::ScriptReview { .. } => "script_review",
+            Self::ScriptFix { .. } => "script_fix",
+            Self::TerminalCommand { .. } => "terminal_command",
+            Self::TerminalDiagnose { .. } => "terminal_diagnose",
+        }
+    }
+
     pub fn capability(&self) -> AiCapability {
         match self {
             Self::EntityNaming { .. } => AiCapability::Naming,
@@ -175,6 +239,10 @@ pub enum AiWorkflowEvent {
     PrepareAction {
         target: AiWorkflowTarget,
         result: String,
+    },
+    PrepareDiagnosticStep {
+        target: AiWorkflowTarget,
+        command: String,
     },
     Cancel,
 }
@@ -330,6 +398,7 @@ pub struct AiWorkflowView {
     restored: bool,
     comparison_original: Option<String>,
     issue_triage_current: Option<(String, String)>,
+    action_policy: AiAutonomyLevel,
 }
 
 impl AiWorkflowView {
@@ -340,6 +409,7 @@ impl AiWorkflowView {
         pending: Option<AiDraft>,
         comparison_original: Option<String>,
         issue_triage_current: Option<(String, String)>,
+        action_policy: AiAutonomyLevel,
         cx: &mut Context<Self>,
     ) -> Self {
         let pending_instructions = pending
@@ -377,6 +447,7 @@ impl AiWorkflowView {
             restored: pending.is_some(),
             comparison_original,
             issue_triage_current,
+            action_policy,
         }
     }
 
@@ -464,6 +535,118 @@ impl AiWorkflowView {
             });
         }
     }
+
+    fn render_diagnostic_plan(
+        &self,
+        plan: &AiDiagnosticPlan,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut steps = div().flex().flex_col().gap(px(8.0));
+        for (index, step) in plan.steps.iter().enumerate() {
+            let target = self.target.clone();
+            let command = step.command.clone();
+            let mut footer = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    Badge::new(t!("ai.workflow.diagnostic.read_only").to_string())
+                        .variant(BadgeVariant::Outline),
+                );
+            if self.action_policy >= AiAutonomyLevel::Confirmation {
+                footer = footer.child(
+                    Button::new(
+                        ("ai-diagnostic-step", index),
+                        t!("ai.workflow.diagnostic.execute_step").to_string(),
+                    )
+                    .variant(ButtonVariant::Destructive)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("play"))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(AiWorkflowEvent::PrepareDiagnosticStep {
+                            target: target.clone(),
+                            command: command.clone(),
+                        });
+                    })),
+                );
+            }
+            steps = steps.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.0))
+                    .gap(px(8.0))
+                    .p(px(12.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .bg(ShellDeckColors::bg_primary())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(22.0))
+                                    .flex_shrink_0()
+                                    .rounded(px(4.0))
+                                    .bg(ShellDeckColors::primary().opacity(0.12))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::primary())
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(step.title.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .rounded(px(4.0))
+                            .bg(ShellDeckColors::bg_surface())
+                            .font_family("monospace")
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(step.command.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(step.explanation.clone()),
+                    )
+                    .child(footer),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(plan.summary.clone()),
+            )
+            .child(steps)
+            .into_any_element()
+    }
 }
 
 impl Render for AiWorkflowView {
@@ -512,6 +695,12 @@ impl Render for AiWorkflowView {
         let issue_triage_proposal =
             if has_result && matches!(&self.target, AiWorkflowTarget::IssueTriage { .. }) {
                 parse_issue_triage_proposal(self.result_state.read(cx).content()).ok()
+            } else {
+                None
+            };
+        let diagnostic_plan =
+            if has_result && matches!(&self.target, AiWorkflowTarget::TerminalDiagnose { .. }) {
+                parse_diagnostic_plan(self.result_state.read(cx).content()).ok()
             } else {
                 None
             };
@@ -730,7 +919,9 @@ impl Render for AiWorkflowView {
                         }),
                 );
                 if self.target.result_is_read_only() {
-                    if let Some(proposal) = issue_triage_proposal.as_ref() {
+                    if let Some(plan) = diagnostic_plan.as_ref() {
+                        body = body.child(self.render_diagnostic_plan(plan, cx));
+                    } else if let Some(proposal) = issue_triage_proposal.as_ref() {
                         body = body.child(render_issue_triage_proposal(
                             proposal,
                             self.issue_triage_current.as_ref(),
@@ -857,6 +1048,7 @@ impl Render for AiWorkflowView {
             .flex()
             .items_center()
             .justify_end()
+            .flex_wrap()
             .gap(px(8.0))
             .when(has_result, |actions| {
                 actions
@@ -877,21 +1069,27 @@ impl Render for AiWorkflowView {
                         .icon(IconSource::from("sparkles"))
                         .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
                     )
-                    .when(self.target.can_prepare_action(), |actions| {
-                        let label = match self.target {
-                            AiWorkflowTarget::SupportReply { .. } => {
-                                t!("ai.action.send").to_string()
-                            }
-                            _ => t!("ai.action.execute").to_string(),
-                        };
-                        actions.child(
-                            Button::new("ai-workflow-prepare-action", label)
-                                .variant(ButtonVariant::Destructive)
-                                .size(ButtonSize::Sm)
-                                .icon(IconSource::from("play"))
-                                .on_click(cx.listener(|this, _, _, cx| this.prepare_action(cx))),
-                        )
-                    })
+                    .when(
+                        self.target.can_prepare_action()
+                            && self.action_policy >= AiAutonomyLevel::Confirmation,
+                        |actions| {
+                            let label = match self.target {
+                                AiWorkflowTarget::SupportReply { .. } => {
+                                    t!("ai.action.send").to_string()
+                                }
+                                _ => t!("ai.action.execute").to_string(),
+                            };
+                            actions.child(
+                                Button::new("ai-workflow-prepare-action", label)
+                                    .variant(ButtonVariant::Destructive)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("play"))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.prepare_action(cx)),
+                                    ),
+                            )
+                        },
+                    )
                     .child(
                         Button::new(
                             "ai-workflow-accept",
@@ -901,6 +1099,9 @@ impl Render for AiWorkflowView {
                                 }
                                 AiWorkflowTarget::IssueTriage { .. } => {
                                     t!("ai.workflow.triage.apply").to_string()
+                                }
+                                AiWorkflowTarget::ScriptFix { .. } => {
+                                    t!("ai.workflow.apply_changes").to_string()
                                 }
                                 AiWorkflowTarget::SupportSummary { .. }
                                 | AiWorkflowTarget::SupportTriage { .. }
@@ -941,12 +1142,21 @@ impl Render for AiWorkflowView {
             .flex_1()
             .min_h(px(0.0))
             .overflow_hidden()
-            .child(scrollable_vertical(body))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(scrollable_vertical(body)),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
+                    .flex_wrap()
                     .gap(px(12.0))
                     .px(px(16.0))
                     .py(px(12.0))

@@ -902,32 +902,38 @@ impl ScriptEditorView {
         let is_inline_editing = self.inline_editing && self.inline_script_id == Some(script.id);
         let lang = &script.language;
 
-        let mut script_info = div().flex().flex_col().min_w_0().overflow_hidden().child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(Self::render_language_badge(lang))
-                .child(
-                    div()
-                        .text_size(px(15.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ShellDeckColors::text_primary())
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(script.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .px(px(4.0))
-                        .py(px(1.0))
-                        .rounded(px(3.0))
-                        .bg(ShellDeckColors::badge_bg())
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(script.category.label().to_string()),
-                ),
-        );
+        let mut script_info = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(Self::render_language_badge(lang))
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(script.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .px(px(4.0))
+                            .py(px(1.0))
+                            .rounded(px(3.0))
+                            .bg(ShellDeckColors::badge_bg())
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(script.category.label().to_string()),
+                    ),
+            );
 
         if let Some(ref desc) = script.description {
             script_info = script_info.child(
@@ -1040,7 +1046,9 @@ impl ScriptEditorView {
                 }))
                 .child(
                     Button::new("cancel-edit-script", t!("scripts.cancel").to_string())
-                        .variant(ButtonVariant::Ghost),
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("x")),
                 )
         } else {
             div()
@@ -1052,7 +1060,9 @@ impl ScriptEditorView {
                 }))
                 .child(
                     Button::new("edit-script", t!("scripts.edit").to_string())
-                        .variant(ButtonVariant::Ghost),
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("pencil")),
                 )
         };
         let ai_actions = self.ai_generation_enabled.then(|| {
@@ -1090,8 +1100,8 @@ impl ScriptEditorView {
         // Header bar
         let header = div()
             .flex()
-            .items_center()
-            .justify_between()
+            .flex_col()
+            .gap(px(10.0))
             .px(px(16.0))
             .py(px(10.0))
             .border_b_1()
@@ -1100,7 +1110,11 @@ impl ScriptEditorView {
             .child(
                 div()
                     .flex()
-                    .flex_shrink_0()
+                    .flex_wrap()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .justify_end()
                     .gap(px(8.0))
                     .children(ai_actions)
                     .child(edit_button)

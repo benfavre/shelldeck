@@ -11,6 +11,7 @@ use crate::models::script::{ScriptCategory, ScriptLanguage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -88,6 +89,250 @@ pub struct AiSurfaceConfig {
     pub recent: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiAutonomyLevel {
+    Preparation,
+    #[default]
+    Confirmation,
+    Automatic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiPolicyConfig {
+    pub support_send: AiAutonomyLevel,
+    pub terminal_execute: AiAutonomyLevel,
+    pub script_execute: AiAutonomyLevel,
+    pub jean_dispatch: AiAutonomyLevel,
+    pub fleet_dispatch: AiAutonomyLevel,
+}
+
+impl Default for AiPolicyConfig {
+    fn default() -> Self {
+        Self {
+            support_send: AiAutonomyLevel::Confirmation,
+            terminal_execute: AiAutonomyLevel::Confirmation,
+            script_execute: AiAutonomyLevel::Confirmation,
+            jean_dispatch: AiAutonomyLevel::Confirmation,
+            fleet_dispatch: AiAutonomyLevel::Confirmation,
+        }
+    }
+}
+
+impl AiPolicyConfig {
+    pub fn level_for(&self, capability: AiCapability) -> AiAutonomyLevel {
+        match capability {
+            AiCapability::SupportReply => self.support_send,
+            AiCapability::TerminalCommand | AiCapability::TerminalDiagnose => self.terminal_execute,
+            AiCapability::ScriptGenerate | AiCapability::ScriptFix => self.script_execute,
+            AiCapability::JeanDispatch => self.jean_dispatch,
+            AiCapability::FleetDispatch => self.fleet_dispatch,
+            _ => AiAutonomyLevel::Preparation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiDiagnosticStep {
+    pub title: String,
+    pub command: String,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiDiagnosticPlan {
+    pub summary: String,
+    pub steps: Vec<AiDiagnosticStep>,
+}
+
+impl AiDiagnosticPlan {
+    pub fn display_text(&self) -> String {
+        let mut output = self.summary.trim().to_string();
+        for (index, step) in self.steps.iter().enumerate() {
+            output.push_str(&format!(
+                "\n\n{}. {}\n{}\n{}",
+                index + 1,
+                step.title.trim(),
+                step.command.trim(),
+                step.explanation.trim()
+            ));
+        }
+        output
+    }
+}
+
+pub fn parse_diagnostic_plan(raw: &str) -> Result<AiDiagnosticPlan> {
+    let value = strip_markdown_fence(raw.trim());
+    let plan: AiDiagnosticPlan = serde_json::from_str(value).map_err(|error| {
+        ShellDeckError::Serialization(format!("Invalid diagnostic plan JSON: {error}"))
+    })?;
+    if plan.summary.trim().is_empty() || plan.summary.chars().count() > 500 {
+        return Err(ShellDeckError::Config(
+            "Diagnostic summary must contain 1 to 500 characters".to_string(),
+        ));
+    }
+    if plan.steps.is_empty() || plan.steps.len() > 5 {
+        return Err(ShellDeckError::Config(
+            "Diagnostic plan must contain 1 to 5 steps".to_string(),
+        ));
+    }
+    let mut commands = HashSet::with_capacity(plan.steps.len());
+    for step in &plan.steps {
+        if step.title.trim().is_empty()
+            || step.title.chars().count() > 120
+            || step.explanation.trim().is_empty()
+            || step.explanation.chars().count() > 500
+        {
+            return Err(ShellDeckError::Config(
+                "Each diagnostic step requires a bounded title and explanation".to_string(),
+            ));
+        }
+        validate_diagnostic_command(&step.command)?;
+        if !commands.insert(step.command.trim()) {
+            return Err(ShellDeckError::Config(
+                "Diagnostic commands must be distinct".to_string(),
+            ));
+        }
+    }
+    Ok(plan)
+}
+
+pub fn validate_diagnostic_command(command: &str) -> Result<()> {
+    let command = command.trim();
+    if command.is_empty()
+        || command.chars().count() > 1_000
+        || command
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | ';' | '&' | '|' | '>' | '<' | '`'))
+        || command.contains("$(")
+    {
+        return Err(ShellDeckError::Config(
+            "Diagnostic commands must be one bounded command without shell control operators"
+                .to_string(),
+        ));
+    }
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    let executable = tokens.first().copied().unwrap_or_default();
+    const ALLOWED: &[&str] = &[
+        "cat",
+        "df",
+        "dig",
+        "docker",
+        "du",
+        "free",
+        "git",
+        "grep",
+        "head",
+        "hostname",
+        "ip",
+        "journalctl",
+        "kubectl",
+        "ls",
+        "lsof",
+        "netstat",
+        "nslookup",
+        "ping",
+        "ps",
+        "pwd",
+        "ss",
+        "stat",
+        "systemctl",
+        "tail",
+        "traceroute",
+        "uname",
+        "uptime",
+        "whoami",
+    ];
+    if !ALLOWED.contains(&executable) {
+        return Err(ShellDeckError::Config(format!(
+            "Diagnostic executable is not allowed: {executable}"
+        )));
+    }
+    let forbidden = [" --delete", " -delete", " --exec", " -exec", "sudo "];
+    if forbidden.iter().any(|token| command.contains(token)) {
+        return Err(ShellDeckError::Config(
+            "Diagnostic command contains a mutating option".to_string(),
+        ));
+    }
+    let subcommand_allowed = |allowed: &[&str]| {
+        tokens
+            .get(1)
+            .is_some_and(|subcommand| allowed.contains(subcommand))
+    };
+    let safe_subcommand = match executable {
+        "docker" => subcommand_allowed(&["ps", "logs", "inspect", "stats", "version", "info"]),
+        "git" => subcommand_allowed(&["status", "log", "diff", "show", "branch", "rev-parse"]),
+        "ip" => subcommand_allowed(&["addr", "address", "link", "route", "neighbour", "neighbor"]),
+        "kubectl" => {
+            subcommand_allowed(&["get", "describe", "logs", "version", "api-resources", "top"])
+        }
+        "systemctl" => subcommand_allowed(&[
+            "status",
+            "show",
+            "is-active",
+            "is-enabled",
+            "list-units",
+            "list-unit-files",
+            "list-dependencies",
+        ]),
+        _ => true,
+    };
+    if !safe_subcommand {
+        return Err(ShellDeckError::Config(format!(
+            "Diagnostic subcommand is not read-only: {command}"
+        )));
+    }
+    if (executable == "ping"
+        && !tokens
+            .iter()
+            .any(|token| matches!(*token, "-c" | "--count")))
+        || (executable == "tail"
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-f" | "--follow")))
+        || (executable == "journalctl"
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-f" | "--follow") || token.starts_with("--vacuum")))
+        || (executable == "docker"
+            && tokens.get(1) == Some(&"stats")
+            && !tokens.contains(&"--no-stream"))
+        || (executable == "docker"
+            && tokens.get(1) == Some(&"logs")
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-f" | "--follow")))
+        || (executable == "ip"
+            && tokens.get(2).is_some_and(|token| {
+                matches!(
+                    *token,
+                    "add" | "append" | "change" | "del" | "delete" | "flush" | "replace" | "set"
+                )
+            }))
+        || (executable == "kubectl"
+            && tokens.get(1) == Some(&"logs")
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-f" | "--follow")))
+        || (executable == "kubectl"
+            && tokens.get(1) == Some(&"get")
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-w" | "--watch")))
+        || (executable == "git"
+            && tokens.get(1) == Some(&"branch")
+            && tokens
+                .iter()
+                .any(|token| matches!(*token, "-c" | "-C" | "-d" | "-D" | "-m" | "-M")))
+    {
+        return Err(ShellDeckError::Config(
+            "Diagnostic command is unbounded or mutating".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl Default for AiSurfaceConfig {
     fn default() -> Self {
         Self {
@@ -110,6 +355,7 @@ pub struct AiConfig {
     pub model: String,
     pub cli_path: Option<PathBuf>,
     pub surfaces: AiSurfaceConfig,
+    pub policies: AiPolicyConfig,
 }
 
 impl AiConfig {
@@ -452,6 +698,23 @@ pub enum AiActionRisk {
     High,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiActionDisposition {
+    DraftOnly,
+    Confirm,
+    Execute,
+}
+
+pub fn ai_action_disposition(level: AiAutonomyLevel, risk: AiActionRisk) -> AiActionDisposition {
+    match (level, risk) {
+        (AiAutonomyLevel::Preparation, _) => AiActionDisposition::DraftOnly,
+        (AiAutonomyLevel::Automatic, AiActionRisk::Low | AiActionRisk::Moderate) => {
+            AiActionDisposition::Execute
+        }
+        _ => AiActionDisposition::Confirm,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiActionPayload {
     TerminalCommand {
@@ -478,6 +741,7 @@ pub struct AiActionPlan {
     pub capability: AiCapability,
     pub kind: AiActionKind,
     pub risk: AiActionRisk,
+    pub autonomy: AiAutonomyLevel,
     pub target_id: String,
     pub target_label: String,
     pub backend: AiBackend,
@@ -556,6 +820,7 @@ impl AiActionPlan {
             capability,
             kind,
             risk,
+            autonomy: AiAutonomyLevel::Confirmation,
             target_id,
             target_label,
             backend,
@@ -567,11 +832,12 @@ impl AiActionPlan {
 
     pub fn audit_detail(&self, status: &str) -> String {
         format!(
-            "action_id={} capability={:?} kind={:?} risk={:?} target={} provider={} model={} timeout_secs={} status={}",
+            "action_id={} capability={:?} kind={:?} risk={:?} autonomy={:?} target={} provider={} model={} timeout_secs={} status={}",
             self.id,
             self.capability,
             self.kind,
             self.risk,
+            self.autonomy,
             self.target_id,
             self.backend.display_name(),
             self.model,
@@ -648,20 +914,61 @@ pub fn ai_line_diff(before: &str, after: &str) -> Vec<AiDiffLine> {
     result
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiTaskStatus {
+    Generating,
+    Ready,
+    #[default]
+    Pending,
+    AwaitingConfirmation,
+    Executing,
+    Applied,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl AiTaskStatus {
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Generating | Self::AwaitingConfirmation | Self::Executing
+        )
+    }
+
+    pub fn is_finished(self) -> bool {
+        matches!(
+            self,
+            Self::Applied | Self::Succeeded | Self::Failed | Self::Cancelled
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AiDraft {
+pub struct AiTask {
     pub id: Uuid,
     pub capability: AiCapability,
     pub surface: AiSurface,
     pub target_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<String>,
+    #[serde(default)]
+    pub target_label: String,
     pub provider: AiBackend,
+    #[serde(default)]
+    pub model: String,
     pub instructions: String,
     pub result: String,
+    #[serde(default)]
+    pub status: AiTaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-impl AiDraft {
+impl AiTask {
     pub fn new(
         capability: AiCapability,
         surface: AiSurface,
@@ -676,33 +983,85 @@ impl AiDraft {
             capability,
             surface,
             target_id: target_id.into(),
+            target_kind: None,
+            target_label: String::new(),
             provider,
+            model: String::new(),
             instructions: instructions.into(),
             result: result.into(),
+            status: AiTaskStatus::Pending,
+            status_message: None,
             created_at: now,
             updated_at: now,
         }
     }
+
+    pub fn from_action(plan: &AiActionPlan, status: AiTaskStatus) -> Self {
+        let now = Utc::now();
+        Self {
+            id: plan.id,
+            capability: plan.capability,
+            surface: match plan.capability {
+                AiCapability::SupportReply
+                | AiCapability::SupportSummary
+                | AiCapability::SupportTriage => AiSurface::Support,
+                AiCapability::IssueReply
+                | AiCapability::IssueSummary
+                | AiCapability::IssueTriage
+                | AiCapability::IssueCompose
+                | AiCapability::FleetDispatch => AiSurface::Issue,
+                AiCapability::ScriptGenerate
+                | AiCapability::ScriptExplain
+                | AiCapability::ScriptReview
+                | AiCapability::ScriptFix => AiSurface::Script,
+                AiCapability::TerminalCommand | AiCapability::TerminalDiagnose => {
+                    AiSurface::Terminal
+                }
+                AiCapability::JeanDispatch => AiSurface::Jean,
+                AiCapability::Naming => AiSurface::Naming,
+            },
+            target_id: plan.target_id.clone(),
+            target_kind: None,
+            target_label: plan.target_label.clone(),
+            provider: plan.backend,
+            model: plan.model.clone(),
+            instructions: String::new(),
+            result: String::new(),
+            status,
+            status_message: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn set_status(&mut self, status: AiTaskStatus, message: Option<String>) {
+        self.status = status;
+        self.status_message = message;
+        self.updated_at = Utc::now();
+    }
 }
 
-pub struct AiDraftStore;
+/// Backward-compatible name used by workflow code while drafts become tasks.
+pub type AiDraft = AiTask;
 
-impl AiDraftStore {
+pub struct AiTaskStore;
+
+impl AiTaskStore {
     const MAX_DRAFTS: usize = 100;
 
     pub fn path() -> PathBuf {
         AppConfig::config_dir().join("ai-drafts.json")
     }
 
-    pub fn load() -> Result<Vec<AiDraft>> {
+    pub fn load() -> Result<Vec<AiTask>> {
         Self::load_from(&Self::path())
     }
 
-    pub fn save(drafts: &[AiDraft]) -> Result<()> {
-        Self::save_to(&Self::path(), drafts)
+    pub fn save(tasks: &[AiTask]) -> Result<()> {
+        Self::save_to(&Self::path(), tasks)
     }
 
-    pub(crate) fn load_from(path: &Path) -> Result<Vec<AiDraft>> {
+    pub(crate) fn load_from(path: &Path) -> Result<Vec<AiTask>> {
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -715,13 +1074,13 @@ impl AiDraftStore {
         })
     }
 
-    pub(crate) fn save_to(path: &Path, drafts: &[AiDraft]) -> Result<()> {
+    pub(crate) fn save_to(path: &Path, tasks: &[AiTask]) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let start = drafts.len().saturating_sub(Self::MAX_DRAFTS);
-        let payload = serde_json::to_vec_pretty(&drafts[start..]).map_err(|error| {
-            ShellDeckError::Serialization(format!("Failed to serialize AI drafts: {error}"))
+        let start = tasks.len().saturating_sub(Self::MAX_DRAFTS);
+        let payload = serde_json::to_vec_pretty(&tasks[start..]).map_err(|error| {
+            ShellDeckError::Serialization(format!("Failed to serialize AI tasks: {error}"))
         })?;
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, payload)?;
@@ -732,6 +1091,8 @@ impl AiDraftStore {
         Ok(())
     }
 }
+
+pub type AiDraftStore = AiTaskStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1335,6 +1696,88 @@ mod tests {
         assert!(config.surfaces.support && config.surfaces.terminal && config.surfaces.recent);
     }
 
+    // SDTEST-1369
+    #[test]
+    fn ai_action_policies_default_to_confirmation_and_map_exact_capabilities() {
+        let mut policies = AiPolicyConfig::default();
+        assert_eq!(
+            policies.level_for(AiCapability::TerminalCommand),
+            AiAutonomyLevel::Confirmation
+        );
+        assert_eq!(
+            policies.level_for(AiCapability::SupportSummary),
+            AiAutonomyLevel::Preparation
+        );
+
+        policies.support_send = AiAutonomyLevel::Automatic;
+        policies.script_execute = AiAutonomyLevel::Preparation;
+        assert_eq!(
+            policies.level_for(AiCapability::SupportReply),
+            AiAutonomyLevel::Automatic
+        );
+        assert_eq!(
+            policies.level_for(AiCapability::ScriptFix),
+            AiAutonomyLevel::Preparation
+        );
+        assert_eq!(
+            ai_action_disposition(AiAutonomyLevel::Automatic, AiActionRisk::Moderate),
+            AiActionDisposition::Execute
+        );
+        assert_eq!(
+            ai_action_disposition(AiAutonomyLevel::Automatic, AiActionRisk::High),
+            AiActionDisposition::Confirm
+        );
+    }
+
+    // SDTEST-1371
+    #[test]
+    fn diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands() {
+        let valid = r#"{
+            "summary":"Inspect service and resource health.",
+            "steps":[
+                {"title":"Service state","command":"systemctl status nginx --no-pager","explanation":"Read the current unit state."},
+                {"title":"Disk usage","command":"df -h","explanation":"Check whether a full filesystem caused the failure."}
+            ]
+        }"#;
+        let plan = parse_diagnostic_plan(valid).expect("valid diagnostic plan");
+        assert_eq!(plan.steps.len(), 2);
+
+        for command in [
+            "sudo systemctl restart nginx",
+            "systemctl restart nginx",
+            "docker rm app",
+            "ping example.com",
+            "journalctl -f",
+            "docker logs -f app",
+            "ip link set eth0 down",
+            "kubectl get pods --watch",
+            "git branch -D old",
+            "df -h; rm -rf /",
+        ] {
+            let payload = serde_json::json!({
+                "summary": "Unsafe",
+                "steps": [{
+                    "title": "Unsafe step",
+                    "command": command,
+                    "explanation": "Must be rejected."
+                }]
+            });
+            assert!(
+                parse_diagnostic_plan(&payload.to_string()).is_err(),
+                "{command}"
+            );
+        }
+
+        let duplicate = serde_json::json!({
+            "summary": "Duplicate",
+            "steps": [
+                {"title":"One","command":"df -h","explanation":"First."},
+                {"title":"Two","command":"df -h","explanation":"Second."}
+            ]
+        });
+        assert!(parse_diagnostic_plan(&duplicate.to_string()).is_err());
+    }
+
     #[test]
     fn context_is_delimited_and_carries_guardrails() {
         let context = AiContext::new(
@@ -1533,6 +1976,44 @@ mod tests {
         assert_eq!(loaded.len(), 100);
         assert_eq!(loaded.first().unwrap().target_id, "ticket-5");
         assert_eq!(loaded.last().unwrap().result, "draft-104");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // SDTEST-1367
+    #[test]
+    fn legacy_ai_drafts_load_as_pending_tasks_and_status_changes_persist() {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-ai-task-migration-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let path = dir.join("tasks.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            r#"[{
+                "id":"550e8400-e29b-41d4-a716-446655440000",
+                "capability":"terminal_diagnose",
+                "surface":"terminal",
+                "target_id":"session-1",
+                "provider":"codex_cli",
+                "instructions":"diagnose",
+                "result":"result",
+                "created_at":"2026-07-20T10:00:00Z",
+                "updated_at":"2026-07-20T10:00:00Z"
+            }]"#,
+        )
+        .unwrap();
+
+        let mut tasks = AiTaskStore::load_from(&path).expect("load legacy draft");
+        assert_eq!(tasks[0].status, AiTaskStatus::Pending);
+        assert!(tasks[0].target_label.is_empty());
+
+        tasks[0].set_status(AiTaskStatus::Succeeded, None);
+        AiTaskStore::save_to(&path, &tasks).expect("save migrated task");
+        let reloaded = AiTaskStore::load_from(&path).expect("reload task");
+        assert_eq!(reloaded[0].status, AiTaskStatus::Succeeded);
+        assert!(reloaded[0].status.is_finished());
         std::fs::remove_dir_all(dir).ok();
     }
 

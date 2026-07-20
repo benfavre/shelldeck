@@ -164,6 +164,7 @@ impl FleetView {
 
     fn prompt_preview(prompt: &str) -> Div {
         let mut preview = div()
+            .w_full()
             .min_w(px(0.0))
             .overflow_hidden()
             .flex()
@@ -178,9 +179,9 @@ impl FleetView {
         {
             preview = preview.child(
                 div()
+                    .w_full()
                     .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
+                    .truncate()
                     .child(line.to_string()),
             );
             rendered += 1;
@@ -854,6 +855,11 @@ impl FleetView {
     fn render_job(&self, job: &JeanJob, cx: &mut Context<Self>) -> impl IntoElement {
         let (status_key, status_variant, status_color) = Self::job_status(job);
         let job_for_detail = job.clone();
+        let metadata = if job.requested_by.is_empty() {
+            job.source.clone()
+        } else {
+            format!("{} · {}", job.source, job.requested_by)
+        };
 
         div()
             .id(ElementId::from(SharedString::from(format!(
@@ -897,15 +903,13 @@ impl FleetView {
                             .items_center()
                             .gap(px(7.0))
                             .min_w(px(0.0))
+                            .overflow_hidden()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
-                            .child(Badge::new(t!(status_key).to_string()).variant(status_variant))
-                            .child(div().truncate().child(job.source.clone()))
-                            .children(if job.requested_by.is_empty() {
-                                None
-                            } else {
-                                Some(div().truncate().child(job.requested_by.clone()))
-                            }),
+                            .child(div().flex_shrink_0().child(
+                                Badge::new(t!(status_key).to_string()).variant(status_variant),
+                            ))
+                            .child(div().flex_1().min_w(px(0.0)).truncate().child(metadata)),
                     ),
             )
             .child(

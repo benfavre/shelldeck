@@ -19,7 +19,7 @@
 | 4 | Recent activity | ✅ landed 2026-07-15 (`shelldeck-core::config::activity` + vue Dev Activité + hooks scripts/tunnels/support/issues/Jean/sites) |
 | 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
 | 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
-| 7 | Couche IA transversale | 🚧 fondation en cours; cadrage des intégrations et de l'autonomie dans [`ai-companion.md`](ai-companion.md) |
+| 7 | Couche IA transversale | 🚧 phases 0 a 3 terminees; centre de taches, notifications, policies et diagnostics bornes de phase 4 termines; automatismes restants dans [`ai-companion.md`](ai-companion.md) |
 
 ## 1. Onboarding first-run — ✅ livré 2026-07-15
 

@@ -467,11 +467,33 @@ La phase 3 est terminée.
 
 ### Phase 4 - autonomie bornee
 
-- Policies par capacite.
+L'analyse de pertinence et l'ordre d'implementation recommande sont detailles
+dans [`ai-companion-phase4-analysis.md`](ai-companion-phase4-analysis.md).
+
+- Fait: policies persistantes par capacite executable dans Settings. Les
+  toggles de surface restent l'etat desactive; chaque action choisit Preparer,
+  Confirmer ou Automatique. L'automatique ne saute le second dialogue que pour
+  les risques faibles ou moderes, tandis que Terminal, Script et Fleet restent
+  obligatoirement confirmes. Le niveau effectivement utilise est fige dans le
+  plan et journalise sans payload.
 - Automatismes Support/triage.
-- Plans de diagnostic terminal.
-- File de taches IA et centre En attente.
-- Notifications de progression et resultats.
+- Fait: plans de diagnostic Terminal structures en 1 a 5 etapes distinctes.
+  Le parseur core impose une allowlist de commandes de lecture, refuse les
+  operateurs shell, elevations, mutations et suivis non bornes. La sheet
+  affiche le resume, l'objectif et la commande de chaque etape; chaque clic
+  revalide la session et ouvre le plan d'action Terminal a risque eleve, donc
+  toujours confirme. L'enchainement automatique et la reinjection de sortie
+  restent differes tant que la fin d'une commande PTY n'est pas observable.
+- Fait: file durable de taches IA et onglet Taches dans la sheet Assistant.
+  Les anciens brouillons deviennent des taches en attente; generation,
+  confirmation, execution, application, succes, echec et annulation sont
+  distingues. Reprendre, ouvrir la cible, arreter Terminal/Script et supprimer
+  sont routes par l'identifiant exact de la tache.
+- Fait: progression et resultats sont visibles dans le centre, les taches
+  actionnables alimentent un badge dans la titlebar et une generation terminee
+  hors de son workflow produit un toast. Lorsque la fenetre n'est pas active,
+  succes et echecs utilisent aussi le canal de notification systeme existant,
+  desactivable dans Settings -> General.
 
 ## 11. Criteres d'acceptation transversaux
 

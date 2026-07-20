@@ -6,13 +6,13 @@ use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Button, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    scrollable_vertical, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 
 use crate::t;
-use shelldeck_core::ai::{configured_cli_available, AiBackend};
+use shelldeck_core::ai::{configured_cli_available, AiAutonomyLevel, AiBackend};
 use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
@@ -502,6 +502,18 @@ impl SettingsView {
                     },
                 ),
             ))
+            .child(Self::render_setting_row(
+                t!("settings.tray.notify_ai_tasks.label").as_ref(),
+                t!("settings.tray.notify_ai_tasks.description").as_ref(),
+                Self::bind_toggle(
+                    "tray-notify-ai-tasks",
+                    self.config.tray.notify_ai_tasks,
+                    &entity,
+                    |this, value| {
+                        this.config.tray.notify_ai_tasks = value;
+                    },
+                ),
+            ))
             .child(self.render_cloud_sync_settings(cx))
     }
 
@@ -980,6 +992,44 @@ impl SettingsView {
             self.config.ai.surfaces.recent,
             &entity,
             |this, value| this.config.ai.surfaces.recent = value,
+        ))
+        .child(Self::render_about_section(
+            t!("settings.ai.policies.section").as_ref(),
+        ))
+        .child(ai_policy_row(
+            "ai-policy-support-send",
+            "support_send",
+            self.config.ai.policies.support_send,
+            &entity,
+            |this, value| this.config.ai.policies.support_send = value,
+        ))
+        .child(ai_policy_row(
+            "ai-policy-terminal-execute",
+            "terminal_execute",
+            self.config.ai.policies.terminal_execute,
+            &entity,
+            |this, value| this.config.ai.policies.terminal_execute = value,
+        ))
+        .child(ai_policy_row(
+            "ai-policy-script-execute",
+            "script_execute",
+            self.config.ai.policies.script_execute,
+            &entity,
+            |this, value| this.config.ai.policies.script_execute = value,
+        ))
+        .child(ai_policy_row(
+            "ai-policy-jean-dispatch",
+            "jean_dispatch",
+            self.config.ai.policies.jean_dispatch,
+            &entity,
+            |this, value| this.config.ai.policies.jean_dispatch = value,
+        ))
+        .child(ai_policy_row(
+            "ai-policy-fleet-dispatch",
+            "fleet_dispatch",
+            self.config.ai.policies.fleet_dispatch,
+            &entity,
+            |this, value| this.config.ai.policies.fleet_dispatch = value,
         ))
     }
 
@@ -2169,5 +2219,59 @@ fn ai_surface_row(
         &label,
         t!("settings.ai.surfaces.description").as_ref(),
         SettingsView::bind_toggle(id, checked, entity, set),
+    )
+}
+
+fn ai_policy_row(
+    id: &'static str,
+    name: &'static str,
+    current: AiAutonomyLevel,
+    entity: &Entity<SettingsView>,
+    set: fn(&mut SettingsView, AiAutonomyLevel),
+) -> impl IntoElement {
+    let label = match name {
+        "support_send" => t!("settings.ai.policies.support_send").to_string(),
+        "terminal_execute" => t!("settings.ai.policies.terminal_execute").to_string(),
+        "script_execute" => t!("settings.ai.policies.script_execute").to_string(),
+        "jean_dispatch" => t!("settings.ai.policies.jean_dispatch").to_string(),
+        "fleet_dispatch" => t!("settings.ai.policies.fleet_dispatch").to_string(),
+        _ => name.to_string(),
+    };
+    let mut controls = div().flex().items_center().gap(px(6.0));
+    for (index, (level, key)) in [
+        (
+            AiAutonomyLevel::Preparation,
+            "settings.ai.policies.preparation",
+        ),
+        (
+            AiAutonomyLevel::Confirmation,
+            "settings.ai.policies.confirmation",
+        ),
+        (AiAutonomyLevel::Automatic, "settings.ai.policies.automatic"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entity = entity.clone();
+        controls = controls.child(
+            Button::new((id, index), t!(key).to_string())
+                .variant(if current == level {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .size(ButtonSize::Sm)
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        set(this, level);
+                        this.save_config(cx);
+                    });
+                }),
+        );
+    }
+    SettingsView::render_setting_row(
+        &label,
+        t!("settings.ai.policies.description").as_ref(),
+        controls,
     )
 }
