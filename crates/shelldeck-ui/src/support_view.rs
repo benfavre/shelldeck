@@ -729,6 +729,16 @@ impl SupportView {
             || (!self.account_email_lc.is_empty() && rb == self.account_email_lc)
     }
 
+    /// Count exactly the rows the Support request list can render. Keeping the
+    /// tab badge on this same predicate prevents a raw API count from claiming
+    /// there are requests while the defensive owner filter hides every row.
+    fn visible_issue_count(&self) -> usize {
+        self.issues
+            .iter()
+            .filter(|issue| self.issues_staff || self.is_my_issue(issue))
+            .count()
+    }
+
     /// Reset every "which row is open" bit so the Support surface returns to
     /// its list view. Called by the Workspace on mode switch so a ticket or a
     /// request opened in Support doesn't visually leak into User mode (its
@@ -3358,7 +3368,7 @@ impl SupportView {
                 cx,
             ))
             .child(tab(
-                t!("support.requests_count", count = self.issues.len()).to_string(),
+                t!("support.requests_count", count = self.visible_issue_count()).to_string(),
                 "tag",
                 SupportSection::Requests,
                 cx,
@@ -3486,18 +3496,11 @@ impl SupportView {
             filter_bar = filter_bar.child(self.render_applied_issues_filter_chips(cx));
         }
 
-        // Staff (super-admin) sees every in-scope request the server hands
+        // Internal Support and super-admin staff see every in-scope request the server hands
         // back; a non-staff caller only ever files their own, but we still
         // filter defensively to `is_my_issue` in case tenant scope surfaces
         // a peer's request through Support.
-        let visible_count = if self.issues_staff {
-            self.issues.len()
-        } else {
-            self.issues
-                .iter()
-                .filter(|issue| self.is_my_issue(issue))
-                .count()
-        };
+        let visible_count = self.visible_issue_count();
         let list = if visible_count == 0 {
             div()
                 .id("sup-issues-list-empty")

@@ -187,7 +187,7 @@ pub struct IssueList {
     pub ok: bool,
     #[serde(default)]
     pub issues: Vec<Issue>,
-    /// Whether the token is staff (super-admin) — drives the triage action bar.
+    /// Whether the token is internal Support or super-admin staff — drives the triage action bar.
     #[serde(default)]
     pub staff: bool,
     #[serde(default)]
