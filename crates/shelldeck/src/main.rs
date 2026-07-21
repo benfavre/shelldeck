@@ -88,6 +88,7 @@ lucide_assets!(
     "refresh-cw",
     "reply",
     "rotate-ccw",
+    "scan",
     "search",
     "scroll-text",
     "send",

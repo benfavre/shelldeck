@@ -4966,6 +4966,8 @@ impl SupportView {
         if !iss.body.trim().is_empty() {
             thread = thread.child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
                     .max_w(px(560.0))
                     .rounded(px(8.0))
                     .bg(ShellDeckColors::bg_primary())
@@ -5018,9 +5020,12 @@ impl SupportView {
                         // it, walls of dashes in a description bleed past
                         // the bubble border.
                         let mut body = div()
+                            .w_full()
+                            .min_w(px(0.0))
                             .flex()
                             .flex_col()
                             .text_size(px(13.0))
+                            .line_height(relative(1.35))
                             .text_color(ShellDeckColors::text_primary());
                         for line in iss.body.split('\n') {
                             let display: SharedString = if line.is_empty() {
@@ -5028,7 +5033,13 @@ impl SupportView {
                             } else {
                                 line.to_string().into()
                             };
-                            body = body.child(div().max_w(px(540.0)).child(display));
+                            body = body.child(
+                                div()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .max_w(px(540.0))
+                                    .child(display),
+                            );
                         }
                         body
                     }),
