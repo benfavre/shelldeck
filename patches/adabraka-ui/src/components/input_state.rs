@@ -31,6 +31,11 @@ actions!(
         Delete,
         Left,
         Right,
+        // ShellDeck patch: SDPATCH-020 — textarea-native vertical movement.
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
         // ShellDeck patch: word-level navigation and delete (Ctrl+←/→ and
         // Ctrl+Backspace/Delete on Linux/Windows; ⌥←/→ + ⌥Backspace/Delete
         // on macOS). Impl lives in the six methods below; keybindings are
@@ -218,6 +223,11 @@ pub struct InputState {
     pub(crate) wrapped_layouts: Vec<gpui::WrappedLine>,
     pub(crate) wrapped_line_count: usize,
     pub(crate) line_height: Pixels,
+    // ShellDeck patch: SDPATCH-020 — preserve the visual column while moving
+    // vertically and keep capped textarea carets inside their scroll viewport.
+    preferred_cursor_x: Option<Pixels>,
+    pub(crate) text_scroll_handle: Option<ScrollHandle>,
+    pub(crate) visible_text_rows: Option<usize>,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -283,6 +293,9 @@ impl InputState {
             wrapped_layouts: Vec::new(),
             wrapped_line_count: 0,
             line_height: px(0.0),
+            preferred_cursor_x: None,
+            text_scroll_handle: None,
+            visible_text_rows: None,
         }
     }
 
@@ -415,6 +428,7 @@ impl InputState {
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.preferred_cursor_x = None;
         cx.emit(InputEvent::Change);
         if let Some(cb) = self.on_change_cb.clone() {
             defer_input_callback(cb, self.content.clone(), cx);
@@ -436,6 +450,7 @@ impl InputState {
         self.selected_range = len..len;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.preferred_cursor_x = None;
         cx.emit(InputEvent::Change);
         if let Some(cb) = self.on_change_cb.clone() {
             defer_input_callback(cb, self.content.clone(), cx);
@@ -779,6 +794,7 @@ impl InputState {
     }
 
     pub fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        self.preferred_cursor_x = None;
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -787,6 +803,7 @@ impl InputState {
     }
 
     pub fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        self.preferred_cursor_x = None;
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
@@ -795,24 +812,47 @@ impl InputState {
     }
 
     pub fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.preferred_cursor_x = None;
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
     pub fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.preferred_cursor_x = None;
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
     pub fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.preferred_cursor_x = None;
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
     }
 
     pub fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        self.preferred_cursor_x = None;
+        let offset = self.visual_line_edge(false).unwrap_or(0);
+        self.move_to(offset, cx);
     }
 
     pub fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        self.preferred_cursor_x = None;
+        let offset = self.visual_line_edge(true).unwrap_or(self.content.len());
+        self.move_to(offset, cx);
+    }
+
+    pub fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_vertically(-1, false, cx);
+    }
+
+    pub fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_vertically(1, false, cx);
+    }
+
+    pub fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_vertically(-1, true, cx);
+    }
+
+    pub fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_vertically(1, true, cx);
     }
 
     pub fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -912,6 +952,7 @@ impl InputState {
         }
 
         let click_index = self.index_for_mouse_position(event.position);
+        self.preferred_cursor_x = None;
 
         if event.modifiers.shift {
             self.select_to(click_index, cx);
@@ -1036,6 +1077,7 @@ impl InputState {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        self.selection_reversed = false;
         cx.notify()
     }
 
@@ -1105,6 +1147,76 @@ impl InputState {
         } else {
             display_index
         }
+    }
+
+    fn visual_position_for_index(&self, offset: usize) -> Option<Point<Pixels>> {
+        if !self.multi_line || self.wrapped_layouts.is_empty() || self.line_height <= px(0.0) {
+            return None;
+        }
+        let mut y = px(0.0);
+        let mut byte_offset = 0usize;
+        for line in &self.wrapped_layouts {
+            let line_end = byte_offset + line.len();
+            if offset >= byte_offset && offset <= line_end {
+                let local = line.position_for_index(offset - byte_offset, self.line_height)?;
+                return Some(point(local.x, y + local.y));
+            }
+            y += self.line_height * (line.wrap_boundaries().len() + 1) as f32;
+            byte_offset = line_end + 1;
+        }
+        None
+    }
+
+    fn index_for_visual_position(&self, position: Point<Pixels>) -> Option<usize> {
+        if !self.multi_line || self.wrapped_layouts.is_empty() || self.line_height <= px(0.0) {
+            return None;
+        }
+        let mut y = px(0.0);
+        let mut byte_offset = 0usize;
+        for line in &self.wrapped_layouts {
+            let height = self.line_height * (line.wrap_boundaries().len() + 1) as f32;
+            if position.y < y + height {
+                let local = point(position.x, (position.y - y).max(px(0.0)));
+                let index = line
+                    .closest_index_for_position(local, self.line_height)
+                    .unwrap_or_else(|index| index);
+                return Some(byte_offset + index.min(line.len()));
+            }
+            y += height;
+            byte_offset += line.len() + 1;
+        }
+        Some(self.content.len())
+    }
+
+    fn move_vertically(&mut self, direction: i32, selecting: bool, cx: &mut Context<Self>) {
+        if !self.multi_line {
+            return;
+        }
+        let Some(current) = self.visual_position_for_index(self.cursor_offset()) else {
+            return;
+        };
+        let preferred_x = self.preferred_cursor_x.unwrap_or(current.x);
+        self.preferred_cursor_x = Some(preferred_x);
+        let target_y = current.y + self.line_height * direction as f32 + self.line_height / 2.0;
+        let target = if target_y < px(0.0) {
+            0
+        } else {
+            self.index_for_visual_position(point(preferred_x, target_y))
+                .unwrap_or_else(|| self.cursor_offset())
+        };
+        if selecting {
+            self.select_to(target, cx);
+        } else {
+            self.selected_range = target..target;
+            self.selection_reversed = false;
+            cx.notify();
+        }
+    }
+
+    fn visual_line_edge(&self, end: bool) -> Option<usize> {
+        let cursor = self.visual_position_for_index(self.cursor_offset())?;
+        let x = if end { px(1_000_000.0) } else { px(-1.0) };
+        self.index_for_visual_position(point(x, cursor.y + self.line_height / 2.0))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -1297,6 +1409,7 @@ impl EntityInputHandler for InputState {
         }
 
         self.marked_range.take();
+        self.preferred_cursor_x = None;
 
         if self.validate_on_change {
             self.validate(cx).ok();
@@ -1397,7 +1510,7 @@ struct PrepaintState {
     // Empty in single-line mode.
     wrapped_lines: Vec<gpui::WrappedLine>,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
+    selection: Vec<PaintQuad>,
     /// ShellDeck patch: horizontal scroll offset applied to the shaped line
     /// and cursor at paint time so the caret stays visible when the content
     /// is wider than the input. See SDPATCH-004.
@@ -1513,8 +1626,10 @@ impl gpui::Element for InputTextElement {
 
             let mut y_top = bounds.top();
             let mut byte_offset = 0usize;
-            let mut cursor_point: Option<Point<Pixels>> = None;
-            let mut selection_quad: Option<PaintQuad> = None;
+            // ShellDeck patch: SDPATCH-020 — keep an empty focused textarea's
+            // caret visible and paint selections across hard/soft line wraps.
+            let mut cursor_point = placeholder_mode.then(|| point(bounds.left(), bounds.top()));
+            let mut selection_quads = Vec::new();
             for line in wrapped.iter() {
                 let line_start = byte_offset;
                 let line_end = line_start + line.len();
@@ -1525,23 +1640,34 @@ impl gpui::Element for InputTextElement {
                         cursor_point = Some(point(bounds.left() + pos.x, y_top + pos.y));
                     }
                 }
-                if !placeholder_mode
-                    && !selected_range.is_empty()
-                    && selected_range.start >= line_start
-                    && selected_range.end <= line_end
-                {
-                    if let (Some(sp), Some(ep)) = (
-                        line.position_for_index(selected_range.start - line_start, line_h),
-                        line.position_for_index(selected_range.end - line_start, line_h),
-                    ) {
-                        if sp.y == ep.y {
-                            selection_quad = Some(fill(
-                                Bounds::from_corners(
-                                    point(bounds.left() + sp.x, y_top + sp.y),
-                                    point(bounds.left() + ep.x, y_top + sp.y + line_h),
-                                ),
-                                selection_color,
-                            ));
+                if !placeholder_mode && !selected_range.is_empty() {
+                    let selected_start = selected_range.start.max(line_start);
+                    let selected_end = selected_range.end.min(line_end);
+                    if selected_start < selected_end {
+                        for visual_row in 0..=line.wrap_boundaries().len() {
+                            let row_y = line_h * visual_row as f32;
+                            let row_start = line
+                                .closest_index_for_position(point(px(-1.0), row_y + line_h / 2.0), line_h)
+                                .unwrap_or_else(|index| index);
+                            let row_end = line
+                                .closest_index_for_position(point(px(1_000_000.0), row_y + line_h / 2.0), line_h)
+                                .unwrap_or_else(|index| index);
+                            let start = (selected_start - line_start).max(row_start);
+                            let end = (selected_end - line_start).min(row_end);
+                            if start < end {
+                                if let (Some(sp), Some(ep)) = (
+                                    line.position_for_index(start, line_h),
+                                    line.position_for_index(end, line_h),
+                                ) {
+                                    selection_quads.push(fill(
+                                        Bounds::from_corners(
+                                            point(bounds.left() + sp.x, y_top + sp.y),
+                                            point(bounds.left() + ep.x, y_top + sp.y + line_h),
+                                        ),
+                                        selection_color,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -1554,8 +1680,8 @@ impl gpui::Element for InputTextElement {
             return PrepaintState {
                 line: None,
                 wrapped_lines: wrapped,
-                cursor: if placeholder_mode { None } else { cursor_quad },
-                selection: selection_quad,
+                cursor: cursor_quad,
+                selection: selection_quads,
                 scroll_offset: px(0.0),
             };
         }
@@ -1670,7 +1796,7 @@ impl gpui::Element for InputTextElement {
 
         let (selection, cursor) = if selected_range.is_empty() {
             (
-                None,
+                Vec::new(),
                 Some(fill(
                     Bounds::new(
                         point(bounds.left() + cursor_pos + scroll_offset, bounds.top()),
@@ -1681,7 +1807,7 @@ impl gpui::Element for InputTextElement {
             )
         } else {
             (
-                Some(fill(
+                vec![fill(
                     Bounds::from_corners(
                         point(
                             bounds.left() + line.x_for_index(selected_range.start) + scroll_offset,
@@ -1693,7 +1819,7 @@ impl gpui::Element for InputTextElement {
                         ),
                     ),
                     selection_color,
-                )),
+                )],
                 None,
             )
         };
@@ -1724,7 +1850,7 @@ impl gpui::Element for InputTextElement {
             cx,
         );
 
-        if let Some(selection) = prepaint.selection.take() {
+        for selection in std::mem::take(&mut prepaint.selection) {
             window.paint_quad(selection)
         }
 
@@ -1772,6 +1898,24 @@ impl gpui::Element for InputTextElement {
                 input.wrapped_line_count = visual_total;
                 input.line_height = line_h;
                 input.last_bounds = Some(bounds);
+                if let (Some(handle), Some(rows), Some(cursor)) = (
+                    input.text_scroll_handle.as_ref(),
+                    input.visible_text_rows,
+                    input.visual_position_for_index(input.cursor_offset()),
+                ) {
+                    let viewport_height = line_h * rows as f32;
+                    let current_top = -handle.offset().y;
+                    let next_top = if cursor.y < current_top {
+                        cursor.y
+                    } else if cursor.y + line_h > current_top + viewport_height {
+                        cursor.y + line_h - viewport_height
+                    } else {
+                        current_top
+                    };
+                    if next_top != current_top {
+                        handle.set_offset(point(handle.offset().x, -next_top.max(px(0.0))));
+                    }
+                }
                 if prev_count != visual_total {
                     cx.notify();
                 }

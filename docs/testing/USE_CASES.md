@@ -1500,6 +1500,15 @@ structured attachments; request and comment attachments remain visible to
 User and Support surfaces and are mirrored as image links to GitHub/Jean.
 Issue uploads never appear in the uploader's personal Share gallery.
 
+### SDUC-433 — Multi-line inputs behave like native textareas
+
+Every multi-line Input uses its wrapped visual layout for cursor movement and
+selection. Up/Down retain the preferred visual column, Shift+Up/Down extends
+the selection, and Home/End move to the current visual line edges. Selections
+remain visible across hard newlines and soft wraps. When `max_rows` caps the
+field, keyboard editing scrolls the internal viewport to keep the caret
+visible instead of growing the surrounding screen or typing off-screen.
+
 ---
 
 ## Retired use cases
@@ -1519,6 +1528,8 @@ Issue uploads never appear in the uploader's personal Share gallery.
   per-capability autonomy and the non-bypassable high-risk confirmation rule.
 - **2026-07-20** — Added SDUC-431 and SDTEST-1371/1372 for strict bounded
   Terminal diagnostic plans and separately confirmed read-only steps.
+- **2026-07-21** — Added SDUC-433 and SDTEST-1376 for native wrapped-line
+  cursor, selection, and caret-follow behavior in shared multi-line Inputs.
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.

@@ -3,10 +3,10 @@
 use crate::animations::{easings, shake_offset};
 use crate::components::icon::Icon;
 pub use crate::components::input_state::{
-    Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, End, Enter, Escape, Home, InputEvent,
-    InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord, SelectAll,
-    SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, ShiftTab, Tab, ValidationError,
-    ValidationRules,
+    Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, Down, End, Enter, Escape, Home,
+    InputEvent, InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord, SelectAll,
+    SelectDown, SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, SelectUp, ShiftTab, Tab,
+    Up, ValidationError, ValidationRules,
 };
 use crate::layout::{HStack, VStack};
 use crate::theme::use_theme;
@@ -21,6 +21,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("delete", Delete, Some("Input")),
         KeyBinding::new("left", Left, Some("Input")),
         KeyBinding::new("right", Right, Some("Input")),
+        // ShellDeck patch: SDPATCH-020 — native textarea vertical navigation.
+        KeyBinding::new("up", Up, Some("Input")),
+        KeyBinding::new("down", Down, Some("Input")),
+        KeyBinding::new("shift-up", SelectUp, Some("Input")),
+        KeyBinding::new("shift-down", SelectDown, Some("Input")),
         KeyBinding::new("shift-left", SelectLeft, Some("Input")),
         KeyBinding::new("shift-right", SelectRight, Some("Input")),
         KeyBinding::new("home", Home, Some("Input")),
@@ -708,6 +713,12 @@ impl RenderOnce for Input {
         } else {
             None
         };
+        // ShellDeck patch: SDPATCH-020 — expose the keyed viewport handle to
+        // InputState so keyboard edits can keep the caret visible.
+        self.state.update(cx, |state, _cx| {
+            state.text_scroll_handle = text_scroll_handle.clone();
+            state.visible_text_rows = self.max_rows;
+        });
 
         let user_style = self.style;
 
@@ -731,6 +742,10 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::delete))
                             .on_action(window.listener_for(&self.state, InputState::left))
                             .on_action(window.listener_for(&self.state, InputState::right))
+                            .on_action(window.listener_for(&self.state, InputState::up))
+                            .on_action(window.listener_for(&self.state, InputState::down))
+                            .on_action(window.listener_for(&self.state, InputState::select_up))
+                            .on_action(window.listener_for(&self.state, InputState::select_down))
                             .on_action(window.listener_for(&self.state, InputState::select_left))
                             .on_action(window.listener_for(&self.state, InputState::select_right))
                             .on_action(window.listener_for(&self.state, InputState::select_all))

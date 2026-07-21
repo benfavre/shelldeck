@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **51**
+Total markers in code: **56**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -382,6 +382,31 @@ carries no marker of its own — see its entry).
   the definite available width GPUI needs to wrap text.
 - **Upstream status**: not filed yet — small generic flex containment fix.
 
+### SDPATCH-020 — native multi-line cursor, selection, and caret scrolling
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — vertical actions, visual position helpers,
+    multi-line selection painting, capped-viewport caret follow
+  - `src/components/input.rs` — vertical keybindings/listeners and keyed scroll
+    handle propagation
+- **Markers**:
+  - `src/components/input_state.rs` — `// ShellDeck patch: SDPATCH-020 — textarea-native vertical movement.`
+  - `src/components/input_state.rs` — `// ShellDeck patch: SDPATCH-020 — preserve the visual column while moving`
+  - `src/components/input_state.rs` — `// ShellDeck patch: SDPATCH-020 — keep an empty focused textarea's`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-020 — native textarea vertical navigation.`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-020 — expose the keyed viewport handle to`
+- **Why**: the patched multi-line Input rendered wrapped text but still had
+  single-line editing semantics: Up/Down were unbound, Home/End jumped across
+  the whole document, selections crossing a visual line were not painted, and
+  a caret moving beyond `max_rows` disappeared outside the scroll viewport.
+  Navigation now uses the same `WrappedLine` layouts as painting and click
+  mapping, retains the preferred visual column, paints every selected row, and
+  scrolls capped textareas just enough to keep the caret visible. Empty
+  focused textareas also paint a caret at the insertion origin instead of
+  looking disabled behind their placeholder.
+- **Upstream status**: not filed yet — should accompany the SDPATCH-009/010
+  textarea design discussion.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -437,6 +462,9 @@ carries no marker of its own — see its entry).
   visible row count and scroll internally once the content exceeds it.
 - **2026-07-20** — added SDPATCH-019: Alert title and description columns now
   shrink and wrap inside narrow panels instead of bleeding through siblings.
+- **2026-07-21** — added SDPATCH-020: multi-line Inputs now provide visual-line
+  Up/Down and Home/End navigation, cross-line selection painting, and capped
+  viewport caret following.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past
