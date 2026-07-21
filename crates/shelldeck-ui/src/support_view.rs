@@ -296,6 +296,7 @@ pub struct SupportView {
     composer_state: Entity<EditorState>,
     attachment_url_state: Entity<InputState>,
     attachment_drafts: Vec<AttachmentDraft>,
+    attachment_panel_open: bool,
     attachment_busy: bool,
     attachment_generation: u64,
     compose_note: bool,
@@ -397,6 +398,7 @@ impl SupportView {
             }),
             attachment_url_state: cx.new(InputState::new),
             attachment_drafts: Vec::new(),
+            attachment_panel_open: false,
             attachment_busy: false,
             attachment_generation: 0,
             compose_note: false,
@@ -442,6 +444,7 @@ impl SupportView {
             self.attachment_generation = self.attachment_generation.wrapping_add(1);
             self.attachment_busy = false;
             self.attachment_drafts.clear();
+            self.attachment_panel_open = false;
         }
         self.section = section;
     }
@@ -747,6 +750,7 @@ impl SupportView {
         self.attachment_generation = self.attachment_generation.wrapping_add(1);
         self.attachment_busy = false;
         self.attachment_drafts.clear();
+        self.attachment_panel_open = false;
         self.selected_id = None;
         self.detail = None;
         self.issue_selected = None;
@@ -768,6 +772,7 @@ impl SupportView {
             self.attachment_generation = self.attachment_generation.wrapping_add(1);
             self.attachment_busy = false;
             self.attachment_drafts.clear();
+            self.attachment_panel_open = false;
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
@@ -915,6 +920,7 @@ impl SupportView {
         self.attachment_generation = self.attachment_generation.wrapping_add(1);
         self.attachment_busy = false;
         self.attachment_drafts.clear();
+        self.attachment_panel_open = false;
         self.attachment_url_state
             .update(cx, |state, cx| state.reset(cx));
     }
@@ -930,6 +936,7 @@ impl SupportView {
             );
         } else {
             self.attachment_drafts.push(draft);
+            self.attachment_panel_open = true;
             self.error = None;
         }
         cx.notify();
@@ -3198,6 +3205,31 @@ impl SupportView {
             )
     }
 
+    fn render_attachment_toggle(
+        &self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = if self.attachment_drafts.is_empty() {
+            t!("user.requests.attachments.title").to_string()
+        } else {
+            format!(
+                "{} ({})",
+                t!("user.requests.attachments.title"),
+                self.attachment_drafts.len()
+            )
+        };
+        Button::new(id, label)
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Outline)
+            .selected(self.attachment_panel_open)
+            .icon(IconSource::from("upload"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.attachment_panel_open = !this.attachment_panel_open;
+                cx.notify();
+            }))
+    }
+
     fn render_composer(&self, _ticket_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = adabraka_ui::theme::use_theme();
         let is_note = self.compose_note;
@@ -3302,25 +3334,34 @@ impl SupportView {
                                     .current_line_color(transparent_black()),
                             ),
                     )
-                    .child(self.render_attachment_picker(cx))
+                    .when(self.attachment_panel_open, |composer| {
+                        composer.child(self.render_attachment_picker(cx))
+                    })
                     .child(
-                        div().flex().justify_end().child(
-                            Button::new(
-                                "support-send",
-                                if is_note {
-                                    t!("support.compose.add_note").to_string()
-                                } else {
-                                    t!("support.send").to_string()
-                                },
-                            )
-                            .variant(ButtonVariant::Default)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("send"))
-                            .disabled(self.attachment_busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.send_composer(cx);
-                            })),
-                        ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(self.render_attachment_toggle("support-attachments-toggle", cx))
+                            .child(
+                                Button::new(
+                                    "support-send",
+                                    if is_note {
+                                        t!("support.compose.add_note").to_string()
+                                    } else {
+                                        t!("support.send").to_string()
+                                    },
+                                )
+                                .variant(ButtonVariant::Default)
+                                .size(ButtonSize::Sm)
+                                .icon(IconSource::from("send"))
+                                .disabled(self.attachment_busy)
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.send_composer(cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
     }
@@ -5061,20 +5102,27 @@ impl SupportView {
                             .current_line_color(transparent_black()),
                     ),
             )
-            .child(self.render_attachment_picker(cx))
+            .when(self.attachment_panel_open, |composer| {
+                composer.child(self.render_attachment_picker(cx))
+            })
             .child(
-                div().flex().justify_end().child(
-                    Button::new("sup-issue-send", t!("support.send").to_string())
-                        .size(ButtonSize::Sm)
-                        .h(gpui::px(32.0))
-                        .icon(IconSource::from("send"))
-                        .disabled(self.attachment_busy)
-                        .on_click({
-                            move |_, _, cx| {
-                                entity.update(cx, |this, cx| this.send_composer(cx));
-                            }
-                        }),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(self.render_attachment_toggle("issue-attachments-toggle", cx))
+                    .child(
+                        Button::new("sup-issue-send", t!("support.send").to_string())
+                            .size(ButtonSize::Sm)
+                            .h(gpui::px(32.0))
+                            .icon(IconSource::from("send"))
+                            .disabled(self.attachment_busy)
+                            .on_click({
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| this.send_composer(cx));
+                                }
+                            }),
+                    ),
             )
     }
 }
