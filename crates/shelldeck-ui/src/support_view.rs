@@ -7,6 +7,7 @@
 
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
+use crate::issue_attachments::{capture_region, draft_from_clipboard_image, AttachmentDraft};
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -24,7 +25,9 @@ use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
 
-use shelldeck_core::config::issues::{Issue, IssueAttachment, IssueInstance};
+use shelldeck_core::config::issues::{
+    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
+};
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
 };
@@ -194,6 +197,7 @@ pub enum SupportViewEvent {
         id: String,
         text: String,
         note: bool,
+        attachments: Vec<AttachmentDraft>,
     },
     SetStatus {
         id: String,
@@ -227,6 +231,11 @@ pub enum SupportViewEvent {
     IssueComment {
         id: String,
         body: String,
+        attachments: Vec<AttachmentDraft>,
+    },
+    ImportAttachmentUrl {
+        url: String,
+        generation: u64,
     },
     IssueStatus {
         id: String,
@@ -285,6 +294,10 @@ pub struct SupportView {
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
     composer_state: Entity<EditorState>,
+    attachment_url_state: Entity<InputState>,
+    attachment_drafts: Vec<AttachmentDraft>,
+    attachment_busy: bool,
+    attachment_generation: u64,
     compose_note: bool,
     ai_reply_enabled: bool,
     ai_issue_enabled: bool,
@@ -382,6 +395,10 @@ impl SupportView {
                 state.show_line_numbers = false;
                 state
             }),
+            attachment_url_state: cx.new(InputState::new),
+            attachment_drafts: Vec::new(),
+            attachment_busy: false,
+            attachment_generation: 0,
             compose_note: false,
             ai_reply_enabled: false,
             ai_issue_enabled: false,
@@ -421,6 +438,11 @@ impl SupportView {
 
     /// Switch the console section (palette / action shortcut to Demandes).
     pub fn set_section(&mut self, section: SupportSection) {
+        if self.section != section {
+            self.attachment_generation = self.attachment_generation.wrapping_add(1);
+            self.attachment_busy = false;
+            self.attachment_drafts.clear();
+        }
         self.section = section;
     }
 
@@ -712,6 +734,9 @@ impl SupportView {
     /// request opened in Support doesn't visually leak into User mode (its
     /// selection state was driving the User-mode sheet render).
     pub fn clear_selection(&mut self) {
+        self.attachment_generation = self.attachment_generation.wrapping_add(1);
+        self.attachment_busy = false;
+        self.attachment_drafts.clear();
         self.selected_id = None;
         self.detail = None;
         self.issue_selected = None;
@@ -728,6 +753,12 @@ impl SupportView {
     }
 
     pub fn set_issue_detail(&mut self, detail: Option<Issue>) {
+        let next_id = detail.as_ref().map(|issue| issue.id.as_str());
+        if next_id != self.issue_selected.as_deref() {
+            self.attachment_generation = self.attachment_generation.wrapping_add(1);
+            self.attachment_busy = false;
+            self.attachment_drafts.clear();
+        }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
         }
@@ -856,6 +887,7 @@ impl SupportView {
         self.priority_menu_open = false;
         self.assign_menu_open = false;
         self.reset_composer(cx);
+        self.clear_attachment_drafts(cx);
         self.loading = false;
         self.error = None;
         // Land on the latest message — every chat / messaging UX defaults
@@ -869,6 +901,195 @@ impl SupportView {
         });
     }
 
+    fn clear_attachment_drafts(&mut self, cx: &mut Context<Self>) {
+        self.attachment_generation = self.attachment_generation.wrapping_add(1);
+        self.attachment_busy = false;
+        self.attachment_drafts.clear();
+        self.attachment_url_state
+            .update(cx, |state, cx| state.reset(cx));
+    }
+
+    fn add_attachment_draft(&mut self, draft: AttachmentDraft, cx: &mut Context<Self>) {
+        if self.attachment_drafts.len() >= ISSUE_ATTACHMENT_MAX_COUNT {
+            self.error = Some(
+                t!(
+                    "toast.issue.attachment_limit",
+                    count = ISSUE_ATTACHMENT_MAX_COUNT
+                )
+                .to_string(),
+            );
+        } else {
+            self.attachment_drafts.push(draft);
+            self.error = None;
+        }
+        cx.notify();
+    }
+
+    fn import_attachment_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.attachment_generation || self.attachment_busy {
+            return;
+        }
+        let remaining = ISSUE_ATTACHMENT_MAX_COUNT.saturating_sub(self.attachment_drafts.len());
+        if remaining == 0 {
+            self.error = Some(
+                t!(
+                    "toast.issue.attachment_limit",
+                    count = ISSUE_ATTACHMENT_MAX_COUNT
+                )
+                .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        self.attachment_busy = true;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .into_iter()
+                        .take(remaining)
+                        .map(|path| AttachmentDraft::from_path(&path))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.attachment_busy = false;
+                if generation != view.attachment_generation {
+                    return;
+                }
+                for result in loaded {
+                    match result {
+                        Ok(draft) => view.add_attachment_draft(draft, cx),
+                        Err(error) => view.error = Some(error),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn pick_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_busy {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(t!("user.requests.attachments.choose").to_string().into()),
+            starting_directory: None,
+        });
+        let generation = self.attachment_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                view.import_attachment_paths(paths, generation, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn paste_attachment(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let Some(image) = item.entries().iter().find_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(image),
+            _ => None,
+        }) else {
+            return false;
+        };
+        match draft_from_clipboard_image(image) {
+            Ok(draft) => self.add_attachment_draft(draft, cx),
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+            }
+        }
+        true
+    }
+
+    fn capture_attachment(&mut self, cx: &mut Context<Self>) {
+        if self.attachment_busy {
+            return;
+        }
+        self.attachment_busy = true;
+        let generation = self.attachment_generation;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async { capture_region() })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.attachment_busy = false;
+                if generation != view.attachment_generation {
+                    return;
+                }
+                match result {
+                    Ok(draft) => view.add_attachment_draft(draft, cx),
+                    Err(error) => view.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn import_attachment_url(&mut self, cx: &mut Context<Self>) {
+        let url = self
+            .attachment_url_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        if url.is_empty() || self.attachment_busy {
+            return;
+        }
+        self.attachment_busy = true;
+        cx.emit(SupportViewEvent::ImportAttachmentUrl {
+            url,
+            generation: self.attachment_generation,
+        });
+        cx.notify();
+    }
+
+    pub fn finish_attachment_url_import(
+        &mut self,
+        generation: u64,
+        result: Result<AttachmentDraft, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.attachment_generation {
+            return;
+        }
+        self.attachment_busy = false;
+        match result {
+            Ok(draft) => {
+                self.attachment_url_state
+                    .update(cx, |state, cx| state.reset(cx));
+                self.add_attachment_draft(draft, cx);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    pub fn clear_composer_after_send(&mut self, cx: &mut Context<Self>) {
+        self.reset_composer(cx);
+        self.clear_attachment_drafts(cx);
+        self.loading = false;
+        cx.notify();
+    }
+
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
     }
@@ -876,6 +1097,7 @@ impl SupportView {
     pub fn set_error(&mut self, msg: impl Into<String>) {
         self.error = Some(msg.into());
         self.loading = false;
+        self.attachment_busy = false;
     }
 
     pub fn selected_id(&self) -> Option<String> {
@@ -1221,22 +1443,36 @@ impl SupportView {
     /// through their button so Enter remains available for new lines.
     pub fn send_composer(&mut self, cx: &mut Context<Self>) {
         let text = self.composer_state.read(cx).content().trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.attachment_drafts.is_empty() {
             return;
         }
+        if self.attachment_busy {
+            return;
+        }
+        let attachments = self.attachment_drafts.clone();
         match self.section {
             SupportSection::Tickets => {
                 if let Some(id) = self.selected_id.clone() {
+                    self.attachment_busy = true;
                     let note = self.compose_note;
                     self.loading = true;
-                    cx.emit(SupportViewEvent::Send { id, text, note });
+                    cx.emit(SupportViewEvent::Send {
+                        id,
+                        text,
+                        note,
+                        attachments,
+                    });
                     cx.notify();
                 }
             }
             SupportSection::Requests => {
                 if let Some(id) = self.issue_selected.clone() {
-                    self.reset_composer(cx);
-                    cx.emit(SupportViewEvent::IssueComment { id, body: text });
+                    self.attachment_busy = true;
+                    cx.emit(SupportViewEvent::IssueComment {
+                        id,
+                        body: text,
+                        attachments,
+                    });
                     cx.notify();
                 }
             }
@@ -2018,7 +2254,12 @@ impl SupportView {
         row
     }
 
-    fn render_message(msg: &SupportMessage, me: &SupportMe) -> impl IntoElement {
+    fn render_message(
+        &self,
+        msg: &SupportMessage,
+        me: &SupportMe,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let (bg, align_end, label) = if msg.is_note() {
             (
                 ShellDeckColors::warning().opacity(0.12),
@@ -2074,7 +2315,7 @@ impl SupportView {
         // added earlier to force horizontal wrap, but they made the bubble
         // stretch past its cap and broke the right-alignment for agent
         // messages — reverted to the pre-SDPATCH-011-hotfix layout.
-        let bubble = div()
+        let mut bubble = div()
             .max_w(px(560.0))
             .rounded(px(8.0))
             .bg(bg)
@@ -2131,6 +2372,9 @@ impl SupportView {
                 }
                 body
             });
+        if !msg.attachments.is_empty() {
+            bubble = bubble.child(self.render_issue_attachment_links(&msg.attachments, cx));
+        }
 
         let mut wrap = div().w_full().flex();
         if align_end {
@@ -2643,7 +2887,7 @@ impl SupportView {
             );
         } else {
             for m in &ticket.messages {
-                messages = messages.child(Self::render_message(m, &self.me));
+                messages = messages.child(self.render_message(m, &self.me, cx));
             }
         }
 
@@ -2801,6 +3045,149 @@ impl SupportView {
         panel.into_any_element()
     }
 
+    fn render_attachment_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut previews = div().flex().flex_wrap().gap(px(6.0));
+        for (index, draft) in self.attachment_drafts.iter().enumerate() {
+            previews = previews.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "support-attachment-draft-{index}"
+                    ))))
+                    .relative()
+                    .w(px(64.0))
+                    .h(px(64.0))
+                    .rounded(px(7.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        img(draft.image.clone())
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(
+                        div()
+                            .id(ElementId::from(SharedString::from(format!(
+                                "support-attachment-remove-{index}"
+                            ))))
+                            .absolute()
+                            .top(px(3.0))
+                            .right(px(3.0))
+                            .size(px(19.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(ShellDeckColors::backdrop())
+                            .cursor_pointer()
+                            .child(lucide_icon("x", 11.0, white()))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if index < this.attachment_drafts.len() {
+                                    this.attachment_drafts.remove(index);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        let url_input = Input::new(&self.attachment_url_state)
+            .size(InputSize::Sm)
+            .placeholder(t!("user.requests.attachments.url_placeholder").to_string())
+            .on_enter({
+                let entity = cx.entity();
+                move |_value, cx| entity.update(cx, |this, cx| this.import_attachment_url(cx))
+            });
+
+        div()
+            .id("support-attachment-picker")
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .p(px(8.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                let mods = event.keystroke.modifiers;
+                if event.keystroke.key.eq_ignore_ascii_case("v")
+                    && (mods.control || mods.platform)
+                    && this.paste_attachment(cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let generation = this.attachment_generation;
+                this.import_attachment_paths(paths.paths().to_vec(), generation, cx);
+            }))
+            .when(!self.attachment_drafts.is_empty(), |el| el.child(previews))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .child(
+                        Button::new(
+                            "support-attachment-file",
+                            t!("user.requests.attachments.file").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("upload"))
+                        .disabled(self.attachment_busy)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.pick_attachments(window, cx)),
+                        ),
+                    )
+                    .child(
+                        Button::new(
+                            "support-attachment-paste",
+                            t!("user.requests.attachments.paste").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("clipboard-paste"))
+                        .disabled(self.attachment_busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if !this.paste_attachment(cx) {
+                                this.error = Some(t!("toast.issue.clipboard_no_image").to_string());
+                                cx.notify();
+                            }
+                        })),
+                    )
+                    .child(
+                        Button::new(
+                            "support-attachment-capture",
+                            t!("user.requests.attachments.capture").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("scan"))
+                        .disabled(self.attachment_busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.capture_attachment(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(url_input))
+                    .child(
+                        Button::new(
+                            "support-attachment-url",
+                            t!("user.requests.attachments.add_url").to_string(),
+                        )
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Outline)
+                        .icon(IconSource::from("globe"))
+                        .disabled(self.attachment_busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.import_attachment_url(cx))),
+                    ),
+            )
+    }
+
     fn render_composer(&self, _ticket_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = adabraka_ui::theme::use_theme();
         let is_note = self.compose_note;
@@ -2905,6 +3292,7 @@ impl SupportView {
                                     .current_line_color(transparent_black()),
                             ),
                     )
+                    .child(self.render_attachment_picker(cx))
                     .child(
                         div().flex().justify_end().child(
                             Button::new(
@@ -2918,6 +3306,7 @@ impl SupportView {
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::Sm)
                             .icon(IconSource::from("send"))
+                            .disabled(self.attachment_busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.send_composer(cx);
                             })),
@@ -2943,6 +3332,9 @@ impl SupportView {
                 .icon(IconSource::from(icon))
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
+                        if this.section != section {
+                            this.clear_attachment_drafts(cx);
+                        }
                         this.section = section;
                         if section == SupportSection::Requests {
                             cx.emit(SupportViewEvent::IssuesRefresh);
@@ -4666,12 +5058,14 @@ impl SupportView {
                             .current_line_color(transparent_black()),
                     ),
             )
+            .child(self.render_attachment_picker(cx))
             .child(
                 div().flex().justify_end().child(
                     Button::new("sup-issue-send", t!("support.send").to_string())
                         .size(ButtonSize::Sm)
                         .h(gpui::px(32.0))
                         .icon(IconSource::from("send"))
+                        .disabled(self.attachment_busy)
                         .on_click({
                             move |_, _, cx| {
                                 entity.update(cx, |this, cx| this.send_composer(cx));

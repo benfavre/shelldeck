@@ -1487,17 +1487,20 @@ then stages a high-risk Terminal action, so confirmation remains mandatory
 under every autonomy policy. Steps are not auto-chained because PTY command
 completion is not yet reliably observable; Ctrl+C remains the stop path.
 
-### SDUC-432 — User requests accept image evidence through every desktop path
+### SDUC-432 — Requests and Support tickets accept image evidence through every desktop path
 
-The New Request and request-comment composers accept up to five PNG, JPEG, or
-WebP images (9 Mo each, leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
+The New Request, request-comment, Support request-comment, ticket-reply, and
+internal-note composers accept up to five PNG, JPEG, or WebP images (9 Mo each,
+leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
 ShellDeck obtains a short-lived, single-use, issue-scoped ticket from Manage,
 uploads the bytes directly to Inklura Share, and sends only opaque receipts
 back to Manage. Manage validates tenant and issue scope before persisting
-structured attachments; request and comment attachments remain visible to
+structured attachments. Request and comment attachments remain visible to
 User and Support surfaces and are mirrored as image links to GitHub/Jean.
+Ticket attachments remain structured in the helpdesk thread and their Share
+viewer links are routed to the originating email, livechat, Manage, or SMS channel.
 Issue uploads never appear in the uploader's personal Share gallery.
 
 ### SDUC-433 — Multi-line inputs behave like native textareas
@@ -1518,6 +1521,9 @@ visible instead of growing the surrounding screen or typing off-screen.
 ---
 
 ## Change log
+
+- **2026-07-21** — Extended SDUC-432 and SDTEST-1373/1375/1377 to cover image
+  replies and internal notes on Support tickets plus the Support requests composer.
 
 - **2026-07-20** — Added SDUC-432 and SDTEST-1373..1375 for request image
   attachments, byte-signature validation, Share receipts, and the five desktop

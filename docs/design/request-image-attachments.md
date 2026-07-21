@@ -1,4 +1,4 @@
-# Pièces jointes image dans les demandes ShellDeck
+# Pièces jointes image dans les demandes et tickets ShellDeck
 
 ## Objectif
 
@@ -6,6 +6,7 @@ Permettre à un utilisateur d'ajouter des images et des captures d'écran :
 
 - lors de la création d'une demande ;
 - dans un commentaire ultérieur ;
+- dans une réponse ou une note interne d'un ticket Support ;
 - depuis un fichier, le presse-papiers ou un glisser-déposer.
 
 Le stockage d'images existant de [Inklura Share](https://share.inklura.fr/) doit
@@ -37,16 +38,12 @@ limitée à la demande concernée.
 
 ## État actuel
 
-### Demandes ShellDeck
+### Demandes et tickets ShellDeck
 
-Le contrat actuel ne transporte que du texte :
-
-- `Issue` contient notamment `body` et `comments` ;
-- `IssueComment` contient `id`, `author`, `body`, `kind` et `at` ;
-- la création et les commentaires sont envoyés à Manage en JSON.
-
-Il n'existe actuellement aucune notion de pièce jointe dans les modèles Rust
-ou TypeScript.
+Le contrat transporte maintenant des pièces jointes structurées sur `Issue`,
+`IssueComment` et `SupportMessage`. Les octets ne transitent jamais dans ces
+objets : ils sont envoyés directement à Share, puis Manage et support-prism ne
+conservent que l'identifiant, les métadonnées et les URLs-capacités.
 
 ### Inklura Share
 
@@ -122,13 +119,13 @@ l'image dans une route TypeScript classique.
 ShellDeck
    │ token Manage existant
    ▼
-Manage /issues ──► ticket d'upload opaque, court et à usage unique
+Manage /issues ou /support ──► ticket d'upload opaque, court et à usage unique
    │
    ▼
 Share /api/attachments/upload
    │ stockage Bext
    ▼
-reçu opaque ──► Manage /issues ──► rattachement à la demande/commentaire
+reçu opaque ──► Manage ──► rattachement à la demande/commentaire/ticket
 ```
 
 ### Flux d'une nouvelle demande
@@ -153,13 +150,22 @@ Le même mécanisme s'applique aux commentaires. Le serveur doit accepter :
 - texte et images ;
 - images uniquement.
 
+### Flux d'un ticket Support
+
+Le même ticket d'upload porte `target_kind: "support"` et l'identifiant du
+thread. Après validation du reçu, l'image est conservée comme donnée structurée
+sur le message. La réponse envoyée au canal d'origine reçoit également le lien
+de visualisation Share : cela fonctionne uniformément pour email, livechat,
+Manage et SMS sans exiger que chaque bridge transporte des octets binaires.
+Une note interne conserve les images dans le thread mais ne route rien au client.
+
 ### Propriétés du ticket d'upload
 
 Le ticket devrait :
 
 - expirer après une ou deux minutes ;
 - contenir 256 bits aléatoires et être stocké côté Manage ;
-- contenir le tenant, l'utilisateur et l'identifiant de la demande ;
+- contenir le tenant, l'utilisateur, le type de cible et son identifiant ;
 - limiter le nombre d'octets et le type MIME ;
 - être utilisable une seule fois ;
 - ne jamais contenir le token Manage lui-même.
@@ -176,7 +182,7 @@ Pour rester compatible avec le chemin statique binaire actuel :
 
 - générer au moins 128 bits aléatoires pour chaque URL-capacité ;
 - ne pas indexer les pièces jointes ShellDeck dans la galerie publique ;
-- marquer les fichiers avec `purpose: "issue"`, `tenant_id` et `issue_id` ;
+- marquer les fichiers avec `purpose: "issue" | "support"`, `tenant_id` et `target_id` ;
 - ne permettre leur suppression qu'à travers le cycle de vie de la demande ;
 - conserver la possibilité de révoquer le lien en supprimant le blob.
 

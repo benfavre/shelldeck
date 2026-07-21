@@ -5004,12 +5004,29 @@ impl Workspace {
             SupportViewEvent::TriageIssue(issue_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::IssueTriage { issue_id }, cx)
             }
-            SupportViewEvent::Send { id, text, note } => {
+            SupportViewEvent::Send {
+                id,
+                text,
+                note,
+                attachments,
+            } => {
                 self.support_action(cx, move |base, token| {
-                    if note {
+                    if attachments.is_empty() && note {
                         ms::support_note(&base, &token, &id, &text)
-                    } else {
+                    } else if attachments.is_empty() {
                         ms::support_reply(&base, &token, &id, &text)
+                    } else {
+                        let uploads = attachments
+                            .iter()
+                            .map(AttachmentDraft::upload)
+                            .collect::<Vec<_>>();
+                        let receipts =
+                            ms::upload_support_attachments(&base, &token, &id, &uploads)?;
+                        if note {
+                            ms::support_note_with_attachments(&base, &token, &id, &text, &receipts)
+                        } else {
+                            ms::support_reply_with_attachments(&base, &token, &id, &text, &receipts)
+                        }
                     }
                 });
             }
@@ -5039,7 +5056,29 @@ impl Workspace {
             }
             SupportViewEvent::IssuesRefresh => self.refresh_issues(cx),
             SupportViewEvent::SelectIssue(id) => self.select_issue(id, cx),
-            SupportViewEvent::IssueComment { id, body } => self.comment_issue_now(id, body, cx),
+            SupportViewEvent::IssueComment {
+                id,
+                body,
+                attachments,
+            } => self.comment_issue_with_images(id, body, attachments, cx),
+            SupportViewEvent::ImportAttachmentUrl { url, generation } => {
+                cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { issues::download_issue_image_url(&url) })
+                        .await
+                        .map_err(|e| cloud_account::user_message(&e))
+                        .and_then(|upload| {
+                            AttachmentDraft::from_bytes(upload.filename, upload.bytes)
+                        });
+                    let _ = this.update(cx, |ws, cx| {
+                        ws.support.update(cx, |view, cx| {
+                            view.finish_attachment_url_import(generation, result, cx)
+                        });
+                    });
+                })
+                .detach();
+            }
             SupportViewEvent::IssueStatus { id, status } => {
                 self.issue_staff_action(cx, move |b, t| issues::set_status(&b, &t, &id, &status))
             }
@@ -6703,20 +6742,26 @@ impl Workspace {
                             );
                         }
                         ws.push_issues_to_support(cx);
+                        ws.support.update(cx, |view, cx| {
+                            view.clear_composer_after_send(cx);
+                        });
                         Self::reset_input(&ws.issue_comment_state.clone(), cx);
                         Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
                         ws.issue_comment_attachments.clear();
                         cx.notify();
                     }
-                    Err(e) => ws.show_toast(
-                        t!(
+                    Err(e) => {
+                        let message = t!(
                             "toast.issue.comment_failed",
                             error = cloud_account::user_message(&e)
                         )
-                        .to_string(),
-                        ToastLevel::Error,
-                        cx,
-                    ),
+                        .to_string();
+                        ws.support.update(cx, |view, cx| {
+                            view.set_error(message.clone());
+                            cx.notify();
+                        });
+                        ws.show_toast(message, ToastLevel::Error, cx);
+                    }
                 }
             });
         })

@@ -520,6 +520,18 @@ pub fn upload_issue_attachments(
     id: &str,
     uploads: &[IssueAttachmentUpload],
 ) -> Result<Vec<String>> {
+    upload_scoped_attachments(&issues_url(base_url), token, id, uploads)
+}
+
+/// Shared ticket→Share upload handshake used by requests and Support tickets.
+/// `ticket_url` remains a Manage endpoint; the long-lived sync token is never
+/// sent to Share, which receives only the short-lived single-use capability.
+pub fn upload_scoped_attachments(
+    ticket_url: &str,
+    token: &str,
+    id: &str,
+    uploads: &[IssueAttachmentUpload],
+) -> Result<Vec<String>> {
     if uploads.len() > ISSUE_ATTACHMENT_MAX_COUNT {
         return Err(ShellDeckError::Connection(format!(
             "{} images maximum par envoi",
@@ -535,7 +547,7 @@ pub fn upload_issue_attachments(
     for upload in uploads {
         upload.validate()?;
         let ticket_resp = client
-            .post(issues_url(base_url))
+            .post(ticket_url)
             .bearer_auth(token)
             .json(&serde_json::json!({
                 "action": "attachment-ticket", "id": id,

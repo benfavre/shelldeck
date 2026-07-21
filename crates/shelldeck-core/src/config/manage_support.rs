@@ -9,6 +9,7 @@
 //! All shapes are parsed defensively (`#[serde(default)]` everywhere, unknown
 //! fields ignored) so channel-specific quirks never break the console.
 
+use crate::config::issues::{upload_scoped_attachments, IssueAttachment, IssueAttachmentUpload};
 use crate::error::{Result, ShellDeckError};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -131,8 +132,12 @@ where
         from: String,
         #[serde(default, deserialize_with = "de_nullable_string")]
         text: String,
+        #[serde(default, deserialize_with = "de_nullable_string")]
+        dir: String,
         #[serde(default)]
         name: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
         #[serde(default, deserialize_with = "de_flex_millis")]
         at: f64,
         #[serde(default, deserialize_with = "de_flex_millis")]
@@ -151,6 +156,10 @@ where
         date: f64,
         #[serde(default, deserialize_with = "de_flex_millis")]
         time: f64,
+        #[serde(default, deserialize_with = "de_flex_millis")]
+        ts: f64,
+        #[serde(default)]
+        attachments: Vec<IssueAttachment>,
     }
     let raw = Raw::deserialize(deserializer)?;
     let at = coalesce_timestamp(&[
@@ -163,12 +172,25 @@ where
         raw.sentAt,
         raw.date,
         raw.time,
+        raw.ts,
     ]);
+    let from = if raw.from.is_empty() {
+        match raw.dir.as_str() {
+            "in" => "contact",
+            "note" => "note",
+            "out" => "agent",
+            _ => "",
+        }
+        .to_string()
+    } else {
+        raw.from
+    };
     Ok(SupportMessage {
-        from: raw.from,
+        from,
         text: raw.text,
         at,
-        name: raw.name,
+        name: raw.name.or(raw.author),
+        attachments: raw.attachments,
     })
 }
 
@@ -179,6 +201,8 @@ pub struct SupportMessage {
     pub at: f64,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<IssueAttachment>,
 }
 
 impl<'de> Deserialize<'de> for SupportMessage {
@@ -443,12 +467,57 @@ pub fn support_reply(base_url: &str, token: &str, id: &str, text: &str) -> Resul
     )
 }
 
+/// Upload Support ticket images through the same scoped Share capability flow
+/// as hosted requests.
+pub fn upload_support_attachments(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    uploads: &[IssueAttachmentUpload],
+) -> Result<Vec<String>> {
+    upload_scoped_attachments(&support_url(base_url), token, id, uploads)
+}
+
+pub fn support_reply_with_attachments(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    text: &str,
+    receipts: &[String],
+) -> Result<SupportTicket> {
+    post_action(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "reply", "id": id, "text": text,
+            "attachment_receipts": receipts,
+        }),
+    )
+}
+
 /// Add an internal note (not sent to the customer).
 pub fn support_note(base_url: &str, token: &str, id: &str, text: &str) -> Result<SupportTicket> {
     post_action(
         base_url,
         token,
         serde_json::json!({ "action": "note", "id": id, "text": text }),
+    )
+}
+
+pub fn support_note_with_attachments(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    text: &str,
+    receipts: &[String],
+) -> Result<SupportTicket> {
+    post_action(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "note", "id": id, "text": text,
+            "attachment_receipts": receipts,
+        }),
     )
 }
 
@@ -672,6 +741,28 @@ mod tests {
         assert!((tr.ticket.messages[1].at - 1751461000000.0).abs() < 1.0);
     }
 
+    // SDTEST-1377
+    #[test]
+    fn support_messages_parse_share_attachments() {
+        let ticket = r#"{"ticket":{"id":"t1","messages":[{
+          "dir":"out","author":"Karim","text":"capture","ts":"2026-07-21T10:00:00.000Z",
+          "attachments":[{"id":"abcdef123456","share_id":"abcdef123456",
+            "url":"https://share.inklura.fr/u/abcdef123456.png",
+            "viewer_url":"https://share.inklura.fr/s/abcdef123456",
+            "filename":"capture.png","content_type":"image/png","bytes":42,
+            "created_at":"2026-07-21T10:00:00.000Z"}]
+        }]}}"#;
+        let parsed: TicketResponse = serde_json::from_str(ticket).expect("support attachment");
+        let attachment = &parsed.ticket.messages[0].attachments[0];
+        assert_eq!(attachment.filename, "capture.png");
+        assert_eq!(
+            attachment.viewer_url,
+            "https://share.inklura.fr/s/abcdef123456"
+        );
+        assert_eq!(parsed.ticket.messages[0].from, "agent");
+        assert_eq!(parsed.ticket.messages[0].name.as_deref(), Some("Karim"));
+    }
+
     #[test]
     fn channel_glyphs_have_a_fallback() {
         let mut t = SupportTicket::default();
@@ -826,6 +917,30 @@ mod tests {
         assert_eq!(body["action"], "note");
         assert_eq!(body["id"], TICKET_ID);
         assert_eq!(body["text"], "à escalader");
+    }
+
+    // SDTEST-1377
+    #[test]
+    fn support_reply_and_note_send_attachment_receipts() {
+        let m = start_support_write_mock();
+        let receipts = vec!["receipt-a".to_string(), "receipt-b".to_string()];
+        super::support_reply_with_attachments(
+            &m.url,
+            WRITE_TOKEN,
+            TICKET_ID,
+            "Voir captures",
+            &receipts,
+        )
+        .expect("reply with attachments");
+        super::support_note_with_attachments(&m.url, WRITE_TOKEN, TICKET_ID, "", &receipts)
+            .expect("note with attachments");
+
+        let reply = recorded(&m, 0);
+        let note = recorded(&m, 1);
+        assert_eq!(reply["attachment_receipts"][0], "receipt-a");
+        assert_eq!(reply["attachment_receipts"][1], "receipt-b");
+        assert_eq!(note["action"], "note");
+        assert_eq!(note["attachment_receipts"][0], "receipt-a");
     }
 
     #[test]
