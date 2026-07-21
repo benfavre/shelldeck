@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::time::Duration;
 
-pub const ISSUE_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
+// Keep one MiB of headroom for multipart framing below Bext's 10 MiB request cap.
+pub const ISSUE_ATTACHMENT_MAX_BYTES: usize = 9 * 1024 * 1024;
 pub const ISSUE_ATTACHMENT_MAX_COUNT: usize = 5;
 
 fn de_nullable_string<'de, D>(d: D) -> std::result::Result<String, D::Error>
@@ -299,7 +300,7 @@ pub fn download_issue_image_url(url: &str) -> Result<IssueAttachmentUpload> {
         .is_some_and(|n| n > ISSUE_ATTACHMENT_MAX_BYTES as u64)
     {
         return Err(ShellDeckError::Connection(
-            "L’image dépasse la limite de 10 Mo.".to_string(),
+            "L’image dépasse la limite de 9 Mo.".to_string(),
         ));
     }
     let mut bytes = Vec::new();
@@ -309,7 +310,7 @@ pub fn download_issue_image_url(url: &str) -> Result<IssueAttachmentUpload> {
         .map_err(|e| ShellDeckError::Connection(format!("lecture image impossible : {}", e)))?;
     if bytes.len() > ISSUE_ATTACHMENT_MAX_BYTES {
         return Err(ShellDeckError::Connection(
-            "L’image dépasse la limite de 10 Mo.".to_string(),
+            "L’image dépasse la limite de 9 Mo.".to_string(),
         ));
     }
     let content_type = issue_image_content_type(&bytes).ok_or_else(|| {
@@ -907,6 +908,13 @@ mod tests {
             bytes: b"nope".to_vec(),
         };
         assert!(upload.validate().is_err());
+    }
+
+    #[test]
+    fn attachment_limit_keeps_multipart_below_bext_request_cap() {
+        const BEXT_REQUEST_CAP: usize = 10 * 1024 * 1024;
+        const MULTIPART_HEADROOM: usize = 1024 * 1024;
+        assert!(ISSUE_ATTACHMENT_MAX_BYTES + MULTIPART_HEADROOM <= BEXT_REQUEST_CAP);
     }
 
     #[test]

@@ -131,9 +131,12 @@ pub fn capture_region() -> Result<AttachmentDraft, String> {
     let captured = {
         let escaped = path.to_string_lossy().replace('\'', "''");
         let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; Start-Process 'ms-screenclip:'; \
+            "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \
+             Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class ShellDeckClipboard {{ [DllImport(\"user32.dll\")] public static extern uint GetClipboardSequenceNumber(); }}'; \
+             $before=[ShellDeckClipboard]::GetClipboardSequenceNumber(); Start-Process 'ms-screenclip:'; \
              $end=(Get-Date).AddSeconds(90); do {{ Start-Sleep -Milliseconds 250; \
-             if ([Windows.Forms.Clipboard]::ContainsImage()) {{ \
+             $current=[ShellDeckClipboard]::GetClipboardSequenceNumber(); \
+             if ($current -ne $before -and [Windows.Forms.Clipboard]::ContainsImage()) {{ \
              $i=[Windows.Forms.Clipboard]::GetImage(); $i.Save('{escaped}',[Drawing.Imaging.ImageFormat]::Png); exit 0 }} \
              }} while ((Get-Date) -lt $end); exit 1"
         );

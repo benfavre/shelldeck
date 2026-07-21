@@ -56,7 +56,7 @@ Inklura Share fournit déjà :
 - un stockage binaire Bext ;
 - des métadonnées et des index en KV ;
 - des pages de visualisation ;
-- une limite de 10 Mo par fichier ;
+- une limite de 9 Mo par fichier (marge multipart sous le plafond Bext de 10 Mio) ;
 - la suppression et le renommage des fichiers d'une galerie utilisateur.
 
 L'endpoint live répond correctement et annonce :
@@ -122,13 +122,13 @@ l'image dans une route TypeScript classique.
 ShellDeck
    │ token Manage existant
    ▼
-Manage /issues ──► ticket d'upload court et signé
+Manage /issues ──► ticket d'upload opaque, court et à usage unique
    │
    ▼
 Share /api/attachments/upload
    │ stockage Bext
    ▼
-reçu signé ──► Manage /issues ──► rattachement à la demande/commentaire
+reçu opaque ──► Manage /issues ──► rattachement à la demande/commentaire
 ```
 
 ### Flux d'une nouvelle demande
@@ -139,7 +139,7 @@ reçu signé ──► Manage /issues ──► rattachement à la demande/comme
 3. Pour chaque image, ShellDeck demande à Manage un ticket d'upload lié à
    l'utilisateur, au tenant et à l'identifiant de la demande.
 4. ShellDeck envoie directement l'image à Inklura Share avec ce ticket.
-5. Share renvoie un reçu signé contenant les métadonnées du fichier.
+5. Share renvoie un reçu-capacité opaque associé aux métadonnées du fichier.
 6. ShellDeck transmet le reçu à Manage, qui le valide puis rattache la pièce
    jointe à la demande.
 7. Si un upload échoue, la demande reste créée et l'interface permet de
@@ -158,14 +158,15 @@ Le même mécanisme s'applique aux commentaires. Le serveur doit accepter :
 Le ticket devrait :
 
 - expirer après une ou deux minutes ;
-- être signé avec une clé partagée entre Manage et Share ;
+- contenir 256 bits aléatoires et être stocké côté Manage ;
 - contenir le tenant, l'utilisateur et l'identifiant de la demande ;
 - limiter le nombre d'octets et le type MIME ;
 - être utilisable une seule fois ;
 - ne jamais contenir le token Manage lui-même.
 
-Le reçu renvoyé par Share doit également être signé afin que Manage ne fasse
-pas confiance à des métadonnées fabriquées par le client.
+Le reçu renvoyé par Share contient également 256 bits aléatoires. Manage le
+résout directement auprès de Share et les deux consommations utilisent un CAS,
+ce qui garantit l'usage unique même sous deux requêtes concurrentes.
 
 ## Niveau de confidentialité
 
@@ -405,7 +406,7 @@ Limites proposées pour la première version :
 
 - PNG, JPEG et WebP uniquement ;
 - 5 images maximum ;
-- 10 Mo maximum par image ;
+- 9 Mo maximum par image ;
 - 25 Mo maximum par demande ou commentaire ;
 - 2 uploads simultanés au maximum.
 
@@ -460,7 +461,7 @@ incomplet.
 Politique proposée :
 
 - image rattachée : conservée pendant la durée de rétention de la demande ;
-- image uploadée mais jamais rattachée : purge après 24 heures ;
+- image uploadée mais jamais réclamée par Manage : purge opportuniste après 1 heure ;
 - demande soft-deleted : purge différée selon une durée à définir ;
 - suppression immédiate réservée à une action explicite et auditée ;
 - quotas par utilisateur et tenant pour empêcher l'accumulation incontrôlée.
@@ -470,7 +471,7 @@ Politique proposée :
 ### 1. Inklura Share
 
 - ajouter le mode d'upload `issue` ;
-- ajouter les tickets et reçus signés ;
+- ajouter les tickets et reçus opaques à usage unique ;
 - passer à des identifiants d'au moins 128 bits ;
 - vérifier la signature réelle des formats acceptés ;
 - refuser SVG dans ce mode ;

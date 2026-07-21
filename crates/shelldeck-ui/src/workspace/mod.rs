@@ -12,8 +12,8 @@ use shelldeck_core::ai::{
     ai_action_disposition, configured_cli_available, create_client, host_context,
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
     parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
-    AiActionKind, AiActionPayload, AiActionPlan, AiActionRisk, AiContext, AiIssueTriageProposal,
-    AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiContext,
+    AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -40,7 +40,9 @@ use uuid::Uuid;
 
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
-use crate::ai_workflow::{AiNamingKind, AiWorkflowEvent, AiWorkflowTarget, AiWorkflowView};
+use crate::ai_workflow::{
+    AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
+};
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
@@ -2163,13 +2165,15 @@ impl Workspace {
         let action_policy = self.app_config.ai.policies.level_for(target.capability());
         let workflow = cx.new(|cx| {
             AiWorkflowView::new(
-                target,
-                self.app_config.ai.backend,
-                self.app_config.ai.model.clone(),
-                pending,
-                comparison_original,
-                issue_triage_current,
-                action_policy,
+                AiWorkflowInit {
+                    target,
+                    backend: self.app_config.ai.backend,
+                    model: self.app_config.ai.model.clone(),
+                    pending,
+                    comparison_original,
+                    issue_triage_current,
+                    action_policy,
+                },
                 cx,
             )
         });
@@ -2309,17 +2313,17 @@ impl Workspace {
                     .get("title")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Terminal");
-                AiActionPlan::new(
-                    target.capability(),
-                    AiActionKind::TerminalCommand,
-                    AiActionRisk::High,
-                    session_id,
-                    label,
-                    self.app_config.ai.backend,
+                AiActionPlan::new(AiActionPlanSpec {
+                    capability: target.capability(),
+                    kind: AiActionKind::TerminalCommand,
+                    risk: AiActionRisk::High,
+                    target_id: session_id.clone(),
+                    target_label: label.to_string(),
+                    backend: self.app_config.ai.backend,
                     model,
-                    1_800,
-                    AiActionPayload::TerminalCommand { command: result },
-                )
+                    timeout_secs: 1_800,
+                    payload: AiActionPayload::TerminalCommand { command: result },
+                })
             }
             AiWorkflowTarget::ScriptGenerate { script_id }
             | AiWorkflowTarget::ScriptFix { script_id } => {
@@ -2338,19 +2342,19 @@ impl Workspace {
                     );
                     return;
                 };
-                AiActionPlan::new(
-                    target.capability(),
-                    AiActionKind::ScriptExecution,
-                    AiActionRisk::High,
-                    script.id.to_string(),
-                    script.name,
-                    self.app_config.ai.backend,
+                AiActionPlan::new(AiActionPlanSpec {
+                    capability: target.capability(),
+                    kind: AiActionKind::ScriptExecution,
+                    risk: AiActionRisk::High,
+                    target_id: script.id.to_string(),
+                    target_label: script.name,
+                    backend: self.app_config.ai.backend,
                     model,
-                    1_800,
-                    AiActionPayload::ScriptExecution {
+                    timeout_secs: 1_800,
+                    payload: AiActionPayload::ScriptExecution {
                         body: shelldeck_core::ai::clean_generated_script_body(&result),
                     },
-                )
+                })
             }
             AiWorkflowTarget::SupportReply { ticket_id } => {
                 let Some((selected_id, label)) = self.support.read(cx).selected_ticket_identity()
@@ -2365,17 +2369,17 @@ impl Workspace {
                     );
                     return;
                 }
-                AiActionPlan::new(
-                    target.capability(),
-                    AiActionKind::SupportSend,
-                    AiActionRisk::Moderate,
-                    ticket_id,
-                    label,
-                    self.app_config.ai.backend,
+                AiActionPlan::new(AiActionPlanSpec {
+                    capability: target.capability(),
+                    kind: AiActionKind::SupportSend,
+                    risk: AiActionRisk::Moderate,
+                    target_id: ticket_id.clone(),
+                    target_label: label,
+                    backend: self.app_config.ai.backend,
                     model,
-                    30,
-                    AiActionPayload::SupportSend { body: result },
-                )
+                    timeout_secs: 30,
+                    payload: AiActionPayload::SupportSend { body: result },
+                })
             }
             _ => return,
         };
@@ -2424,17 +2428,17 @@ impl Workspace {
         } else {
             self.app_config.ai.model.clone()
         };
-        match AiActionPlan::new(
-            target.capability(),
-            AiActionKind::TerminalCommand,
-            AiActionRisk::High,
-            session_id,
-            label,
-            self.app_config.ai.backend,
+        match AiActionPlan::new(AiActionPlanSpec {
+            capability: target.capability(),
+            kind: AiActionKind::TerminalCommand,
+            risk: AiActionRisk::High,
+            target_id: session_id.clone(),
+            target_label: label.to_string(),
+            backend: self.app_config.ai.backend,
             model,
-            1_800,
-            AiActionPayload::TerminalCommand { command },
-        ) {
+            timeout_secs: 1_800,
+            payload: AiActionPayload::TerminalCommand { command },
+        }) {
             Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
@@ -2454,17 +2458,17 @@ impl Workspace {
             .read(cx)
             .selected_ticket_identity()
             .unwrap_or_else(|| ("jean".to_string(), "JeanClaude".to_string()));
-        match AiActionPlan::new(
-            shelldeck_core::ai::AiCapability::JeanDispatch,
-            AiActionKind::JeanDispatch,
-            AiActionRisk::Moderate,
+        match AiActionPlan::new(AiActionPlanSpec {
+            capability: shelldeck_core::ai::AiCapability::JeanDispatch,
+            kind: AiActionKind::JeanDispatch,
+            risk: AiActionRisk::Moderate,
             target_id,
             target_label,
-            self.app_config.ai.backend,
+            backend: self.app_config.ai.backend,
             model,
-            30,
-            AiActionPayload::JeanDispatch { prompt },
-        ) {
+            timeout_secs: 30,
+            payload: AiActionPayload::JeanDispatch { prompt },
+        }) {
             Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
@@ -2502,20 +2506,20 @@ impl Workspace {
         } else {
             self.app_config.ai.model.clone()
         };
-        match AiActionPlan::new(
-            shelldeck_core::ai::AiCapability::FleetDispatch,
-            AiActionKind::FleetDispatch,
-            AiActionRisk::High,
-            issue.id.clone(),
-            issue.title,
-            self.app_config.ai.backend,
+        match AiActionPlan::new(AiActionPlanSpec {
+            capability: shelldeck_core::ai::AiCapability::FleetDispatch,
+            kind: AiActionKind::FleetDispatch,
+            risk: AiActionRisk::High,
+            target_id: issue.id.clone(),
+            target_label: issue.title,
+            backend: self.app_config.ai.backend,
             model,
-            30,
-            AiActionPayload::FleetDispatch {
+            timeout_secs: 30,
+            payload: AiActionPayload::FleetDispatch {
                 issue_id: issue.id,
                 instance_id,
             },
-        ) {
+        }) {
             Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
         }
@@ -6529,6 +6533,9 @@ impl Workspace {
         attachments: Vec<AttachmentDraft>,
         cx: &mut Context<Self>,
     ) {
+        if self.issue_attachment_busy {
+            return;
+        }
         let title = title.trim().to_string();
         if title.is_empty() {
             return;
@@ -6536,6 +6543,9 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
+        self.issue_attachment_busy = true;
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -6558,67 +6568,71 @@ impl Workspace {
                     }
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok((iss, attachment_error)) => {
-                    let preserve_attachments = attachment_error.is_some();
-                    ws.show_toast(
-                        t!("toast.issue.created").to_string(),
-                        ToastLevel::Success,
-                        cx,
-                    );
-                    ws.add_activity_entry(
-                        ActivityEntry::new(
-                            ActivityKind::Issue,
-                            t!("activity.issue.created", title = iss.title.as_str()).to_string(),
-                        )
-                        .with_target(iss.id.clone(), iss.title.clone())
-                        .with_action(ActivityAction::OpenIssue),
-                        cx,
-                    );
-                    // Success: close the composer sheet, clear its buffers,
-                    // and pop the detail sheet on the newly-created request.
-                    ws.user_new_request_sheet_open = false;
-                    Self::reset_input(&ws.issue_title_state.clone(), cx);
-                    Self::reset_input(&ws.issue_body_state.clone(), cx);
-                    Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
-                    Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
-                    if preserve_attachments {
-                        ws.issue_comment_attachments =
-                            std::mem::take(&mut ws.issue_new_attachments);
-                    } else {
-                        ws.issue_new_attachments.clear();
-                    }
-                    ws.issue_ai_request_id = ws.issue_ai_request_id.wrapping_add(1);
-                    ws.issue_ai_expanded = false;
-                    ws.issue_ai_loading = false;
-                    ws.issue_ai_error = None;
-                    ws.issue_new_source = "user";
-                    ws.upsert_issue_in_list(iss.clone());
-                    ws.issue_detail = Some(iss.clone());
-                    ws.issue_selected = Some(iss.id.clone());
-                    ws.push_issues_to_support(cx);
-                    if let Some(error) = attachment_error {
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_attachment_busy = false;
+                match result {
+                    Ok((iss, attachment_error)) => {
+                        let preserve_attachments = attachment_error.is_some();
                         ws.show_toast(
-                            t!(
-                                "toast.issue.attachment_failed_after_create",
-                                error = cloud_account::user_message(&error)
-                            )
-                            .to_string(),
-                            ToastLevel::Warning,
+                            t!("toast.issue.created").to_string(),
+                            ToastLevel::Success,
                             cx,
                         );
+                        ws.add_activity_entry(
+                            ActivityEntry::new(
+                                ActivityKind::Issue,
+                                t!("activity.issue.created", title = iss.title.as_str())
+                                    .to_string(),
+                            )
+                            .with_target(iss.id.clone(), iss.title.clone())
+                            .with_action(ActivityAction::OpenIssue),
+                            cx,
+                        );
+                        // Success: close the composer sheet, clear its buffers,
+                        // and pop the detail sheet on the newly-created request.
+                        ws.user_new_request_sheet_open = false;
+                        Self::reset_input(&ws.issue_title_state.clone(), cx);
+                        Self::reset_input(&ws.issue_body_state.clone(), cx);
+                        Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
+                        Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                        if preserve_attachments {
+                            ws.issue_comment_attachments =
+                                std::mem::take(&mut ws.issue_new_attachments);
+                        } else {
+                            ws.issue_new_attachments.clear();
+                        }
+                        ws.issue_ai_request_id = ws.issue_ai_request_id.wrapping_add(1);
+                        ws.issue_ai_expanded = false;
+                        ws.issue_ai_loading = false;
+                        ws.issue_ai_error = None;
+                        ws.issue_new_source = "user";
+                        ws.upsert_issue_in_list(iss.clone());
+                        ws.issue_detail = Some(iss.clone());
+                        ws.issue_selected = Some(iss.id.clone());
+                        ws.push_issues_to_support(cx);
+                        if let Some(error) = attachment_error {
+                            ws.show_toast(
+                                t!(
+                                    "toast.issue.attachment_failed_after_create",
+                                    error = cloud_account::user_message(&error)
+                                )
+                                .to_string(),
+                                ToastLevel::Warning,
+                                cx,
+                            );
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.create_failed",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.create_failed",
-                        error = cloud_account::user_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
             });
         })
         .detach();
@@ -6636,6 +6650,9 @@ impl Workspace {
         attachments: Vec<AttachmentDraft>,
         cx: &mut Context<Self>,
     ) {
+        if self.issue_attachment_busy {
+            return;
+        }
         let body = body.trim().to_string();
         if body.is_empty() && attachments.is_empty() {
             return;
@@ -6643,6 +6660,9 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
+        self.issue_attachment_busy = true;
+        self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -6660,40 +6680,44 @@ impl Workspace {
                     }
                 })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(iss) => {
-                    ws.upsert_issue_in_list(iss.clone());
-                    ws.issue_detail = Some(iss);
-                    if let Some((id, title)) = ws
-                        .issue_detail
-                        .as_ref()
-                        .map(|detail| (detail.id.clone(), detail.title.clone()))
-                    {
-                        ws.add_activity_entry(
-                            ActivityEntry::new(
-                                ActivityKind::Issue,
-                                t!("activity.issue.commented", title = title.as_str()).to_string(),
-                            )
-                            .with_target(id, title)
-                            .with_action(ActivityAction::OpenIssue),
-                            cx,
-                        );
+            let _ = this.update(cx, |ws, cx| {
+                ws.issue_attachment_busy = false;
+                match result {
+                    Ok(iss) => {
+                        ws.upsert_issue_in_list(iss.clone());
+                        ws.issue_detail = Some(iss);
+                        if let Some((id, title)) = ws
+                            .issue_detail
+                            .as_ref()
+                            .map(|detail| (detail.id.clone(), detail.title.clone()))
+                        {
+                            ws.add_activity_entry(
+                                ActivityEntry::new(
+                                    ActivityKind::Issue,
+                                    t!("activity.issue.commented", title = title.as_str())
+                                        .to_string(),
+                                )
+                                .with_target(id, title)
+                                .with_action(ActivityAction::OpenIssue),
+                                cx,
+                            );
+                        }
+                        ws.push_issues_to_support(cx);
+                        Self::reset_input(&ws.issue_comment_state.clone(), cx);
+                        Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                        ws.issue_comment_attachments.clear();
+                        cx.notify();
                     }
-                    ws.push_issues_to_support(cx);
-                    Self::reset_input(&ws.issue_comment_state.clone(), cx);
-                    Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
-                    ws.issue_comment_attachments.clear();
-                    cx.notify();
+                    Err(e) => ws.show_toast(
+                        t!(
+                            "toast.issue.comment_failed",
+                            error = cloud_account::user_message(&e)
+                        )
+                        .to_string(),
+                        ToastLevel::Error,
+                        cx,
+                    ),
                 }
-                Err(e) => ws.show_toast(
-                    t!(
-                        "toast.issue.comment_failed",
-                        error = cloud_account::user_message(&e)
-                    )
-                    .to_string(),
-                    ToastLevel::Error,
-                    cx,
-                ),
             });
         })
         .detach();

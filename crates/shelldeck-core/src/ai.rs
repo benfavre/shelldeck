@@ -750,20 +750,32 @@ pub struct AiActionPlan {
     pub payload: AiActionPayload,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiActionPlanSpec {
+    pub capability: AiCapability,
+    pub kind: AiActionKind,
+    pub risk: AiActionRisk,
+    pub target_id: String,
+    pub target_label: String,
+    pub backend: AiBackend,
+    pub model: String,
+    pub timeout_secs: u64,
+    pub payload: AiActionPayload,
+}
+
 impl AiActionPlan {
-    pub fn new(
-        capability: AiCapability,
-        kind: AiActionKind,
-        risk: AiActionRisk,
-        target_id: impl Into<String>,
-        target_label: impl Into<String>,
-        backend: AiBackend,
-        model: impl Into<String>,
-        timeout_secs: u64,
-        payload: AiActionPayload,
-    ) -> Result<Self> {
-        let target_id = target_id.into();
-        let target_label = target_label.into();
+    pub fn new(spec: AiActionPlanSpec) -> Result<Self> {
+        let AiActionPlanSpec {
+            capability,
+            kind,
+            risk,
+            target_id,
+            target_label,
+            backend,
+            model,
+            timeout_secs,
+            payload,
+        } = spec;
         if target_id.trim().is_empty() || target_label.trim().is_empty() {
             return Err(ShellDeckError::Config(
                 "AI action requires an explicit target".to_string(),
@@ -824,7 +836,7 @@ impl AiActionPlan {
             target_id,
             target_label,
             backend,
-            model: model.into(),
+            model,
             timeout_secs: timeout_secs.max(1),
             payload,
         })
@@ -2115,34 +2127,34 @@ mod tests {
     // SDTEST-1364
     #[test]
     fn action_plan_rejects_mismatched_payload_and_redacts_content_from_audit() {
-        let mismatch = AiActionPlan::new(
-            AiCapability::TerminalCommand,
-            AiActionKind::TerminalCommand,
-            AiActionRisk::High,
-            "session-1",
-            "Production shell",
-            AiBackend::CodexCli,
-            "gpt",
-            60,
-            AiActionPayload::SupportSend {
+        let mismatch = AiActionPlan::new(AiActionPlanSpec {
+            capability: AiCapability::TerminalCommand,
+            kind: AiActionKind::TerminalCommand,
+            risk: AiActionRisk::High,
+            target_id: "session-1".into(),
+            target_label: "Production shell".into(),
+            backend: AiBackend::CodexCli,
+            model: "gpt".into(),
+            timeout_secs: 60,
+            payload: AiActionPayload::SupportSend {
                 body: "secret reply".into(),
             },
-        );
+        });
         assert!(mismatch.is_err());
 
-        let plan = AiActionPlan::new(
-            AiCapability::TerminalCommand,
-            AiActionKind::TerminalCommand,
-            AiActionRisk::High,
-            "session-1",
-            "Production shell",
-            AiBackend::CodexCli,
-            "gpt",
-            60,
-            AiActionPayload::TerminalCommand {
+        let plan = AiActionPlan::new(AiActionPlanSpec {
+            capability: AiCapability::TerminalCommand,
+            kind: AiActionKind::TerminalCommand,
+            risk: AiActionRisk::High,
+            target_id: "session-1".into(),
+            target_label: "Production shell".into(),
+            backend: AiBackend::CodexCli,
+            model: "gpt".into(),
+            timeout_secs: 60,
+            payload: AiActionPayload::TerminalCommand {
                 command: "echo super-secret".into(),
             },
-        )
+        })
         .unwrap();
         let audit = plan.audit_detail("confirmed");
         assert!(audit.contains("session-1"));

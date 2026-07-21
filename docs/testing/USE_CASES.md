@@ -1490,7 +1490,7 @@ completion is not yet reliably observable; Ctrl+C remains the stop path.
 ### SDUC-432 — User requests accept image evidence through every desktop path
 
 The New Request and request-comment composers accept up to five PNG, JPEG, or
-WebP images (10 Mo each) from an image URL, the native file picker,
+WebP images (9 Mo each, leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
 ShellDeck obtains a short-lived, single-use, issue-scoped ticket from Manage,

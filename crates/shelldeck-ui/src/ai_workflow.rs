@@ -401,17 +401,27 @@ pub struct AiWorkflowView {
     action_policy: AiAutonomyLevel,
 }
 
+pub struct AiWorkflowInit {
+    pub target: AiWorkflowTarget,
+    pub backend: AiBackend,
+    pub model: String,
+    pub pending: Option<AiDraft>,
+    pub comparison_original: Option<String>,
+    pub issue_triage_current: Option<(String, String)>,
+    pub action_policy: AiAutonomyLevel,
+}
+
 impl AiWorkflowView {
-    pub fn new(
-        target: AiWorkflowTarget,
-        backend: AiBackend,
-        model: String,
-        pending: Option<AiDraft>,
-        comparison_original: Option<String>,
-        issue_triage_current: Option<(String, String)>,
-        action_policy: AiAutonomyLevel,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(init: AiWorkflowInit, cx: &mut Context<Self>) -> Self {
+        let AiWorkflowInit {
+            target,
+            backend,
+            model,
+            pending,
+            comparison_original,
+            issue_triage_current,
+            action_policy,
+        } = init;
         let pending_instructions = pending
             .as_ref()
             .map(|draft| draft.instructions.clone())
