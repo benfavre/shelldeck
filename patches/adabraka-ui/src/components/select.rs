@@ -2,6 +2,8 @@
 
 use crate::components::icon::Icon;
 use crate::components::icon_source::IconSource;
+use crate::components::input::{Input, InputSize, InputVariant};
+use crate::components::input_state::InputState;
 use crate::components::scrollable::scrollable_vertical;
 use crate::theme::use_theme;
 use gpui::{prelude::*, *};
@@ -9,6 +11,10 @@ use gpui::{prelude::*, *};
 actions!(select, [SelectUp, SelectDown, SelectConfirm, SelectCancel]);
 
 const DROPDOWN_MARGIN: Pixels = px(4.0);
+// ShellDeck patch: SDPATCH-022 — large searchable menus must not instantiate
+// every option. Above this threshold, the dropdown uses `uniform_list` and
+// renders only the visible rows.
+const VIRTUAL_LIST_THRESHOLD: usize = 50;
 
 #[derive(Clone, Debug)]
 pub enum SelectEvent {
@@ -56,14 +62,24 @@ pub struct Select<T: Clone + 'static> {
     clearable: bool,
     loading: bool,
     search_query: String,
+    // ShellDeck patch: SDPATCH-022 — use the library's real text input so
+    // searchable Selects inherit native caret, selection, and IME behavior.
+    search_input: Entity<InputState>,
+    // ShellDeck patch: SDPATCH-022 — callers can localize the searchable
+    // dropdown's input placeholder instead of inheriting an English literal.
+    search_placeholder: SharedString,
     on_change: Option<Box<dyn Fn(&T, &mut Window, &mut App) + Send + Sync + 'static>>,
     bounds: Bounds<Pixels>,
+    // ShellDeck patch: SDPATCH-022 — deferred popup contents are outside the
+    // trigger's hit-test tree, so retain their real bounds for outside-clicks.
+    dropdown_bounds: Option<Bounds<Pixels>>,
     leading_icon: Option<IconSource>,
     style: StyleRefinement,
 }
 
 impl<T: Clone + 'static> Select<T> {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let search_input = cx.new(InputState::new);
         Self {
             focus_handle: cx.focus_handle(),
             options: Vec::new(),
@@ -76,8 +92,13 @@ impl<T: Clone + 'static> Select<T> {
             clearable: false,
             loading: false,
             search_query: String::new(),
+            search_input,
+            // ShellDeck patch: SDPATCH-022 — preserve the upstream-facing
+            // English default while allowing localized callers to override it.
+            search_placeholder: "Type to search...".into(),
             on_change: None,
             bounds: Bounds::default(),
+            dropdown_bounds: None,
             leading_icon: None,
             style: StyleRefinement::default(),
         }
@@ -106,6 +127,13 @@ impl<T: Clone + 'static> Select<T> {
 
     pub fn searchable(mut self, searchable: bool) -> Self {
         self.searchable = searchable;
+        self
+    }
+
+    /// ShellDeck patch: SDPATCH-022 — localize the input shown inside an open
+    /// searchable dropdown.
+    pub fn search_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.search_placeholder = placeholder.into();
         self
     }
 
@@ -157,11 +185,32 @@ impl<T: Clone + 'static> Select<T> {
         }
     }
 
+    // ShellDeck patch: SDPATCH-022 — GPUI clips flex-row text before its
+    // CSS-style ellipsis is painted. Keep the full label for filtering, but
+    // render a deterministic Unicode ellipsis inside constrained menus.
+    fn ellipsized_option_label(label: &str) -> SharedString {
+        const MAX_VISIBLE_CHARS: usize = 44;
+        let mut chars = label.chars();
+        let prefix: String = chars
+            .by_ref()
+            .take(MAX_VISIBLE_CHARS.saturating_sub(1))
+            .collect();
+        if chars.next().is_some() {
+            format!("{prefix}…").into()
+        } else {
+            label.to_string().into()
+        }
+    }
+
     fn toggle_dropdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.disabled {
             self.open = !self.open;
             if self.open {
-                window.focus(&self.focus_handle);
+                if self.searchable {
+                    window.focus(&self.search_input.read(cx).focus_handle(cx));
+                } else {
+                    window.focus(&self.focus_handle);
+                }
                 self.highlighted_index = self.selected_index.or(Some(0));
             }
             cx.notify();
@@ -170,8 +219,10 @@ impl<T: Clone + 'static> Select<T> {
 
     fn close_dropdown(&mut self, cx: &mut Context<Self>) {
         self.open = false;
+        self.dropdown_bounds = None;
         self.highlighted_index = self.selected_index;
         self.search_query.clear();
+        self.search_input.update(cx, InputState::reset);
         cx.notify();
     }
 
@@ -420,7 +471,12 @@ impl<T: Clone + 'static> Render for Select<T> {
             });
 
         let searchable = self.searchable;
-        let search_query: SharedString = self.search_query.clone().into();
+        // ShellDeck patch: SDPATCH-022 — render the caller-provided localized
+        // search hint when the query is empty.
+        let search_placeholder = self.search_placeholder.clone();
+        let search_input = self.search_input.clone();
+        let filtered_count = self.filtered_options().len();
+        let loading = self.loading;
 
         div()
             .relative()
@@ -435,24 +491,14 @@ impl<T: Clone + 'static> Render for Select<T> {
                     .on_action(cx.listener(Select::select_confirm))
                     .on_action(cx.listener(Select::select_cancel))
             })
-            .when(open && searchable, |this: Div| {
-                this.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "backspace" {
-                        this.search_query.pop();
-                        cx.notify();
-                    }
-                    else if event.keystroke.key.len() == 1 && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
-                        this.search_query.push_str(&event.keystroke.key);
-                        let filtered = this.filtered_options();
-                        if !filtered.is_empty() {
-                            this.highlighted_index = Some(filtered[0].0);
-                        }
-                        cx.notify();
-                    }
-                }))
-            })
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.open {
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                // ShellDeck patch: SDPATCH-022 — `deferred` popup children
+                // trigger `on_mouse_down_out` on the Select root. A click
+                // inside the measured popup is not an outside click.
+                let inside_popup = this
+                    .dropdown_bounds
+                    .is_some_and(|bounds| bounds.contains(&event.position));
+                if !inside_popup && this.open {
                     this.close_dropdown(cx);
                 }
             }))
@@ -465,7 +511,21 @@ impl<T: Clone + 'static> Render for Select<T> {
                             .child(
                                 div()
                                     .occlude()
+                                    .relative()
                                     .w(bounds.size.width)
+                                    .child({
+                                        let entity = cx.entity().clone();
+                                        canvas(
+                                            move |bounds, _, cx| {
+                                                entity.update(cx, |this, _| {
+                                                    this.dropdown_bounds = Some(bounds);
+                                                })
+                                            },
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .size_full()
+                                    })
                                     .child(
                                         div()
                                             .occlude()
@@ -488,36 +548,145 @@ impl<T: Clone + 'static> Render for Select<T> {
                                                                 .pb(px(4.0))
                                                                 .border_b_1()
                                                                 .border_color(theme.tokens.border)
-                                                                .child(
-                                                                    div()
-                                                                        .w_full()
-                                                                        .h(px(32.0))
-                                                                        .px(px(8.0))
-                                                                        .flex()
-                                                                        .items_center()
-                                                                        .bg(theme.tokens.background)
-                                                                        .border_1()
-                                                                        .border_color(theme.tokens.input)
-                                                                        .rounded(theme.tokens.radius_sm)
-                                                                        .text_size(px(13.0))
-                                                                        .font_family(theme.tokens.font_family.clone())
-                                                                        .text_color(if search_query.is_empty() {
-                                                                            theme.tokens.muted_foreground
-                                                                        } else {
-                                                                            theme.tokens.foreground
-                                                                        })
-                                                                        .child(if search_query.is_empty() {
-                                                                            SharedString::from("Type to search...")
-                                                                        } else {
-                                                                            search_query.clone()
-                                                                        })
-                                                                )
+                                                                // ShellDeck patch: SDPATCH-022 — render the real Input;
+                                                                // its existing caret/selection fixes now apply here too.
+                                                                .child(Input::new(&search_input)
+                                                                    .size(InputSize::Sm)
+                                                                    .variant(InputVariant::Ghost)
+                                                                    .placeholder(search_placeholder.clone())
+                                                                    .on_change({
+                                                                        let entity = cx.entity().clone();
+                                                                        move |value, cx| {
+                                                                            entity.update(cx, |this, cx| {
+                                                                                this.search_query = value.to_string();
+                                                                                this.highlighted_index = this
+                                                                                    .filtered_options()
+                                                                                    .first()
+                                                                                    .map(|(index, _)| *index);
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                    }))
                                                         )
                                                     })
                                                     .child(
-                                                        div()
-                                                            .max_h(px(300.0))
-                                                            .child(
+                                                        if !loading && filtered_count >= VIRTUAL_LIST_THRESHOLD {
+                                                            // ShellDeck patch: SDPATCH-022 — a fixed-height row
+                                                            // lets GPUI virtualize large filtered option sets.
+                                                            // The group is rendered inside the row instead of as
+                                                            // a variable-height heading.
+                                                            uniform_list(
+                                                                "select-options-virtual",
+                                                                filtered_count,
+                                                                cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                                                                    let theme = use_theme();
+                                                                    let filtered_indices: Vec<usize> = this
+                                                                        .filtered_options()
+                                                                        .into_iter()
+                                                                        .map(|(index, _)| index)
+                                                                        .collect();
+                                                                    let mut rows = Vec::with_capacity(range.len());
+
+                                                                    for display_index in range {
+                                                                        let Some(&index) = filtered_indices.get(display_index) else {
+                                                                            continue;
+                                                                        };
+                                                                        let option = &this.options[index];
+                                                                        let is_selected = this.selected_index == Some(index);
+                                                                        let is_highlighted = this.highlighted_index == Some(index);
+                                                                        let item_fg = if is_highlighted {
+                                                                            theme.tokens.accent_foreground
+                                                                        } else if is_selected {
+                                                                            theme.tokens.primary
+                                                                        } else {
+                                                                            theme.tokens.popover_foreground
+                                                                        };
+
+                                                                        rows.push(
+                                                                            div()
+                                                                                .id(("select-option-virtual", index))
+                                                                                .w_full()
+                                                                                .h(px(48.0))
+                                                                                .px(px(12.0))
+                                                                                .flex()
+                                                                                .items_center()
+                                                                                .text_color(item_fg)
+                                                                                .bg(if is_highlighted {
+                                                                                    theme.tokens.accent
+                                                                                } else {
+                                                                                    gpui::transparent_black()
+                                                                                })
+                                                                                .hover(|mut style| {
+                                                                                    style.background = Some(theme.tokens.accent.into());
+                                                                                    style
+                                                                                })
+                                                                                .cursor(CursorStyle::PointingHand)
+                                                                                .font_family(theme.tokens.font_family.clone())
+                                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                                                    this.select_option(index, window, cx);
+                                                                                }))
+                                                                                .child(
+                                                                                    div()
+                                                                                        .flex()
+                                                                                        .w_full()
+                                                                                        .items_center()
+                                                                                        .gap(px(8.0))
+                                                                                        .min_w(px(0.0))
+                                                                                        .overflow_hidden()
+                                                                                        .when_some(option.icon.as_ref(), |div, src| {
+                                                                                            div.child(
+                                                                                                Icon::new(src.clone())
+                                                                                                    .size(px(14.0))
+                                                                                                    .color(if is_highlighted {
+                                                                                                        theme.tokens.accent_foreground
+                                                                                                    } else if is_selected {
+                                                                                                        theme.tokens.primary
+                                                                                                    } else {
+                                                                                                        theme.tokens.muted_foreground
+                                                                                                    }),
+                                                                                            )
+                                                                                        })
+                                                                                        .child(
+                                                                                            div()
+                                                                                                .flex()
+                                                                                                .flex_col()
+                                                                                                .flex_grow()
+                                                                                                .min_w(px(0.0))
+                                                                                                .overflow_hidden()
+                                                                                                .child(
+                                                                                                    div()
+                                                                                                        .text_size(px(14.0))
+                                                                                                        .overflow_hidden()
+                                                                                                        .whitespace_nowrap()
+                                                                                                        .text_ellipsis()
+                                                                                                        .child(Self::ellipsized_option_label(&option.label)),
+                                                                                                )
+                                                                                                .when_some(option.group.as_ref(), |container, group| {
+                                                                                                    container.child(
+                                                                                                        div()
+                                                                                                            .text_size(px(11.0))
+                                                                                                            .text_color(theme.tokens.muted_foreground)
+                                                                                                            .overflow_hidden()
+                                                                                                            .whitespace_nowrap()
+                                                                                                            .text_ellipsis()
+                                                                                                            .child(group.clone()),
+                                                                                                    )
+                                                                                                }),
+                                                                                        ),
+                                                                                ),
+                                                                        );
+                                                                    }
+
+                                                                    rows
+                                                                }),
+                                                            )
+                                                            .h(px(300.0))
+                                                            .w_full()
+                                                            .into_any_element()
+                                                        } else {
+                                                            div()
+                                                                .max_h(px(300.0))
+                                                                .child(
                                                                 scrollable_vertical({
                                                                 let filtered = self.filtered_options();
                                                                 let loading = self.loading;
@@ -640,7 +809,7 @@ impl<T: Clone + 'static> Render for Select<T> {
                                                                                                     .min_w(px(0.0))
                                                                                                     .overflow_hidden()
                                                                                                     .truncate()
-                                                                                                    .child(option.label.clone()),
+                                                                                                    .child(Self::ellipsized_option_label(&option.label)),
                                                                                             )
                                                                                     )
                                                                                     .into_any_element()
@@ -651,7 +820,9 @@ impl<T: Clone + 'static> Render for Select<T> {
                                                                     )
                                                                 })
                                                             })
-                                                        )
+                                                                )
+                                                                .into_any_element()
+                                                        }
                                                     )
                                             ),
                                     ),

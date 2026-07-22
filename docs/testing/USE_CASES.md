@@ -876,7 +876,8 @@ GitHub linkage fields.
 ### SDUC-222 — Create issue
 
 `create_issue(token, body)` POSTs the correct shape; supports
-`source = "user" | "support"`.
+`source = "user" | "support"` and an optional `site_id` + `site_label`
+target. Untargeted requests omit both site fields so Manage stores `null`.
 
 ### SDUC-223 — Comment on issue
 
@@ -903,7 +904,9 @@ Workspace polls issues every 15s while User or Support is visible.
 ### SDUC-228 — User "Mes demandes" view
 
 `render_user_requests` shows the caller's own issues with expand-to-comment
-and create composer; the composer respects `IssueField` keyboard focus.
+and create composer. The composer exposes a searchable site picker backed by
+the signed-in account's Manage directory, defaults to the active site when
+available, and offers an explicit no-specific-site choice.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1593,6 +1596,8 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-22** — Extended SDUC-222/228 with the searchable request-site
+  target and added SDTEST-1389/1390 for its wire contract and UI wiring.
 - **2026-07-22** — Added SDUC-438 and SDTEST-1388 after auditing reachable
   dynamic icon names against the embedded Lucide subset.
 - **2026-07-21** — Added SDUC-434..436 and SDTEST-1380..1386 for the standalone,
