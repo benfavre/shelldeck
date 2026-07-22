@@ -126,6 +126,24 @@ impl FleetView {
         self.loading = false;
     }
 
+    /// Focus an exact job from a deep link, opening the same detail sheet as a
+    /// row click. Awaiting jobs are checked first because they may not yet be
+    /// present in the latest fleet snapshot.
+    pub fn open_job_by_id(&mut self, job_id: &str, cx: &mut Context<Self>) -> bool {
+        let job = self
+            .awaiting
+            .iter()
+            .find(|job| job.id == job_id)
+            .or_else(|| self.snapshot.jobs.iter().find(|job| job.id == job_id))
+            .cloned();
+        let Some(job) = job else {
+            return false;
+        };
+        self.job_filter = JobFilter::All;
+        self.open_job_detail(job, cx);
+        true
+    }
+
     fn compact_filter_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
         Button::new(id, label)
             .size(ButtonSize::Sm)

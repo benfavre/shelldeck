@@ -5,6 +5,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 
 pub struct Card {
     header: Option<AnyElement>,
+    header_divider: bool,
     content: Option<AnyElement>,
     footer: Option<AnyElement>,
     style: StyleRefinement,
@@ -20,6 +21,7 @@ impl Card {
     pub fn new() -> Self {
         Self {
             header: None,
+            header_divider: true,
             content: None,
             footer: None,
             style: StyleRefinement::default(),
@@ -28,6 +30,11 @@ impl Card {
 
     pub fn header(mut self, header: impl IntoElement) -> Self {
         self.header = Some(header.into_any_element());
+        self
+    }
+
+    pub fn header_divider(mut self, visible: bool) -> Self {
+        self.header_divider = visible;
         self
     }
 
@@ -76,8 +83,9 @@ impl IntoElement for Card {
                 div()
                     .px(px(24.0))
                     .py(px(16.0))
-                    .border_b_1()
-                    .border_color(theme.tokens.border)
+                    .when(self.header_divider, |header| {
+                        header.border_b_1().border_color(theme.tokens.border)
+                    })
                     .child(header),
             );
         }

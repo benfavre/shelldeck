@@ -60,6 +60,8 @@ pub enum TrayCommand {
     /// Bring the ShellDeck window to the front (or restore it if
     /// minimized / hidden to tray).
     ShowWindow,
+    /// Show or hide the compact standalone AI assistant window.
+    ToggleAiDock,
     /// Open the command palette.
     OpenPalette,
     /// Connect one of the persisted quick-access hosts.
@@ -171,6 +173,7 @@ fn install_menu_router(cmd_tx: Sender<TrayCommand>) {
 fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
     match id {
         SHOW_ID => Some(TrayCommand::ShowWindow),
+        ASSISTANT_ID => Some(TrayCommand::ToggleAiDock),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
         QUIT_ID => Some(TrayCommand::Quit),
         _ => id
@@ -181,6 +184,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
 }
 
 const SHOW_ID: &str = "shelldeck.tray.show";
+const ASSISTANT_ID: &str = "shelldeck.tray.assistant";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
 const QUIT_ID: &str = "shelldeck.tray.quit";
 const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
@@ -215,6 +219,8 @@ struct MenuItems {
 fn build_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
 
+    let assistant_label = shelldeck_ui::ai_dock::dock_tray_label();
+    let assistant_item = MenuItem::with_id(ASSISTANT_ID, &assistant_label, true, None);
     let show_item = MenuItem::with_id(SHOW_ID, "Ouvrir ShellDeck", true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, "Palette de commandes", true, None);
     let quit_item = MenuItem::with_id(QUIT_ID, "Quitter", true, None);
@@ -233,6 +239,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         jean: MenuItem::with_id(COUNTER_JEAN_ID, counter_label_jean(0), false, None),
     };
 
+    menu.append(&assistant_item)
+        .context("append Assistant item")?;
     menu.append(&show_item).context("append Show item")?;
     menu.append(&palette_item).context("append Palette item")?;
     menu.append(&pinned_menu)
@@ -441,6 +449,15 @@ mod tests {
         assert!(matches!(
             command_for_menu_id(&menu_id),
             Some(TrayCommand::ConnectPinned(routed)) if routed == id
+        ));
+    }
+
+    // SDTEST-1380
+    #[test]
+    fn assistant_menu_id_routes_to_dock_toggle() {
+        assert!(matches!(
+            command_for_menu_id(ASSISTANT_ID),
+            Some(TrayCommand::ToggleAiDock)
         ));
     }
 

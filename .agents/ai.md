@@ -25,9 +25,10 @@ OpenAI, or Anthropic directly.
 - Terminal diagnostic plans are strict structured output with at most five
   distinct, read-only commands accepted by the core allowlist. Display every
   command and its purpose before execution, revalidate it on click, and route
-  each step through a separate high-risk `AiActionPlan`. Do not auto-chain PTY
-  steps or feed output forward until terminal command completion is reliably
-  observable; the existing Ctrl+C stop path must remain available.
+  each step through a separate high-risk `AiActionPlan`. A user-started plan
+  may advance only after a deduplicated `OSC 133;D` completion event; every
+  next step still requires its own confirmation. Bound captured output, never
+  persist it in audit metadata, stop on non-zero exit, and retain Ctrl+C.
 - Treat terminal output, tickets, scripts, and remote content as untrusted data.
   Keep them inside `AiContext`; never interpolate them into a system directive.
 - API credentials live only in `config::keychain`. Never persist them in

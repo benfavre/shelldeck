@@ -27,6 +27,7 @@ const KIND_FILTERS: &[ActivityKind] = &[
 #[derive(Debug, Clone)]
 pub enum RecentEvent {
     Open(ActivityEntry),
+    Analyze(ActivityEntry),
 }
 
 impl EventEmitter<RecentEvent> for RecentView {}
@@ -37,6 +38,7 @@ pub struct RecentView {
     search_query: String,
     selected_kind: Option<ActivityKind>,
     focus_handle: FocusHandle,
+    ai_enabled: bool,
 }
 
 impl RecentView {
@@ -47,11 +49,16 @@ impl RecentView {
             search_query: String::new(),
             selected_kind: None,
             focus_handle: cx.focus_handle(),
+            ai_enabled: false,
         }
     }
 
     pub fn set_entries(&mut self, entries: Vec<ActivityEntry>) {
         self.entries = entries;
+    }
+
+    pub fn set_ai_enabled(&mut self, enabled: bool) {
+        self.ai_enabled = enabled;
     }
 
     fn compact_filter_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
@@ -178,6 +185,7 @@ impl RecentView {
         let action = entry.action;
         let action_label = Self::action_label(action);
         let event_for_click = entry.clone();
+        let event_for_ai = entry.clone();
 
         let mut meta = div()
             .flex()
@@ -257,6 +265,22 @@ impl RecentView {
                 .size(ButtonSize::Sm)
                 .on_click(cx.listener(move |_this, _event, _window, cx| {
                     cx.emit(RecentEvent::Open(event_for_click.clone()));
+                })),
+            );
+        }
+        if self.ai_enabled {
+            row = row.child(
+                Button::new(
+                    ElementId::from(SharedString::from(format!("recent-ai-{}", entry.id))),
+                    t!("recent.action.analyze").to_string(),
+                )
+                .variant(ButtonVariant::Ai)
+                .size(ButtonSize::Sm)
+                .icon(adabraka_ui::components::icon_source::IconSource::from(
+                    "sparkles",
+                ))
+                .on_click(cx.listener(move |_this, _event, _window, cx| {
+                    cx.emit(RecentEvent::Analyze(event_for_ai.clone()));
                 })),
             );
         }

@@ -51,6 +51,23 @@ pub mod x11 {
         mask
     }
 
+    // ShellDeck patch: global grabs must survive Caps Lock and Num Lock state.
+    fn lock_variants(modmask: u16) -> [u16; 4] {
+        let caps_lock = u16::from(ModMask::LOCK);
+        let num_lock = u16::from(ModMask::M2);
+        [
+            modmask,
+            modmask | caps_lock,
+            modmask | num_lock,
+            modmask | caps_lock | num_lock,
+        ]
+    }
+
+    fn modifiers_match(actual: u16, registered: u16) -> bool {
+        let ignored_locks = u16::from(ModMask::LOCK) | u16::from(ModMask::M2);
+        actual & !ignored_locks == registered
+    }
+
     fn keystroke_to_x11_keycode(keystroke: &Keystroke, xcb: &XCBConnection) -> Option<u8> {
         let setup = xcb.setup();
         let min_keycode = setup.min_keycode;
@@ -186,18 +203,39 @@ pub mod x11 {
             })?;
             let modmask = keystroke_to_x11_modmask(keystroke);
 
-            xcb.grab_key(
-                false,
-                root_window,
-                modmask.into(),
-                keycode,
-                GrabMode::ASYNC,
-                GrabMode::ASYNC,
-            )?
-            .check()?;
+            // ShellDeck patch: grab every lock-state variant and roll back partial grabs.
+            let mut grabbed: Vec<u16> = Vec::new();
+            for variant in lock_variants(modmask) {
+                let result = xcb
+                    .grab_key(
+                        false,
+                        root_window,
+                        variant.into(),
+                        keycode,
+                        GrabMode::ASYNC,
+                        GrabMode::ASYNC,
+                    )?
+                    .check();
+                if let Err(error) = result {
+                    for grabbed_variant in grabbed {
+                        let _ = xcb.ungrab_key(keycode, root_window, grabbed_variant.into());
+                    }
+                    return Err(error.into());
+                }
+                grabbed.push(variant);
+            }
 
             self.keycodes.insert(id, (keycode, modmask));
             self.inner.register(id, keystroke)
+        }
+
+        // ShellDeck patch: map root-window KeyPress events back to registered IDs.
+        pub fn matching_id(&self, keycode: u8, modifiers: u16) -> Option<u32> {
+            self.keycodes.iter().find_map(|(id, (registered_keycode, registered_modifiers))| {
+                (*registered_keycode == keycode
+                    && modifiers_match(modifiers, *registered_modifiers))
+                .then_some(*id)
+            })
         }
 
         pub fn unregister(
@@ -207,9 +245,32 @@ pub mod x11 {
             root_window: xproto::Window,
         ) {
             if let Some((keycode, modmask)) = self.keycodes.remove(&id) {
-                let _ = xcb.ungrab_key(keycode, root_window, modmask.into());
+                // ShellDeck patch: release every lock-state grab registered above.
+                for variant in lock_variants(modmask) {
+                    let _ = xcb.ungrab_key(keycode, root_window, variant.into());
+                }
             }
             self.inner.unregister(id);
+        }
+    }
+
+    // ShellDeck patch: protect lock-state matching against regressions.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn matching_modifiers_ignore_caps_and_num_lock() {
+            let shortcut = u16::from(ModMask::CONTROL) | u16::from(ModMask::SHIFT);
+            assert!(modifiers_match(shortcut, shortcut));
+            assert!(modifiers_match(
+                shortcut | u16::from(ModMask::LOCK) | u16::from(ModMask::M2),
+                shortcut
+            ));
+            assert!(!modifiers_match(
+                shortcut | u16::from(ModMask::M1),
+                shortcut
+            ));
         }
     }
 }

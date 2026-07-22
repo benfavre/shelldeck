@@ -526,6 +526,10 @@ pub struct TerminalGrid {
     pub working_directory: Option<String>,
     pub hyperlink: Option<String>,
     pub prompt_mark: Option<PromptMark>,
+    /// Monotonic completion generation, incremented for every OSC 133;D.
+    pub prompt_mark_sequence: u64,
+    /// Absolute history row where the current command output starts.
+    pub command_output_start: Option<usize>,
     pub prompt_lines: Vec<usize>,
     pub clipboard_request: Option<(String, String)>,
     pub palette_overrides: HashMap<u8, (u8, u8, u8)>,
@@ -592,6 +596,8 @@ impl TerminalGrid {
             working_directory: None,
             hyperlink: None,
             prompt_mark: None,
+            prompt_mark_sequence: 0,
+            command_output_start: None,
             prompt_lines: Vec::new(),
             clipboard_request: None,
             palette_overrides: HashMap::new(),
@@ -1537,6 +1543,45 @@ impl TerminalGrid {
         }
 
         result
+    }
+
+    /// Return bounded text produced since the latest OSC 133;C marker.
+    pub fn command_output(&self, max_lines: usize, max_chars: usize) -> String {
+        if max_lines == 0 || max_chars == 0 {
+            return String::new();
+        }
+        let history_len = self.scrollback.len() + self.cells.len();
+        let end = (self.scrollback.len() + self.cursor.row + 1).min(history_len);
+        let start = self
+            .command_output_start
+            .unwrap_or(end.saturating_sub(max_lines));
+        let first = start.min(end).max(end.saturating_sub(max_lines));
+        let mut lines = Vec::new();
+        for index in first..end {
+            let row = if index < self.scrollback.len() {
+                self.scrollback.get(index)
+            } else {
+                self.cells.get(index - self.scrollback.len())
+            };
+            let Some(row) = row else { continue };
+            let mut line = String::new();
+            for cell in row {
+                if cell.wide == CellWidth::Spacer {
+                    continue;
+                }
+                line.push(cell.c);
+                line.extend(cell.combining.iter());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        let mut output = lines.join("\n");
+        if output.chars().count() > max_chars {
+            output = output
+                .chars()
+                .skip(output.chars().count() - max_chars)
+                .collect();
+        }
+        output
     }
 
     // -- Alternate screen buffer --

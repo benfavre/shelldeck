@@ -655,6 +655,11 @@ pub enum TerminalEvent {
     SuggestNameWithAi(Uuid),
     CreateIssueFromContext(Uuid),
     StopAiCommand(Uuid),
+    AiCommandFinished {
+        session_id: Uuid,
+        exit_code: Option<i32>,
+        output: String,
+    },
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1087,6 +1092,7 @@ pub struct TerminalView {
     ai_actions_enabled: bool,
     ai_naming_enabled: bool,
     ai_running_command: Option<Uuid>,
+    observed_command_sequences: HashMap<Uuid, u64>,
     /// Configured scrollback buffer size (lines). Applied to live grids and to
     /// newly added sessions.
     configured_scrollback: usize,
@@ -1206,6 +1212,7 @@ impl TerminalView {
             ai_actions_enabled: false,
             ai_naming_enabled: false,
             ai_running_command: None,
+            observed_command_sequences: HashMap::new(),
             configured_scrollback: 10_000,
             has_focus: false,
             output_tx,
@@ -1604,6 +1611,20 @@ impl TerminalView {
         self.session_for(self.layout.focused)
     }
 
+    fn session_by_id(&self, id: Uuid) -> Option<&TerminalSession> {
+        self.pane
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .or_else(|| self.layout.extra.values().find(|session| session.id == id))
+            .or_else(|| {
+                self.stored_layouts
+                    .values()
+                    .flat_map(|layout| layout.extra.values())
+                    .find(|session| session.id == id)
+            })
+    }
+
     pub fn set_ai_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.ai_actions_enabled = enabled;
         cx.notify();
@@ -1667,8 +1688,10 @@ impl TerminalView {
         if session.id != expected_session {
             return Err("session_changed");
         }
-        session.write_input(command.as_bytes());
-        session.write_input(b"\r");
+        let sequence = session.grid.lock().prompt_mark_sequence;
+        session.write_tracked_command(command);
+        self.observed_command_sequences
+            .insert(expected_session, sequence);
         self.ai_running_command = Some(expected_session);
         cx.notify();
         Ok(())
@@ -2118,6 +2141,35 @@ impl TerminalView {
                             }
                             if g.synchronized_output() {
                                 any_sync = true;
+                            }
+                        }
+                        if let Some(session_id) = this.ai_running_command {
+                            let completion = this.session_by_id(session_id).and_then(|session| {
+                                let grid = session.grid.lock();
+                                let exit_code = match grid.prompt_mark {
+                                    Some(
+                                        shelldeck_terminal::grid::PromptMark::CommandFinished(code),
+                                    ) => code,
+                                    _ => return None,
+                                };
+                                let sequence = grid.prompt_mark_sequence;
+                                let output = grid.command_output(120, 32_000);
+                                Some((sequence, exit_code, output))
+                            });
+                            if let Some((sequence, exit_code, output)) = completion {
+                                let observed = this
+                                    .observed_command_sequences
+                                    .entry(session_id)
+                                    .or_default();
+                                if sequence > *observed {
+                                    *observed = sequence;
+                                    this.ai_running_command = None;
+                                    cx.emit(TerminalEvent::AiCommandFinished {
+                                        session_id,
+                                        exit_code,
+                                        output,
+                                    });
+                                }
                             }
                         }
                         // Clear dirty flags on stored (background) tabs' split

@@ -83,6 +83,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-070 | *to write* — save_to writes atomically | SDUC-091 | **Red / P0** | The config is the user's investment; a torn write on power loss is unrecoverable. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 | SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
+| SDTEST-1382 | `app_config.rs::config_without_companion_section_defaults_to_visible_start` | SDUC-435 | Green | Old configs remain visible by default; an explicit `[companion] start_hidden = true` round-trips through serde. |
 
 ---
 

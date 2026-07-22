@@ -299,7 +299,10 @@ impl SettingsView {
             .flex()
             .items_center()
             .justify_between()
+            .gap(px(16.0))
             .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .py(px(12.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
@@ -308,9 +311,13 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .flex_shrink_0()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .child(
                         div()
+                            .min_w(px(0.0))
+                            .line_clamp(1)
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ShellDeckColors::text_primary())
@@ -318,6 +325,8 @@ impl SettingsView {
                     )
                     .child(
                         div()
+                            .min_w(px(0.0))
+                            .line_clamp(2)
                             .text_size(px(12.0))
                             .text_color(ShellDeckColors::text_muted())
                             .child(description.to_string()),
@@ -325,10 +334,8 @@ impl SettingsView {
             )
             .child(
                 div()
-                    .flex_grow()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
                     .flex()
+                    .flex_shrink_0()
                     .justify_end()
                     // Right padding so the rounded end of a Toggle or the
                     // caret of a Select never sits under the vertical
@@ -424,6 +431,42 @@ impl SettingsView {
                     "general-autostart",
                     self.config.general.autostart,
                     &entity,
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.start_hidden.label").as_ref(),
+                t!("settings.companion.start_hidden.description").as_ref(),
+                Self::bind_toggle(
+                    "companion-start-hidden",
+                    self.config.companion.start_hidden,
+                    &entity,
+                    |this, value| {
+                        this.config.companion.start_hidden = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.global_shortcut.label").as_ref(),
+                t!("settings.companion.global_shortcut.description").as_ref(),
+                Self::bind_toggle(
+                    "companion-global-shortcut",
+                    self.config.companion.global_shortcut_enabled,
+                    &entity,
+                    |this, value| {
+                        this.config.companion.global_shortcut_enabled = value;
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.global_palette_shortcut.label").as_ref(),
+                t!("settings.companion.global_palette_shortcut.description").as_ref(),
+                Self::bind_toggle(
+                    "companion-global-palette-shortcut",
+                    self.config.companion.global_palette_shortcut_enabled,
+                    &entity,
+                    |this, value| {
+                        this.config.companion.global_palette_shortcut_enabled = value;
+                    },
                 ),
             ))
             .child(Self::render_setting_row(
@@ -1002,6 +1045,13 @@ impl SettingsView {
             self.config.ai.policies.support_send,
             &entity,
             |this, value| this.config.ai.policies.support_send = value,
+        ))
+        .child(ai_policy_row(
+            "ai-policy-support-triage",
+            "support_triage",
+            self.config.ai.policies.support_triage,
+            &entity,
+            |this, value| this.config.ai.policies.support_triage = value,
         ))
         .child(ai_policy_row(
             "ai-policy-terminal-execute",
@@ -2231,6 +2281,7 @@ fn ai_policy_row(
 ) -> impl IntoElement {
     let label = match name {
         "support_send" => t!("settings.ai.policies.support_send").to_string(),
+        "support_triage" => t!("settings.ai.policies.support_triage").to_string(),
         "terminal_execute" => t!("settings.ai.policies.terminal_execute").to_string(),
         "script_execute" => t!("settings.ai.policies.script_execute").to_string(),
         "jean_dispatch" => t!("settings.ai.policies.jean_dispatch").to_string(),

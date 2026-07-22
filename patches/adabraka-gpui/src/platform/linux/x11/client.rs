@@ -621,6 +621,10 @@ impl X11Client {
             }
 
             for event in events.into_iter() {
+                // ShellDeck patch: root-window hotkeys must bypass window/XIM routing.
+                if self.dispatch_global_hotkey(&event) {
+                    continue;
+                }
                 let mut state = self.0.borrow_mut();
                 if !state.has_xim() {
                     drop(state);
@@ -671,6 +675,28 @@ impl X11Client {
             }
         }
         Ok(())
+    }
+
+    // ShellDeck patch: invoke the Linux platform callback for matched root KeyPress events.
+    fn dispatch_global_hotkey(&self, event: &Event) -> bool {
+        let Event::KeyPress(event) = event else {
+            return false;
+        };
+        let (id, callback) = {
+            let mut state = self.0.borrow_mut();
+            let Some(id) = state
+                .global_hotkey
+                .matching_id(event.detail, u16::from(event.state))
+            else {
+                return false;
+            };
+            (id, state.common.callbacks.global_hotkey.take())
+        };
+        if let Some(mut callback) = callback {
+            callback(id);
+            self.0.borrow_mut().common.callbacks.global_hotkey = Some(callback);
+        }
+        true
     }
 
     pub fn enable_ime(&self) {

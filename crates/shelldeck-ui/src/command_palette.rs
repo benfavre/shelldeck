@@ -9,6 +9,12 @@ use shelldeck_core::config::cloud_account::AppMode;
 
 use crate::t;
 use crate::theme::ShellDeckColors;
+use crate::workspace::{
+    CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAiAssistant, OpenBextCloud,
+    OpenFileEditorView, OpenFleet, OpenJeanConsole, OpenQuickConnect, OpenRecent, OpenServerSync,
+    OpenSettings, OpenSites, OpenSupportRequests, OpenTemplateBrowser, PrevTab, SwitchSite,
+    ToggleSidebar,
+};
 
 actions!(shelldeck, [ToggleCommandPalette]);
 
@@ -81,6 +87,29 @@ impl PaletteAction {
     }
 }
 
+pub fn action_opens_main_window(action: &dyn Action) -> bool {
+    action.as_any().is::<NewTerminal>()
+        || action.as_any().is::<ToggleSidebar>()
+        || action.as_any().is::<OpenSettings>()
+        || action.as_any().is::<OpenQuickConnect>()
+        || action.as_any().is::<CloseTab>()
+        || action.as_any().is::<NextTab>()
+        || action.as_any().is::<PrevTab>()
+        || action.as_any().is::<OpenTemplateBrowser>()
+        || action.as_any().is::<NewScript>()
+        || action.as_any().is::<OpenServerSync>()
+        || action.as_any().is::<OpenSites>()
+        || action.as_any().is::<OpenRecent>()
+        || action.as_any().is::<OpenFileEditorView>()
+        || action.as_any().is::<SwitchSite>()
+        || action.as_any().is::<OpenJeanConsole>()
+        || action.as_any().is::<OpenFleet>()
+        || action.as_any().is::<NewRequest>()
+        || action.as_any().is::<OpenSupportRequests>()
+        || action.as_any().is::<OpenBextCloud>()
+        || action.as_any().is::<OpenAiAssistant>()
+}
+
 /// Events emitted by the command palette.
 pub enum CommandPaletteEvent {
     ActionSelected(Box<dyn Action>),
@@ -104,6 +133,7 @@ impl EventEmitter<CommandPaletteEvent> for CommandPalette {}
 
 pub struct CommandPalette {
     pub visible: bool,
+    standalone: bool,
     /// Real adabraka `Input` state — owns the cursor / selection / undo. The
     /// `query` string below is kept in sync via `on_change` for the filter
     /// helpers that need `&str` access.
@@ -121,6 +151,7 @@ impl CommandPalette {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             visible: false,
+            standalone: false,
             query_state: cx.new(InputState::new),
             query: String::new(),
             actions: Vec::new(),
@@ -153,6 +184,20 @@ impl CommandPalette {
             let input_focus = self.query_state.read(cx).focus_handle(cx);
             input_focus.focus(window);
         }
+    }
+
+    pub fn set_standalone(&mut self, standalone: bool) {
+        self.standalone = standalone;
+    }
+
+    pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.visible = true;
+        self.reset_input(cx);
+        self.query.clear();
+        self.selected_index = 0;
+        self.update_filter();
+        self.query_state.read(cx).focus_handle(cx).focus(window);
+        cx.notify();
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
@@ -349,6 +394,9 @@ impl Render for CommandPalette {
                 .flex()
                 .items_center()
                 .justify_between()
+                .gap(px(12.0))
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .px(px(14.0))
                 .py(px(8.0))
                 .mx(px(4.0))
@@ -382,13 +430,19 @@ impl Render for CommandPalette {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
+                        .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .child(lucide_icon(icon, 14.0, icon_color))
                         .child(
                             div()
+                                .flex_shrink_0()
+                                .child(lucide_icon(icon, 14.0, icon_color)),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.0))
                                 .overflow_hidden()
-                                .whitespace_nowrap()
+                                .line_clamp(1)
                                 .text_color(label_color)
                                 .child(name),
                         ),
@@ -405,6 +459,7 @@ impl Render for CommandPalette {
             if let Some(shortcut) = &action.shortcut {
                 item = item.child(
                     div()
+                        .flex_shrink_0()
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
                         .child(shortcut.clone()),
@@ -414,82 +469,88 @@ impl Render for CommandPalette {
             list = list.child(item);
         }
 
-        // Outer container with focus tracking and key handling
-        div()
+        let mut panel = div()
+            .bg(ShellDeckColors::bg_surface())
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            // Query input — real `Input` widget with cursor / undo /
+            // selection. `on_change` mirrors the value back into
+            // `self.query` for the fuzzy-match helper; `on_enter`
+            // confirms the currently-selected action.
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(8.0))
+                    .border_b_1()
+                    .border_color(ShellDeckColors::border())
+                    .child(
+                        Input::new(&self.query_state)
+                            .size(InputSize::Md)
+                            .placeholder(t!("palette.placeholder").to_string())
+                            .prefix(lucide_icon("search", 14.0, ShellDeckColors::text_muted()))
+                            .on_change({
+                                let entity = cx.entity();
+                                move |value, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.query = value.to_string();
+                                        this.update_filter();
+                                        this.emit_selection_preview(cx);
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .on_enter({
+                                let entity = cx.entity();
+                                move |_v, cx| {
+                                    entity.update(cx, |this, cx| this.confirm(cx));
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(scrollable_vertical(list)),
+            );
+
+        if self.standalone {
+            panel = panel.size_full();
+        } else {
+            panel = panel
+                .w(px(520.0))
+                .max_h(px(460.0))
+                .rounded(px(10.0))
+                .shadow_xl();
+        }
+
+        let root = div()
             .id("command-palette")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
-            }))
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .right(px(0.0))
-            .bottom(px(0.0))
-            // Semi-transparent backdrop
-            .bg(ShellDeckColors::backdrop())
-            .flex()
-            .justify_center()
-            .pt(px(80.0))
-            .child(
-                div()
-                    .w(px(520.0))
-                    .max_h(px(460.0))
-                    .bg(ShellDeckColors::bg_surface())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .rounded(px(10.0))
-                    .shadow_xl()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    // Query input — real `Input` widget with cursor / undo /
-                    // selection. `on_change` mirrors the value back into
-                    // `self.query` for the fuzzy-match helper; `on_enter`
-                    // confirms the currently-selected action.
-                    .child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(8.0))
-                            .border_b_1()
-                            .border_color(ShellDeckColors::border())
-                            .child(
-                                Input::new(&self.query_state)
-                                    .size(InputSize::Md)
-                                    .placeholder(t!("palette.placeholder").to_string())
-                                    .prefix(lucide_icon(
-                                        "search",
-                                        14.0,
-                                        ShellDeckColors::text_muted(),
-                                    ))
-                                    .on_change({
-                                        let entity = cx.entity();
-                                        move |value, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.query = value.to_string();
-                                                this.update_filter();
-                                                this.emit_selection_preview(cx);
-                                                cx.notify();
-                                            });
-                                        }
-                                    })
-                                    .on_enter({
-                                        let entity = cx.entity();
-                                        move |_v, cx| {
-                                            entity.update(cx, |this, cx| this.confirm(cx));
-                                        }
-                                    }),
-                            ),
-                    )
-                    // Results list
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.0))
-                            .overflow_hidden()
-                            .child(scrollable_vertical(list)),
-                    ),
-            )
+            }));
+        if self.standalone {
+            root.size_full()
+                .overflow_hidden()
+                .bg(ShellDeckColors::bg_surface())
+                .child(panel)
+        } else {
+            root.absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .bg(ShellDeckColors::backdrop())
+                .flex()
+                .justify_center()
+                .pt(px(80.0))
+                .child(panel)
+        }
     }
 }
 

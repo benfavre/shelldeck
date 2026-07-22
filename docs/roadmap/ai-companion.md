@@ -459,9 +459,9 @@ La phase 1 est terminée.
 - Fait: les scripts IA sont suivis jusqu'au succès, échec, arrêt ou timeout de
   30 minutes. Les appels réseau gardent leurs timeouts clients. L'audit durable
   journalise l'acteur du compte ou la session locale, capacité, cible, provider/modèle,
-  risque, délai et statut, jamais le payload. Une commande PTY reste suivie
-  manuellement et interrompue avec Ctrl+C, sa fin n'étant pas observable de
-  façon fiable par ShellDeck.
+  risque, délai et statut, jamais le payload. Les commandes PTY IA remontent
+  désormais leur completion `OSC 133;D` au Workspace avec code de sortie;
+  Ctrl+C reste disponible et la sortie capturée reste bornée et hors audit.
 
 La phase 3 est terminée.
 
@@ -476,14 +476,25 @@ dans [`ai-companion-phase4-analysis.md`](ai-companion-phase4-analysis.md).
   les risques faibles ou moderes, tandis que Terminal, Script et Fleet restent
   obligatoirement confirmes. Le niveau effectivement utilise est fige dans le
   plan et journalise sans payload.
-- Automatismes Support/triage.
+- Fait: triage Support structure et valide avec apercu avant/apres, controle de
+  l'agent, mutations priorite/assignation et policy dediee. En mode Automatique,
+  l'application suit directement le clic explicite sur Trier; aucun polling ne
+  declenche silencieusement le provider et un meme ticket n'est donc pas
+  retraite en boucle.
+- Fait: reactions IA contextuelles depuis Activite. Chaque entree expose un
+  bouton IA lorsque la surface Recent est active; l'assistant recoit uniquement
+  l'evenement choisi et le contexte borne des hosts. Les notifications OS,
+  toasts et hooks existants restent passifs en arriere-plan.
 - Fait: plans de diagnostic Terminal structures en 1 a 5 etapes distinctes.
   Le parseur core impose une allowlist de commandes de lecture, refuse les
   operateurs shell, elevations, mutations et suivis non bornes. La sheet
   affiche le resume, l'objectif et la commande de chaque etape; chaque clic
   revalide la session et ouvre le plan d'action Terminal a risque eleve, donc
-  toujours confirme. L'enchainement automatique et la reinjection de sortie
-  restent differes tant que la fin d'une commande PTY n'est pas observable.
+  toujours confirme. Le plan complet peut maintenant etre lance sequentiellement:
+  ShellDeck instrumente les commandes lorsque le shell n'emet pas deja les
+  marqueurs, remonte `OSC 133;D` avec le code de sortie et une sortie bornee,
+  puis ne prepare l'etape suivante qu'apres cette completion. Chaque etape
+  conserve sa confirmation et un code non nul arrete le plan.
 - Fait: file durable de taches IA et onglet Taches dans la sheet Assistant.
   Les anciens brouillons deviennent des taches en attente; generation,
   confirmation, execution, application, succes, echec et annulation sont
@@ -494,6 +505,9 @@ dans [`ai-companion-phase4-analysis.md`](ai-companion-phase4-analysis.md).
   hors de son workflow produit un toast. Lorsque la fenetre n'est pas active,
   succes et echecs utilisent aussi le canal de notification systeme existant,
   desactivable dans Settings -> General.
+- Restant qualite: les contrats core et parseurs importants sont testes, mais
+  les scenarios GPUI P0/P1 `SDTEST-1345` a `SDTEST-1376` encore marques
+  `to write` dans `docs/testing/tests-ui-and-app.md` ne sont pas implementes.
 
 ## 11. Criteres d'acceptation transversaux
 

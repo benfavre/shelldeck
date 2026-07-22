@@ -10,7 +10,7 @@ use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_ui::theme::ShellDeckColors;
-use shelldeck_ui::Workspace;
+use shelldeck_ui::{AiDockView, CommandPaletteWindowView, Workspace};
 use std::borrow::Cow;
 use tracing_subscriber::EnvFilter;
 
@@ -374,21 +374,17 @@ fn dispatch_tray_command(
             // frontmost). `activate_window` is the portable way to say
             // "give this window the OS focus".
             let _ = window.update(cx, |_, window, _cx| {
+                window.show_window();
                 window.activate_window();
             });
         }
-        TrayCommand::OpenPalette => {
-            if let Some(ws) = ws.upgrade() {
-                let _ = window.update(cx, |_, window, cx| {
-                    ws.update(cx, |ws, cx| ws.toggle_command_palette(window, cx));
-                    window.activate_window();
-                });
-            }
-        }
+        TrayCommand::ToggleAiDock => toggle_ai_dock(ws, window, cx),
+        TrayCommand::OpenPalette => toggle_companion_command_palette(ws, window, cx),
         TrayCommand::ConnectPinned(id) => {
             if let Some(ws) = ws.upgrade() {
                 let _ = window.update(cx, |_, window, cx| {
                     ws.update(cx, |ws, cx| ws.connect_pinned_connection(id, cx));
+                    window.show_window();
                     window.activate_window();
                 });
             }
@@ -399,6 +395,434 @@ fn dispatch_tray_command(
             }
             cx.quit();
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiDockToggleAction {
+    Create,
+    Show,
+    Hide,
+}
+
+fn ai_dock_toggle_action(visible: Option<bool>) -> AiDockToggleAction {
+    match visible {
+        None => AiDockToggleAction::Create,
+        Some(false) => AiDockToggleAction::Show,
+        Some(true) => AiDockToggleAction::Hide,
+    }
+}
+
+fn companion_main_window_visible(start_hidden: bool, tray_available: bool) -> bool {
+    !start_hidden || !tray_available
+}
+
+const AI_DOCK_GLOBAL_HOTKEY_ID: u32 = 1;
+const COMMAND_PALETTE_GLOBAL_HOTKEY_ID: u32 = 2;
+
+fn ai_dock_global_shortcut() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-shift-space"
+    } else {
+        "ctrl-shift-space"
+    }
+}
+
+fn command_palette_global_shortcut() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-alt-space"
+    } else {
+        "ctrl-alt-space"
+    }
+}
+
+fn companion_pointer(
+    window_bounds: gpui::Bounds<gpui::Pixels>,
+    mouse_position: gpui::Point<gpui::Pixels>,
+    mouse_is_global: bool,
+) -> gpui::Point<gpui::Pixels> {
+    if mouse_is_global {
+        mouse_position
+    } else {
+        window_bounds.origin + mouse_position
+    }
+}
+
+#[derive(Clone)]
+struct CompanionDisplay {
+    bounds: gpui::Bounds<gpui::Pixels>,
+    id: gpui::DisplayId,
+}
+
+#[cfg(target_os = "linux")]
+fn is_x11_session() -> bool {
+    std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("x11"))
+        || (std::env::var_os("XDG_SESSION_TYPE").is_none()
+            && std::env::var_os("DISPLAY").is_some()
+            && std::env::var_os("WAYLAND_DISPLAY").is_none())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_x11_session() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn parse_xrandr_monitor_geometry(
+    geometry: &str,
+    scale_factor: f32,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let (width, after_width_mm) = geometry.split_once('/')?;
+    let (_, after_x) = after_width_mm.split_once('x')?;
+    let (height, after_height_mm) = after_x.split_once('/')?;
+    let first_sign = after_height_mm.find(['+', '-'])?;
+    let origins = &after_height_mm[first_sign..];
+    let second_sign = origins[1..].find(['+', '-'])? + 1;
+    let (origin_x, origin_y) = origins.split_at(second_sign);
+    let scale_factor = scale_factor.max(1.0);
+    Some(gpui::Bounds {
+        origin: gpui::point(
+            gpui::px(origin_x.parse::<f32>().ok()? / scale_factor),
+            gpui::px(origin_y.parse::<f32>().ok()? / scale_factor),
+        ),
+        size: gpui::size(
+            gpui::px(width.parse::<f32>().ok()? / scale_factor),
+            gpui::px(height.parse::<f32>().ok()? / scale_factor),
+        ),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn x11_monitor_bounds(scale_factor: f32) -> Vec<gpui::Bounds<gpui::Pixels>> {
+    let Ok(output) = std::process::Command::new("xrandr")
+        .arg("--listactivemonitors")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            line.split_whitespace()
+                .find_map(|token| parse_xrandr_monitor_geometry(token, scale_factor))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_x11_workarea(properties: &str, scale_factor: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let desktop = properties
+        .lines()
+        .find(|line| line.starts_with("_NET_CURRENT_DESKTOP"))?
+        .split_once('=')?
+        .1
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    let values = properties
+        .lines()
+        .find(|line| line.starts_with("_NET_WORKAREA"))?
+        .split_once('=')?
+        .1
+        .split(',')
+        .filter_map(|value| value.trim().parse::<f32>().ok())
+        .collect::<Vec<_>>();
+    let offset = desktop.checked_mul(4)?;
+    let values = values.get(offset..offset + 4)?;
+    let scale_factor = scale_factor.max(1.0);
+    Some(gpui::Bounds {
+        origin: gpui::point(
+            gpui::px(values[0] / scale_factor),
+            gpui::px(values[1] / scale_factor),
+        ),
+        size: gpui::size(
+            gpui::px(values[2] / scale_factor),
+            gpui::px(values[3] / scale_factor),
+        ),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn x11_workarea(scale_factor: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let output = std::process::Command::new("xprop")
+        .args(["-root", "_NET_CURRENT_DESKTOP", "_NET_WORKAREA"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_x11_workarea(&String::from_utf8_lossy(&output.stdout), scale_factor)
+}
+
+fn companion_display(
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) -> Option<CompanionDisplay> {
+    let window_geometry = main_window
+        .update(cx, |_, window, _| {
+            let bounds = window.window_bounds().get_bounds();
+            let mouse = window.mouse_position();
+            // X11 reports the pointer in root-window coordinates. Wayland,
+            // macOS and Windows report it relative to the GPUI window.
+            let mouse_is_global = is_x11_session();
+            let scale_factor = window.scale_factor();
+            let mut pointer = companion_pointer(bounds, mouse, mouse_is_global);
+            if mouse_is_global {
+                pointer = gpui::point(
+                    pointer.x * (1.0 / scale_factor),
+                    pointer.y * (1.0 / scale_factor),
+                );
+            }
+            (pointer, bounds.center(), scale_factor)
+        })
+        .ok();
+    let displays = cx.displays();
+    let platform_display = cx.primary_display().or_else(|| displays.first().cloned())?;
+
+    #[cfg(target_os = "linux")]
+    if is_x11_session() {
+        if let Some((pointer, _, scale_factor)) = window_geometry {
+            if let Some(monitor_bounds) = x11_monitor_bounds(scale_factor)
+                .into_iter()
+                .find(|bounds| bounds.contains(&pointer))
+            {
+                let bounds = x11_workarea(scale_factor)
+                    .filter(|workarea| workarea.intersects(&monitor_bounds))
+                    .map(|workarea| monitor_bounds.intersect(&workarea))
+                    .unwrap_or(monitor_bounds);
+                return Some(CompanionDisplay {
+                    bounds,
+                    id: platform_display.id(),
+                });
+            }
+            tracing::warn!(?pointer, "no active XRandR monitor contains the pointer");
+        }
+    }
+
+    window_geometry
+        .and_then(|(pointer, main_center, _)| {
+            displays
+                .iter()
+                .find(|display| display.bounds().contains(&pointer))
+                .or_else(|| {
+                    displays
+                        .iter()
+                        .find(|display| display.bounds().contains(&main_center))
+                })
+        })
+        .map(|display| CompanionDisplay {
+            bounds: display.bounds(),
+            id: display.id(),
+        })
+        .or(Some(CompanionDisplay {
+            bounds: platform_display.bounds(),
+            id: platform_display.id(),
+        }))
+}
+
+fn ai_dock_bounds(display_bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Bounds<gpui::Pixels> {
+    let width = gpui::px(480.0).min(display_bounds.size.width);
+    gpui::Bounds {
+        origin: gpui::point(display_bounds.right() - width, display_bounds.origin.y),
+        size: gpui::size(width, display_bounds.size.height),
+    }
+}
+
+fn command_palette_bounds(
+    display_bounds: gpui::Bounds<gpui::Pixels>,
+) -> gpui::Bounds<gpui::Pixels> {
+    let width = gpui::px(620.0).min(display_bounds.size.width);
+    let height = gpui::px(480.0).min(display_bounds.size.height);
+    gpui::Bounds {
+        origin: gpui::point(
+            display_bounds.origin.x + (display_bounds.size.width - width) * 0.5,
+            display_bounds.origin.y + (display_bounds.size.height - height) * 0.5,
+        ),
+        size: gpui::size(width, height),
+    }
+}
+
+/// Toggle the single compact Assistant window owned by this process.
+/// Hidden windows remain registered in GPUI, so scanning by root type gives us
+/// single-instance behavior without a second global window registry.
+fn toggle_ai_dock(
+    workspace: gpui::WeakEntity<Workspace>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
+
+    let Some(workspace) = workspace.upgrade() else {
+        return;
+    };
+    let Some(display) = companion_display(main_window, cx) else {
+        tracing::error!("failed to open AI Dock: no display available");
+        return;
+    };
+    let existing = cx
+        .windows()
+        .into_iter()
+        .find_map(|handle| handle.downcast::<AiDockView>());
+
+    if let Some(handle) = existing {
+        let recreate = handle
+            .update(cx, |dock, window, cx| {
+                match ai_dock_toggle_action(Some(window.is_window_visible())) {
+                    AiDockToggleAction::Show => {
+                        if !display
+                            .bounds
+                            .contains(&window.window_bounds().get_bounds().center())
+                        {
+                            window.remove_window();
+                            return true;
+                        }
+                        workspace.update(cx, |workspace, cx| workspace.refresh_ai_dock(cx));
+                        dock.mark_shown();
+                        window.show_window();
+                        window.activate_window();
+                        dock.focus_composer(window, cx);
+                    }
+                    AiDockToggleAction::Hide => window.remove_window(),
+                    AiDockToggleAction::Create => unreachable!(),
+                }
+                false
+            })
+            .unwrap_or(false);
+        if !recreate {
+            return;
+        }
+    }
+
+    let (assistant, font_family) = workspace.update(cx, |workspace, cx| {
+        (
+            workspace.prepare_ai_dock(cx),
+            workspace.companion_ui_font_family(),
+        )
+    });
+    let bounds = ai_dock_bounds(display.bounds);
+    let options = WindowOptions {
+        titlebar: None,
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        kind: WindowKind::Overlay,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        display_id: Some(display.id),
+        window_decorations: Some(WindowDecorations::Client),
+        app_id: Some("shelldeck".to_string()),
+        ..Default::default()
+    };
+
+    match cx.open_window(options, move |window, cx| {
+        let dock = cx.new(|cx| AiDockView::new(assistant, main_window, font_family, window, cx));
+        dock
+    }) {
+        Ok(handle) => {
+            cx.activate(true);
+            let _ = handle.update(cx, |dock, window, cx| {
+                dock.mark_shown();
+                window.activate_window();
+                dock.focus_composer(window, cx);
+            });
+        }
+        Err(error) => tracing::error!("failed to open AI Dock window: {error:#}"),
+    }
+}
+
+fn toggle_companion_command_palette(
+    workspace: gpui::WeakEntity<Workspace>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
+
+    let Some(workspace) = workspace.upgrade() else {
+        return;
+    };
+    let Some(display) = companion_display(main_window, cx) else {
+        tracing::error!("failed to open command palette: no display available");
+        return;
+    };
+    if let Some(handle) = cx
+        .windows()
+        .into_iter()
+        .find_map(|handle| handle.downcast::<CommandPaletteWindowView>())
+    {
+        let recreate = handle
+            .update(cx, |palette, window, cx| {
+                if window.is_window_visible() {
+                    window.remove_window();
+                    false
+                } else if !display
+                    .bounds
+                    .contains(&window.window_bounds().get_bounds().center())
+                {
+                    window.remove_window();
+                    true
+                } else {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.prepare_companion_command_palette(cx);
+                    });
+                    palette.mark_shown();
+                    window.show_window();
+                    window.activate_window();
+                    palette.show(window, cx);
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if !recreate {
+            return;
+        }
+    }
+
+    let (palette, font_family) = workspace.update(cx, |workspace, cx| {
+        (
+            workspace.prepare_companion_command_palette(cx),
+            workspace.companion_ui_font_family(),
+        )
+    });
+    let bounds = command_palette_bounds(display.bounds);
+    let options = WindowOptions {
+        titlebar: None,
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        kind: WindowKind::Overlay,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        display_id: Some(display.id),
+        window_decorations: Some(WindowDecorations::Client),
+        app_id: Some("shelldeck".to_string()),
+        ..Default::default()
+    };
+
+    match cx.open_window(options, move |window, cx| {
+        let palette_window = window.window_handle();
+        let view = cx.new(|cx| {
+            CommandPaletteWindowView::new(
+                palette,
+                main_window,
+                palette_window,
+                font_family,
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| view.show(window, cx));
+        view
+    }) {
+        Ok(handle) => {
+            cx.activate(true);
+            let _ = handle.update(cx, |view, window, _| {
+                view.mark_shown();
+                window.activate_window();
+            });
+        }
+        Err(error) => tracing::error!("failed to open command palette window: {error:#}"),
     }
 }
 
@@ -413,6 +837,7 @@ fn dispatch_deep_link(
 ) {
     let link = DeepLink::parse(&payload);
     let _ = window.update(cx, |_, window, cx| {
+        window.show_window();
         window.activate_window();
         if let (Some(link), Some(ws)) = (link, ws.upgrade()) {
             ws.update(cx, |ws, cx| ws.open_deep_link(link, cx));
@@ -544,6 +969,49 @@ fn main() -> Result<()> {
         // Register keyboard shortcuts
         actions::register_keybindings(cx);
 
+        // Platform callbacks intentionally only enqueue a small ID. Routing
+        // back into GPUI happens from the foreground loop after the Workspace
+        // and its window handles exist.
+        let (global_hotkey_tx, global_hotkey_rx) = std::sync::mpsc::channel();
+        cx.on_global_hotkey(move |id| {
+            tracing::debug!(id, "global hotkey callback received");
+            let _ = global_hotkey_tx.send(id);
+        });
+        if config.companion.global_shortcut_enabled {
+            match gpui::Keystroke::parse(ai_dock_global_shortcut()) {
+                Ok(keystroke) => {
+                    match cx.register_global_hotkey(AI_DOCK_GLOBAL_HOTKEY_ID, &keystroke) {
+                        Ok(()) => tracing::info!(
+                            shortcut = ai_dock_global_shortcut(),
+                            "AI Dock global shortcut registered"
+                        ),
+                        Err(error) => tracing::warn!(
+                            shortcut = ai_dock_global_shortcut(),
+                            "AI Dock global shortcut unavailable: {error:#}"
+                        ),
+                    }
+                }
+                Err(error) => tracing::error!("invalid AI Dock global shortcut: {error}"),
+            }
+        }
+        if config.companion.global_palette_shortcut_enabled {
+            match gpui::Keystroke::parse(command_palette_global_shortcut()) {
+                Ok(keystroke) => {
+                    match cx.register_global_hotkey(COMMAND_PALETTE_GLOBAL_HOTKEY_ID, &keystroke) {
+                        Ok(()) => tracing::info!(
+                            shortcut = command_palette_global_shortcut(),
+                            "command palette global shortcut registered"
+                        ),
+                        Err(error) => tracing::warn!(
+                            shortcut = command_palette_global_shortcut(),
+                            "command palette global shortcut unavailable: {error:#}"
+                        ),
+                    }
+                }
+                Err(error) => tracing::error!("invalid command palette shortcut: {error}"),
+            }
+        }
+
         // Combine SSH config connections with manual ones
         let all_connections = {
             let mut conns = ssh_connections;
@@ -556,7 +1024,7 @@ fn main() -> Result<()> {
         };
 
         // Open main window
-        let window_options = WindowOptions {
+        let mut window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("ShellDeck".into()),
                 appears_transparent: true,
@@ -596,6 +1064,17 @@ fn main() -> Result<()> {
                 None
             }
         };
+        let tray_available = tray_handles.is_some();
+        window_options.show =
+            companion_main_window_visible(config.companion.start_hidden, tray_available);
+        let start_hidden = !window_options.show;
+        if start_hidden {
+            tracing::info!("companion start: main window hidden in system tray");
+        } else if config.companion.start_hidden {
+            tracing::warn!(
+                "companion start requested but tray is unavailable; showing main window"
+            );
+        }
 
         match cx.open_window(window_options, |window, cx| {
             let workspace = cx.new(|cx| {
@@ -708,6 +1187,35 @@ fn main() -> Result<()> {
                 .detach();
             }
 
+            // Global shortcut dispatch. The platform callback above may run
+            // outside GPUI's entity update context, hence this foreground
+            // receiver mirrors the tray/deep-link routing loops.
+            {
+                let ws_handle = workspace.downgrade();
+                let window_handle = window.window_handle();
+                cx.spawn(async move |cx| {
+                    use std::time::Duration;
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(50))
+                            .await;
+                        while let Ok(id) = global_hotkey_rx.try_recv() {
+                            let ws_handle = ws_handle.clone();
+                            let _ = cx.update(|cx| match id {
+                                AI_DOCK_GLOBAL_HOTKEY_ID => {
+                                    toggle_ai_dock(ws_handle, window_handle, cx);
+                                }
+                                COMMAND_PALETTE_GLOBAL_HOTKEY_ID => {
+                                    toggle_companion_command_palette(ws_handle, window_handle, cx);
+                                }
+                                _ => {}
+                            });
+                        }
+                    }
+                })
+                .detach();
+            }
+
             // Intercept window close to honor the `confirm_before_close`
             // and `close_to_tray` settings. `close_to_tray` wins when
             // enabled + tray up: hide the window and return false so
@@ -721,7 +1229,12 @@ fn main() -> Result<()> {
                             window.hide_window();
                             return false;
                         }
-                        ws.update(cx, |ws, cx| ws.confirm_window_close(cx))
+                        let should_close = ws.update(cx, |ws, cx| ws.confirm_window_close(cx));
+                        if should_close {
+                            ws.update(cx, |ws, cx| ws.shutdown(cx));
+                            cx.quit();
+                        }
+                        should_close
                     } else {
                         true
                     }
@@ -929,4 +1442,117 @@ fn main() -> Result<()> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
+        command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
+        AiDockToggleAction,
+    };
+    #[cfg(target_os = "linux")]
+    use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
+
+    // SDTEST-1381
+    #[test]
+    fn ai_dock_toggle_reuses_the_existing_window() {
+        assert_eq!(ai_dock_toggle_action(None), AiDockToggleAction::Create);
+        assert_eq!(ai_dock_toggle_action(Some(false)), AiDockToggleAction::Show);
+        assert_eq!(ai_dock_toggle_action(Some(true)), AiDockToggleAction::Hide);
+    }
+
+    // SDTEST-1383
+    #[test]
+    fn companion_hidden_start_requires_an_available_tray() {
+        assert!(companion_main_window_visible(false, false));
+        assert!(companion_main_window_visible(false, true));
+        assert!(companion_main_window_visible(true, false));
+        assert!(!companion_main_window_visible(true, true));
+    }
+
+    #[test]
+    fn ai_dock_is_anchored_to_the_display_right_edge() {
+        let display = gpui::Bounds {
+            origin: gpui::point(gpui::px(100.0), gpui::px(30.0)),
+            size: gpui::size(gpui::px(1920.0), gpui::px(1050.0)),
+        };
+
+        let dock = ai_dock_bounds(display);
+
+        assert_eq!(dock.origin, gpui::point(gpui::px(1540.0), gpui::px(30.0)));
+        assert_eq!(dock.size, gpui::size(gpui::px(480.0), gpui::px(1050.0)));
+        assert_eq!(dock.right(), display.right());
+    }
+
+    #[test]
+    fn x11_pointer_coordinates_are_not_offset_twice() {
+        let window = gpui::Bounds {
+            origin: gpui::point(gpui::px(1920.0), gpui::px(0.0)),
+            size: gpui::size(gpui::px(1200.0), gpui::px(800.0)),
+        };
+        let pointer = gpui::point(gpui::px(2500.0), gpui::px(400.0));
+
+        assert_eq!(companion_pointer(window, pointer, true), pointer);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn xrandr_geometry_preserves_each_monitor_origin() {
+        let primary = parse_xrandr_monitor_geometry("1920/598x1080/336+0+0", 1.0)
+            .expect("primary monitor geometry");
+        let secondary = parse_xrandr_monitor_geometry("1920/598x1080/336+1920+0", 1.0)
+            .expect("secondary monitor geometry");
+
+        assert_eq!(primary.origin, gpui::point(gpui::px(0.0), gpui::px(0.0)));
+        assert_eq!(
+            secondary.origin,
+            gpui::point(gpui::px(1920.0), gpui::px(0.0))
+        );
+        assert_eq!(primary.size, secondary.size);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_workarea_excludes_the_system_toolbar() {
+        let properties = "_NET_CURRENT_DESKTOP(CARDINAL) = 0\n\
+                          _NET_WORKAREA(CARDINAL) = 0, 32, 3840, 1048, 0, 32, 3840, 1048\n";
+        let workarea = parse_x11_workarea(properties, 1.0).expect("desktop workarea");
+        let right_monitor = gpui::Bounds {
+            origin: gpui::point(gpui::px(1920.0), gpui::px(0.0)),
+            size: gpui::size(gpui::px(1920.0), gpui::px(1080.0)),
+        };
+
+        let usable = right_monitor.intersect(&workarea);
+
+        assert_eq!(usable.origin, gpui::point(gpui::px(1920.0), gpui::px(32.0)));
+        assert_eq!(usable.size, gpui::size(gpui::px(1920.0), gpui::px(1048.0)));
+    }
+
+    #[test]
+    fn command_palette_is_centered_inside_the_selected_display() {
+        let display = gpui::Bounds {
+            origin: gpui::point(gpui::px(1920.0), gpui::px(0.0)),
+            size: gpui::size(gpui::px(1920.0), gpui::px(1080.0)),
+        };
+
+        let palette = command_palette_bounds(display);
+
+        assert_eq!(
+            palette.origin,
+            gpui::point(gpui::px(2570.0), gpui::px(300.0))
+        );
+        assert_eq!(palette.size, gpui::size(gpui::px(620.0), gpui::px(480.0)));
+    }
+
+    #[test]
+    fn ai_dock_global_shortcut_is_parseable() {
+        gpui::Keystroke::parse(ai_dock_global_shortcut()).expect("valid global shortcut");
+    }
+
+    #[test]
+    fn command_palette_global_shortcut_is_parseable() {
+        gpui::Keystroke::parse(command_palette_global_shortcut())
+            .expect("valid command palette global shortcut");
+    }
 }

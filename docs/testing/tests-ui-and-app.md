@@ -241,10 +241,23 @@ parallel `cargo test`.
 | SDTEST-1366 | *to write* — AI script tracking cannot stop a later execution | SDUC-428 | **Red / P0** | Fake-clock/process wiring: success/failure/cancel remove the matching action ID; only the still-current action times out and invokes the existing Stop path. |
 | SDTEST-1368 | *to write* — AI task center routes exact targets and only exposes valid actions | SDUC-429 | **Red / P0** | GPUI wiring: actionable count matches the titlebar badge; resume/open/stop/delete route by task ID, active tasks survive sheet closure, and stale active states recover as cancelled after restart. |
 | SDTEST-1370 | *to write* — AI policy controls drive the executable workflow action | SDUC-430 | **Red / P0** | GPUI wiring: Settings persists each capability independently; Prepare hides/blocks Execute, Confirm opens the second dialog, Automatic executes moderate actions directly, and High risk still opens confirmation. |
-| SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each Run action revalidates the active session and opens high-risk confirmation, copy exports readable text, and Ctrl+C remains available after submission. |
+| SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each step revalidates the active session and opens high-risk confirmation, full-plan execution advances only after matching OSC 133 completion, stops on failure, and Ctrl+C remains available. |
 | SDTEST-1374 | `issue_attachments.rs::rejects_extension_spoofing` + `recognizes_png_magic` | SDUC-432 | Green | Pure local intake guard: accepted formats are identified by bytes, never filename alone. |
 | SDTEST-1375 | *to write* — attachment picker routes URL/paste/drop/file/capture drafts to the exact composer | SDUC-432 | **Red / P0** | GPUI integration: each source adds one removable preview to the active New Request, request comment, Support request comment, ticket reply, or internal note; changing target clears drafts; submission uploads once and preserves drafts on failure. |
 | SDTEST-1376 | *to write* — shared multi-line Input follows native wrapped-line editing semantics | SDUC-433 | **Red / P0** | GPUI integration: Up/Down retain visual X, Shift selection paints across hard/soft lines, Home/End stay on the visual row, mouse placement matches the glyph, and `max_rows` scroll keeps the caret visible. |
+
+---
+
+## 8d. `shelldeck` AI Dock companion
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1380 | `tray::tests::assistant_menu_id_routes_to_dock_toggle` | SDUC-434 | Green | The stable tray item ID routes only to `ToggleAiDock`. |
+| SDTEST-1381 | `main::tests::ai_dock_toggle_reuses_the_existing_window` | SDUC-434 | Green | Pure window-state decision: absent creates, hidden shows, visible hides; repeated toggles never request a second creation. |
+| SDTEST-1383 | `main::tests::companion_hidden_start_requires_an_available_tray` | SDUC-435 | Green | Hidden start is allowed only with a live tray; every no-tray combination leaves the main window visible and recoverable. |
+| SDTEST-1384 | `main::tests::ai_dock_is_anchored_to_the_display_right_edge` | SDUC-434 | Green | The fixed 480 px Dock preserves the supplied display's vertical bounds and shares its right edge. |
+| SDTEST-1385 | `main::tests::ai_dock_global_shortcut_is_parseable` | SDUC-434 | Green | The platform-specific default global shortcut is accepted by GPUI's keystroke parser. |
+| SDTEST-1386 | `main::tests::command_palette_global_shortcut_is_parseable` | SDUC-436 | Green | The standalone palette's platform-specific global shortcut is accepted by GPUI's keystroke parser. |
 
 ---
 

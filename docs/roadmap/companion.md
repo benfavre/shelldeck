@@ -9,7 +9,7 @@
 > quand on l'attaque, et la case correspondante est cochée ici après
 > merge.
 
-## Statut au 2026-07-16
+## Statut au 2026-07-21
 
 | # | Item | Statut |
 |---|------|--------|
@@ -19,7 +19,8 @@
 | 4 | Recent activity | ✅ landed 2026-07-15 (`shelldeck-core::config::activity` + vue Dev Activité + hooks scripts/tunnels/support/issues/Jean/sites) |
 | 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
 | 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
-| 7 | Couche IA transversale | 🚧 phases 0 a 3 terminees; centre de taches, notifications, policies et diagnostics bornes de phase 4 termines; automatismes restants dans [`ai-companion.md`](ai-companion.md) |
+| 7 | Couche IA transversale | 🚧 phases 0 a 4 livrees dans le perimetre de securite: taches, notifications, policies, triage Support explicite/automatique, activite contextuelle et diagnostics PTY sequentiels. Restent les tags bloques par l'API et la couverture GPUI dans [`ai-companion.md`](ai-companion.md). |
+| 8 | AI Dock Companion | 🚧 phases A/B livrées : fenêtre IA depuis le tray + démarrage caché récupérable ; runtime léger et raccourci global restent dans [`ai-dock-companion.md`](ai-dock-companion.md) |
 
 ## 1. Onboarding first-run — ✅ livré 2026-07-15
 
@@ -106,10 +107,16 @@ Livré en 4 sous-commits :
 - Confirmations Jean en attente
 - Tickets support non lus / demandes assignées
 
-**Actions rapides depuis le menu tray :**
+**Actions rapides livrées depuis le menu tray :**
 
-- Ouvrir la fenêtre principale sur une vue précise
+- Ouvrir la fenêtre principale
 - Ouvrir la palette de commandes
+- Ouvrir une connexion épinglée
+- Quitter
+
+**Actions rapides encore prévues :**
+
+- Rendre les quatre compteurs cliquables vers leur vue précise
 - Reconnecter les sessions sauvegardées
 - Se déconnecter / basculer de mode
 
@@ -177,11 +184,13 @@ query/fragment/slash final ignorés) :
   `CFBundleURLTypes` dans `build-dmg.sh` ; Windows `URL Protocol` dans le
   NSIS + `install.ps1` (HKCU `Software\Classes\shelldeck`).
 
+- **Ciblage fin d'un job Jean livré 2026-07-21** :
+  `jean/confirm/<job_id>` conserve l'identifiant pendant le refresh Fleet puis
+  ouvre directement la sheet du job exact, y compris s'il est seulement dans
+  la file locale des validations.
+
 **Non fait / follow-ups :**
 
-- **Ciblage fin d'un job Jean** : `jean/confirm/<job_id>` ouvre la vue
-  Fleet mais ne scrolle pas / ne pré-sélectionne pas le job exact
-  (deux espaces d'ID : `thread_ts` JeanClaude vs `JeanJob.id` Fleet).
 - **Cible côté Manage** : PR séparée qui ajoute les boutons « Ouvrir
   dans ShellDeck » aux endroits stratégiques (page site, ticket,
   connexion).

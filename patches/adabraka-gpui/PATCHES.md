@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **9**
+Total markers in code: **16**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -109,6 +109,29 @@ only, out of the src/-scoped marker convention.)
   hasn't propagated any of it to Quad/Shadow.
 - **Upstream status**: not filed yet — real bug worth reproducing +
   upstreaming; batch with SDPATCH-101/102 in one Augani/adabraka-gpui PR.
+
+### SDPATCH-106 — Dispatch Linux/X11 global hotkeys from the root window
+
+- **Files / symbols**:
+  - `src/platform/linux/global_hotkey.rs` — X11 lock-state grabs and ID matching
+  - `src/platform/linux/x11/client.rs` — `X11Client::dispatch_global_hotkey`
+- **Markers**:
+  - `src/platform/linux/global_hotkey.rs:54` — `// ShellDeck patch: global grabs must survive Caps Lock and Num Lock state.`
+  - `src/platform/linux/global_hotkey.rs:206` — `// ShellDeck patch: grab every lock-state variant and roll back partial grabs.`
+  - `src/platform/linux/global_hotkey.rs:232` — `// ShellDeck patch: map root-window KeyPress events back to registered IDs.`
+  - `src/platform/linux/global_hotkey.rs:248` — `// ShellDeck patch: release every lock-state grab registered above.`
+  - `src/platform/linux/global_hotkey.rs:257` — `// ShellDeck patch: protect lock-state matching against regressions.`
+  - `src/platform/linux/x11/client.rs:624` — `// ShellDeck patch: root-window hotkeys must bypass window/XIM routing.`
+  - `src/platform/linux/x11/client.rs:680` — `// ShellDeck patch: invoke the Linux platform callback for matched root KeyPress events.`
+- **Why**: X11 delivers a successful `GrabKey` as a `KeyPress` on the root
+  window, but the upstream event path immediately looked that ID up as a GPUI
+  application window (or forwarded it through XIM), returned `None`, and never
+  invoked `on_global_hotkey`. Dispatching matched root events before normal
+  window/XIM routing makes the callback functional. Grabbing and matching all
+  Caps Lock / Num Lock variants keeps the shortcut reliable regardless of lock
+  state.
+- **Upstream status**: not filed yet — Linux/X11 framework bug suitable for an
+  upstream PR; Wayland still needs a compositor shortcuts portal.
 
 ## Preserved files (do not overwrite on sync)
 

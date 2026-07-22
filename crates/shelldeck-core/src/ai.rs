@@ -102,6 +102,7 @@ pub enum AiAutonomyLevel {
 #[serde(default)]
 pub struct AiPolicyConfig {
     pub support_send: AiAutonomyLevel,
+    pub support_triage: AiAutonomyLevel,
     pub terminal_execute: AiAutonomyLevel,
     pub script_execute: AiAutonomyLevel,
     pub jean_dispatch: AiAutonomyLevel,
@@ -112,6 +113,7 @@ impl Default for AiPolicyConfig {
     fn default() -> Self {
         Self {
             support_send: AiAutonomyLevel::Confirmation,
+            support_triage: AiAutonomyLevel::Preparation,
             terminal_execute: AiAutonomyLevel::Confirmation,
             script_execute: AiAutonomyLevel::Confirmation,
             jean_dispatch: AiAutonomyLevel::Confirmation,
@@ -124,6 +126,7 @@ impl AiPolicyConfig {
     pub fn level_for(&self, capability: AiCapability) -> AiAutonomyLevel {
         match capability {
             AiCapability::SupportReply => self.support_send,
+            AiCapability::SupportTriage => self.support_triage,
             AiCapability::TerminalCommand | AiCapability::TerminalDiagnose => self.terminal_execute,
             AiCapability::ScriptGenerate | AiCapability::ScriptFix => self.script_execute,
             AiCapability::JeanDispatch => self.jean_dispatch,
@@ -1720,11 +1723,20 @@ mod tests {
             policies.level_for(AiCapability::SupportSummary),
             AiAutonomyLevel::Preparation
         );
+        assert_eq!(
+            policies.level_for(AiCapability::SupportTriage),
+            AiAutonomyLevel::Preparation
+        );
 
         policies.support_send = AiAutonomyLevel::Automatic;
+        policies.support_triage = AiAutonomyLevel::Automatic;
         policies.script_execute = AiAutonomyLevel::Preparation;
         assert_eq!(
             policies.level_for(AiCapability::SupportReply),
+            AiAutonomyLevel::Automatic
+        );
+        assert_eq!(
+            policies.level_for(AiCapability::SupportTriage),
             AiAutonomyLevel::Automatic
         );
         assert_eq!(

@@ -244,6 +244,10 @@ pub enum AiWorkflowEvent {
         target: AiWorkflowTarget,
         command: String,
     },
+    PrepareDiagnosticPlan {
+        target: AiWorkflowTarget,
+        plan: AiDiagnosticPlan,
+    },
     Cancel,
 }
 
@@ -644,18 +648,32 @@ impl AiWorkflowView {
             );
         }
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(plan.summary.clone()),
-            )
-            .child(steps)
-            .into_any_element()
+        let mut content = div().flex().flex_col().gap(px(10.0)).child(
+            div()
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_primary())
+                .child(plan.summary.clone()),
+        );
+        if self.action_policy >= AiAutonomyLevel::Confirmation && plan.steps.len() > 1 {
+            let target = self.target.clone();
+            let plan = plan.clone();
+            content = content.child(
+                Button::new(
+                    "ai-diagnostic-run-plan",
+                    t!("ai.workflow.diagnostic.execute_plan").to_string(),
+                )
+                .variant(ButtonVariant::Destructive)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("list-checks"))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(AiWorkflowEvent::PrepareDiagnosticPlan {
+                        target: target.clone(),
+                        plan: plan.clone(),
+                    });
+                })),
+            );
+        }
+        content.child(steps).into_any_element()
     }
 }
 
@@ -702,22 +720,27 @@ impl Render for AiWorkflowView {
             }
         };
         let has_result = !self.result_state.read(cx).content().trim().is_empty();
-        let issue_triage_proposal =
-            if has_result && matches!(&self.target, AiWorkflowTarget::IssueTriage { .. }) {
-                parse_issue_triage_proposal(self.result_state.read(cx).content()).ok()
-            } else {
-                None
-            };
+        let issue_triage_proposal = if has_result
+            && matches!(
+                &self.target,
+                AiWorkflowTarget::SupportTriage { .. } | AiWorkflowTarget::IssueTriage { .. }
+            ) {
+            parse_issue_triage_proposal(self.result_state.read(cx).content()).ok()
+        } else {
+            None
+        };
         let diagnostic_plan =
             if has_result && matches!(&self.target, AiWorkflowTarget::TerminalDiagnose { .. }) {
                 parse_diagnostic_plan(self.result_state.read(cx).content()).ok()
             } else {
                 None
             };
-        let triage_accept_disabled = matches!(&self.target, AiWorkflowTarget::IssueTriage { .. })
-            && issue_triage_proposal
-                .as_ref()
-                .is_none_or(|proposal| !proposal.has_changes());
+        let triage_accept_disabled = matches!(
+            &self.target,
+            AiWorkflowTarget::SupportTriage { .. } | AiWorkflowTarget::IssueTriage { .. }
+        ) && issue_triage_proposal
+            .as_ref()
+            .is_none_or(|proposal| !proposal.has_changes());
 
         let instructions_input = if self.target.result_is_read_only() {
             let entity = cx.entity();
@@ -1107,14 +1130,19 @@ impl Render for AiWorkflowView {
                                 AiWorkflowTarget::TerminalCommand { .. } => {
                                     t!("ai.workflow.insert").to_string()
                                 }
-                                AiWorkflowTarget::IssueTriage { .. } => {
+                                AiWorkflowTarget::SupportTriage { .. }
+                                    if self.action_policy == AiAutonomyLevel::Preparation =>
+                                {
+                                    t!("ai.workflow.copy").to_string()
+                                }
+                                AiWorkflowTarget::SupportTriage { .. }
+                                | AiWorkflowTarget::IssueTriage { .. } => {
                                     t!("ai.workflow.triage.apply").to_string()
                                 }
                                 AiWorkflowTarget::ScriptFix { .. } => {
                                     t!("ai.workflow.apply_changes").to_string()
                                 }
                                 AiWorkflowTarget::SupportSummary { .. }
-                                | AiWorkflowTarget::SupportTriage { .. }
                                 | AiWorkflowTarget::IssueSummary { .. }
                                 | AiWorkflowTarget::ScriptExplain { .. }
                                 | AiWorkflowTarget::ScriptReview { .. }

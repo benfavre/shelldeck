@@ -1232,6 +1232,8 @@ UUIDs are validated (bad UUID → `None`); query strings, fragments and
 trailing slashes are ignored; unknown verbs and wrong schemes parse to
 `None` so the router can no-op instead of guessing. Server-side IDs
 (sites/tickets/issues/Jean jobs) keep their original casing.
+`JeanConfirm` retains its job id across an asynchronous Fleet refresh and opens
+the matching job detail rather than only navigating to the Fleet surface.
 
 ### SDUC-407 — Single instance + deep-link hand-off
 
@@ -1262,6 +1264,8 @@ Dev mode exposes an "Activité" surface with search, kind filters, relative
 timestamps, and contextual open actions. Entries can route back to the
 matching surface when enough target data is present: terminal, connection,
 script, tunnel, support ticket, hosted request, site, Jean, Fleet, or bext.
+When Recent AI is enabled, a row can explicitly open the assistant with only
+that activity entry and the bounded host directory as context.
 
 ---
 
@@ -1466,7 +1470,7 @@ than pretending that a lost process or request is still running.
 ### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
 
 Settings exposes `Prepare`, `Confirm`, and `Automatic` policies for Support
-send, Terminal execution, Script execution, Jean dispatch, and Fleet dispatch;
+send, Support triage, Terminal execution, Script execution, Jean dispatch, and Fleet dispatch;
 surface toggles remain the single disabled state. Older configurations default
 every executable capability to confirmation. Preparation hides or blocks the
 final executable action. Automatic skips the second dialog only for low or
@@ -1484,8 +1488,10 @@ operators, elevation, mutation, continuous follow modes, and duplicate steps
 are rejected. The workflow renders each command and explanation separately.
 Running a step revalidates both the command and exact active terminal session,
 then stages a high-risk Terminal action, so confirmation remains mandatory
-under every autonomy policy. Steps are not auto-chained because PTY command
-completion is not yet reliably observable; Ctrl+C remains the stop path.
+under every autonomy policy. A full plan may advance step by step only after a
+deduplicated `OSC 133;D` completion event; missing shell integration is framed
+by ShellDeck, non-zero exit stops the sequence, output is bounded, and Ctrl+C
+remains the stop path.
 
 ### SDUC-432 — Requests and Support tickets accept image evidence through every desktop path
 
@@ -1512,6 +1518,49 @@ remain visible across hard newlines and soft wraps. When `max_rows` caps the
 field, keyboard editing scrolls the internal viewport to keep the caret
 visible instead of growing the surrounding screen or typing off-screen.
 
+### SDUC-434 — The tray toggles one standalone AI Dock
+
+The system-tray menu can create, hide, show and focus one Assistant Dock without
+making the main ShellDeck window visible. The 480 px Dock is anchored to the
+right edge for the display height, has no native titlebar, and
+cannot be moved, resized or minimized. Repeated invocations reuse the existing
+Dock rather than creating duplicates. Closing the Dock hides it and keeps an
+in-flight request alive. It inherits ShellDeck's UI font and scale, uses a
+bounded global context, shares durable conversations and tasks with the main
+assistant, exposes an explicit action to reopen ShellDeck, and disables
+submission with an explanation when no usable global AI backend is configured.
+The enabled-by-default global shortcut toggles that same single Dock from any
+application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
+The Dock opens on the display containing the pointer, moves to that display on
+the next invocation if necessary, and hides on Escape or when its window loses
+focus.
+Registration failure (notably Wayland without a shortcuts portal) is non-fatal
+and leaves the tray path available.
+
+### SDUC-435 — Companion startup never strands an invisible process
+
+`companion.start_hidden` keeps the main ShellDeck window hidden on startup only
+when the system tray was created successfully. The default remains a visible
+start for old and fresh configurations. If the tray backend is unavailable,
+ShellDeck ignores the hidden-start preference and opens its main window so the
+process is always recoverable. Tray and deep-link show actions explicitly show
+the hidden window before activating it. When `tray.close_to_tray` is enabled,
+both the native window-close request and ShellDeck's custom titlebar × hide the
+main window without shutting down the workspace or tray.
+
+### SDUC-436 — The global shortcut opens only the standalone command palette
+
+With the main ShellDeck window hidden, Ctrl+Alt+Space on Windows/Linux or
+Cmd+Alt+Space on macOS opens one borderless command-palette window with the
+search input focused. Repeated triggers reuse and toggle that window. Escape
+and command confirmation hide it, as does moving focus to another window. The
+palette is centered on the display containing the pointer and migrates between
+displays on its next invocation. Commands that navigate ShellDeck reveal the
+main window after selection; background commands can complete without showing
+it. Labels, icons and shortcut hints remain contained at the minimum palette
+width. Linux/Wayland registration failure remains non-fatal and the tray entry
+opens the same standalone palette.
+
 ---
 
 ## Retired use cases
@@ -1522,6 +1571,8 @@ visible instead of growing the surrounding screen or typing off-screen.
 
 ## Change log
 
+- **2026-07-21** — Added SDUC-434..436 and SDTEST-1380..1386 for the standalone,
+  single-instance AI Dock plus recoverable hidden startup.
 - **2026-07-21** — Extended SDUC-432 and SDTEST-1373/1375/1377 to cover image
   replies and internal notes on Support tickets plus the Support requests composer.
 

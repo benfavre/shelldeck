@@ -65,6 +65,7 @@ enum AiAssistantTab {
 pub struct AiAssistantView {
     prompt_state: Entity<InputState>,
     context: AiContext,
+    available: bool,
     loading: bool,
     error: Option<String>,
     request_gate: AiRequestGate,
@@ -91,6 +92,7 @@ impl AiAssistantView {
         Self {
             prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             context,
+            available: true,
             loading: false,
             error: None,
             request_gate: AiRequestGate::default(),
@@ -118,6 +120,32 @@ impl AiAssistantView {
         cx.notify();
     }
 
+    pub fn set_history_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.history_open = open;
+        cx.notify();
+    }
+
+    /// Reload the durable conversation list before a separately hosted
+    /// assistant surface becomes visible. The main sheet and companion Dock
+    /// use distinct view entities so their focus/request gates cannot interfere,
+    /// while this refresh keeps their persisted history coherent.
+    pub fn reload_conversations(&mut self, cx: &mut Context<Self>) {
+        match AiConversationStore::load() {
+            Ok(conversations) => {
+                self.active_conversation = conversations
+                    .iter()
+                    .rev()
+                    .find(|conversation| !conversation.archived)
+                    .map(|conversation| conversation.id);
+                self.conversations = conversations;
+                self.show_archived = false;
+                self.pending_delete = None;
+            }
+            Err(error) => tracing::warn!("Failed to reload AI conversations: {error}"),
+        }
+        cx.notify();
+    }
+
     pub fn set_backend(&mut self, backend: AiBackend, model: String, cx: &mut Context<Self>) {
         self.backend = backend;
         self.model = model;
@@ -139,6 +167,29 @@ impl AiAssistantView {
             self.active_conversation = None;
         }
         cx.notify();
+    }
+
+    pub fn set_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        let was_available = self.available;
+        self.available = available;
+        if !available {
+            self.request_gate.invalidate();
+            self.loading = false;
+            self.error = Some(t!("ai.dock.unavailable").to_string());
+        } else if !was_available {
+            self.error = None;
+        }
+        cx.notify();
+    }
+
+    pub fn focus_composer(&self, window: &mut Window, cx: &App) {
+        if self.available {
+            self.prompt_state.read(cx).focus_handle(cx).focus(window);
+        }
+    }
+
+    pub fn has_open_dialog(&self) -> bool {
+        self.pending_delete.is_some()
     }
 
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
@@ -179,7 +230,7 @@ impl AiAssistantView {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
+        if self.loading || !self.available {
             return;
         }
         let prompt = self.prompt_state.read(cx).content().trim().to_string();
@@ -1005,7 +1056,7 @@ impl Render for AiAssistantView {
             .min_rows(3)
             .max_rows(6)
             .placeholder(t!("ai.assistant.placeholder").to_string())
-            .disabled(self.loading)
+            .disabled(self.loading || !self.available)
             .on_enter(submit);
 
         let mut quick_actions = div().flex().flex_wrap().justify_center().gap(px(8.0));
@@ -1018,7 +1069,7 @@ impl Render for AiAssistantView {
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Sm)
                     .icon(IconSource::from(icon))
-                    .disabled(self.loading)
+                    .disabled(self.loading || !self.available)
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.submit_prompt(quick_prompt.clone(), cx);
                     })),
@@ -1156,7 +1207,7 @@ impl Render for AiAssistantView {
                         .variant(ButtonVariant::Ai)
                         .size(ButtonSize::Sm)
                         .icon(IconSource::from("send"))
-                        .disabled(self.loading)
+                        .disabled(self.loading || !self.available)
                         .on_click(cx.listener(|this, _, _window, cx| this.submit(cx))),
                 ),
         );

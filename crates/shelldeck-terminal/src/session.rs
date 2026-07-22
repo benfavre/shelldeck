@@ -27,6 +27,13 @@ type SshSpawn = (
     mpsc::UnboundedReceiver<Vec<u8>>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellFlavor {
+    Posix,
+    Fish,
+    PowerShell,
+}
+
 pub struct TerminalSession {
     pub id: Uuid,
     pub title: String,
@@ -38,6 +45,7 @@ pub struct TerminalSession {
     /// Optional signal fired by the reader thread whenever new output is
     /// processed, so the UI can repaint event-driven instead of polling.
     output_notifier: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
+    shell_flavor: ShellFlavor,
 }
 
 impl TerminalSession {
@@ -51,6 +59,21 @@ impl TerminalSession {
 impl TerminalSession {
     /// Spawn a new local terminal session.
     pub fn spawn_local(shell: Option<&str>, rows: u16, cols: u16) -> crate::Result<Self> {
+        let shell_name = shell
+            .map(str::to_string)
+            .or_else(|| std::env::var("SHELL").ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let shell_flavor = if shell_name.contains("fish") {
+            ShellFlavor::Fish
+        } else if cfg!(target_os = "windows")
+            || shell_name.contains("powershell")
+            || shell_name.contains("pwsh")
+        {
+            ShellFlavor::PowerShell
+        } else {
+            ShellFlavor::Posix
+        };
         let grid = Arc::new(Mutex::new(TerminalGrid::new(rows as usize, cols as usize)));
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -144,6 +167,7 @@ impl TerminalSession {
             input_tx,
             resize_fn: Some(resize_fn),
             output_notifier,
+            shell_flavor,
         })
     }
 
@@ -213,6 +237,7 @@ impl TerminalSession {
             input_tx,
             resize_fn: None,
             output_notifier,
+            shell_flavor: ShellFlavor::Posix,
         };
 
         Ok((session, data_tx, input_rx))
@@ -221,6 +246,29 @@ impl TerminalSession {
     /// Send input data to the terminal (e.g., keyboard input).
     pub fn write_input(&self, data: &[u8]) {
         let _ = self.input_tx.send(data.to_vec());
+    }
+
+    /// Submit a command with OSC 133 completion markers when the shell has not
+    /// advertised native integration. The original command remains unchanged.
+    pub fn write_tracked_command(&self, command: &str) {
+        if self.grid.lock().prompt_mark.is_some() {
+            self.write_input(command.as_bytes());
+            self.write_input(b"\r");
+            return;
+        }
+        let framed = match self.shell_flavor {
+            ShellFlavor::Posix => format!(
+                "printf '\\033]133;C\\007'; {{ {command}; }}; __shelldeck_status=$?; printf '\\033]133;D;%s\\007' \"$__shelldeck_status\""
+            ),
+            ShellFlavor::Fish => format!(
+                "printf '\\033]133;C\\007'; begin; {command}; end; set __shelldeck_status $status; printf '\\033]133;D;%s\\007' $__shelldeck_status"
+            ),
+            ShellFlavor::PowerShell => format!(
+                "$e=[char]27; [Console]::Write(\"$e]133;C`a\"); {command}; $s=if($LASTEXITCODE -ne $null){{$LASTEXITCODE}}elseif($?){{0}}else{{1}}; [Console]::Write(\"$e]133;D;$s`a\")"
+            ),
+        };
+        self.write_input(framed.as_bytes());
+        self.write_input(b"\r");
     }
 
     /// Resize the terminal grid and underlying PTY / SSH channel.
@@ -240,5 +288,43 @@ impl TerminalSession {
     /// Check if the session is still running.
     pub fn is_running(&self) -> bool {
         self.state == SessionState::Running
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // SDTEST-1379
+    #[test]
+    fn tracked_posix_command_emits_completion_and_captures_output() {
+        let session = TerminalSession::spawn_local(Some("/bin/sh"), 24, 80).expect("spawn sh");
+        session.write_tracked_command("printf shelldeck_tracked_output");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            {
+                let grid = session.grid.lock();
+                if grid.prompt_mark_sequence > 0 {
+                    assert_eq!(
+                        grid.prompt_mark,
+                        Some(crate::grid::PromptMark::CommandFinished(Some(0)))
+                    );
+                    let output = grid.command_output(20, 2_000);
+                    assert!(
+                        output.contains("shelldeck_tracked_output"),
+                        "captured output: {output:?}"
+                    );
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "tracked command did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session.write_input(b"exit\r");
     }
 }

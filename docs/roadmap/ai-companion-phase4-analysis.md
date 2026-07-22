@@ -13,12 +13,13 @@ doivent etre simplifiees pour eviter une configuration trop complexe.
 
 | Fonction | Pertinence | Recommandation |
 |---|---:|---|
-| Policies par capacite | Tres forte | A faire avec une configuration simple |
-| Automatismes Support et triage | Forte, mais ciblee | Automatiser le classement, jamais les reponses par defaut |
-| Plans de diagnostic Terminal | Tres forte | Etapes visibles et controle permanent |
-| Centre En attente | Tres forte | Centre unifie des taches IA |
-| Notifications et progression | Indispensable | Partie du centre de taches, pas une fonction separee |
+| Policies par capacite | Tres forte | Fait pour les capacites executables |
+| Automatismes Support et triage | Forte, mais ciblee | Fait apres action explicite |
+| Plans de diagnostic Terminal | Tres forte | Fait avec completion OSC 133 |
+| Centre En attente | Tres forte | Fait |
+| Notifications et progression | Indispensable | Fait |
 | Tags de demandes | Moyenne a forte | Attendre la mutation dans l'API Issues |
+| Reactions IA aux evenements | Moyenne | Fait depuis les lignes Activite |
 
 ## 2. Policies d'autonomie par capacite
 
@@ -66,12 +67,15 @@ Les actions suivantes ne doivent pas etre automatiques par defaut:
 - dispatcher vers Fleet sans limites explicites.
 
 ShellDeck etant une application desktop, ces automatismes ne fonctionnent que
-lorsque l'application est ouverte. L'interface devra afficher clairement que
-l'automatisation est locale. Le traitement devra aussi etre idempotent pour
-ne pas retraiter un ticket a chaque polling.
+lorsque l'application est ouverte. Le perimetre livre part d'un clic explicite
+sur Trier; le polling Support ne declenche donc aucun appel provider et ne peut
+pas retraiter un ticket en boucle.
 
 **Decision:** tres utile pour le triage de metadonnees; l'envoi automatique de
-reponses reste hors du comportement par defaut.
+reponses reste hors du comportement par defaut. La proposition JSON validee,
+l'annuaire des agents, les mutations priorite/assignation et la policy dediee
+sont livres. `Automatique` applique le triage apres le clic explicite; le
+declenchement silencieux en arriere-plan reste volontairement exclu.
 
 ## 4. Plans de diagnostic Terminal
 
@@ -86,13 +90,14 @@ Un plan de diagnostic doit suivre ce flux:
 5. La sortie d'une etape alimente la suivante.
 6. L'utilisateur peut arreter le plan a tout moment.
 
-**Livre (2026-07-20):** le premier palier produit genere un JSON strict de 1
+**Livre (2026-07-21):** le produit genere un JSON strict de 1
 a 5 etapes, valide une allowlist de commandes en lecture seule, puis affiche
 chaque commande avec son objectif. Chaque etape est une action Terminal a
 risque eleve, revalidee et confirmee separement; Ctrl+C reste le mecanisme
-d'arret. Les points 4 et 5 ne sont pas automatises pour le moment: la fin
-d'une commande PTY n'est pas observable de facon fiable, donc ShellDeck ne
-doit ni supposer sa completion ni reinjecter une sortie partielle.
+d'arret. Le plan complet instrumente les shells sans integration native,
+transforme `OSC 133;D[;exitcode]` en evenement de session deduplique et capture
+une sortie bornee. L'etape suivante n'est preparee qu'apres cet evenement,
+conserve sa confirmation et un code non nul arrete la sequence.
 
 Le modele ne doit pas pouvoir declarer seul qu'une commande est sans danger.
 L'execution automatique doit reposer sur des operations reconnues et bornees.
@@ -102,8 +107,8 @@ en confirmation.
 Chaque plan doit avoir une limite d'etapes, de duree et de volume de sortie
 pour eviter les boucles et les consommations non bornees.
 
-**Decision:** premier palier livre; l'orchestration sequentielle depend d'un
-signal de fin PTY fiable.
+**Decision:** livre en etendant le protocole `OSC 133` existant jusqu'au
+Workspace; aucune temporisation n'est utilisee pour supposer une completion.
 
 ## 5. File de taches et centre En attente
 
@@ -162,9 +167,10 @@ avec leur filtrage.
 1. Modele unifie de taches IA et centre En attente. **Fait.**
 2. Progression, arret, resultats et notifications. **Fait.**
 3. Policies simples par capacite. **Fait pour les capacites executables.**
-4. Plans de diagnostic Terminal.
-5. Triage Support automatique borne et idempotent.
+4. Plans de diagnostic Terminal. **Fait avec orchestration OSC 133.**
+5. Triage Support automatique borne. **Fait apres clic explicite; aucun polling IA silencieux.**
 6. Tags apres evolution de l'API Issues.
+7. Actions IA depuis l'activite recente. **Fait avec declenchement explicite.**
 
 La phase 4 reste donc pertinente avec deux restrictions importantes:
 l'automatisation generale des reponses Support est ecartee et la configuration

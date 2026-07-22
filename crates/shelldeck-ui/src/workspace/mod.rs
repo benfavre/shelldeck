@@ -34,7 +34,7 @@ use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
 use shelldeck_ssh::tunnel::TunnelHandle;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::{DerefMut, Range};
 use uuid::Uuid;
 
@@ -245,6 +245,11 @@ impl ActiveScript {
     }
 }
 
+struct AiDiagnosticSequence {
+    target: AiWorkflowTarget,
+    remaining: VecDeque<String>,
+}
+
 pub struct Workspace {
     connections: Vec<Connection>,
     store: ConnectionStore,
@@ -259,6 +264,7 @@ pub struct Workspace {
     file_editor: Entity<FileEditorView>,
     settings: Entity<SettingsView>,
     ai_assistant: Entity<AiAssistantView>,
+    ai_dock_assistant: Entity<AiAssistantView>,
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
@@ -266,8 +272,10 @@ pub struct Workspace {
     ai_action_confirmation: Option<AiActionPlan>,
     ai_script_runs: HashMap<Uuid, AiActionPlan>,
     ai_terminal_runs: HashMap<Uuid, AiActionPlan>,
+    ai_diagnostic_sequences: HashMap<Uuid, AiDiagnosticSequence>,
     status_bar: Entity<StatusBar>,
     command_palette: Entity<CommandPalette>,
+    companion_command_palette: Entity<CommandPalette>,
     toasts: Entity<ToastContainer>,
     connection_form: Option<Entity<ConnectionForm>>,
     login_form: Option<Entity<LoginForm>>,
@@ -295,8 +303,10 @@ pub struct Workspace {
     _sidebar_sub: Subscription,
     _terminal_sub: Subscription,
     _palette_sub: Subscription,
+    _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
     _ai_assistant_sub: Subscription,
+    _ai_dock_assistant_sub: Subscription,
     _ai_workflow_sub: Option<Subscription>,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
@@ -367,6 +377,8 @@ pub struct Workspace {
     _fleet_sub: Subscription,
     /// Cached fleet snapshot (feeds fleet_view).
     fleet_snapshot: Option<FleetSnapshot>,
+    /// Exact Fleet job requested by a deep link, retained across async refresh.
+    pending_fleet_job_focus: Option<String>,
     /// Poll while the Fleet view is visible.
     _fleet_view_poll: Option<gpui::Task<()>>,
     /// This machine's registered runtime instance (when the runtime is enabled).
@@ -634,6 +646,16 @@ impl Workspace {
                 cx,
             )
         });
+        let ai_dock_assistant = cx.new(|cx| {
+            AiAssistantView::new(
+                AiContext::new(
+                    AiSurface::Global,
+                    t!("ai.context.global").to_string(),
+                    serde_json::json!({}),
+                ),
+                cx,
+            )
+        });
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
@@ -655,6 +677,10 @@ impl Workspace {
             let _ = AiTaskStore::save(&ai_tasks);
         }
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
+        ai_dock_assistant.update(cx, |view, cx| {
+            view.set_history_open(false, cx);
+            view.set_tasks(ai_tasks.clone(), cx);
+        });
         let ai_backend_ready = app_config.ai.is_configured()
             && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
         support.update(cx, |view, cx| {
@@ -683,6 +709,9 @@ impl Workspace {
                 cx,
             );
         });
+        recent.update(cx, |view, _| {
+            view.set_ai_enabled(ai_backend_ready && app_config.ai.allows(AiSurface::Recent));
+        });
 
         // Create auto-updater
         let auto_updater = cx.new(|cx| {
@@ -700,6 +729,12 @@ impl Workspace {
             palette.set_actions(Self::base_palette_actions(false, false));
             palette
         });
+        let companion_command_palette = cx.new(|cx| {
+            let mut palette = CommandPalette::new(cx);
+            palette.set_standalone(true);
+            palette.set_actions(Self::base_palette_actions(false, false));
+            palette
+        });
 
         // Subscribe to sidebar events
         let sidebar_sub = cx.subscribe(&sidebar, |this, _sidebar, event: &SidebarEvent, cx| {
@@ -714,32 +749,14 @@ impl Workspace {
         // Subscribe to command palette events
         let palette_sub = cx.subscribe(
             &command_palette,
-            |this, _palette, event: &CommandPaletteEvent, cx| match event {
-                CommandPaletteEvent::SelectionPreviewed(action) => {
-                    this.preview_palette_action(action.as_ref(), cx);
-                }
-                CommandPaletteEvent::ActionSelected(action) => {
-                    if let Some(t) = action.as_any().downcast_ref::<ApplyAppTheme>() {
-                        // Commit the previewed app theme (persists it).
-                        this.revert_terminal_theme_preview(cx);
-                        this.commit_theme_preview(t.pref.clone(), cx);
-                    } else if let Some(t) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
-                        // Commit the previewed terminal theme (persists it).
-                        this.revert_theme_preview(cx);
-                        this.terminal_theme_before_preview = None;
-                        this.apply_terminal_theme_by_name(&t.name, cx);
-                    } else {
-                        // Any other command: drop any active previews first.
-                        this.revert_theme_preview(cx);
-                        this.revert_terminal_theme_preview(cx);
-                        cx.dispatch_action(action.as_ref());
-                    }
-                }
-                CommandPaletteEvent::Dismissed => {
-                    this.revert_theme_preview(cx);
-                    this.revert_terminal_theme_preview(cx);
-                    cx.notify();
-                }
+            |this, _palette, event: &CommandPaletteEvent, cx| {
+                this.handle_command_palette_event(event, cx);
+            },
+        );
+        let companion_palette_sub = cx.subscribe(
+            &companion_command_palette,
+            |this, _palette, event: &CommandPaletteEvent, cx| {
+                this.handle_command_palette_event(event, cx);
             },
         );
 
@@ -748,10 +765,14 @@ impl Workspace {
             this.handle_settings_event(event, cx);
         });
 
-        let ai_assistant_sub = cx.subscribe(
-            &ai_assistant,
-            |this, _view, event: &AiAssistantEvent, cx| {
-                this.handle_ai_assistant_event(event.clone(), cx);
+        let ai_assistant_sub =
+            cx.subscribe(&ai_assistant, |this, view, event: &AiAssistantEvent, cx| {
+                this.handle_ai_assistant_event(view, event.clone(), cx);
+            });
+        let ai_dock_assistant_sub = cx.subscribe(
+            &ai_dock_assistant,
+            |this, view, event: &AiAssistantEvent, cx| {
+                this.handle_ai_assistant_event(view, event.clone(), cx);
             },
         );
 
@@ -871,6 +892,7 @@ impl Workspace {
             file_editor,
             settings,
             ai_assistant,
+            ai_dock_assistant,
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,
@@ -878,8 +900,10 @@ impl Workspace {
             ai_action_confirmation: None,
             ai_script_runs: HashMap::new(),
             ai_terminal_runs: HashMap::new(),
+            ai_diagnostic_sequences: HashMap::new(),
             status_bar,
             command_palette,
+            companion_command_palette,
             toasts,
             connection_form: None,
             login_form: None,
@@ -901,8 +925,10 @@ impl Workspace {
             _sidebar_sub: sidebar_sub,
             _terminal_sub: terminal_sub,
             _palette_sub: palette_sub,
+            _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
             _ai_assistant_sub: ai_assistant_sub,
+            _ai_dock_assistant_sub: ai_dock_assistant_sub,
             _ai_workflow_sub: None,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
@@ -945,6 +971,7 @@ impl Workspace {
             fleet_view,
             _fleet_sub: fleet_sub,
             fleet_snapshot: None,
+            pending_fleet_job_focus: None,
             _fleet_view_poll: None,
             runtime_instance: None,
             runtime_awaiting: Vec::new(),
@@ -1380,6 +1407,7 @@ impl Workspace {
                 if let Some(plan) = self.ai_terminal_runs.remove(id) {
                     self.audit_ai_action(&plan, "target_closed", cx);
                 }
+                self.ai_diagnostic_sequences.remove(id);
                 self.add_activity(
                     t!("activity.terminal_closed").to_string(),
                     ActivityKind::Terminal,
@@ -1537,11 +1565,47 @@ impl Workspace {
                     if let Some(plan) = self.ai_terminal_runs.remove(session_id) {
                         self.audit_ai_action(&plan, "cancelled", cx);
                     }
+                    self.ai_diagnostic_sequences.remove(session_id);
                     self.show_toast(
                         t!("toast.ai.command_stopped").to_string(),
                         ToastLevel::Info,
                         cx,
                     );
+                }
+            }
+            TerminalEvent::AiCommandFinished {
+                session_id,
+                exit_code,
+                output,
+            } => {
+                if let Some(plan) = self.ai_terminal_runs.remove(session_id) {
+                    let succeeded = exit_code.is_none_or(|code| code == 0);
+                    self.audit_ai_action(&plan, if succeeded { "succeeded" } else { "failed" }, cx);
+                    self.show_toast(
+                        if succeeded {
+                            t!("toast.ai.action_succeeded").to_string()
+                        } else {
+                            t!("toast.ai.command_failed", code = exit_code.unwrap_or(-1))
+                                .to_string()
+                        },
+                        if succeeded {
+                            ToastLevel::Success
+                        } else {
+                            ToastLevel::Error
+                        },
+                        cx,
+                    );
+                    if succeeded {
+                        if self.ai_diagnostic_sequences.contains_key(session_id) {
+                            self.prepare_next_ai_diagnostic_step(*session_id, output.clone(), cx);
+                        }
+                    } else if let Some(sequence) = self.ai_diagnostic_sequences.remove(session_id) {
+                        self.set_ai_workflow_task_status(
+                            &sequence.target,
+                            AiTaskStatus::Failed,
+                            cx,
+                        );
+                    }
                 }
             }
         }
@@ -1599,7 +1663,18 @@ impl Workspace {
                 self.app_config.terminal = config.terminal.clone();
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
+                self.app_config.companion = config.companion.clone();
                 self.app_config.ai = config.ai.clone();
+                let dock_available =
+                    self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+                self.ai_dock_assistant.update(cx, |assistant, cx| {
+                    assistant.set_backend(
+                        self.app_config.ai.backend,
+                        self.app_config.ai.model.clone(),
+                        cx,
+                    );
+                    assistant.set_available(dock_available, cx);
+                });
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
@@ -1772,6 +1847,56 @@ impl Workspace {
         self.open_ai_assistant_with_context(context, cx);
     }
 
+    /// Prepare the shared assistant entity for the standalone companion Dock.
+    /// The Dock intentionally starts with a bounded global context rather than
+    /// silently inheriting terminal, ticket or script data from the main UI.
+    pub fn prepare_ai_dock(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
+        let available = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+        // Both views persist the complete conversation list. Keep only one
+        // editor visible so concurrent saves cannot overwrite each other.
+        self.ai_sheet = None;
+        self.ai_dock_assistant.update(cx, |assistant, cx| {
+            assistant.reload_conversations(cx);
+            assistant.set_backend(
+                self.app_config.ai.backend,
+                self.app_config.ai.model.clone(),
+                cx,
+            );
+            assistant.set_context(
+                AiContext::new(
+                    AiSurface::Global,
+                    t!("ai.context.global").to_string(),
+                    serde_json::json!({}),
+                ),
+                cx,
+            );
+            assistant.set_available(available, cx);
+        });
+        cx.notify();
+        self.ai_dock_assistant.clone()
+    }
+
+    pub fn companion_ui_font_family(&self) -> Option<String> {
+        (self.ui_font_family != "System Default").then(|| self.ui_font_family.clone())
+    }
+
+    /// Refresh the hidden Dock before showing it again without touching its
+    /// context request gate, so an in-flight completion remains valid.
+    pub fn refresh_ai_dock(&mut self, cx: &mut Context<Self>) {
+        let available = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+        self.ai_sheet = None;
+        self.ai_dock_assistant.update(cx, |assistant, cx| {
+            assistant.reload_conversations(cx);
+            assistant.set_backend(
+                self.app_config.ai.backend,
+                self.app_config.ai.model.clone(),
+                cx,
+            );
+            assistant.set_available(available, cx);
+        });
+        cx.notify();
+    }
+
     fn current_ai_context(&self, cx: &App) -> AiContext {
         if self.effective_mode() == AppMode::Support {
             let support = self.support.read(cx);
@@ -1917,6 +2042,10 @@ impl Workspace {
                 cx,
             );
         });
+        self.recent.update(cx, |view, cx| {
+            view.set_ai_enabled(backend_ready && self.app_config.ai.allows(AiSurface::Recent));
+            cx.notify();
+        });
     }
 
     fn close_ai_workflow(&mut self, cx: &mut Context<Self>) {
@@ -1932,6 +2061,8 @@ impl Workspace {
         }
         let tasks = self.ai_tasks.clone();
         self.ai_assistant
+            .update(cx, |view, cx| view.set_tasks(tasks.clone(), cx));
+        self.ai_dock_assistant
             .update(cx, |view, cx| view.set_tasks(tasks, cx));
         cx.notify();
     }
@@ -2155,6 +2286,9 @@ impl Workspace {
             _ => None,
         };
         let issue_triage_current = match &target {
+            AiWorkflowTarget::SupportTriage { .. } => {
+                self.support.read(cx).selected_ticket_triage_state()
+            }
             AiWorkflowTarget::IssueTriage { issue_id } => self
                 .issue_detail
                 .as_ref()
@@ -2232,12 +2366,19 @@ impl Workspace {
                     self.ai_context_data_with_hosts(entity),
                 )
             }
-            AiWorkflowTarget::SupportReply { .. }
-            | AiWorkflowTarget::SupportSummary { .. }
-            | AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
+            AiWorkflowTarget::SupportReply { .. } | AiWorkflowTarget::SupportSummary { .. } => {
+                AiContext::new(
+                    AiSurface::Support,
+                    t!("ai.context.support").to_string(),
+                    self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
+                )
+            }
+            AiWorkflowTarget::SupportTriage { .. } => AiContext::new(
                 AiSurface::Support,
                 t!("ai.context.support").to_string(),
-                self.ai_context_data_with_hosts(self.support.read(cx).ai_context_data()),
+                self.ai_context_data_with_hosts(
+                    self.support.read(cx).support_triage_context_data(),
+                ),
             ),
             AiWorkflowTarget::IssueReply { .. } | AiWorkflowTarget::IssueSummary { .. } => {
                 AiContext::new(
@@ -2444,6 +2585,69 @@ impl Workspace {
         }
     }
 
+    fn start_ai_diagnostic_sequence(
+        &mut self,
+        target: AiWorkflowTarget,
+        plan: shelldeck_core::ai::AiDiagnosticPlan,
+        cx: &mut Context<Self>,
+    ) {
+        let AiWorkflowTarget::TerminalDiagnose { session_id } = &target else {
+            return;
+        };
+        let Ok(session_id) = Uuid::parse_str(session_id) else {
+            return;
+        };
+        if plan
+            .steps
+            .iter()
+            .any(|step| validate_diagnostic_command(&step.command).is_err())
+        {
+            self.show_toast(
+                t!("toast.ai.command_invalid").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        let remaining = plan
+            .steps
+            .into_iter()
+            .map(|step| step.command)
+            .collect::<VecDeque<_>>();
+        self.ai_diagnostic_sequences
+            .insert(session_id, AiDiagnosticSequence { target, remaining });
+        self.prepare_next_ai_diagnostic_step(session_id, String::new(), cx);
+    }
+
+    fn prepare_next_ai_diagnostic_step(
+        &mut self,
+        session_id: Uuid,
+        _previous_output: String,
+        cx: &mut Context<Self>,
+    ) {
+        let next = self
+            .ai_diagnostic_sequences
+            .get_mut(&session_id)
+            .and_then(|sequence| {
+                sequence
+                    .remaining
+                    .pop_front()
+                    .map(|command| (sequence.target.clone(), command))
+            });
+        if let Some((target, command)) = next {
+            self.prepare_ai_diagnostic_step(target, command, cx);
+            return;
+        }
+        if let Some(sequence) = self.ai_diagnostic_sequences.remove(&session_id) {
+            self.set_ai_workflow_task_status(&sequence.target, AiTaskStatus::Succeeded, cx);
+            self.show_toast(
+                t!("toast.ai.diagnostic_completed").to_string(),
+                ToastLevel::Success,
+                cx,
+            );
+        }
+    }
+
     fn prepare_jean_dispatch(&mut self, prompt: String, cx: &mut Context<Self>) {
         if self.effective_jean_config().is_none() || prompt.trim().is_empty() {
             return;
@@ -2576,6 +2780,11 @@ impl Workspace {
 
     fn cancel_ai_action_confirmation(&mut self, cx: &mut Context<Self>) {
         if let Some(plan) = self.ai_action_confirmation.take() {
+            if plan.capability == shelldeck_core::ai::AiCapability::TerminalDiagnose {
+                if let Ok(session_id) = Uuid::parse_str(&plan.target_id) {
+                    self.ai_diagnostic_sequences.remove(&session_id);
+                }
+            }
             let resumable = self
                 .ai_tasks
                 .iter()
@@ -2624,6 +2833,42 @@ impl Workspace {
         .detach();
     }
 
+    fn track_ai_terminal_run(
+        &mut self,
+        session_id: Uuid,
+        plan: AiActionPlan,
+        cx: &mut Context<Self>,
+    ) {
+        let action_id = plan.id;
+        let timeout = std::time::Duration::from_secs(plan.timeout_secs);
+        self.ai_terminal_runs.insert(session_id, plan);
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor().timer(timeout).await;
+            let _ = this.update(cx, |workspace, cx| {
+                let still_same_action = workspace
+                    .ai_terminal_runs
+                    .get(&session_id)
+                    .is_some_and(|plan| plan.id == action_id);
+                if !still_same_action {
+                    return;
+                }
+                let _ = workspace
+                    .terminal
+                    .update(cx, |terminal, cx| terminal.stop_ai_command(session_id, cx));
+                workspace.ai_diagnostic_sequences.remove(&session_id);
+                if let Some(plan) = workspace.ai_terminal_runs.remove(&session_id) {
+                    workspace.audit_ai_action(&plan, "timed_out", cx);
+                }
+                workspace.show_toast(
+                    t!("toast.ai.action_timed_out").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn finish_ai_script_run(
         &mut self,
         script_id: Uuid,
@@ -2663,7 +2908,7 @@ impl Workspace {
                 if executed {
                     self.audit_ai_action(&plan, "submitted", cx);
                     if let Ok(session_id) = Uuid::parse_str(&plan.target_id) {
-                        self.ai_terminal_runs.insert(session_id, plan.clone());
+                        self.track_ai_terminal_run(session_id, plan.clone(), cx);
                     }
                     self.close_ai_workflow(cx);
                     self.show_toast(
@@ -2672,6 +2917,11 @@ impl Workspace {
                         cx,
                     );
                 } else {
+                    if plan.capability == shelldeck_core::ai::AiCapability::TerminalDiagnose {
+                        if let Ok(session_id) = Uuid::parse_str(&plan.target_id) {
+                            self.ai_diagnostic_sequences.remove(&session_id);
+                        }
+                    }
                     self.audit_ai_action(&plan, "target_changed", cx);
                     self.show_toast(
                         t!("toast.ai.action_target_changed").to_string(),
@@ -2945,8 +3195,10 @@ impl Workspace {
                 };
                 let context = self.ai_workflow_context(&target, cx);
                 let config = self.app_config.ai.clone();
-                let structured_issue_triage =
-                    matches!(&target, AiWorkflowTarget::IssueTriage { .. });
+                let structured_issue_triage = matches!(
+                    &target,
+                    AiWorkflowTarget::SupportTriage { .. } | AiWorkflowTarget::IssueTriage { .. }
+                );
                 let structured_name = matches!(&target, AiWorkflowTarget::EntityNaming { .. });
                 let structured_diagnostic =
                     matches!(&target, AiWorkflowTarget::TerminalDiagnose { .. });
@@ -2959,6 +3211,11 @@ impl Workspace {
                 .to_string();
                 let workflow = self.ai_workflow.as_ref().map(|entity| entity.downgrade());
                 let task_id = self.begin_ai_workflow_task(&target, instructions, cx);
+                let automatic_support_triage =
+                    matches!(&target, AiWorkflowTarget::SupportTriage { .. })
+                        && self.app_config.ai.policies.support_triage
+                            == shelldeck_core::ai::AiAutonomyLevel::Automatic;
+                let generated_target = target.clone();
                 cx.spawn(async move |this, cx: &mut AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -3009,6 +3266,21 @@ impl Workspace {
                         .map_err(|error| error.to_string());
                     let _ = this.update(cx, |workspace, cx| {
                         workspace.finish_ai_workflow_task(task_id, &result, cx);
+                        if automatic_support_triage {
+                            if let (AiWorkflowTarget::SupportTriage { ticket_id }, Ok(raw)) =
+                                (&generated_target, &result)
+                            {
+                                if let Ok(proposal) = parse_issue_triage_proposal(raw) {
+                                    workspace.set_ai_workflow_task_status(
+                                        &generated_target,
+                                        AiTaskStatus::Applied,
+                                        cx,
+                                    );
+                                    workspace.close_ai_workflow(cx);
+                                    workspace.apply_support_triage(ticket_id.clone(), proposal, cx);
+                                }
+                            }
+                        }
                     });
                     if let Some(workflow) = workflow.and_then(|workflow| workflow.upgrade()) {
                         let _ = workflow.update(cx, |view, cx| {
@@ -3077,6 +3349,38 @@ impl Workspace {
                         ToastLevel::Success,
                         cx,
                     );
+                    return;
+                }
+                if let AiWorkflowTarget::SupportTriage { ticket_id } = &target {
+                    let proposal = match parse_issue_triage_proposal(&result) {
+                        Ok(proposal) => proposal,
+                        Err(error) => {
+                            self.show_toast(
+                                t!("toast.ai.triage_invalid", error = error.to_string())
+                                    .to_string(),
+                                ToastLevel::Error,
+                                cx,
+                            );
+                            return;
+                        }
+                    };
+                    if self.app_config.ai.policies.support_triage
+                        == shelldeck_core::ai::AiAutonomyLevel::Preparation
+                    {
+                        cx.write_to_clipboard(ClipboardItem::new_string(result));
+                        self.set_ai_workflow_task_status(&target, AiTaskStatus::Applied, cx);
+                        self.close_ai_workflow(cx);
+                        self.show_toast(
+                            t!("toast.ai.analysis_copied").to_string(),
+                            ToastLevel::Success,
+                            cx,
+                        );
+                        return;
+                    }
+                    self.set_ai_workflow_task_status(&target, AiTaskStatus::Applied, cx);
+                    let ticket_id = ticket_id.clone();
+                    self.close_ai_workflow(cx);
+                    self.apply_support_triage(ticket_id, proposal, cx);
                     return;
                 }
                 if let AiWorkflowTarget::IssueTriage { issue_id } = &target {
@@ -3207,6 +3511,9 @@ impl Workspace {
             AiWorkflowEvent::PrepareDiagnosticStep { target, command } => {
                 self.prepare_ai_diagnostic_step(target, command, cx);
             }
+            AiWorkflowEvent::PrepareDiagnosticPlan { target, plan } => {
+                self.start_ai_diagnostic_sequence(target, plan, cx);
+            }
             AiWorkflowEvent::Pending {
                 target,
                 instructions,
@@ -3247,7 +3554,13 @@ impl Workspace {
         if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;
         }
+        for handle in cx.windows() {
+            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
+                let _ = dock.update(cx, |_dock, window, _cx| window.hide_window());
+            }
+        }
         self.ai_assistant.update(cx, |assistant, cx| {
+            assistant.reload_conversations(cx);
             assistant.set_backend(
                 self.app_config.ai.backend,
                 self.app_config.ai.model.clone(),
@@ -3275,7 +3588,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn handle_ai_assistant_event(&mut self, event: AiAssistantEvent, cx: &mut Context<Self>) {
+    fn handle_ai_assistant_event(
+        &mut self,
+        source: Entity<AiAssistantView>,
+        event: AiAssistantEvent,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             AiAssistantEvent::Submit {
                 request_id,
@@ -3284,6 +3602,7 @@ impl Workspace {
                 context,
             } => {
                 let config = self.app_config.ai.clone();
+                let source = source.clone();
                 cx.spawn(async move |this, cx: &mut AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -3295,8 +3614,8 @@ impl Workspace {
                         })
                         .await
                         .map_err(|error| error.to_string());
-                    let _ = this.update(cx, |workspace, cx| {
-                        workspace.ai_assistant.update(cx, |assistant, cx| {
+                    let _ = this.update(cx, |_workspace, cx| {
+                        source.update(cx, |assistant, cx| {
                             assistant.set_result(request_id, conversation_id, result, cx);
                         });
                     });
@@ -3623,6 +3942,16 @@ impl Workspace {
     fn handle_recent_event(&mut self, event: RecentEvent, cx: &mut Context<Self>) {
         match event {
             RecentEvent::Open(entry) => self.open_activity(entry, cx),
+            RecentEvent::Analyze(entry) => {
+                let context = AiContext::new(
+                    AiSurface::Recent,
+                    t!("ai.context.recent_event").to_string(),
+                    self.ai_context_data_with_hosts(serde_json::json!({
+                        "activity": entry,
+                    })),
+                );
+                self.open_ai_assistant_with_context(context, cx);
+            }
         }
     }
 
@@ -4728,8 +5057,107 @@ impl Workspace {
             }
         }
         self.command_palette.update(cx, |palette, _| {
+            palette.set_actions(actions.clone());
+        });
+        self.companion_command_palette.update(cx, |palette, _| {
             palette.set_actions(actions);
         });
+    }
+
+    fn handle_command_palette_event(
+        &mut self,
+        event: &CommandPaletteEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            CommandPaletteEvent::SelectionPreviewed(action) => {
+                self.preview_palette_action(action.as_ref(), cx);
+            }
+            CommandPaletteEvent::ActionSelected(action) => {
+                if let Some(theme) = action.as_any().downcast_ref::<ApplyAppTheme>() {
+                    self.revert_terminal_theme_preview(cx);
+                    self.commit_theme_preview(theme.pref.clone(), cx);
+                } else if let Some(theme) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
+                    self.revert_theme_preview(cx);
+                    self.terminal_theme_before_preview = None;
+                    self.apply_terminal_theme_by_name(&theme.name, cx);
+                } else {
+                    self.revert_theme_preview(cx);
+                    self.revert_terminal_theme_preview(cx);
+                    self.execute_palette_action(action.as_ref(), cx);
+                }
+            }
+            CommandPaletteEvent::Dismissed => {
+                self.revert_theme_preview(cx);
+                self.revert_terminal_theme_preview(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    fn execute_palette_action(&mut self, action: &dyn Action, cx: &mut Context<Self>) {
+        if action.as_any().is::<NewTerminal>() {
+            self.open_new_terminal(cx);
+        } else if action.as_any().is::<ToggleSidebar>() {
+            self.toggle_sidebar(cx);
+        } else if action.as_any().is::<OpenSettings>() {
+            self.set_active_view(ActiveView::Settings);
+            cx.notify();
+        } else if action.as_any().is::<CloseTab>() {
+            self.close_active_tab(cx);
+        } else if action.as_any().is::<NextTab>() {
+            self.next_tab(cx);
+        } else if action.as_any().is::<PrevTab>() {
+            self.prev_tab(cx);
+        } else if action.as_any().is::<Quit>() {
+            self.shutdown(cx);
+            cx.quit();
+        } else if action.as_any().is::<OpenTemplateBrowser>() {
+            self.set_active_view(ActiveView::Scripts);
+            self.show_template_browser(cx);
+        } else if action.as_any().is::<NewScript>() {
+            self.set_active_view(ActiveView::Scripts);
+            self.show_script_form(cx);
+        } else if action.as_any().is::<OpenServerSync>() {
+            self.set_active_view(ActiveView::ServerSync);
+            cx.notify();
+        } else if action.as_any().is::<OpenSites>() {
+            self.set_active_view(ActiveView::Sites);
+            cx.notify();
+        } else if action.as_any().is::<OpenRecent>() {
+            self.activate_dev_section(SidebarSection::Recent, cx);
+        } else if action.as_any().is::<OpenFileEditorView>() {
+            self.set_active_view(ActiveView::FileEditor);
+            cx.notify();
+        } else if action.as_any().is::<CloudSyncNow>() {
+            self.cloud_sync_now(cx);
+        } else if action.as_any().is::<SwitchSite>() {
+            self.open_site_switcher(cx);
+        } else if let Some(area) = action.as_any().downcast_ref::<OpenManageArea>() {
+            self.open_manage_area(area.path.clone(), cx);
+        } else if let Some(mode) = action.as_any().downcast_ref::<SetAppMode>() {
+            self.set_mode(mode.mode, cx);
+        } else if action.as_any().is::<OpenJeanConsole>() {
+            self.open_jean_console(cx);
+        } else if action.as_any().is::<JeanTogglePause>() {
+            self.jean_toggle_pause(cx);
+        } else if action.as_any().is::<OpenFleet>() {
+            self.open_fleet(cx);
+        } else if action.as_any().is::<ToggleJeanRuntime>() {
+            self.toggle_jean_runtime(cx);
+        } else if action.as_any().is::<NewRequest>() {
+            self.open_new_request(cx);
+        } else if action.as_any().is::<OpenSupportRequests>() {
+            self.open_support_requests(cx);
+        } else if action.as_any().is::<OpenBextCloud>() {
+            self.open_bext_cloud(cx);
+        } else if action.as_any().is::<ConnectBextCloud>() {
+            self.connect_bext_cloud_action(cx);
+        } else if action.as_any().is::<OpenAiAssistant>() {
+            self.open_ai_assistant(cx);
+        } else {
+            cx.dispatch_action(action);
+        }
     }
 
     // --- App modes (User / Support / Dev) ---
@@ -5561,6 +5989,7 @@ impl Workspace {
                         cx.notify();
                     });
                     ws.push_runtime_status_to_fleet(cx);
+                    ws.focus_pending_fleet_job(cx);
                 }
                 Err(e) => ws.fleet_view.update(cx, |v, cx| {
                     v.set_error(cloud_account::user_message(&e));
@@ -5593,6 +6022,19 @@ impl Workspace {
             v.set_awaiting(awaiting);
             cx.notify();
         });
+        self.focus_pending_fleet_job(cx);
+    }
+
+    fn focus_pending_fleet_job(&mut self, cx: &mut Context<Self>) {
+        let Some(job_id) = self.pending_fleet_job_focus.clone() else {
+            return;
+        };
+        let opened = self
+            .fleet_view
+            .update(cx, |view, cx| view.open_job_by_id(&job_id, cx));
+        if opened {
+            self.pending_fleet_job_focus = None;
+        }
     }
 
     fn sync_fleet_view_poll(&mut self, cx: &mut Context<Self>) {
@@ -6935,6 +7377,117 @@ impl Workspace {
         .detach();
     }
 
+    fn apply_support_triage(
+        &mut self,
+        ticket_id: String,
+        proposal: AiIssueTriageProposal,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.support.read(cx).selected_ticket_identity();
+        if selected.as_ref().map(|(id, _)| id.as_str()) != Some(ticket_id.as_str()) {
+            self.show_toast(
+                t!("toast.ai.triage_obsolete").to_string(),
+                ToastLevel::Error,
+                cx,
+            );
+            return;
+        }
+        if let Some(assignee) = proposal.assignee.as_deref() {
+            if !self.support.read(cx).is_known_support_assignee(assignee) {
+                self.show_toast(
+                    t!("toast.ai.triage_unknown_assignee", assignee = assignee).to_string(),
+                    ToastLevel::Error,
+                    cx,
+                );
+                return;
+            }
+        }
+        let Some((current_priority, current_assignee)) =
+            self.support.read(cx).selected_ticket_triage_state()
+        else {
+            return;
+        };
+        let priority = proposal
+            .priority
+            .filter(|priority| !priority.eq_ignore_ascii_case(current_priority.trim()));
+        let assignee = proposal
+            .assignee
+            .filter(|assignee| !assignee.eq_ignore_ascii_case(current_assignee.trim()));
+        let change_count = usize::from(priority.is_some()) + usize::from(assignee.is_some());
+        if change_count == 0 {
+            self.show_toast(
+                t!("toast.ai.triage_no_changes").to_string(),
+                ToastLevel::Info,
+                cx,
+            );
+            return;
+        }
+        let base = self.account_base_url();
+        let token = self.app_config.cloud_sync.token.clone();
+        self.show_toast(
+            t!("toast.ai.triage_applying").to_string(),
+            ToastLevel::Info,
+            cx,
+        );
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut updated = None;
+                    if let Some(priority) = priority {
+                        updated = Some(manage_support::support_priority(
+                            &base, &token, &ticket_id, &priority,
+                        )?);
+                    }
+                    if let Some(assignee) = assignee {
+                        updated = Some(manage_support::support_assign(
+                            &base, &token, &ticket_id, &assignee,
+                        )?);
+                    }
+                    updated.ok_or_else(|| {
+                        shelldeck_core::ShellDeckError::Config(
+                            "support triage has no applicable changes".to_string(),
+                        )
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(ticket) => {
+                    let label = ticket.subject.clone();
+                    let id = ticket.id.clone();
+                    workspace.support.update(cx, |view, cx| {
+                        view.set_detail(ticket, cx);
+                    });
+                    workspace.add_activity_entry(
+                        ActivityEntry::new(
+                            ActivityKind::Support,
+                            t!("activity.support.updated", subject = label.as_str()).to_string(),
+                        )
+                        .with_target(id, label)
+                        .with_action(ActivityAction::OpenTicket),
+                        cx,
+                    );
+                    workspace.show_toast(
+                        t!("toast.ai.triage_applied", count = change_count).to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    workspace.refresh_support(cx);
+                }
+                Err(error) => workspace.show_toast(
+                    t!(
+                        "toast.ai.triage_failed",
+                        error = cloud_account::user_message(&error)
+                    )
+                    .to_string(),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
     /// Soft-delete a request (owner-or-staff). On success the row is
     /// removed from the local list, the detail pane closed, and any drift
     /// is caught by the 15 s issues poll.
@@ -7866,11 +8419,10 @@ impl Workspace {
                 self.select_support_ticket(id, cx);
                 cx.notify();
             }
-            DeepLink::JeanConfirm(_job_id) => {
-                // v1 opens the Fleet view where awaiting jobs are listed;
-                // scrolling to / pre-selecting the exact job is a follow-up
-                // (see docs/roadmap/companion.md §3).
+            DeepLink::JeanConfirm(job_id) => {
+                self.pending_fleet_job_focus = Some(job_id);
                 self.open_fleet(cx);
+                self.focus_pending_fleet_job(cx);
             }
         }
     }
@@ -7958,6 +8510,14 @@ impl Workspace {
             cx.notify();
         });
         cx.notify();
+    }
+
+    pub fn prepare_companion_command_palette(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<CommandPalette> {
+        self.refresh_command_palette(cx);
+        self.companion_command_palette.clone()
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -8362,12 +8922,17 @@ impl Workspace {
             true,
         )
         .on_click(
-            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
                 if let Some(ws) = h_quit.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.shutdown(cx);
+                    if ws.read(cx).should_hide_to_tray() {
+                        window.hide_window();
+                        return;
+                    }
+                    let should_close = ws.update(cx, |ws, cx| ws.confirm_window_close(cx));
+                    if should_close {
+                        ws.update(cx, |ws, cx| ws.shutdown(cx));
                         cx.quit();
-                    });
+                    }
                 }
             },
         );

@@ -47,6 +47,11 @@ pub struct AppConfig {
     /// without a `[tray]` section parsing cleanly.
     #[serde(default)]
     pub tray: TrayConfig,
+    /// `[companion]` — process/window lifecycle for the tray companion.
+    /// Kept separate from notification preferences and defaulted so configs
+    /// written before the AI Dock continue to parse unchanged.
+    #[serde(default)]
+    pub companion: CompanionConfig,
     /// Connection ids shown in the sidebar and system-tray quick-access
     /// sections. Order is user-defined and preserved across sessions.
     #[serde(default)]
@@ -249,6 +254,28 @@ impl Default for TrayConfig {
             notify_ssh_disconnect: true,
             notify_fleet_done: true,
             notify_ai_tasks: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompanionConfig {
+    /// Start with the main window hidden when the tray backend is available.
+    /// Defaults off so upgrades preserve ShellDeck's traditional visible start.
+    pub start_hidden: bool,
+    /// Register the system-wide shortcut that toggles the Assistant Dock.
+    pub global_shortcut_enabled: bool,
+    /// Register the system-wide shortcut that toggles the command palette.
+    pub global_palette_shortcut_enabled: bool,
+}
+
+impl Default for CompanionConfig {
+    fn default() -> Self {
+        Self {
+            start_hidden: false,
+            global_shortcut_enabled: true,
+            global_palette_shortcut_enabled: true,
         }
     }
 }
@@ -474,6 +501,43 @@ theme = "Dark"
         .expect("parse config without pinned_connections");
 
         assert!(config.pinned_connections.is_empty());
+    }
+
+    // SDTEST-1382
+    #[test]
+    fn config_without_companion_section_defaults_to_visible_start() {
+        let config: AppConfig = toml::from_str(
+            r#"
+theme = "Dark"
+
+[terminal]
+
+[general]
+"#,
+        )
+        .expect("parse config without companion section");
+
+        assert!(!config.companion.start_hidden);
+        assert!(config.companion.global_shortcut_enabled);
+        assert!(config.companion.global_palette_shortcut_enabled);
+
+        let configured: AppConfig = toml::from_str(
+            r#"
+theme = "Dark"
+
+[terminal]
+
+[general]
+
+[companion]
+start_hidden = true
+"#,
+        )
+        .expect("parse config with companion section");
+        assert!(configured.companion.start_hidden);
+        let serialized = toml::to_string(&configured).expect("serialize companion config");
+        let reloaded: AppConfig = toml::from_str(&serialized).expect("reload companion config");
+        assert!(reloaded.companion.start_hidden);
     }
 
     #[test]
@@ -749,5 +813,6 @@ ui_font_size = 14.0
         assert!(!cfg.cloud_sync.enabled);
         assert!(!cfg.jean_runtime.enabled);
         assert!(!cfg.bext_cloud.is_connected());
+        assert!(!cfg.companion.start_hidden);
     }
 }

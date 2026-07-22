@@ -1,9 +1,11 @@
 mod ai_action_dialog;
 pub mod ai_assistant;
+pub mod ai_dock;
 pub mod ai_workflow;
 pub mod bext_cloud_view;
 pub mod brand;
 pub mod command_palette;
+pub mod command_palette_window;
 pub mod connection_combobox;
 pub mod connection_form;
 pub mod dashboard;
@@ -47,5 +49,7 @@ macro_rules! t {
     };
 }
 
+pub use ai_dock::AiDockView;
+pub use command_palette_window::CommandPaletteWindowView;
 pub use i18n::{apply_ui_language, rel_time};
 pub use workspace::{TrayCounters, TrayNotification, Workspace};

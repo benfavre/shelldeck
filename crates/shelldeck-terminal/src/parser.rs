@@ -969,6 +969,8 @@ impl vte::Perform for Performer<'_> {
                         }
                         Some('C') => {
                             grid.prompt_mark = Some(PromptMark::CommandExecuted);
+                            grid.command_output_start =
+                                Some(grid.scrollback_len() + grid.cursor.row);
                         }
                         Some('D') => {
                             // Exit code may follow after a semicolon.
@@ -982,6 +984,7 @@ impl vte::Perform for Performer<'_> {
                                 marker.get(2..).and_then(|s| s.parse::<i32>().ok())
                             };
                             grid.prompt_mark = Some(PromptMark::CommandFinished(exit_code));
+                            grid.prompt_mark_sequence = grid.prompt_mark_sequence.wrapping_add(1);
                         }
                         _ => {}
                     }
@@ -1269,6 +1272,20 @@ mod tests {
         let g = g.lock();
         assert_eq!(g.prompt_mark, Some(PromptMark::PromptStart));
         assert_eq!(g.prompt_lines, vec![0]);
+    }
+
+    // SDTEST-1378
+    #[test]
+    fn osc_133_completion_tracks_generation_exit_code_and_bounded_output() {
+        let g = run(
+            4,
+            20,
+            b"\x1b]133;C\x07diagnostic output\r\n\x1b]133;D;7\x07",
+        );
+        let g = g.lock();
+        assert_eq!(g.prompt_mark, Some(PromptMark::CommandFinished(Some(7))));
+        assert_eq!(g.prompt_mark_sequence, 1);
+        assert!(g.command_output(10, 100).contains("diagnostic output"));
     }
 
     // ---- ESC sequences ----

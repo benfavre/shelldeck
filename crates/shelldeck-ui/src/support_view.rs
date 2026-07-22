@@ -19,7 +19,9 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
+use adabraka_ui::components::text::{Text, TextVariant};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
+use adabraka_ui::display::card::Card;
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use gpui::prelude::*;
 use gpui::*;
@@ -1161,6 +1163,25 @@ impl SupportView {
         })
     }
 
+    pub fn support_triage_context_data(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ticket": self.detail,
+            "agents": self.agents.iter().take(50).map(|agent| serde_json::json!({
+                "name": agent.name,
+                "email": agent.email,
+            })).collect::<Vec<_>>(),
+            "current_user": {
+                "name": self.me.name,
+                "email": self.me.email,
+            },
+        })
+    }
+
+    pub fn selected_ticket_triage_state(&self) -> Option<(String, String)> {
+        let ticket = self.detail.as_ref()?;
+        Some((ticket.priority.clone(), ticket.assignee.clone()))
+    }
+
     pub fn is_known_issue_assignee(&self, assignee: &str) -> bool {
         let assignee = assignee.trim();
         assignee.is_empty()
@@ -1168,6 +1189,10 @@ impl SupportView {
                 .agents
                 .iter()
                 .any(|agent| agent.email.eq_ignore_ascii_case(assignee))
+    }
+
+    pub fn is_known_support_assignee(&self, assignee: &str) -> bool {
+        self.is_known_issue_assignee(assignee)
     }
 
     pub fn ai_surface(&self) -> shelldeck_core::ai::AiSurface {
@@ -4965,20 +4990,8 @@ impl SupportView {
 
         if !iss.body.trim().is_empty() {
             thread = thread.child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .max_w(px(560.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .child(
+                Card::new()
+                    .header(
                         div()
                             .flex()
                             .items_center()
@@ -5014,35 +5027,24 @@ impl SupportView {
                                     .child(rel_time(iss.created_at)),
                             ),
                     )
-                    .child({
-                        // Per-line max_w to force wrap — same containment as
-                        // `render_issue_comment` / `render_message`. Without
-                        // it, walls of dashes in a description bleed past
-                        // the bubble border.
-                        let mut body = div()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .text_size(px(13.0))
-                            .line_height(relative(1.35))
-                            .text_color(ShellDeckColors::text_primary());
+                    .header_divider(false)
+                    .content({
+                        let mut body = div().flex().flex_col().w_full().min_w(px(0.0));
                         for line in iss.body.split('\n') {
-                            let display: SharedString = if line.is_empty() {
-                                " ".into()
-                            } else {
-                                line.to_string().into()
-                            };
+                            let line = if line.is_empty() { " " } else { line };
                             body = body.child(
-                                div()
-                                    .w_full()
-                                    .min_w(px(0.0))
-                                    .max_w(px(540.0))
-                                    .child(display),
+                                Text::new(line.to_string())
+                                    .variant(TextVariant::BodySmall)
+                                    .color(ShellDeckColors::text_primary())
+                                    .line_height(1.35)
+                                    .w_full(),
                             );
                         }
                         body
-                    }),
+                    })
+                    .w(px(560.0))
+                    .max_w(relative(1.0))
+                    .flex_shrink_0(),
             );
         } else if iss.comments.is_empty() && iss.attachments.is_empty() {
             thread = thread.child(

@@ -39,6 +39,7 @@ cross-platform coverage.
 | SDTEST-719 | `parser.rs::osc_2_sets_title_st_terminated` | SDUC-014 | Green |
 | SDTEST-720 | `parser.rs::osc_palette_color_override` | SDUC-014 | Green |
 | SDTEST-721 | `parser.rs::osc_133_prompt_marker` | SDUC-014 | Green |
+| SDTEST-1378 | `parser.rs::osc_133_completion_tracks_generation_exit_code_and_bounded_output` | SDUC-431 | Green | Pins the deduplicated completion generation, exit code, and bounded command-output boundary consumed by the Workspace. |
 | SDTEST-722 | `parser.rs::esc_save_restore_cursor` | SDUC-008 | Green |
 | SDTEST-723 | `parser.rs::esc_ris_full_reset` | SDUC-018 | Green |
 | SDTEST-724 | `parser.rs::dec_special_graphics_charset` | SDUC-015 | Green |
@@ -132,7 +133,7 @@ cross-platform coverage.
 
 ## 4. `colors.rs` — palette
 
-Existing: **0 tests.**
+Existing: **1 Unix integration test.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -177,6 +178,7 @@ Existing: **0 tests.**
 | SDTEST-984 | *to write* — is_running is true while child lives, false after exit | SDUC-023 | **Red / P1** | |
 | SDTEST-985 | *to write* — session state transitions Running → Exited → Failed | SDUC-023 | **Red / P1** | State-machine sanity. |
 | SDTEST-986 | *to write* — spawn_ssh honours title, rows, cols and returns the expected channels | SDUC-023, SDUC-044 | **Red / P1** | Cross-referenced with the SSH inventory (SDTEST-520). |
+| SDTEST-1379 | `session.rs::tracked_posix_command_emits_completion_and_captures_output` (`#[cfg(all(test, unix))]`) | SDUC-431 | Green | Real `/bin/sh` PTY proves the fallback framing emits OSC 133 completion, preserves exit 0, and captures bounded output. |
 
 ---
 
