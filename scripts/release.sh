@@ -436,8 +436,7 @@ git fetch --quiet
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "")
 if [[ -n "$REMOTE" && "$LOCAL" != "$REMOTE" ]]; then
-    BASE=$(git merge-base HEAD origin/main 2>/dev/null || echo "")
-    if [[ "$BASE" != "$LOCAL" ]]; then
+    if ! git merge-base --is-ancestor origin/main HEAD; then
         die "Your branch is behind origin/main. Run 'git pull --rebase' first."
     fi
 fi
