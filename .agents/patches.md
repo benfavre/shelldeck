@@ -130,10 +130,10 @@ Rules:
   patches` section with the sync date it was removed — future me
   wants to know why the diff shrank.
 
-## `/sync-patches` — the workflow
+## `/sync-patches` / `$sync-patches` — the workflow
 
-Input parsing (see `.claude/commands/sync-patches.md` for the entry
-point):
+Input parsing (see `.claude/commands/sync-patches.md` for Claude and
+`.agents/skills/sync-patches/SKILL.md` for Codex):
 
 - No args → list the forks that have a `PATCHES.md`, print the pinned
   version of each, and ask what to sync.
@@ -224,8 +224,8 @@ If `/sync-patches <crate>` is called on a fork that has no
 
 ## Related files
 
-- `.claude/commands/sync-patches.md` — the slash-command entry point
-  that redirects here.
+- `.claude/commands/sync-patches.md` — the Claude slash-command entry point.
+- `.agents/skills/sync-patches/SKILL.md` — the Codex project-skill entry point.
 - `patches/adabraka-gpui/PATCHES.md` — the current GPUI fork inventory.
 - `patches/adabraka-ui/PATCHES.md` — the current UI fork inventory.
 - `patches/diffs/` — lightweight unified diffs + `*.md` inventory (no full vendor).

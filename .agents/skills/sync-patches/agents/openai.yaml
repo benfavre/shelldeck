@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync vendored patches"
+  short_description: "Update forks while preserving ShellDeck patches"
+  default_prompt: "Use $sync-patches to update a vendored fork safely."

@@ -17,6 +17,9 @@ repo-root [`AGENTS.md`](../AGENTS.md).
   [`.cursor/rules/`](../.cursor/rules/) (one `.mdc` per module, with `globs`
   or `alwaysApply`). Keep `.agents/` and `.cursor/rules/` in sync when you
   edit a rule file.
+- **Codex project commands** live under `skills/<name>/SKILL.md`. Invoke them
+  with `$<name>` followed by the same arguments as their Claude slash-command
+  counterpart, for example `$release patch` or `$sync-patches adabraka-ui`.
 
 ## Adding a rule file
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release ShellDeck"
+  short_description: "Bump, publish, and monitor ShellDeck releases"
+  default_prompt: "Use $release to publish a ShellDeck patch release."
