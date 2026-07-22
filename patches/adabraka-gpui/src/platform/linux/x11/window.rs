@@ -75,6 +75,8 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_NOTIFICATION,
         _NET_WM_WINDOW_TYPE_DIALOG,
+        // ShellDeck patch: interactive overlays need a focusable EWMH type.
+        _NET_WM_WINDOW_TYPE_UTILITY,
         _NET_WM_WINDOW_TYPE_DOCK,
         _NET_WM_SYNC,
         _NET_WM_STATE_DEMANDS_ATTENTION,
@@ -581,6 +583,8 @@ impl X11WindowState {
                 )?;
             }
 
+            // ShellDeck patch: overlays host real inputs, so expose them as
+            // focusable utilities rather than system-reserved dock panels.
             if params.kind == WindowKind::Overlay {
                 check_reply(
                     || "X11 ChangeProperty32 setting window type for overlay failed.",
@@ -589,7 +593,7 @@ impl X11WindowState {
                         x_window,
                         atoms._NET_WM_WINDOW_TYPE,
                         xproto::AtomEnum::ATOM,
-                        &[atoms._NET_WM_WINDOW_TYPE_DOCK],
+                        &[atoms._NET_WM_WINDOW_TYPE_UTILITY],
                     ),
                 )?;
                 check_reply(

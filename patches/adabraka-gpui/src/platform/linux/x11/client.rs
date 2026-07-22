@@ -933,7 +933,9 @@ impl X11Client {
                     .context("X11: Failed to handle property notify")
                     .log_err();
             }
-            Event::FocusIn(event) => {
+            // ShellDeck patch: passive keyboard grabs emit synthetic focus
+            // transitions; only NORMAL events represent a real app switch.
+            Event::FocusIn(event) if event.mode == xproto::NotifyMode::NORMAL => {
                 let window = self.get_window(event.event)?;
                 window.set_active(true);
                 let mut state = self.0.borrow_mut();
@@ -944,7 +946,7 @@ impl X11Client {
                 drop(state);
                 self.enable_ime();
             }
-            Event::FocusOut(event) => {
+            Event::FocusOut(event) if event.mode == xproto::NotifyMode::NORMAL => {
                 let window = self.get_window(event.event)?;
                 window.set_active(false);
                 let mut state = self.0.borrow_mut();
@@ -957,6 +959,7 @@ impl X11Client {
                 self.reset_ime();
                 window.handle_ime_delete();
             }
+            Event::FocusIn(_) | Event::FocusOut(_) => {}
             Event::XkbNewKeyboardNotify(_) | Event::XkbMapNotify(_) => {
                 let mut state = self.0.borrow_mut();
                 let xkb_state = {

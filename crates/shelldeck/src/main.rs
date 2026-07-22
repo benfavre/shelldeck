@@ -681,7 +681,6 @@ fn toggle_ai_dock(
                             return true;
                         }
                         workspace.update(cx, |workspace, cx| workspace.refresh_ai_dock(cx));
-                        dock.mark_shown();
                         window.show_window();
                         window.activate_window();
                         dock.focus_composer(window, cx);
@@ -724,7 +723,6 @@ fn toggle_ai_dock(
         Ok(handle) => {
             cx.activate(true);
             let _ = handle.update(cx, |dock, window, cx| {
-                dock.mark_shown();
                 window.activate_window();
                 dock.focus_composer(window, cx);
             });
@@ -767,7 +765,6 @@ fn toggle_companion_command_palette(
                     workspace.update(cx, |workspace, cx| {
                         workspace.prepare_companion_command_palette(cx);
                     });
-                    palette.mark_shown();
                     window.show_window();
                     window.activate_window();
                     palette.show(window, cx);
@@ -817,10 +814,7 @@ fn toggle_companion_command_palette(
     }) {
         Ok(handle) => {
             cx.activate(true);
-            let _ = handle.update(cx, |view, window, _| {
-                view.mark_shown();
-                window.activate_window();
-            });
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
         }
         Err(error) => tracing::error!("failed to open command palette window: {error:#}"),
     }
