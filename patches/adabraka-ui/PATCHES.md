@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **56**
+Total markers in code: **57**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -406,6 +406,19 @@ carries no marker of its own — see its entry).
   looking disabled behind their placeholder.
 - **Upstream status**: not filed yet — should accompany the SDPATCH-009/010
   textarea design discussion.
+
+### SDPATCH-021 — Alert variants use the bundled Lucide icon names
+
+- **Files / symbols**:
+  - `src/components/alert.rs` — `AlertVariant::default_icon`
+- **Markers**:
+  - `src/components/alert.rs` — `// ShellDeck patch: SDPATCH-021 — match the bundled Lucide filenames.`
+- **Why**: the success, warning, and error variants requested the legacy names
+  `check-circle`, `alert-triangle`, and `alert-circle`, but ShellDeck's Lucide
+  bundle contains `circle-check.svg`, `triangle-alert.svg`, and
+  `circle-alert.svg`. Missing assets left blank 20 px icon slots in alerts.
+  Each variant now uses the actual bundled filename.
+- **Upstream status**: ShellDeck asset-name compatibility; not planned.
 
 ## Preserved files (do not overwrite on sync)
 

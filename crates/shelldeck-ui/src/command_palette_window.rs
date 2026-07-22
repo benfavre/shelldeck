@@ -31,13 +31,25 @@ impl CommandPaletteWindowView {
                 ) {
                     if let CommandPaletteEvent::ActionSelected(action) = event {
                         if action_opens_main_window(action.as_ref()) {
-                            let _ = main_window.update(cx, |_, window, _| {
+                            if let Err(error) = main_window.update(cx, |_, window, _| {
                                 window.show_window();
                                 window.activate_window();
-                            });
+                            }) {
+                                tracing::warn!(
+                                    error = %error,
+                                    "command palette could not activate the main window"
+                                );
+                            }
                         }
                     }
-                    let _ = palette_window.update(cx, |_, window, _| window.remove_window());
+                    if let Err(error) =
+                        palette_window.update(cx, |_, window, _| window.remove_window())
+                    {
+                        tracing::debug!(
+                            error = %error,
+                            "command palette window was already closed"
+                        );
+                    }
                 }
             },
         );

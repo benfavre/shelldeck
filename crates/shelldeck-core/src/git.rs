@@ -44,32 +44,40 @@ pub fn is_git_repo(dir: &Path) -> bool {
 
 /// Get git status for a directory. Returns None if not a git repo.
 pub fn get_git_status(dir: &Path) -> Option<GitStatus> {
-    if !is_git_repo(dir) {
-        return None;
-    }
-
-    let branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+    let output = Command::new("git")
+        .args(["status", "--porcelain=v1", "--branch"])
         .current_dir(dir)
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        .filter(|output| output.status.success())?;
 
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain=v1"])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    Some(parse_status(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_status(output: &str) -> GitStatus {
+    let mut branch = None;
 
     let mut modified = 0;
     let mut staged = 0;
     let mut untracked = 0;
 
-    for line in status_output.lines() {
+    for line in output.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            let name = header
+                .strip_prefix("No commits yet on ")
+                .or_else(|| header.strip_prefix("Initial commit on "))
+                .unwrap_or(header)
+                .split("...")
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .next()
+                .unwrap_or_default();
+            if !name.is_empty() {
+                branch = Some(name.to_string());
+            }
+            continue;
+        }
         if line.len() < 2 {
             continue;
         }
@@ -88,10 +96,35 @@ pub fn get_git_status(dir: &Path) -> Option<GitStatus> {
         }
     }
 
-    Some(GitStatus {
+    GitStatus {
         branch,
         modified,
         staged,
         untracked,
-    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // SDTEST-1387
+    #[test]
+    fn porcelain_branch_status_parses_in_one_pass() {
+        let status = parse_status(
+            "## feature/perf...origin/feature/perf [ahead 2]\n M modified.rs\nM  staged.rs\nMM both.rs\n?? new.rs\n",
+        );
+
+        assert_eq!(status.branch.as_deref(), Some("feature/perf"));
+        assert_eq!(status.modified, 2);
+        assert_eq!(status.staged, 2);
+        assert_eq!(status.untracked, 1);
+
+        let unborn = parse_status("## No commits yet on main\n?? README.md\n");
+        assert_eq!(unborn.branch.as_deref(), Some("main"));
+        assert_eq!(unborn.untracked, 1);
+
+        let detached = parse_status("## HEAD (no branch)\n");
+        assert_eq!(detached.branch.as_deref(), Some("HEAD"));
+    }
 }

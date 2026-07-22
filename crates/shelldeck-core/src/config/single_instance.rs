@@ -129,26 +129,40 @@ impl Primary {
     /// honours the link that started it.
     ///
     /// The discovery file lives for the whole app lifetime (so the socket
-    /// stays discoverable); the thread scrubs it when the receiver is
-    /// dropped (app shutting down) to avoid a stale-port hand-off race on
-    /// the next launch. A hard crash leaves the file behind — handled
-    /// gracefully by the stale-file take-over path in [`acquire`].
+    /// stays discoverable); the listener scrubs it when delivery stops.
+    /// Process shutdown or a hard crash can leave the file behind, which is
+    /// handled gracefully by the stale-file take-over path in [`acquire`].
     pub fn listen(self, initial: Option<String>) -> Receiver<String> {
         let (tx, rx) = mpsc::channel::<String>();
 
-        if let Some(link) = initial {
-            let _ = tx.send(link);
-        }
+        self.listen_with(initial, move |payload| tx.send(payload).is_ok());
 
+        rx
+    }
+
+    /// Start the accept loop and deliver payloads directly to `deliver`.
+    /// Returning `false` from the callback stops the listener. This lets GUI
+    /// callers bridge into an async channel without periodically polling the
+    /// standard-library receiver returned by [`Primary::listen`].
+    pub fn listen_with(
+        self,
+        initial: Option<String>,
+        mut deliver: impl FnMut(String) -> bool + Send + 'static,
+    ) {
         let Primary {
             listener,
             token,
             info_path,
         } = self;
-        // Non-blocking so the thread can exit if the process tears down;
-        // we poll with a short sleep like `browser_connect_listen`.
-        let _ = listener.set_nonblocking(true);
-        std::thread::Builder::new()
+
+        if let Some(link) = initial {
+            if !deliver(link) {
+                let _ = std::fs::remove_file(&info_path);
+                return;
+            }
+        }
+
+        if let Err(error) = std::thread::Builder::new()
             .name("shelldeck-ipc".to_string())
             .spawn(move || {
                 loop {
@@ -157,14 +171,11 @@ impl Primary {
                             if let Some(payload) = handle_handoff(stream, &token) {
                                 if !payload.is_empty() {
                                     // Receiver gone → app shutting down, stop.
-                                    if tx.send(payload).is_err() {
+                                    if !deliver(payload) {
                                         break;
                                     }
                                 }
                             }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(120));
                         }
                         Err(e) => {
                             tracing::warn!("single-instance accept failed: {e}");
@@ -174,9 +185,9 @@ impl Primary {
                 }
                 let _ = std::fs::remove_file(&info_path);
             })
-            .ok();
-
-        rx
+        {
+            tracing::warn!("single-instance listener thread failed to start: {error}");
+        }
     }
 
     /// Remove the discovery file. Best-effort — the OS also cleans the

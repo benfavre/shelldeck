@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **16**
+Total markers in code: **22**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -153,6 +153,25 @@ only, out of the src/-scoped marker convention.)
 - **Upstream status**: not filed yet — the upstream API would ideally expose a
   distinct interactive-overlay kind rather than changing generic overlay
   semantics per platform.
+
+### SDPATCH-108 — Discard stale XIM callbacks after window teardown
+
+- **Files / symbols**:
+  - `src/platform/linux/x11/client.rs` — `X11ClientStatePtr::drop_window`,
+    `X11Client::xim_handle_commit`, `X11Client::xim_handle_preedit`
+- **Markers**:
+  - `src/platform/linux/x11/client.rs:250` — `// ShellDeck patch: forget XIM work targeting a transient window before`
+  - `src/platform/linux/x11/client.rs:1366` — `// ShellDeck patch: a transient window may close before XIM delivers`
+  - `src/platform/linux/x11/client.rs:1381` — `// ShellDeck patch: preedit callbacks can race transient-window`
+- **Why**: XIM delivery is asynchronous, so closing the standalone palette or
+  Assistant Dock can destroy its X11 window while a commit or preedit callback
+  still targets that window. The upstream path kept the destroyed window as the
+  active XIM target and logged the expected race as an internal bug. Clearing
+  queued composition state during teardown and dropping only callbacks whose
+  target no longer exists prevents stale text from reaching another surface and
+  removes the misleading error.
+- **Upstream status**: not filed yet — lifecycle hardening suitable for an
+  upstream PR.
 
 ## Preserved files (do not overwrite on sync)
 

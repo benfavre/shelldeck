@@ -363,6 +363,14 @@ Existing: **0 tests**.
 
 ---
 
+## 22. `git.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1387 | `git.rs::porcelain_branch_status_parses_in_one_pass` | SDUC-437 | Green | Pins normal/upstream, unborn, and detached branch headers plus staged/modified/untracked counts from the single `git status --porcelain=v1 --branch` response. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

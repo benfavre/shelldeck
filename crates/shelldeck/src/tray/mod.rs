@@ -49,6 +49,7 @@
 
 use anyhow::{Context, Result};
 use std::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use uuid::Uuid;
 
@@ -98,7 +99,7 @@ pub struct PinnedConnection {
 /// they've taken the receiver + sender — the tray thread owns the
 /// live `TrayIcon` and `MenuItem`s.
 pub struct TrayService {
-    rx: Option<Receiver<TrayCommand>>,
+    rx: Option<UnboundedReceiver<TrayCommand>>,
     state_tx: Option<Sender<TrayState>>,
 }
 
@@ -115,7 +116,7 @@ impl TrayService {
     /// Callers should log the error and continue without a tray rather
     /// than aborting the app.
     pub fn new() -> Result<Self> {
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<TrayCommand>();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
         install_menu_router(cmd_tx);
 
         let (state_tx, state_rx) = std::sync::mpsc::channel::<TrayState>();
@@ -135,8 +136,8 @@ impl TrayService {
 
     /// Hand off the command receiver to the caller. Panics if called
     /// twice — the workspace should consume this exactly once at
-    /// startup and poll it on its own schedule.
-    pub fn take_receiver(&mut self) -> Receiver<TrayCommand> {
+    /// startup and await it without periodic wakeups.
+    pub fn take_receiver(&mut self) -> UnboundedReceiver<TrayCommand> {
         self.rx
             .take()
             .expect("TrayService::take_receiver called twice")
@@ -159,7 +160,7 @@ impl TrayService {
 ///
 /// The item ids are stable strings set inside [`build_menu`] so this
 /// handler doesn't need to see the `MenuItem`s directly.
-fn install_menu_router(cmd_tx: Sender<TrayCommand>) {
+fn install_menu_router(cmd_tx: UnboundedSender<TrayCommand>) {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let Some(cmd) = command_for_menu_id(event.id.0.as_str()) else {
             return;

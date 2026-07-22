@@ -15,11 +15,12 @@ pub enum AlertVariant {
 
 impl AlertVariant {
     fn default_icon(&self) -> &'static str {
+        // ShellDeck patch: SDPATCH-021 — match the bundled Lucide filenames.
         match self {
             AlertVariant::Info => "info",
-            AlertVariant::Success => "check-circle",
-            AlertVariant::Warning => "alert-triangle",
-            AlertVariant::Error => "alert-circle",
+            AlertVariant::Success => "circle-check",
+            AlertVariant::Warning => "triangle-alert",
+            AlertVariant::Error => "circle-alert",
         }
     }
 }

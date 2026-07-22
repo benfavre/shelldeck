@@ -247,6 +247,15 @@ impl X11ClientStatePtr {
         if state.keyboard_focused_window == Some(x_window) {
             state.keyboard_focused_window = None;
         }
+        // ShellDeck patch: forget XIM work targeting a transient window before
+        // delayed callbacks can outlive that window.
+        if let Some(xim_handler) = state.xim_handler.as_mut()
+            && xim_handler.window == x_window
+        {
+            xim_handler.window = xproto::Window::default();
+            xim_handler.last_callback_event = None;
+            state.composing = false;
+        }
         state.cursor_styles.remove(&x_window);
 
         if state.windows.is_empty() && !state.common.keep_alive_without_windows {
@@ -1354,7 +1363,10 @@ impl X11Client {
 
     fn xim_handle_commit(&self, window: xproto::Window, text: String) -> Option<()> {
         let Some(window) = self.get_window(window) else {
-            log::error!("bug: Failed to get window for XIM commit");
+            // ShellDeck patch: a transient window may close before XIM delivers
+            // its queued commit; discard that stale text instead of misrouting it.
+            self.0.borrow_mut().composing = false;
+            log::debug!("discarding XIM commit for a closed window");
             return None;
         };
         let mut state = self.0.borrow_mut();
@@ -1366,7 +1378,10 @@ impl X11Client {
 
     fn xim_handle_preedit(&self, window: xproto::Window, text: String) -> Option<()> {
         let Some(window) = self.get_window(window) else {
-            log::error!("bug: Failed to get window for XIM preedit");
+            // ShellDeck patch: preedit callbacks can race transient-window
+            // teardown, so clear composition and ignore the obsolete update.
+            self.0.borrow_mut().composing = false;
+            log::debug!("discarding XIM preedit for a closed window");
             return None;
         };
 

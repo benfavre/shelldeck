@@ -77,7 +77,7 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (72 icons)
+## Inventory (76 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
@@ -88,7 +88,9 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `archive-restore` | action | restore an archived AI conversation |
 | `arrow-down` | navigation | scroll / sort down |
 | `arrow-left-right` | infra | port forwards |
+| `arrow-right` | navigation | AI proposal transitions and next actions |
 | `arrow-up` | navigation | scroll / sort up |
+| `bot` | AI | Jean dispatch action |
 | `calendar` | time | date pickers, due dates |
 | `check` | action | confirm, done |
 | `check-check` | action | read receipts, double-check |
@@ -126,9 +128,11 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `minus` | chrome | zoom out, decrement |
 | `pencil` | action | edit |
 | `pin` | terminal | pin tab |
+| `play` | action | execute AI actions and scripts |
 | `plus` | chrome | add, zoom in |
 | `refresh-cw` | action | **Support refresh**, reload lists |
 | `reply` | support | reply composer mode |
+| `route` | AI | dispatch an action to Jean or the fleet |
 | `rotate-ccw` | action | resume an AI task |
 | `scan` | support | interactive screen-area capture |
 | `search` | chrome | search inputs |

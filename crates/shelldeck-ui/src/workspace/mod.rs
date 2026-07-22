@@ -875,9 +875,6 @@ impl Workspace {
             }
         }
 
-        // Start git status polling
-        let git_poll_task = Self::start_git_polling(cx, &status_bar);
-
         Self {
             connections,
             store,
@@ -942,7 +939,7 @@ impl Workspace {
             _script_form_sub: None,
             _template_browser_sub: None,
             _variable_prompt_sub: None,
-            _git_poll_task: Some(git_poll_task),
+            _git_poll_task: None,
             auto_updater,
             _update_sub: update_sub,
             _status_bar_sub: status_bar_sub,
@@ -8704,14 +8701,25 @@ impl Workspace {
         self.sync_terminal_tab_count(cx);
     }
 
-    /// Start periodic git status polling (every 15 seconds). Only repaints the
-    /// status bar when the status string actually changed.
-    fn start_git_polling(cx: &mut Context<Self>, status_bar: &Entity<StatusBar>) -> gpui::Task<()> {
-        let weak_bar = status_bar.downgrade();
-        cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
+    /// Start periodic git status polling. Work is suspended while the main
+    /// window is hidden in the tray, and the status bar only repaints when the
+    /// displayed value actually changes.
+    pub fn start_git_polling(&mut self, main_window: AnyWindowHandle, cx: &mut Context<Self>) {
+        if self._git_poll_task.is_some() {
+            return;
+        }
+        let weak_bar = self.status_bar.downgrade();
+        self._git_poll_task = Some(cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_secs(15))
                 .await;
+
+            let main_window_visible = main_window
+                .update(cx, |_, window, _| window.is_window_visible())
+                .unwrap_or(false);
+            if !main_window_visible {
+                continue;
+            }
 
             let git_display = cx
                 .background_executor()
@@ -8730,7 +8738,7 @@ impl Workspace {
             if result.is_err() {
                 break;
             }
-        })
+        }));
     }
 }
 

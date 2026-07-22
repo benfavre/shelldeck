@@ -181,34 +181,20 @@ impl FleetView {
     }
 
     fn prompt_preview(prompt: &str) -> Div {
-        let mut preview = div()
-            .w_full()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
-            .text_color(ShellDeckColors::text_primary());
-        let mut rendered = 0;
-        for line in prompt
+        let preview = prompt
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(2)
-        {
-            preview = preview.child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .child(line.to_string()),
-            );
-            rendered += 1;
-        }
-        while rendered < 2 {
-            preview = preview.child(div().child(" "));
-            rendered += 1;
-        }
-        preview
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        div()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .line_clamp(2)
+            .text_size(px(12.0))
+            .text_color(ShellDeckColors::text_primary())
+            .child(preview)
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -355,7 +341,9 @@ impl FleetView {
             panel = panel.child(
                 Alert::warning()
                     .title(t!("fleet.runtime.safety_title").to_string())
-                    .description(t!("fleet.runtime.warning").to_string()),
+                    .description(t!("fleet.runtime.warning").to_string())
+                    .p(px(12.0))
+                    .gap(px(8.0)),
             );
         }
 

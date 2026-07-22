@@ -1569,8 +1569,32 @@ opens the same standalone palette.
 
 ---
 
+## 26. Workspace Git status
+
+### SDUC-437 — Compact Git status
+
+When ShellDeck runs inside a Git repository, the status bar displays the
+current branch and counts staged, modified, and untracked paths. Collecting
+that snapshot uses a single porcelain-status invocation and pauses while the
+main window is hidden in the tray.
+
+---
+
+## 27. Embedded icon integrity
+
+### SDUC-438 — Reachable named icons render instead of reserving blank slots
+
+Every named Lucide icon selected dynamically by ShellDeck's AI actions and
+shared Alert variants is present in the curated asset directory and registered
+in the binary asset source. Missing icon names must fail a unit test instead of
+silently rendering an empty fixed-size slot in the interface.
+
+---
+
 ## Change log
 
+- **2026-07-22** — Added SDUC-438 and SDTEST-1388 after auditing reachable
+  dynamic icon names against the embedded Lucide subset.
 - **2026-07-21** — Added SDUC-434..436 and SDTEST-1380..1386 for the standalone,
   single-instance AI Dock plus recoverable hidden startup.
 - **2026-07-21** — Extended SDUC-432 and SDTEST-1373/1375/1377 to cover image
@@ -1635,6 +1659,8 @@ opens the same standalone palette.
   SDUC-407 single-instance + hand-off) for the `shelldeck://` companion
   feature. Tests SDTEST-1320..1323 in `config/{deep_link,single_instance}.rs`.
 - **2026-07-07** — Initial catalogue.
+- **2026-07-22** — Added SDUC-437 for the event-efficient workspace Git
+  status used by the background companion mode.
 - **2026-07-09** — Added SDUC-170/171/172 (Support timestamp aliases,
   Lucide channel mapping) and § 18 i18n (SDUC-400..405) following the
   rust-i18n landing (`.agents/i18n.md`, commits `ae99be5` +

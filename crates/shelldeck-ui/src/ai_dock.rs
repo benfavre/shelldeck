@@ -105,10 +105,15 @@ impl Render for AiDockView {
                         .size(ButtonSize::Sm)
                         .icon(IconSource::from("external-link"))
                         .on_click(move |_, dock_window, cx| {
-                            let _ = main_window.update(cx, |_, main_window, _| {
+                            if let Err(error) = main_window.update(cx, |_, main_window, _| {
                                 main_window.show_window();
                                 main_window.activate_window();
-                            });
+                            }) {
+                                tracing::warn!(
+                                    error = %error,
+                                    "AI Dock could not activate the main window"
+                                );
+                            }
                             dock_window.remove_window();
                         }),
                     )

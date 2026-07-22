@@ -44,6 +44,8 @@ lucide_assets!(
     "arrow-down",
     "arrow-up",
     "arrow-left-right",
+    "arrow-right",
+    "bot",
     "box",
     "calendar",
     "check",
@@ -84,9 +86,11 @@ lucide_assets!(
     "minus",
     "pencil",
     "pin",
+    "play",
     "plus",
     "refresh-cw",
     "reply",
+    "route",
     "rotate-ccw",
     "scan",
     "search",
@@ -373,20 +377,24 @@ fn dispatch_tray_command(
             // Restore + focus the main window (or a no-op if already
             // frontmost). `activate_window` is the portable way to say
             // "give this window the OS focus".
-            let _ = window.update(cx, |_, window, _cx| {
+            if let Err(error) = window.update(cx, |_, window, _cx| {
                 window.show_window();
                 window.activate_window();
-            });
+            }) {
+                tracing::warn!(error = %error, "tray could not show the main window");
+            }
         }
         TrayCommand::ToggleAiDock => toggle_ai_dock(ws, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(ws, window, cx),
         TrayCommand::ConnectPinned(id) => {
             if let Some(ws) = ws.upgrade() {
-                let _ = window.update(cx, |_, window, cx| {
+                if let Err(error) = window.update(cx, |_, window, cx| {
                     ws.update(cx, |ws, cx| ws.connect_pinned_connection(id, cx));
                     window.show_window();
                     window.activate_window();
-                });
+                }) {
+                    tracing::warn!(error = %error, "tray could not open a pinned connection");
+                }
             }
         }
         TrayCommand::Quit => {
@@ -494,23 +502,32 @@ fn parse_xrandr_monitor_geometry(
 
 #[cfg(target_os = "linux")]
 fn x11_monitor_bounds(scale_factor: f32) -> Vec<gpui::Bounds<gpui::Pixels>> {
-    let Ok(output) = std::process::Command::new("xrandr")
+    let output = match std::process::Command::new("xrandr")
         .arg("--listactivemonitors")
         .output()
-    else {
-        return Vec::new();
+    {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not query X11 monitors with xrandr");
+            return Vec::new();
+        }
     };
     if !output.status.success() {
+        tracing::warn!(status = %output.status, "xrandr monitor query failed");
         return Vec::new();
     }
-    String::from_utf8_lossy(&output.stdout)
+    let monitors = String::from_utf8_lossy(&output.stdout)
         .lines()
         .skip(1)
         .filter_map(|line| {
             line.split_whitespace()
                 .find_map(|token| parse_xrandr_monitor_geometry(token, scale_factor))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if monitors.is_empty() {
+        tracing::warn!("xrandr returned no parseable active monitor");
+    }
+    monitors
 }
 
 #[cfg(target_os = "linux")]
@@ -548,38 +565,53 @@ fn parse_x11_workarea(properties: &str, scale_factor: f32) -> Option<gpui::Bound
 
 #[cfg(target_os = "linux")]
 fn x11_workarea(scale_factor: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
-    let output = std::process::Command::new("xprop")
+    let output = match std::process::Command::new("xprop")
         .args(["-root", "_NET_CURRENT_DESKTOP", "_NET_WORKAREA"])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not query the X11 work area with xprop");
+            return None;
+        }
+    };
     if !output.status.success() {
+        tracing::warn!(status = %output.status, "xprop work-area query failed");
         return None;
     }
-    parse_x11_workarea(&String::from_utf8_lossy(&output.stdout), scale_factor)
+    let workarea = parse_x11_workarea(&String::from_utf8_lossy(&output.stdout), scale_factor);
+    if workarea.is_none() {
+        tracing::warn!("xprop returned an unparseable X11 work area");
+    }
+    workarea
 }
 
 fn companion_display(
     main_window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) -> Option<CompanionDisplay> {
-    let window_geometry = main_window
-        .update(cx, |_, window, _| {
-            let bounds = window.window_bounds().get_bounds();
-            let mouse = window.mouse_position();
-            // X11 reports the pointer in root-window coordinates. Wayland,
-            // macOS and Windows report it relative to the GPUI window.
-            let mouse_is_global = is_x11_session();
-            let scale_factor = window.scale_factor();
-            let mut pointer = companion_pointer(bounds, mouse, mouse_is_global);
-            if mouse_is_global {
-                pointer = gpui::point(
-                    pointer.x * (1.0 / scale_factor),
-                    pointer.y * (1.0 / scale_factor),
-                );
-            }
-            (pointer, bounds.center(), scale_factor)
-        })
-        .ok();
+    let window_geometry = match main_window.update(cx, |_, window, _| {
+        let bounds = window.window_bounds().get_bounds();
+        let mouse = window.mouse_position();
+        // X11 reports the pointer in root-window coordinates. Wayland,
+        // macOS and Windows report it relative to the GPUI window.
+        let mouse_is_global = is_x11_session();
+        let scale_factor = window.scale_factor();
+        let mut pointer = companion_pointer(bounds, mouse, mouse_is_global);
+        if mouse_is_global {
+            pointer = gpui::point(
+                pointer.x * (1.0 / scale_factor),
+                pointer.y * (1.0 / scale_factor),
+            );
+        }
+        (pointer, bounds.center(), scale_factor)
+    }) {
+        Ok(geometry) => Some(geometry),
+        Err(error) => {
+            tracing::warn!(error = %error, "could not read the main window geometry for companion placement");
+            None
+        }
+    };
     let displays = cx.displays();
     let platform_display = cx.primary_display().or_else(|| displays.first().cloned())?;
 
@@ -669,28 +701,32 @@ fn toggle_ai_dock(
         .find_map(|handle| handle.downcast::<AiDockView>());
 
     if let Some(handle) = existing {
-        let recreate = handle
-            .update(cx, |dock, window, cx| {
-                match ai_dock_toggle_action(Some(window.is_window_visible())) {
-                    AiDockToggleAction::Show => {
-                        if !display
-                            .bounds
-                            .contains(&window.window_bounds().get_bounds().center())
-                        {
-                            window.remove_window();
-                            return true;
-                        }
-                        workspace.update(cx, |workspace, cx| workspace.refresh_ai_dock(cx));
-                        window.show_window();
-                        window.activate_window();
-                        dock.focus_composer(window, cx);
+        let recreate = match handle.update(cx, |dock, window, cx| {
+            match ai_dock_toggle_action(Some(window.is_window_visible())) {
+                AiDockToggleAction::Show => {
+                    if !display
+                        .bounds
+                        .contains(&window.window_bounds().get_bounds().center())
+                    {
+                        window.remove_window();
+                        return true;
                     }
-                    AiDockToggleAction::Hide => window.remove_window(),
-                    AiDockToggleAction::Create => unreachable!(),
+                    workspace.update(cx, |workspace, cx| workspace.refresh_ai_dock(cx));
+                    window.show_window();
+                    window.activate_window();
+                    dock.focus_composer(window, cx);
                 }
-                false
-            })
-            .unwrap_or(false);
+                AiDockToggleAction::Hide => window.remove_window(),
+                AiDockToggleAction::Create => unreachable!(),
+            }
+            false
+        }) {
+            Ok(recreate) => recreate,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to update the existing AI Dock window");
+                true
+            }
+        };
         if !recreate {
             return;
         }
@@ -722,10 +758,12 @@ fn toggle_ai_dock(
     }) {
         Ok(handle) => {
             cx.activate(true);
-            let _ = handle.update(cx, |dock, window, cx| {
+            if let Err(error) = handle.update(cx, |dock, window, cx| {
                 window.activate_window();
                 dock.focus_composer(window, cx);
-            });
+            }) {
+                tracing::warn!(error = %error, "failed to activate the new AI Dock window");
+            }
         }
         Err(error) => tracing::error!("failed to open AI Dock window: {error:#}"),
     }
@@ -750,28 +788,35 @@ fn toggle_companion_command_palette(
         .into_iter()
         .find_map(|handle| handle.downcast::<CommandPaletteWindowView>())
     {
-        let recreate = handle
-            .update(cx, |palette, window, cx| {
-                if window.is_window_visible() {
-                    window.remove_window();
-                    false
-                } else if !display
-                    .bounds
-                    .contains(&window.window_bounds().get_bounds().center())
-                {
-                    window.remove_window();
-                    true
-                } else {
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.prepare_companion_command_palette(cx);
-                    });
-                    window.show_window();
-                    window.activate_window();
-                    palette.show(window, cx);
-                    false
-                }
-            })
-            .unwrap_or(false);
+        let recreate = match handle.update(cx, |palette, window, cx| {
+            if window.is_window_visible() {
+                window.remove_window();
+                false
+            } else if !display
+                .bounds
+                .contains(&window.window_bounds().get_bounds().center())
+            {
+                window.remove_window();
+                true
+            } else {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.prepare_companion_command_palette(cx);
+                });
+                window.show_window();
+                window.activate_window();
+                palette.show(window, cx);
+                false
+            }
+        }) {
+            Ok(recreate) => recreate,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to update the existing command palette window"
+                );
+                true
+            }
+        };
         if !recreate {
             return;
         }
@@ -814,7 +859,9 @@ fn toggle_companion_command_palette(
     }) {
         Ok(handle) => {
             cx.activate(true);
-            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            if let Err(error) = handle.update(cx, |_, window, _| window.activate_window()) {
+                tracing::warn!(error = %error, "failed to activate the new command palette");
+            }
         }
         Err(error) => tracing::error!("failed to open command palette window: {error:#}"),
     }
@@ -830,13 +877,15 @@ fn dispatch_deep_link(
     cx: &mut gpui::App,
 ) {
     let link = DeepLink::parse(&payload);
-    let _ = window.update(cx, |_, window, cx| {
+    if let Err(error) = window.update(cx, |_, window, cx| {
         window.show_window();
         window.activate_window();
         if let (Some(link), Some(ws)) = (link, ws.upgrade()) {
             ws.update(cx, |ws, cx| ws.open_deep_link(link, cx));
         }
-    });
+    }) {
+        tracing::warn!(error = %error, "deep link could not activate the main window");
+    }
 }
 
 fn main() -> Result<()> {
@@ -863,9 +912,13 @@ fn main() -> Result<()> {
         }
         Acquire::Primary(p) => p,
     };
-    // The receiver yields forwarded deep links (and our own launch arg, if
-    // any, delivered first). Polled from the GPUI window init below.
-    let deep_link_rx = primary.listen(deep_link_arg);
+    // Bridge forwarded deep links directly into an async receiver. The IPC
+    // thread blocks in accept() and wakes GPUI only when a link actually
+    // arrives.
+    let (deep_link_tx, deep_link_rx) = tokio::sync::mpsc::unbounded_channel();
+    primary.listen_with(deep_link_arg, move |payload| {
+        deep_link_tx.send(payload).is_ok()
+    });
 
     // Load configuration
     let config = AppConfig::load().unwrap_or_else(|e| {
@@ -966,10 +1019,12 @@ fn main() -> Result<()> {
         // Platform callbacks intentionally only enqueue a small ID. Routing
         // back into GPUI happens from the foreground loop after the Workspace
         // and its window handles exist.
-        let (global_hotkey_tx, global_hotkey_rx) = std::sync::mpsc::channel();
+        let (global_hotkey_tx, global_hotkey_rx) = tokio::sync::mpsc::unbounded_channel();
         cx.on_global_hotkey(move |id| {
             tracing::debug!(id, "global hotkey callback received");
-            let _ = global_hotkey_tx.send(id);
+            if let Err(error) = global_hotkey_tx.send(id) {
+                tracing::error!(id, error = %error, "global hotkey dispatch channel closed");
+            }
         });
         if config.companion.global_shortcut_enabled {
             match gpui::Keystroke::parse(ai_dock_global_shortcut()) {
@@ -1079,6 +1134,9 @@ fn main() -> Result<()> {
                     store_for_workspace.clone(),
                 )
             });
+            workspace.update(cx, |ws, cx| {
+                ws.start_git_polling(window.window_handle(), cx);
+            });
             // Focus the workspace root so keyboard shortcuts dispatch correctly
             workspace.read(cx).focus_handle.focus(window);
 
@@ -1116,9 +1174,9 @@ fn main() -> Result<()> {
                                 })
                                 .collect(),
                         };
-                        // Send failure means the tray thread died —
-                        // best-effort, ignore.
-                        let _ = state_tx.send(state);
+                        if let Err(error) = state_tx.send(state) {
+                            tracing::debug!(error = %error, "tray state dropped because its worker stopped");
+                        }
                     }));
                     // OS notifications on deltas. Notify-rust's .show()
                     // is a synchronous D-Bus call on Linux; fire off a
@@ -1138,43 +1196,37 @@ fn main() -> Result<()> {
                     // unread tickets don't spam the OS on startup.
                     ws.publish_tray_state(cx);
                 });
+                let mut rx = rx;
                 let ws_handle = workspace.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    use std::time::Duration;
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(150))
-                            .await;
-                        while let Ok(cmd) = rx.try_recv() {
-                            let ws_handle = ws_handle.clone();
-                            let _ = cx.update(|cx| {
-                                dispatch_tray_command(cmd, ws_handle, window_handle, cx);
-                            });
+                    while let Some(cmd) = rx.recv().await {
+                        let ws_handle = ws_handle.clone();
+                        if let Err(error) = cx.update(|cx| {
+                            dispatch_tray_command(cmd, ws_handle, window_handle, cx);
+                        }) {
+                            tracing::debug!(error = %error, "tray command dropped during shutdown");
+                            break;
                         }
                     }
                 })
                 .detach();
             }
 
-            // Deep-link dispatch loop. Drains URLs forwarded by the
-            // single-instance guard (and our own launch arg, delivered
-            // first) and routes them onto the workspace. Mirrors the tray
-            // loop: a short foreground timer + non-blocking drain.
+            // Deep-link dispatch waits until the single-instance listener
+            // forwards a URL, then routes it onto the workspace.
             {
+                let mut deep_link_rx = deep_link_rx;
                 let ws_handle = workspace.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    use std::time::Duration;
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(150))
-                            .await;
-                        while let Ok(payload) = deep_link_rx.try_recv() {
-                            let ws_handle = ws_handle.clone();
-                            let _ = cx.update(|cx| {
-                                dispatch_deep_link(payload, ws_handle, window_handle, cx);
-                            });
+                    while let Some(payload) = deep_link_rx.recv().await {
+                        let ws_handle = ws_handle.clone();
+                        if let Err(error) = cx.update(|cx| {
+                            dispatch_deep_link(payload, ws_handle, window_handle, cx);
+                        }) {
+                            tracing::debug!(error = %error, "deep link dropped during shutdown");
+                            break;
                         }
                     }
                 })
@@ -1185,25 +1237,27 @@ fn main() -> Result<()> {
             // outside GPUI's entity update context, hence this foreground
             // receiver mirrors the tray/deep-link routing loops.
             {
+                let mut global_hotkey_rx = global_hotkey_rx;
                 let ws_handle = workspace.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    use std::time::Duration;
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(50))
-                            .await;
-                        while let Ok(id) = global_hotkey_rx.try_recv() {
-                            let ws_handle = ws_handle.clone();
-                            let _ = cx.update(|cx| match id {
-                                AI_DOCK_GLOBAL_HOTKEY_ID => {
-                                    toggle_ai_dock(ws_handle, window_handle, cx);
-                                }
-                                COMMAND_PALETTE_GLOBAL_HOTKEY_ID => {
-                                    toggle_companion_command_palette(ws_handle, window_handle, cx);
-                                }
-                                _ => {}
-                            });
+                    while let Some(id) = global_hotkey_rx.recv().await {
+                        let ws_handle = ws_handle.clone();
+                        if let Err(error) = cx.update(|cx| match id {
+                            AI_DOCK_GLOBAL_HOTKEY_ID => {
+                                toggle_ai_dock(ws_handle, window_handle, cx);
+                            }
+                            COMMAND_PALETTE_GLOBAL_HOTKEY_ID => {
+                                toggle_companion_command_palette(ws_handle, window_handle, cx);
+                            }
+                            _ => {}
+                        }) {
+                            tracing::debug!(
+                                id,
+                                error = %error,
+                                "global hotkey dropped during shutdown"
+                            );
+                            break;
                         }
                     }
                 })
@@ -1548,5 +1602,25 @@ mod tests {
     fn command_palette_global_shortcut_is_parseable() {
         gpui::Keystroke::parse(command_palette_global_shortcut())
             .expect("valid command palette global shortcut");
+    }
+
+    // SDTEST-1388
+    #[test]
+    fn reachable_dynamic_icons_are_embedded() {
+        for name in [
+            "arrow-right",
+            "bot",
+            "circle-alert",
+            "circle-check",
+            "play",
+            "route",
+            "triangle-alert",
+        ] {
+            let path = format!("icons/lucide/{name}.svg");
+            assert!(
+                super::lucide_bytes(&path).is_some(),
+                "reachable icon is not embedded: {path}"
+            );
+        }
     }
 }

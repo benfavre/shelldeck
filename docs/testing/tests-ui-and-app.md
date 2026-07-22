@@ -258,6 +258,7 @@ parallel `cargo test`.
 | SDTEST-1384 | `main::tests::ai_dock_is_anchored_to_the_display_right_edge` | SDUC-434 | Green | The fixed 480 px Dock preserves the supplied display's vertical bounds and shares its right edge. |
 | SDTEST-1385 | `main::tests::ai_dock_global_shortcut_is_parseable` | SDUC-434 | Green | The platform-specific default global shortcut is accepted by GPUI's keystroke parser. |
 | SDTEST-1386 | `main::tests::command_palette_global_shortcut_is_parseable` | SDUC-436 | Green | The standalone palette's platform-specific global shortcut is accepted by GPUI's keystroke parser. |
+| SDTEST-1388 | `main::tests::reachable_dynamic_icons_are_embedded` | SDUC-438 | Green | Every dynamically selected icon used by AI actions and Alert variants resolves to an SVG embedded in the application binary. |
 
 ---
 
