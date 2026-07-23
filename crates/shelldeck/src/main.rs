@@ -397,6 +397,35 @@ impl WorkspaceSlot {
     }
 }
 
+/// Application-level owner for companion services and auxiliary windows.
+///
+/// This deliberately contains no `Workspace`: tray state, global-shortcut
+/// routing, the AI controller, and Dock/palette window handles remain usable
+/// while the main application surface is absent.
+struct CompanionRuntime {
+    main_window: gpui::AnyWindowHandle,
+    ai_companion: gpui::Entity<AiCompanionController>,
+    tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+    ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
+    command_palette_window: Option<gpui::WindowHandle<CommandPaletteWindowView>>,
+}
+
+impl CompanionRuntime {
+    fn command_for_hotkey(id: u32) -> Option<CompanionCommand> {
+        match id {
+            AI_DOCK_GLOBAL_HOTKEY_ID => Some(CompanionCommand::ToggleAiDock),
+            COMMAND_PALETTE_GLOBAL_HOTKEY_ID => Some(CompanionCommand::ToggleCommandPalette),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompanionCommand {
+    ToggleAiDock,
+    ToggleCommandPalette,
+}
+
 /// Lightweight root kept in the hidden main window until a surface actually
 /// needs the full application. It lets the tray and global shortcuts stay
 /// alive without constructing every Workspace view and network poller.
@@ -404,11 +433,9 @@ struct CompanionRoot {
     config: Option<AppConfig>,
     connections: Option<Vec<Connection>>,
     store: Option<ConnectionStore>,
-    ai_companion: gpui::Entity<AiCompanionController>,
+    runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
-    tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
-    main_window: gpui::AnyWindowHandle,
     _ai_companion_sub: gpui::Subscription,
 }
 
@@ -433,17 +460,21 @@ impl CompanionRoot {
             config: Some(config),
             connections: Some(connections),
             store: Some(store),
-            ai_companion,
+            runtime: CompanionRuntime {
+                main_window,
+                ai_companion,
+                tray_state_tx,
+                ai_dock_window: None,
+                command_palette_window: None,
+            },
             workspace: None,
             workspace_slot,
-            tray_state_tx,
-            main_window,
             _ai_companion_sub: ai_companion_sub,
         }
     }
 
     fn route_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut gpui::Context<Self>) {
-        let main_window = self.main_window;
+        let main_window = self.runtime.main_window;
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let _ = main_window.update(cx, |_, window, cx| {
                 let _ = this.update(cx, |root, cx| {
@@ -473,7 +504,7 @@ impl CompanionRoot {
             .expect("CompanionRoot config consumed before Workspace creation");
         let connections = self.connections.take().unwrap_or_default();
         let store = self.store.take().unwrap_or_default();
-        let controller = self.ai_companion.read(cx);
+        let controller = self.runtime.ai_companion.read(cx);
         let ai_dock_assistant = controller.assistant();
         let ai_tasks = controller.tasks();
         let ai_companion_config = controller.shared_config();
@@ -497,7 +528,7 @@ impl CompanionRoot {
         workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
         workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
 
-        if let Some(state_tx) = self.tray_state_tx.clone() {
+        if let Some(state_tx) = self.runtime.tray_state_tx.clone() {
             workspace.update(cx, |ws, cx| {
                 ws.set_tray_state_publisher(Box::new(move |counters| {
                     let state = tray::TrayState {
@@ -891,8 +922,8 @@ fn command_palette_bounds(
 }
 
 /// Toggle the single compact Assistant window owned by this process.
-/// Hidden windows remain registered in GPUI, so scanning by root type gives us
-/// single-instance behavior without a second global window registry.
+/// The application-level companion runtime retains the window handle so
+/// repeated invocations reuse the same Dock.
 fn toggle_ai_dock(
     root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
@@ -903,25 +934,24 @@ fn toggle_ai_dock(
     let Some(root) = root.upgrade() else {
         return;
     };
-    let (ai_companion, font_family) = root.update(cx, |root, cx| {
+    let (ai_companion, font_family, existing) = root.update(cx, |root, cx| {
         if let Some(workspace) = &root.workspace {
             workspace.update(cx, |workspace, cx| {
                 workspace.close_ai_sheet_for_companion(cx);
             });
         }
-        (root.ai_companion.clone(), root.companion_ui_font_family(cx))
+        (
+            root.runtime.ai_companion.clone(),
+            root.companion_ui_font_family(cx),
+            root.runtime.ai_dock_window,
+        )
     });
     let Some(display) = companion_display(main_window, cx) else {
         tracing::error!("failed to open AI Dock: no display available");
         return;
     };
-    let existing = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<AiDockView>());
-
     if let Some(handle) = existing {
-        let recreate = match handle.update(cx, |dock, window, cx| {
+        let (recreate, clear_handle) = match handle.update(cx, |dock, window, cx| {
             match ai_dock_toggle_action(Some(window.is_window_visible())) {
                 AiDockToggleAction::Show => {
                     if !display
@@ -929,24 +959,32 @@ fn toggle_ai_dock(
                         .contains(&window.window_bounds().get_bounds().center())
                     {
                         window.remove_window();
-                        return true;
+                        return (true, true);
                     }
                     ai_companion.update(cx, |controller, cx| controller.refresh(cx));
                     window.show_window();
                     window.activate_window();
                     dock.focus_composer(window, cx);
+                    (false, false)
                 }
-                AiDockToggleAction::Hide => window.remove_window(),
+                AiDockToggleAction::Hide => {
+                    window.remove_window();
+                    (false, true)
+                }
                 AiDockToggleAction::Create => unreachable!(),
             }
-            false
         }) {
-            Ok(recreate) => recreate,
+            Ok(result) => result,
             Err(error) => {
                 tracing::warn!(error = %error, "failed to update the existing AI Dock window");
-                true
+                (true, true)
             }
         };
+        if clear_handle {
+            root.update(cx, |root, _| {
+                root.runtime.ai_dock_window = None;
+            });
+        }
         if !recreate {
             return;
         }
@@ -971,6 +1009,9 @@ fn toggle_ai_dock(
         cx.new(|cx| AiDockView::new(assistant, main_window, font_family, window, cx))
     }) {
         Ok(handle) => {
+            root.update(cx, |root, _| {
+                root.runtime.ai_dock_window = Some(handle);
+            });
             cx.activate(true);
             if let Err(error) = handle.update(cx, |dock, window, cx| {
                 window.activate_window();
@@ -1006,21 +1047,18 @@ fn toggle_companion_command_palette(
         tracing::error!("failed to open command palette: no display available");
         return;
     };
-    if let Some(handle) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<CommandPaletteWindowView>())
-    {
-        let recreate = match handle.update(cx, |palette, window, cx| {
+    let existing = root.read(cx).runtime.command_palette_window;
+    if let Some(handle) = existing {
+        let (recreate, clear_handle) = match handle.update(cx, |palette, window, cx| {
             if window.is_window_visible() {
                 window.remove_window();
-                false
+                (false, true)
             } else if !display
                 .bounds
                 .contains(&window.window_bounds().get_bounds().center())
             {
                 window.remove_window();
-                true
+                (true, true)
             } else {
                 workspace.update(cx, |workspace, cx| {
                     workspace.prepare_companion_command_palette(cx);
@@ -1028,18 +1066,23 @@ fn toggle_companion_command_palette(
                 window.show_window();
                 window.activate_window();
                 palette.show(window, cx);
-                false
+                (false, false)
             }
         }) {
-            Ok(recreate) => recreate,
+            Ok(result) => result,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     "failed to update the existing command palette window"
                 );
-                true
+                (true, true)
             }
         };
+        if clear_handle {
+            root.update(cx, |root, _| {
+                root.runtime.command_palette_window = None;
+            });
+        }
         if !recreate {
             return;
         }
@@ -1081,6 +1124,9 @@ fn toggle_companion_command_palette(
         view
     }) {
         Ok(handle) => {
+            root.update(cx, |root, _| {
+                root.runtime.command_palette_window = Some(handle);
+            });
             cx.activate(true);
             if let Err(error) = handle.update(cx, |_, window, _| window.activate_window()) {
                 tracing::warn!(error = %error, "failed to activate the new command palette");
@@ -1425,15 +1471,21 @@ fn main() -> Result<()> {
                 cx.spawn(async move |cx| {
                     while let Some(id) = global_hotkey_rx.recv().await {
                         let root_handle = root_handle.clone();
-                        if let Err(error) = cx.update(|cx| match id {
-                            AI_DOCK_GLOBAL_HOTKEY_ID => {
-                                toggle_ai_dock(root_handle, window_handle, cx);
-                            }
-                            COMMAND_PALETTE_GLOBAL_HOTKEY_ID => {
-                                toggle_companion_command_palette(root_handle, window_handle, cx);
-                            }
-                            _ => {}
-                        }) {
+                        if let Err(error) =
+                            cx.update(|cx| match CompanionRuntime::command_for_hotkey(id) {
+                                Some(CompanionCommand::ToggleAiDock) => {
+                                    toggle_ai_dock(root_handle, window_handle, cx);
+                                }
+                                Some(CompanionCommand::ToggleCommandPalette) => {
+                                    toggle_companion_command_palette(
+                                        root_handle,
+                                        window_handle,
+                                        cx,
+                                    );
+                                }
+                                None => {}
+                            })
+                        {
                             tracing::debug!(
                                 id,
                                 error = %error,
@@ -1679,7 +1731,8 @@ mod tests {
     use super::{
         ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        workspace_created_at_boot, AiDockToggleAction,
+        workspace_created_at_boot, AiDockToggleAction, CompanionCommand, CompanionRuntime,
+        AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -1706,6 +1759,20 @@ mod tests {
     fn hidden_companion_start_defers_workspace_creation() {
         assert!(workspace_created_at_boot(true));
         assert!(!workspace_created_at_boot(false));
+    }
+
+    // SDTEST-1393
+    #[test]
+    fn companion_runtime_owns_global_shortcut_routing() {
+        assert_eq!(
+            CompanionRuntime::command_for_hotkey(AI_DOCK_GLOBAL_HOTKEY_ID),
+            Some(CompanionCommand::ToggleAiDock)
+        );
+        assert_eq!(
+            CompanionRuntime::command_for_hotkey(COMMAND_PALETTE_GLOBAL_HOTKEY_ID),
+            Some(CompanionCommand::ToggleCommandPalette)
+        );
+        assert_eq!(CompanionRuntime::command_for_hotkey(u32::MAX), None);
     }
 
     #[test]

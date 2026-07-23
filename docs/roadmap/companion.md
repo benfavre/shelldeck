@@ -20,7 +20,7 @@
 | 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
 | 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
 | 7 | Couche IA transversale | 🚧 phases 0 a 4 livrees dans le perimetre de securite: taches, notifications, policies, triage Support explicite/automatique, activite contextuelle et diagnostics PTY sequentiels. Restent les tags bloques par l'API et la couverture GPUI dans [`ai-companion.md`](ai-companion.md). |
-| 8 | AI Dock Companion | 🚧 phases A/B livrées ; phase C avancée avec création différée du `Workspace` et `AiCompanionController` autonome pour ouvrir le Dock et converser sans initialiser les vues/pollers principaux ; phase D partielle sur Windows/macOS/Linux X11, sans portail Wayland ni configuration dynamique. Le masquage à la perte de focus et le placement multi-écran sont déjà livrés. La suite du runtime léger et les finitions sont détaillées dans [`ai-dock-companion.md`](ai-dock-companion.md). |
+| 8 | AI Dock Companion | 🚧 phases A/B livrées ; phase C avancée avec création différée du `Workspace`, `AiCompanionController` autonome et `CompanionRuntime` propriétaire du tray/raccourcis/fenêtres auxiliaires ; phase D partielle sur Windows/macOS/Linux X11, sans portail Wayland ni configuration dynamique. Le masquage à la perte de focus et le placement multi-écran sont déjà livrés. La suite du runtime léger et les finitions sont détaillées dans [`ai-dock-companion.md`](ai-dock-companion.md). |
 
 ## 1. Onboarding first-run — ✅ livré 2026-07-15
 

@@ -1535,7 +1535,9 @@ submission with an explanation when no usable global AI backend is configured.
 The Dock's global chat is owned by an independent `AiCompanionController`:
 opening it and completing a conversation do not initialize `Workspace`.
 Selecting a task action may initialize `Workspace` when its terminal, ticket,
-or script target is required.
+or script target is required. `CompanionRuntime` retains the Dock and palette
+window handles and owns global-shortcut routing, so repeated invocations do
+not depend on scanning or constructing the main application surface.
 The enabled-by-default global shortcut toggles that same single Dock from any
 application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
 The Dock opens on the display containing the pointer, moves to that display on

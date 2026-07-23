@@ -297,8 +297,9 @@ fortement la mémoire ou le temps de démarrage.
   global, la configuration partagée et le traitement des complétions. Ouvrir
   le Dock ou converser ne construit plus le `Workspace`; seules les actions de
   tâche qui doivent rejoindre un ticket, terminal ou script l'initialisent.
-- [ ] Introduire le `CompanionRuntime` applicatif qui possède le tray, les
-  raccourcis et les handles de fenêtres sans dépendre d'un `Workspace`.
+- [x] Introduire le `CompanionRuntime` applicatif qui possède le bridge d'état
+  tray, le routage des raccourcis globaux, le contrôleur IA et les handles des
+  fenêtres Dock/palette sans dépendre d'un `Workspace`.
 - [ ] Charger uniquement config, keychain, conversations/tâches et services
   compagnon au démarrage caché.
 - [ ] Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement à
