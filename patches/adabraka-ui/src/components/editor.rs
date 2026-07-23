@@ -2214,7 +2214,14 @@ impl EditorState {
         if let Some(item) = cx.read_from_clipboard() {
             if let Some(text) = item.text() {
                 self.insert_text_at_cursor(&text, cx);
+            } else {
+                // ShellDeck patch: SDPATCH-024 — let an ancestor attachment
+                // picker handle Ctrl/Cmd+V when the clipboard contains an
+                // image instead of editor text.
+                cx.propagate();
             }
+        } else {
+            cx.propagate();
         }
     }
 

@@ -983,6 +983,11 @@ impl InputState {
             };
             let filtered_text = self.filter_input(&normalized);
             self.replace_text_in_range(None, &filtered_text, window, cx);
+        } else {
+            // ShellDeck patch: SDPATCH-024 — a focused text input owns the
+            // Ctrl/Cmd+V action. Let an ancestor attachment picker handle the
+            // action when the clipboard contains an image instead of text.
+            cx.propagate();
         }
     }
 

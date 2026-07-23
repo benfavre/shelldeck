@@ -1,10 +1,10 @@
 use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
-    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Button, ButtonSize,
-    ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
+    Button, ButtonSize, ButtonVariant, Select, SelectOption, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -412,6 +412,11 @@ pub struct Workspace {
     /// via SDPATCH-009) so Détails behaves as a textarea.
     issue_title_state: Entity<InputState>,
     issue_body_state: Entity<InputState>,
+    /// Searchable target-site picker for the New Request sheet. The selected
+    /// id is resolved back through `site_directory` before submission so a
+    /// stale or forged option can never reach Manage.
+    issue_site_select: Entity<Select<String>>,
+    issue_new_site_id: Option<String>,
     issue_comment_state: Entity<InputState>,
     issue_attachment_url_state: Entity<InputState>,
     issue_new_attachments: Vec<AttachmentDraft>,
@@ -526,6 +531,7 @@ impl Workspace {
         store: ConnectionStore,
     ) -> Self {
         crate::i18n::apply_ui_language(&config.general.ui_language);
+        let issue_site_select = Self::build_issue_site_select(&[], None, cx);
 
         // Restore the persisted active-site filter (if any) so the sidebar
         // opens scoped to the last-selected site.
@@ -987,6 +993,8 @@ impl Workspace {
             user_issue_detail_dismissing: false,
             issue_title_state: cx.new(InputState::new),
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            issue_site_select,
+            issue_new_site_id: None,
             issue_comment_state: cx.new(InputState::new),
             issue_attachment_url_state: cx.new(InputState::new),
             issue_new_attachments: Vec::new(),
@@ -4665,6 +4673,8 @@ impl Workspace {
         self.last_whoami = None;
         self.user_home_tab = UserHomeTab::Sites;
         self.site_directory = None;
+        self.issue_new_site_id = None;
+        self.rebuild_issue_site_select(cx);
         self.site_menu_open = false;
         self._support_poll_task = None;
         self._issues_poll = None;
@@ -4695,6 +4705,95 @@ impl Workspace {
 
     // --- Manage sites (site switcher) ---
 
+    fn issue_site_option_label(site: &ManagedSiteInfo) -> String {
+        let label = site.display_label();
+        if site.host.trim().is_empty() || label.contains(site.host.trim()) {
+            label
+        } else {
+            format!("{label} — {}", site.host.trim())
+        }
+    }
+
+    fn build_issue_site_select(
+        sites: &[ManagedSiteInfo],
+        selected_site_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Entity<Select<String>> {
+        let mut sorted_sites = sites.to_vec();
+        sorted_sites.sort_by_key(|site| Self::issue_site_option_label(site).to_lowercase());
+
+        let mut options =
+            vec![
+                SelectOption::new(String::new(), t!("user.requests.site_none").to_string())
+                    .with_icon("icons/lucide/globe.svg"),
+            ];
+        options.extend(sorted_sites.into_iter().map(|site| {
+            let mut option =
+                SelectOption::new(site.site_id.clone(), Self::issue_site_option_label(&site))
+                    .with_icon("icons/lucide/globe.svg");
+            if !site.tenant_name.trim().is_empty() {
+                option = option.with_group(site.tenant_name.clone());
+            }
+            option
+        }));
+
+        let selected_index = selected_site_id
+            .and_then(|id| options.iter().position(|option| option.value == id))
+            .or(Some(0));
+        let parent = cx.entity();
+        cx.new(move |select_cx| {
+            Select::new(select_cx)
+                .options(options)
+                .selected_index(selected_index)
+                .placeholder(t!("user.requests.site_placeholder").to_string())
+                .searchable(true)
+                .search_placeholder(t!("user.requests.site_placeholder").to_string())
+                .leading_icon("icons/lucide/search.svg")
+                .on_change(move |site_id, _window, cx| {
+                    parent.update(cx, |workspace, cx| {
+                        workspace.issue_new_site_id = if site_id.is_empty() {
+                            None
+                        } else {
+                            Some(site_id.clone())
+                        };
+                        cx.notify();
+                    });
+                })
+        })
+    }
+
+    fn rebuild_issue_site_select(&mut self, cx: &mut Context<Self>) {
+        let sites = self
+            .site_directory
+            .as_ref()
+            .map(|directory| directory.sites.as_slice())
+            .unwrap_or_default();
+        if self
+            .issue_new_site_id
+            .as_ref()
+            .is_some_and(|selected| !sites.iter().any(|site| &site.site_id == selected))
+        {
+            self.issue_new_site_id = None;
+        }
+        let selected = self.issue_new_site_id.as_deref();
+        self.issue_site_select = Self::build_issue_site_select(sites, selected, cx);
+    }
+
+    fn reset_new_request_site_to_active(&mut self, cx: &mut Context<Self>) {
+        self.issue_new_site_id = self
+            .app_config
+            .cloud_sync
+            .active_site_id
+            .as_ref()
+            .filter(|active_id| {
+                self.site_directory.as_ref().is_some_and(|directory| {
+                    directory.sites.iter().any(|s| &s.site_id == *active_id)
+                })
+            })
+            .cloned();
+        self.rebuild_issue_site_select(cx);
+    }
+
     /// Fetch the sites directory + areas in the background and cache them.
     /// No-op when logged out; never blocks.
     pub fn refresh_sites(&mut self, cx: &mut Context<Self>) {
@@ -4716,6 +4815,7 @@ impl Workspace {
                         payload.areas.len()
                     );
                     ws.site_directory = Some(payload);
+                    ws.rebuild_issue_site_select(cx);
                     ws.refresh_command_palette(cx);
                     // Server may have just delivered the Jean config (super-admin).
                     ws.update_jean_availability(cx);
@@ -6479,6 +6579,7 @@ impl Workspace {
             self.set_mode(AppMode::User, cx);
         }
         self.issue_new_source = "user";
+        self.reset_new_request_site_to_active(cx);
         self.user_new_request_sheet_open = true;
         self.sync_issues_poll(cx);
         cx.notify();
@@ -6501,6 +6602,7 @@ impl Workspace {
         Self::reset_input(&self.issue_ai_prompt_state.clone(), cx);
         self.issue_new_priority = "normal".to_string();
         self.issue_new_source = source;
+        self.reset_new_request_site_to_active(cx);
         self.issue_ai_expanded = false;
         self.issue_ai_loading = false;
         self.issue_ai_error = None;
@@ -6784,6 +6886,8 @@ impl Workspace {
                 Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
                 ws.issue_new_attachments.clear();
                 ws.issue_new_source = "user";
+                ws.issue_new_site_id = None;
+                ws.rebuild_issue_site_select(cx);
                 cx.notify();
             });
         })
@@ -7008,6 +7112,8 @@ impl Workspace {
         body: String,
         priority: String,
         source: &'static str,
+        site_id: String,
+        site_label: String,
         attachments: Vec<AttachmentDraft>,
         cx: &mut Context<Self>,
     ) {
@@ -7028,8 +7134,16 @@ impl Workspace {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let created =
-                        issues::create_issue(&base, &token, &title, &body, &priority, source)?;
+                    let created = issues::create_issue(
+                        &base,
+                        &token,
+                        &title,
+                        &body,
+                        &priority,
+                        source,
+                        &site_id,
+                        &site_label,
+                    )?;
                     if attachments.is_empty() {
                         return Ok::<_, shelldeck_core::ShellDeckError>((created, None));
                     }
@@ -7084,6 +7198,8 @@ impl Workspace {
                         ws.issue_ai_loading = false;
                         ws.issue_ai_error = None;
                         ws.issue_new_source = "user";
+                        ws.issue_new_site_id = None;
+                        ws.rebuild_issue_site_select(cx);
                         ws.upsert_issue_in_list(iss.clone());
                         ws.issue_detail = Some(iss.clone());
                         ws.issue_selected = Some(iss.id.clone());
@@ -7688,8 +7804,30 @@ impl Workspace {
         let body = self.issue_body_state.read(cx).content().to_string();
         let prio = self.issue_new_priority.clone();
         let source = self.issue_new_source;
+        let selected_site = self.issue_new_site_id.as_deref().and_then(|site_id| {
+            self.site_directory
+                .as_ref()?
+                .sites
+                .iter()
+                .find(|site| site.site_id == site_id)
+        });
+        let site_id = selected_site
+            .map(|site| site.site_id.clone())
+            .unwrap_or_default();
+        let site_label = selected_site
+            .map(ManagedSiteInfo::display_label)
+            .unwrap_or_default();
         let attachments = self.issue_new_attachments.clone();
-        self.create_issue_now(title, body, prio, source, attachments, cx);
+        self.create_issue_now(
+            title,
+            body,
+            prio,
+            source,
+            site_id,
+            site_label,
+            attachments,
+            cx,
+        );
     }
 
     /// Submit the comment composer on the currently-open detail sheet.
@@ -11438,6 +11576,19 @@ impl Workspace {
             .child(scrollable_vertical(body))
     }
 
+    /// Return a label that always carries a visible Unicode ellipsis when it
+    /// exceeds the badge's known character budget. GPUI currently clips text
+    /// nodes inside flex badges before painting its CSS-style ellipsis.
+    fn ellipsize_badge_label(label: &str, max_chars: usize) -> String {
+        let mut chars = label.chars();
+        let prefix: String = chars.by_ref().take(max_chars.saturating_sub(1)).collect();
+        if chars.next().is_some() {
+            format!("{prefix}…")
+        } else {
+            label.to_string()
+        }
+    }
+
     /// One row of the "Mes demandes" list — status badge, title, priority,
     /// optional GitHub number, and a hover-only red trash icon that opens
     /// the delete confirm. The hover kebab is hand-rolled (matches the
@@ -11477,13 +11628,27 @@ impl Workspace {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .truncate()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_primary())
                     .child(iss.title.clone()),
-            )
-            .child(priority_badge(&iss.priority));
+            );
+        if let Some(site_label) = iss
+            .site_label
+            .as_ref()
+            .filter(|label| !label.trim().is_empty())
+        {
+            row = row.child(
+                Badge::new(Self::ellipsize_badge_label(site_label, 17))
+                    .variant(BadgeVariant::Outline)
+                    .max_w(px(140.0))
+                    .overflow_hidden(),
+            );
+        }
+        row = row.child(priority_badge(&iss.priority));
         if let Some(g) = &iss.github {
             row = row.child(
                 div()
@@ -11883,6 +12048,13 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
+            .on_action(cx.listener(move |this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(target, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                 let generation = this.issue_attachment_generation;
                 this.import_attachment_paths(target, paths.paths().to_vec(), generation, cx);
@@ -12073,7 +12245,15 @@ impl Workspace {
             .min_rows(4);
 
         let ai_enabled = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Issue);
-        let mut inner = div().flex().flex_col().gap(px(10.0));
+        let mut inner = div().flex().flex_col().gap(px(10.0)).on_action(cx.listener(
+            |this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(IssueAttachmentTarget::NewRequest, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            },
+        ));
         if ai_enabled {
             let model = if self.app_config.ai.model.trim().is_empty() {
                 self.app_config.ai.backend.default_model().to_string()
@@ -12211,6 +12391,20 @@ impl Workspace {
         }
 
         inner = inner
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("user.requests.site_label").to_string()),
+                    )
+                    .child(self.issue_site_select.clone()),
+            )
             .child(
                 div()
                     .flex()
@@ -12356,9 +12550,17 @@ impl Workspace {
             .flex_col()
             .gap(px(8.0))
             .mt(px(10.0))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(IssueAttachmentTarget::Comment, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(
                 div()
                     .flex()
+                    .w_full()
                     .items_start()
                     .gap(px(8.0))
                     .min_w(px(0.0))
@@ -12373,6 +12575,18 @@ impl Workspace {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .child(iss.title.clone()),
+                    )
+                    .children(
+                        iss.site_label
+                            .as_ref()
+                            .filter(|label| !label.trim().is_empty())
+                            .map(|label| {
+                                Badge::new(Self::ellipsize_badge_label(label, 13))
+                                    .variant(BadgeVariant::Outline)
+                                    .max_w(px(120.0))
+                                    .flex_shrink_0()
+                                    .overflow_hidden()
+                            }),
                     )
                     .children(iss.github.as_ref().map(|g| {
                         div()

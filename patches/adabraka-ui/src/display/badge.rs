@@ -77,6 +77,7 @@ impl IntoElement for Badge {
         div()
             .flex()
             .items_center()
+            .min_w(px(0.0))
             .px(px(10.0))
             .py(px(2.0))
             .rounded_full()
@@ -93,6 +94,17 @@ impl IntoElement for Badge {
                 div.style().refine(&user_style);
                 div
             })
-            .child(self.label)
+            // ShellDeck patch: SDPATCH-023 — constrained badges need their
+            // label in a shrinking text box; clipping the flex root alone
+            // cuts glyphs abruptly and can consume the parent's end padding.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(self.label),
+            )
     }
 }

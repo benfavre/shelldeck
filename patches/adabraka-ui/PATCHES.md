@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **57**
+Total markers in code: **69**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -420,6 +420,57 @@ carries no marker of its own — see its entry).
   Each variant now uses the actual bundled filename.
 - **Upstream status**: ShellDeck asset-name compatibility; not planned.
 
+### SDPATCH-022 — Localized and virtualized searchable Select menus
+
+- **Files / symbols**:
+  - `src/components/select.rs` — `Select`, `Select::search_placeholder`,
+    `Select::render`, `VIRTUAL_LIST_THRESHOLD`
+- **Markers**:
+  - `src/components/select.rs` — eleven `// ShellDeck patch: SDPATCH-022` /
+    `/// ShellDeck patch: SDPATCH-022` markers covering the threshold,
+    placeholder state/API, and virtual-list render branch.
+- **Why**: upstream hardcodes the searchable hint in English and renders every
+  filtered option eagerly. ShellDeck's request-site picker commonly receives
+  150+ sites, which made opening and filtering the menu visibly stall. Callers
+  can now localize the hint, and menus with 50 or more results use GPUI's
+  fixed-height `uniform_list`, keeping render cost proportional to the visible
+  rows. The search surface is a real `InputState`, so it inherits the existing
+  native caret, selection, IME, and horizontal-scroll fixes. Group labels remain
+  visible as a secondary line inside virtual rows, and long option labels retain
+  their full searchable value while rendering with a deterministic Unicode
+  ellipsis.
+- **Upstream status**: not filed yet — generic performance and localization
+  improvements suitable for upstreaming.
+
+### SDPATCH-023 — Constrained Badge labels shrink with ellipsis
+
+- **Files / symbols**:
+  - `src/display/badge.rs` — `Badge::into_element`
+- **Markers**:
+  - `src/display/badge.rs` — `// ShellDeck patch: SDPATCH-023 — constrained badges need their`
+- **Why**: applying `max_w` and `overflow_hidden` to the Badge flex root did not
+  constrain its raw text child. Long site labels could consume the containing
+  row's end padding and be cut mid-glyph. The label now owns a shrinkable,
+  no-wrap ellipsis box inside the badge padding.
+- **Upstream status**: not filed yet — generic overflow fix suitable for
+  upstreaming.
+
+### SDPATCH-024 — Propagate non-text paste from focused Inputs
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState::paste`
+  - `src/components/editor.rs` — `EditorState::paste`
+- **Markers**:
+  - `src/components/input_state.rs` — `// ShellDeck patch: SDPATCH-024 — a focused text input owns the`
+  - `src/components/editor.rs` — `// ShellDeck patch: SDPATCH-024 — let an ancestor attachment`
+- **Why**: a focused `Input` owns the Ctrl/Cmd+V action even when the
+  clipboard contains only an image. Its text-only paste handler previously did
+  nothing while still preventing an ancestor attachment picker from receiving
+  the action. Non-text paste now propagates; ordinary text paste remains owned
+  by the Input.
+- **Upstream status**: not filed yet — generic action propagation fix suitable
+  for upstreaming.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -478,6 +529,15 @@ carries no marker of its own — see its entry).
 - **2026-07-21** — added SDPATCH-020: multi-line Inputs now provide visual-line
   Up/Down and Home/End navigation, cross-line selection painting, and capped
   viewport caret following.
+- **2026-07-22** — added SDPATCH-022: searchable Select menus accept a localized
+  hint, keep their deferred search surface focused using measured popup bounds,
+  reuse the real Input caret, virtualize result sets of 50+ options, and render
+  long rows with a deterministic ellipsis. Marker count 57 → 68.
+- **2026-07-22** — added SDPATCH-023: constrained Badge labels now shrink and
+  ellipsize without consuming their parent's end padding. Marker count 68 → 69.
+- **2026-07-23** — added SDPATCH-024: focused Inputs and Editors propagate
+  non-text paste so ancestor image-attachment pickers can handle Ctrl/Cmd+V.
+  Marker count 69 → 71.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past

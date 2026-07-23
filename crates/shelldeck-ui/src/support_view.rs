@@ -13,10 +13,10 @@ use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
-use adabraka_ui::components::editor::{Editor, EditorState};
+use adabraka_ui::components::editor::{Editor, EditorState, Paste as EditorPaste};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::text::{Text, TextVariant};
@@ -3159,6 +3159,13 @@ impl SupportView {
                     cx.stop_propagation();
                 }
             }))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                if this.paste_attachment(cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let generation = this.attachment_generation;
                 this.import_attachment_paths(paths.paths().to_vec(), generation, cx);
@@ -3314,6 +3321,13 @@ impl SupportView {
             .py(px(10.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
+            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+                if this.paste_attachment(cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -5085,6 +5099,13 @@ impl SupportView {
             .py(px(10.0))
             .border_t_1()
             .border_color(ShellDeckColors::border())
+            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+                if this.paste_attachment(cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
                 let issue_id = issue_id.clone().unwrap_or_default();
                 composer.child(

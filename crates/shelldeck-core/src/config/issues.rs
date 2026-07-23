@@ -488,6 +488,8 @@ pub fn create_issue(
     body: &str,
     priority: &str,
     source: &str,
+    site_id: &str,
+    site_label: &str,
 ) -> Result<Issue> {
     let mut b = serde_json::json!({ "action": "create", "title": title });
     let obj = b.as_object_mut().unwrap();
@@ -499,6 +501,12 @@ pub fn create_issue(
     }
     if !source.is_empty() {
         obj.insert("source".into(), serde_json::json!(source));
+    }
+    if !site_id.is_empty() {
+        obj.insert("site_id".into(), serde_json::json!(site_id));
+    }
+    if !site_label.is_empty() {
+        obj.insert("site_label".into(), serde_json::json!(site_label));
     }
     post_issue(base_url, token, b)
 }
@@ -869,14 +877,26 @@ mod tests {
     fn create_and_comment_bodies() {
         let m = start_mock();
         let (b, t) = cfg(&m);
-        let created = create_issue(&b, &t, "Nouveau", "corps", "high", "support").expect("create");
+        let created = create_issue(
+            &b,
+            &t,
+            "Nouveau",
+            "corps",
+            "high",
+            "support",
+            "site-42",
+            "Acme — Boutique",
+        )
+        .expect("create");
         assert_eq!(created.id, "iss_1");
         comment_issue(&b, &t, "iss_1", "un mot").expect("comment");
 
         let posts = m.posts.lock().unwrap();
         assert!(posts.iter().any(|p| p.contains("\"action\":\"create\"")
             && p.contains("\"source\":\"support\"")
-            && p.contains("\"priority\":\"high\"")));
+            && p.contains("\"priority\":\"high\"")
+            && p.contains("\"site_id\":\"site-42\"")
+            && p.contains("\"site_label\":\"Acme — Boutique\"")));
         assert!(posts.iter().any(|p| p.contains("\"action\":\"comment\"")));
     }
 
@@ -1072,9 +1092,9 @@ mod tests {
         let (b, t) = cfg(&m);
 
         // Empty source ⇒ omitted from body.
-        create_issue(&b, &t, "titre A", "", "", "").expect("empty source");
+        create_issue(&b, &t, "titre A", "", "", "", "", "").expect("empty source");
         // Explicit support source ⇒ present.
-        create_issue(&b, &t, "titre B", "", "", "support").expect("source=support");
+        create_issue(&b, &t, "titre B", "", "", "support", "", "").expect("source=support");
 
         let posts = m.posts.lock().unwrap();
         let a = serde_json::from_str::<serde_json::Value>(&posts[0]).unwrap();
@@ -1089,6 +1109,36 @@ mod tests {
             Some("support"),
             "source=support must land as a JSON string, got: {b_}",
         );
+    }
+
+    // SDTEST-1389 — A targeted request carries both stable site identity and
+    // the human label; an untargeted request omits both fields so Manage keeps
+    // its null defaults.
+    #[test]
+    fn create_issue_site_target_is_present_or_fully_omitted() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+
+        create_issue(
+            &b,
+            &t,
+            "site ciblé",
+            "",
+            "normal",
+            "user",
+            "site-123",
+            "Acme — Vitrine",
+        )
+        .expect("targeted create");
+        create_issue(&b, &t, "général", "", "normal", "user", "", "").expect("untargeted create");
+
+        let posts = m.posts.lock().unwrap();
+        let targeted: serde_json::Value = serde_json::from_str(&posts[0]).unwrap();
+        let general: serde_json::Value = serde_json::from_str(&posts[1]).unwrap();
+        assert_eq!(targeted["site_id"], "site-123");
+        assert_eq!(targeted["site_label"], "Acme — Vitrine");
+        assert!(general.get("site_id").is_none());
+        assert!(general.get("site_label").is_none());
     }
 
     // SDTEST-301 — `delete_issue` is an owner-or-staff soft delete. The
