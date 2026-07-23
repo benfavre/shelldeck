@@ -42,9 +42,10 @@ le PFX auto-signé configuré dans
 `test_windows_signing` pour tester cette même mécanique. Dès que les deux
 secrets `WINDOWS_CERTIFICATE_*` sont présents, le workflow leur donne la
 priorité. Une configuration de production partielle bloque la release.
-Le certificat auto-signé valide la chaîne technique sans appeler de service
-d'horodatage externe, mais reste non approuvé par défaut sur les PC des
-utilisateurs. Un certificat public conserve l'horodatage SHA-256.
+Le certificat auto-signé utilise l'API Authenticode locale de PowerShell sans
+appeler de service d'horodatage ou de validation externe, mais reste non
+approuvé par défaut sur les PC des utilisateurs. Un certificat public conserve
+`signtool`, la validation de chaîne et l'horodatage SHA-256.
 
 ## Secrets et variable GitHub
 
