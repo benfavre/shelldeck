@@ -6,6 +6,7 @@ interface PlatformRelease {
   url: string;
   sha256: string;
   size: number;
+  signature: string;
 }
 
 interface UpdateManifest {
@@ -1206,11 +1207,13 @@ export default {
       }
 
       return jsonResponse({
+        platform,
         version: manifest.version,
         url: platformData.url,
         sha256: platformData.sha256,
         size: platformData.size,
         pub_date: manifest.pub_date,
+        signature: platformData.signature,
       });
     }
 

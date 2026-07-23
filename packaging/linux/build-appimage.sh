@@ -101,13 +101,12 @@ mkdir -p "$PROJECT_ROOT/dist"
 export ARCH=x86_64
 export VERSION="$VERSION"
 
-# linuxdeploy bundles shared libraries and creates the AppImage
+# linuxdeploy prepares the AppDir. appimagetool is invoked separately so CI
+# can embed a GPG signature in the final AppImage.
 "$LINUXDEPLOY" \
     --appdir "$APPDIR" \
-    --desktop-file "$APPDIR/usr/share/applications/shelldeck.desktop" \
-    --output appimage 2>&1 || {
-    # Fallback: manual AppImage creation if linuxdeploy fails (e.g., no FUSE)
-    echo "==> linuxdeploy failed, trying manual AppImage creation..."
+    --desktop-file "$APPDIR/usr/share/applications/shelldeck.desktop" 2>&1 || {
+    echo "==> linuxdeploy failed; using the manually prepared AppDir"
 
     # Create AppRun
     cat > "$APPDIR/AppRun" << 'APPRUN'
@@ -124,27 +123,35 @@ APPRUN
     ln -sf usr/share/icons/hicolor/256x256/apps/shelldeck.png "$APPDIR/shelldeck.png" 2>/dev/null || true
     ln -sf usr/share/applications/shelldeck.desktop "$APPDIR/shelldeck.desktop"
 
-    # Use appimagetool if available
-    APPIMAGETOOL="$TOOLS_DIR/appimagetool-x86_64.AppImage"
-    if [ ! -f "$APPIMAGETOOL" ]; then
-        curl -fsSL -o "$APPIMAGETOOL" \
-            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-        chmod +x "$APPIMAGETOOL"
-    fi
-
-    "$APPIMAGETOOL" --no-appstream "$APPDIR" "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage" 2>&1 || {
-        # Last resort: try with --appimage-extract-and-run (no FUSE needed)
-        "$APPIMAGETOOL" --appimage-extract-and-run --no-appstream "$APPDIR" \
-            "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage"
-    }
 }
 
-# Move output if linuxdeploy created it in current directory
-if [ -f "$PROJECT_ROOT/ShellDeck-${VERSION}-x86_64.AppImage" ]; then
-    mv "$PROJECT_ROOT/ShellDeck-${VERSION}-x86_64.AppImage" "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage"
-elif [ -f "ShellDeck-${VERSION}-x86_64.AppImage" ]; then
-    mv "ShellDeck-${VERSION}-x86_64.AppImage" "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage"
+# linuxdeploy normally creates AppRun. Preserve the fallback for older builds.
+if [ ! -x "$APPDIR/AppRun" ]; then
+    ln -sf usr/bin/shelldeck "$APPDIR/AppRun"
 fi
+
+APPIMAGETOOL="$TOOLS_DIR/appimagetool-x86_64.AppImage"
+if [ ! -f "$APPIMAGETOOL" ]; then
+    curl -fsSL -o "$APPIMAGETOOL" \
+        "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+    chmod +x "$APPIMAGETOOL"
+fi
+
+SIGN_ARGS=()
+if [ "${SHELLDECK_APPIMAGE_SIGN:-0}" = "1" ]; then
+    if ! command -v gpg2 >/dev/null 2>&1 && ! command -v gpg >/dev/null 2>&1; then
+        echo "ERROR: GPG is required to sign the AppImage" >&2
+        exit 1
+    fi
+    SIGN_ARGS+=(--sign)
+fi
+
+rm -f "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage"
+"$APPIMAGETOOL" --no-appstream "$APPDIR" "${SIGN_ARGS[@]}" \
+    "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage" 2>&1 || {
+    "$APPIMAGETOOL" --appimage-extract-and-run --no-appstream \
+        "$APPDIR" "${SIGN_ARGS[@]}" "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage"
+}
 
 echo ""
 if [ -f "$PROJECT_ROOT/dist/ShellDeck-x86_64.AppImage" ]; then

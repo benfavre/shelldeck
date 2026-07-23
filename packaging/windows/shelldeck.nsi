@@ -9,7 +9,7 @@
 ; ---------------------------------------------------------------------------
 !define APP_NAME "ShellDeck"
 !define APP_EXE "shelldeck.exe"
-!define APP_PUBLISHER "ShellDeck Contributors"
+!define APP_PUBLISHER "FAVRE BENJAMIN (WEB-DESIGN 29)"
 !define APP_URL "https://github.com/benfavre/shelldeck"
 !define APP_DESCRIPTION "GPU-accelerated terminal and SSH companion"
 

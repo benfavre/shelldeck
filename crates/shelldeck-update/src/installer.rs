@@ -5,11 +5,17 @@ use tokio::io::AsyncWriteExt;
 
 use crate::ReleaseInfo;
 
-/// Download the release archive to `dest`, verifying its SHA-256 digest.
+/// Download the release archive to a sibling temporary file, verifying the
+/// signed metadata, byte count and SHA-256 digest before publishing `dest`.
 pub async fn download_and_verify(release: &ReleaseInfo, dest: &Path) -> Result<()> {
+    crate::verify_release_signature(release)?;
+    download_verified_payload(release, dest).await
+}
+
+async fn download_verified_payload(release: &ReleaseInfo, dest: &Path) -> Result<()> {
     tracing::info!("Downloading update from {}", release.url);
 
-    let response = reqwest::get(&release.url)
+    let mut response = reqwest::get(&release.url)
         .await
         .context("Failed to download update")?;
 
@@ -20,17 +26,49 @@ pub async fn download_and_verify(release: &ReleaseInfo, dest: &Path) -> Result<(
         );
     }
 
-    let bytes = response
-        .bytes()
+    let partial = dest.with_extension("part");
+    let _ = tokio::fs::remove_file(&partial).await;
+    let mut file = tokio::fs::File::create(&partial)
         .await
-        .context("Failed to read update payload")?;
-
-    // Verify SHA-256
+        .context("Failed to create temporary update file")?;
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    let mut downloaded = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed to read update payload")?
+    {
+        downloaded = downloaded
+            .checked_add(chunk.len() as u64)
+            .context("Update payload size overflow")?;
+        if release.size > 0 && downloaded > release.size {
+            let _ = tokio::fs::remove_file(&partial).await;
+            anyhow::bail!(
+                "Update payload exceeds signed size: expected {} bytes",
+                release.size
+            );
+        }
+        hasher.update(&chunk);
+        file.write_all(&chunk)
+            .await
+            .context("Failed to write temporary update file")?;
+    }
+    file.flush().await?;
+    drop(file);
+
+    if release.size > 0 && downloaded != release.size {
+        let _ = tokio::fs::remove_file(&partial).await;
+        anyhow::bail!(
+            "Update size mismatch: expected {}, got {}",
+            release.size,
+            downloaded
+        );
+    }
+
     let digest = format!("{:x}", hasher.finalize());
 
-    if digest != release.sha256 {
+    if !digest.eq_ignore_ascii_case(&release.sha256) {
+        let _ = tokio::fs::remove_file(&partial).await;
         anyhow::bail!(
             "SHA-256 mismatch: expected {}, got {}",
             release.sha256,
@@ -39,23 +77,17 @@ pub async fn download_and_verify(release: &ReleaseInfo, dest: &Path) -> Result<(
     }
 
     tracing::info!("SHA-256 verified: {}", digest);
-
-    // Write to destination
-    let mut file = tokio::fs::File::create(dest)
+    tokio::fs::rename(&partial, dest)
         .await
-        .context("Failed to create update file")?;
-    file.write_all(&bytes)
-        .await
-        .context("Failed to write update file")?;
-    file.flush().await?;
+        .context("Failed to publish verified update file")?;
 
     Ok(())
 }
 
 /// Platform-specific installation of the downloaded archive.
 ///
-/// - **Linux**: extract tar.gz, rename running binary to `.bak`, copy new binary in place.
-/// - **macOS**: extract zip, rsync into the running app bundle.
+/// - **Linux**: extract tar.gz, stage beside the executable, then rename with rollback.
+/// - **macOS**: extract a complete signed `.app`, then rename the bundle with rollback.
 /// - **Windows**: extract zip to a staging directory, rename-and-replace strategy.
 pub async fn install(archive: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
@@ -108,16 +140,29 @@ async fn install_linux(archive: &Path) -> Result<()> {
     // Find the new binary inside the extracted directory
     let new_binary = find_binary_in_dir(&staging)?;
 
-    // Rename current binary to .bak, copy new one in place
+    // Stage the replacement on the same filesystem, then swap with rollback.
     let backup = current_exe.with_extension("bak");
-    std::fs::rename(&current_exe, &backup).context("Failed to rename current binary to .bak")?;
-    std::fs::copy(&new_binary, &current_exe).context("Failed to copy new binary")?;
-    std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755))?;
+    let replacement = current_exe.with_extension("new");
+    let _ = std::fs::remove_file(&replacement);
+    std::fs::copy(&new_binary, &replacement).context("Failed to stage new binary")?;
+    std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o755))?;
+    atomic_replace_file(&current_exe, &replacement, &backup)?;
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&staging);
 
     tracing::info!("Linux update installed successfully");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn atomic_replace_file(current: &Path, replacement: &Path, backup: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(backup);
+    std::fs::rename(current, backup).context("Failed to create binary backup")?;
+    if let Err(error) = std::fs::rename(replacement, current) {
+        let _ = std::fs::rename(backup, current);
+        return Err(error).context("Failed to atomically install new binary");
+    }
     Ok(())
 }
 
@@ -150,23 +195,38 @@ async fn install_macos(archive: &Path) -> Result<()> {
         anyhow::bail!("unzip extraction failed");
     }
 
-    // rsync the extracted .app contents into the current bundle
-    let status = tokio::process::Command::new("rsync")
-        .args(["-a", "--delete"])
-        .arg(format!("{}/", staging.to_string_lossy()))
-        .arg(format!("{}/", app_bundle.to_string_lossy()))
-        .status()
-        .await
-        .context("Failed to rsync update")?;
-
-    if !status.success() {
-        anyhow::bail!("rsync failed");
+    let new_bundle = find_app_bundle(&staging)?;
+    let backup = app_bundle.with_extension("app.update-backup");
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(&app_bundle, &backup).context("Failed to back up current app bundle")?;
+    if let Err(error) = std::fs::rename(&new_bundle, &app_bundle) {
+        let _ = std::fs::rename(&backup, &app_bundle);
+        return Err(error).context("Failed to atomically install new app bundle");
     }
-
+    let _ = std::fs::remove_dir_all(&backup);
     let _ = std::fs::remove_dir_all(&staging);
 
     tracing::info!("macOS update installed successfully");
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn find_app_bundle(dir: &Path) -> Result<std::path::PathBuf> {
+    if dir.extension().is_some_and(|ext| ext == "app") {
+        return Ok(dir.to_path_buf());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "app") {
+            return Ok(path);
+        }
+        if path.is_dir() {
+            if let Ok(bundle) = find_app_bundle(&path) {
+                return Ok(bundle);
+            }
+        }
+    }
+    anyhow::bail!("Downloaded macOS archive does not contain an .app bundle")
 }
 
 #[cfg(target_os = "windows")]
@@ -253,4 +313,70 @@ fn walkdir(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn fixture_release(payload: &'static [u8], sha256: String) -> ReleaseInfo {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(payload).await.unwrap();
+        });
+        ReleaseInfo {
+            platform: "linux-x86_64".into(),
+            version: "1.0.0".into(),
+            url: format!("http://{address}/update"),
+            sha256,
+            size: payload.len() as u64,
+            pub_date: "2026-07-23T12:00:00Z".into(),
+            signature: String::new(),
+        }
+    }
+
+    // SDTEST-1240 — a bad digest never publishes the destination archive.
+    #[tokio::test]
+    async fn sha256_mismatch_removes_partial_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("update.tar.gz");
+        let release = fixture_release(b"not the signed archive", "0".repeat(64)).await;
+
+        let error = download_verified_payload(&release, &destination)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("SHA-256 mismatch"));
+        assert!(!destination.exists());
+        assert!(!destination.with_extension("part").exists());
+    }
+
+    // SDTEST-1242 — the Unix replacement is a same-filesystem rename and
+    // retains the previous executable as a rollback copy.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_binary_replacement_is_atomic_and_keeps_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("shelldeck");
+        let replacement = temp.path().join("shelldeck.new");
+        let backup = temp.path().join("shelldeck.bak");
+        std::fs::write(&current, b"old").unwrap();
+        std::fs::write(&replacement, b"new").unwrap();
+
+        atomic_replace_file(&current, &replacement, &backup).unwrap();
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old");
+        assert!(!replacement.exists());
+    }
 }

@@ -10,9 +10,14 @@ on:
         description: "Dry run (build only, skip GitHub release)"
         type: boolean
         default: false
+      test_windows_signing:
+        description: "Sign Windows artifacts with the self-signed test certificate"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
+  SHELLDECK_UPDATE_PUBLIC_KEY_BASE64: ${{ vars.SHELLDECK_UPDATE_PUBLIC_KEY_BASE64 }}
 
 jobs:
   # ─── Extract version from tag or Cargo.toml ───
@@ -55,7 +60,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             archive_ext: tar.gz
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             platform: macos-aarch64
             archive_ext: zip
@@ -72,7 +77,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-03-06
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
@@ -113,21 +118,98 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl pkg-config create-dmg
 
-      - name: Build release
+      - name: Require update verification key for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
+        run: |
+          if [ -z "$SHELLDECK_UPDATE_PUBLIC_KEY_BASE64" ]; then
+            echo "SHELLDECK_UPDATE_PUBLIC_KEY_BASE64 repository variable is missing" >&2
+            exit 1
+          fi
+
+      - name: Build release binary
+        shell: bash
+        env:
+          SHELLDECK_DEFER_ARCHIVE: "1"
         run: bash scripts/build-release.sh
 
       # ─── Native Installers ───
 
+      - name: Import Linux AppImage signing key
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.LINUX_GPG_PRIVATE_KEY_BASE64 }}
+        run: |
+          if [ -z "$LINUX_GPG_PRIVATE_KEY_BASE64" ]; then
+            echo "LINUX_GPG_PRIVATE_KEY_BASE64 secret is missing" >&2
+            exit 1
+          fi
+          printf '%s' "$LINUX_GPG_PRIVATE_KEY_BASE64" | base64 --decode | gpg --batch --import
+
       # Linux: AppImage
       - name: Build AppImage
         if: runner.os == 'Linux'
+        env:
+          SHELLDECK_APPIMAGE_SIGN: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
         run: bash packaging/linux/build-appimage.sh
+
+      - name: Import Apple Developer ID certificate
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_DEVELOPER_ID_P12_BASE64" ] || [ -z "$APPLE_DEVELOPER_ID_P12_PASSWORD" ]; then
+            echo "Apple Developer ID certificate secrets are missing" >&2
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/shelldeck-signing.keychain-db"
+          CERTIFICATE="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$CERTIFICATE"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERTIFICATE" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
       # macOS: DMG
       - name: Build DMG
         if: runner.os == 'macOS'
+        env:
+          SHELLDECK_MACOS_SIGNING_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          SHELLDECK_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
         run: bash packaging/macos/build-dmg.sh
+
+      - name: Notarize macOS update and disk image
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          if [ -z "$APPLE_NOTARY_KEY_P8_BASE64" ] || [ -z "$APPLE_NOTARY_KEY_ID" ] || [ -z "$APPLE_NOTARY_ISSUER_ID" ]; then
+            echo "Apple notarization secrets are missing" >&2
+            exit 1
+          fi
+          NOTARY_KEY="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY"
+          chmod 600 "$NOTARY_KEY"
+          SHELLDECK_RELEASE_PLATFORM=macos-aarch64 bash scripts/package-release.sh
+          xcrun notarytool submit dist/shelldeck-macos-aarch64.zip --wait \
+            --key "$NOTARY_KEY" --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID"
+          xcrun notarytool submit dist/ShellDeck-macos-aarch64.dmg --wait \
+            --key "$NOTARY_KEY" --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID"
+          xcrun stapler staple dist/ShellDeck-macos-aarch64.dmg
+          xcrun stapler validate dist/ShellDeck-macos-aarch64.dmg
 
       # Windows: NSIS installer
       - name: Install NSIS
@@ -135,12 +217,92 @@ jobs:
         shell: bash
         run: choco install nsis -y
 
+      - name: Sign Windows executable
+        if: runner.os == 'Windows' && (startsWith(github.ref, 'refs/tags/v') || inputs.test_windows_signing)
+        shell: pwsh
+        env:
+          WINDOWS_PRODUCTION_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TEST_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_TEST_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PASSWORD }}
+          WINDOWS_SELF_SIGNED_TEST: ${{ !startsWith(github.ref, 'refs/tags/v') && inputs.test_windows_signing && '1' || '0' }}
+        run: |
+          if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+            $certificateBase64 = $env:WINDOWS_TEST_CERTIFICATE_PFX_BASE64
+            $certificatePassword = $env:WINDOWS_TEST_CERTIFICATE_PASSWORD
+          } else {
+            $certificateBase64 = $env:WINDOWS_PRODUCTION_CERTIFICATE_PFX_BASE64
+            $certificatePassword = $env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
+          }
+          if (-not $certificateBase64 -or -not $certificatePassword) {
+            throw "Windows Authenticode certificate secrets are missing"
+          }
+          $certificate = Join-Path $env:RUNNER_TEMP "shelldeck-signing.pfx"
+          [IO.File]::WriteAllBytes(
+            $certificate,
+            [Convert]::FromBase64String($certificateBase64)
+          )
+          if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+            $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            $testCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              $certificate,
+              $certificatePassword,
+              $flags
+            )
+            $rootStore = [Security.Cryptography.X509Certificates.X509Store]::new(
+              "Root",
+              [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+            )
+            $rootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $rootStore.Add($testCertificate)
+            $rootStore.Close()
+            Write-Host "Trusted the self-signed certificate on this ephemeral runner only"
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+            /f $certificate /p $certificatePassword `
+            "target/release/shelldeck.exe"
+          & $signtool verify /pa /all /v "target/release/shelldeck.exe"
+
       - name: Build NSIS installer
         if: runner.os == 'Windows'
         shell: bash
         run: |
           export PATH="/c/Program Files (x86)/NSIS:$PATH"
           bash packaging/windows/build-nsis.sh
+
+      - name: Sign Windows installer
+        if: runner.os == 'Windows' && (startsWith(github.ref, 'refs/tags/v') || inputs.test_windows_signing)
+        shell: pwsh
+        env:
+          WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TEST_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PASSWORD }}
+          WINDOWS_SELF_SIGNED_TEST: ${{ !startsWith(github.ref, 'refs/tags/v') && inputs.test_windows_signing && '1' || '0' }}
+        run: |
+          $certificate = Join-Path $env:RUNNER_TEMP "shelldeck-signing.pfx"
+          $certificatePassword = if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+            $env:WINDOWS_TEST_CERTIFICATE_PASSWORD
+          } else {
+            $env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
+          }
+          if (-not $certificatePassword) {
+            throw "Windows Authenticode certificate password is missing"
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+            /f $certificate /p $certificatePassword `
+            "dist/ShellDeck-windows-x86_64-setup.exe"
+          & $signtool verify /pa /all /v "dist/ShellDeck-windows-x86_64-setup.exe"
+
+      - name: Package signed auto-update archive
+        shell: bash
+        env:
+          SHELLDECK_RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/package-release.sh
 
       # Upload archive artifact
       - name: Upload archive artifact
@@ -212,6 +374,20 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Sign checksum inventory
+        env:
+          LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.LINUX_GPG_PRIVATE_KEY_BASE64 }}
+        run: |
+          if [ -z "$LINUX_GPG_PRIVATE_KEY_BASE64" ]; then
+            echo "LINUX_GPG_PRIVATE_KEY_BASE64 secret is missing" >&2
+            exit 1
+          fi
+          printf '%s' "$LINUX_GPG_PRIVATE_KEY_BASE64" | base64 --decode | gpg --batch --import
+          gpg --batch --armor --export > release-assets/ShellDeck-signing-key.asc
+          gpg --batch --armor --detach-sign \
+            --output release-assets/SHA256SUMS.txt.asc \
+            release-assets/SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -246,7 +422,6 @@ jobs:
           path: artifacts
 
       - name: Generate update manifest
-        id: manifest
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ github.ref_name }}"
@@ -259,33 +434,42 @@ jobs:
           PLATFORMS[macos-aarch64]="shelldeck-macos-aarch64/shelldeck-macos-aarch64.zip"
           PLATFORMS[windows-x86_64]="shelldeck-windows-x86_64/shelldeck-windows-x86_64.zip"
 
-          MANIFEST='{"version":"'"$VERSION"'","pub_date":"'"$PUB_DATE"'","platforms":{'
-          FIRST=true
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            '{version: $version, pub_date: $pub_date, platforms: {}}' \
+            > unsigned-manifest.json
 
           for PLATFORM in "${!PLATFORMS[@]}"; do
             FILE="artifacts/${PLATFORMS[$PLATFORM]}"
-            if [ -f "$FILE" ]; then
-              SHA=$(sha256sum "$FILE" | awk '{print $1}')
-              SIZE=$(stat -c%s "$FILE")
-              URL="https://github.com/${REPO}/releases/download/${TAG}/$(basename "$FILE")"
-
-              if [ "$FIRST" = true ]; then
-                FIRST=false
-              else
-                MANIFEST="$MANIFEST,"
-              fi
-
-              MANIFEST="$MANIFEST\"${PLATFORM}\":{\"url\":\"${URL}\",\"sha256\":\"${SHA}\",\"size\":${SIZE}}"
-            else
-              echo "Warning: $FILE not found, skipping $PLATFORM"
+            if [ ! -f "$FILE" ]; then
+              echo "Required update archive not found: $FILE" >&2
+              exit 1
             fi
+            SHA=$(sha256sum "$FILE" | awk '{print $1}')
+            SIZE=$(stat -c%s "$FILE")
+            URL="https://github.com/${REPO}/releases/download/${TAG}/$(basename "$FILE")"
+            jq \
+              --arg platform "$PLATFORM" \
+              --arg url "$URL" \
+              --arg sha256 "$SHA" \
+              --argjson size "$SIZE" \
+              '.platforms[$platform] = {url: $url, sha256: $sha256, size: $size}' \
+              unsigned-manifest.json > next-manifest.json
+            mv next-manifest.json unsigned-manifest.json
           done
 
-          MANIFEST="$MANIFEST}}"
-
           echo "=== Update Manifest ==="
-          echo "$MANIFEST" | jq .
-          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          jq . unsigned-manifest.json
+
+      - name: Sign update manifest
+        env:
+          SHELLDECK_UPDATE_PRIVATE_KEY_PEM_BASE64: ${{ secrets.SHELLDECK_UPDATE_PRIVATE_KEY_PEM_BASE64 }}
+        run: |
+          bash scripts/verify-update-signing-key.sh
+          bash scripts/sign-update-manifest.sh \
+            unsigned-manifest.json signed-manifest.json
+          jq . signed-manifest.json
 
       - name: Upload manifest to Cloudflare KV
         env:
@@ -297,7 +481,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_KV_NAMESPACE_ID}/values/latest-release" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data '${{ steps.manifest.outputs.manifest }}' \
+            --data-binary @signed-manifest.json \
           && echo "Manifest uploaded successfully" \
           || (echo "Failed to upload manifest" && exit 1)
 

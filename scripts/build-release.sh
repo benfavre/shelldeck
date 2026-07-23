@@ -90,34 +90,20 @@ fi
 
 echo "==> Binary: $BINARY ($(wc -c < "$BINARY" | tr -d ' ') bytes)"
 
-# ---------------------------------------------------------------------------
-# Package into archive
-# ---------------------------------------------------------------------------
-mkdir -p dist
+if [ "${SHELLDECK_DEFER_ARCHIVE:-0}" = "1" ]; then
+    echo "==> Archive deferred until after signing"
+    exit 0
+fi
+
+if [ "$PLATFORM" = "macos-aarch64" ]; then
+    SHELLDECK_MACOS_APP_ONLY=1 bash packaging/macos/build-dmg.sh "$BINARY"
+fi
+SHELLDECK_RELEASE_PLATFORM="$PLATFORM" bash scripts/package-release.sh
 
 case "$PLATFORM" in
-    linux-x86_64)
-        ARCHIVE_NAME="shelldeck-linux-x86_64.tar.gz"
-        ARCHIVE_PATH="dist/$ARCHIVE_NAME"
-        echo "==> Packaging $ARCHIVE_PATH..."
-        tar -czf "$ARCHIVE_PATH" -C target/release shelldeck
-        ;;
-    macos-aarch64)
-        ARCHIVE_NAME="shelldeck-macos-aarch64.zip"
-        ARCHIVE_PATH="dist/$ARCHIVE_NAME"
-        echo "==> Packaging $ARCHIVE_PATH..."
-        (cd target/release && zip -j "../../$ARCHIVE_PATH" shelldeck)
-        ;;
-    windows-x86_64)
-        ARCHIVE_NAME="shelldeck-windows-x86_64.zip"
-        ARCHIVE_PATH="dist/$ARCHIVE_NAME"
-        echo "==> Packaging $ARCHIVE_PATH..."
-        if command -v zip &>/dev/null; then
-            (cd target/release && zip -j "../../$ARCHIVE_PATH" shelldeck.exe)
-        else
-            powershell -Command "Compress-Archive -Path 'target/release/shelldeck.exe' -DestinationPath '$ARCHIVE_PATH' -Force"
-        fi
-        ;;
+    linux-x86_64) ARCHIVE_PATH="dist/shelldeck-linux-x86_64.tar.gz" ;;
+    macos-aarch64) ARCHIVE_PATH="dist/shelldeck-macos-aarch64.zip" ;;
+    windows-x86_64) ARCHIVE_PATH="dist/shelldeck-windows-x86_64.zip" ;;
 esac
 
 # ---------------------------------------------------------------------------

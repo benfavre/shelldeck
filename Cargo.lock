@@ -6959,6 +6959,8 @@ version = "0.5.2"
 dependencies = [
  "adabraka-gpui",
  "anyhow",
+ "base64",
+ "ed25519-dalek",
  "reqwest",
  "semver",
  "serde",

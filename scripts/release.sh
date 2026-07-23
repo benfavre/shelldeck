@@ -26,7 +26,11 @@ EXPECTED_ARTIFACTS=(
     "shelldeck-macos-aarch64.zip"
     "shelldeck-windows-x86_64.zip"
     "ShellDeck-x86_64.AppImage"
+    "ShellDeck-macos-aarch64.dmg"
+    "ShellDeck-windows-x86_64-setup.exe"
     "SHA256SUMS.txt"
+    "SHA256SUMS.txt.asc"
+    "ShellDeck-signing-key.asc"
 )
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
