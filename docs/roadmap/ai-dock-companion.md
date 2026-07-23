@@ -309,7 +309,12 @@ fortement la mémoire ou le temps de démarrage.
 - [x] Repousser le parsing SSH et le chargement du store au premier besoin du
   `Workspace`. Le Cloud Sync de démarrage part ensuite sur
   `background_executor`, sans bloquer l'affichage.
-- [ ] Mesurer le RSS et le temps de démarrage avant/après.
+- [x] Mesurer le RSS et le temps de démarrage avant/après. Benchmark indicatif
+  Linux/X11 en build debug, même configuration temporaire et RSS lu 1 s après
+  `ShellDeck window opened` : avant `2e0501c` = 663 ms / 182004 KiB / 32
+  threads ; après `4139880` = 478 ms / 182092 KiB / 32 threads. Le temps
+  baisse de 185 ms (≈ 28 %) ; l'écart RSS de +88 KiB (0,05 %) est du bruit de
+  mesure, donc aucune baisse mémoire n'est revendiquée à ce stade.
 - [x] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
   seul. Smoke Linux effectué le 2026-07-23 : démarrage caché puis
   Ctrl+Shift+Space ouvre un Dock 480×1048 sans trace
