@@ -9,7 +9,7 @@
 > quand on l'attaque, et la case correspondante est cochée ici après
 > merge.
 
-## Statut au 2026-07-21
+## Statut au 2026-07-23
 
 | # | Item | Statut |
 |---|------|--------|
@@ -20,7 +20,7 @@
 | 5 | Pin / favoris rapides | ✅ landed 2026-07-15 (connexions : persistance + sidebar + tray dynamique) |
 | 6 | Onboarding first-run | ✅ landed 2026-07-15 (`onboarding_view` + `general.onboarding_completed` + replay Settings) |
 | 7 | Couche IA transversale | 🚧 phases 0 a 4 livrees dans le perimetre de securite: taches, notifications, policies, triage Support explicite/automatique, activite contextuelle et diagnostics PTY sequentiels. Restent les tags bloques par l'API et la couverture GPUI dans [`ai-companion.md`](ai-companion.md). |
-| 8 | AI Dock Companion | 🚧 phases A/B livrées : fenêtre IA depuis le tray + démarrage caché récupérable ; runtime léger et raccourci global restent dans [`ai-dock-companion.md`](ai-dock-companion.md) |
+| 8 | AI Dock Companion | 🚧 phases A/B livrées ; première tranche C livrée avec création différée du `Workspace` au démarrage caché ; phase D partielle sur Windows/macOS/Linux X11, sans portail Wayland ni configuration dynamique. Le masquage à la perte de focus et le placement multi-écran sont déjà livrés. La suite du runtime léger et les finitions sont détaillées dans [`ai-dock-companion.md`](ai-dock-companion.md). |
 
 ## 1. Onboarding first-run — ✅ livré 2026-07-15
 
@@ -99,6 +99,11 @@ Livré en 4 sous-commits :
 - **Icône template** monochrome pour macOS dark/light adaptatif.
 - **Notification riche** avec l'identité de la connexion perdue au
   lieu du compte agrégé (`SshDisconnected { count }`).
+- **État visuel des tâches IA** dans le tray — la notification de fin existe,
+  mais aucun compteur ou indicateur de tâche active n'est rendu dans le menu.
+- **i18n complète du menu tray** — le Dock réutilise les traductions FR/EN,
+  mais plusieurs actions, compteurs et libellés du menu restent codés en
+  français dans `tray/mod.rs`.
 
 **Statut affiché :**
 
@@ -193,9 +198,12 @@ query/fragment/slash final ignorés) :
 
 - **Cible côté Manage** : PR séparée qui ajoute les boutons « Ouvrir
   dans ShellDeck » aux endroits stratégiques (page site, ticket,
-  connexion).
+  connexion). Audit du dépôt Bext le 2026-07-23 : aucun lien
+  `shelldeck://` n'y est encore présent.
 - **`tunnel/<site>/<port>`** (schéma initial) non retenu — pas d'API
   pour résoudre `(site, port)` → tunnel ; on cible le `PortForward.id`.
+- **`shelldeck://assistant`** n'est pas encore reconnu par le parseur ni routé
+  vers le Dock.
 
 ## 4. Pin / favoris rapides — ✅ livré 2026-07-15
 

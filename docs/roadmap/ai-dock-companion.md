@@ -4,14 +4,33 @@
 > accessible depuis le système, sans devoir afficher ni initialiser toute
 > l'interface principale.
 
-## Statut au 2026-07-21
+## Statut vérifié au 2026-07-23
 
 🚧 Phases A et B livrées le 2026-07-21 : Dock single-instance depuis le tray,
 conversation globale séparée, focus composer, fermeture-vers-tray, retour vers
-ShellDeck et démarrage caché récupérable. La phase D est livrée sur Windows,
-macOS et Linux/X11 avec `Ctrl+Shift+Space` (`Cmd+Shift+Space` sur macOS) ; le
-portail Global Shortcuts Wayland reste à réaliser. Les phases C et E restent à
-réaliser.
+ShellDeck et démarrage caché récupérable.
+
+La phase D est **partielle** :
+
+- le raccourci fixe fonctionne dans le code sur Windows, macOS et Linux/X11
+  avec `Ctrl+Shift+Space` (`Cmd+Shift+Space` sur macOS) ;
+- le portail Global Shortcuts Wayland reste à réaliser ;
+- l'enregistrement/désenregistrement dynamique n'est pas câblé : les toggles
+  Settings prennent effet au prochain lancement ;
+- il n'existe pas encore de capture de combinaison ni d'état d'erreur visible
+  dans Settings.
+
+La première tranche de la phase C est livrée : avec `start_hidden`, la fenêtre
+principale possède un `CompanionRoot` léger et ne construit plus immédiatement
+le `Workspace`, ses vues ou ses pollers. `main.rs` charge encore les connexions,
+le store et peut lancer le Cloud Sync avant GPUI. Le Dock et la palette
+initialisent encore le `Workspace` à leur première ouverture tant que
+`AiCompanionController` n'en a pas été extrait.
+
+La phase E est **partiellement livrée** : le Dock et la palette se masquent
+déjà à la perte de focus et leur placement multi-écran est câblé. Restent le
+deep link Assistant, l'icône tray macOS template, l'état visuel des tâches IA
+dans le tray, la géométrie persistante et les finitions d'accessibilité/i18n.
 
 La palette de commandes possède aussi une fenêtre compagnon autonome, ouverte
 par `Ctrl+Alt+Space` (`Cmd+Alt+Space` sur macOS) sans afficher la fenêtre
@@ -262,38 +281,58 @@ fortement la mémoire ou le temps de démarrage.
 - [x] Ajouter `CompanionConfig` avec des defaults rétrocompatibles.
 - [x] Ne pas afficher la fenêtre principale lorsque `start_hidden` est actif et que
   le tray est disponible.
-- [ ] Créer le `Workspace` et la fenêtre principale au premier `ShowMainWindow`
-  seulement (Phase C ; la Phase B garde une fenêtre initialisée mais cachée).
+- [x] Différer la création du `Workspace` en démarrage caché derrière un
+  `CompanionRoot` léger. La fenêtre native existe encore cachée ; le
+  `Workspace` est construit à la première commande qui nécessite son état.
 - [x] Ajouter le fallback visible lorsque le tray échoue.
-- [ ] Tester autostart + start hidden sur les trois OS via la matrice CI.
+- [ ] Tester autostart + start hidden sur les trois OS. La CI habituelle teste
+  Linux et la matrice de release compile macOS/Windows, mais aucun test de
+  comportement Companion ne s'exécute encore sur ces deux plateformes.
 
 ### Phase C — Runtime réellement léger
 
-- Extraire `AiCompanionController` du `Workspace`.
-- Charger uniquement config, keychain, conversations/tâches et services
+- [x] Ne plus construire `Workspace`, ses vues et ses pollers au démarrage
+  caché.
+- [ ] Extraire `AiCompanionController` du `Workspace`.
+- [ ] Introduire le `CompanionRuntime` applicatif qui possède le tray, les
+  raccourcis et les handles de fenêtres sans dépendre d'un `Workspace`.
+- [ ] Charger uniquement config, keychain, conversations/tâches et services
   compagnon au démarrage caché.
-- Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement à
+- [ ] Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement à
   l'ouverture de la fenêtre principale.
-- Mesurer le RSS et le temps de démarrage avant/après.
-- Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
+- [ ] Repousser le parsing SSH, le chargement du store et le Cloud Sync au
+  premier besoin de la fenêtre principale, ou documenter les données minimales
+  réellement nécessaires au runtime compagnon.
+- [ ] Mesurer le RSS et le temps de démarrage avant/après.
+- [ ] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
   seul.
 
 ### Phase D — Raccourci global
 
-- Choisir et valider le backend sur les trois plateformes.
-- Ajouter l'enregistrement/désenregistrement dynamique.
-- Ajouter la capture de combinaison et l'état d'erreur dans Settings.
-- Toggle du Dock, focus composer et restauration de fenêtre.
-- Documenter le fallback Wayland et les permissions éventuelles.
+- [x] Implémenter les backends Windows, macOS et Linux/X11.
+- [ ] Implémenter le portail Global Shortcuts sous Wayland ; le backend actuel
+  renvoie explicitement « Global hotkeys not supported on Wayland ».
+- [ ] Ajouter l'enregistrement/désenregistrement dynamique.
+- [ ] Ajouter la capture de combinaison et l'état d'erreur dans Settings.
+- [x] Toggle du Dock, focus composer et restauration de fenêtre.
+- [x] Échec d'enregistrement non fatal avec fallback tray.
+- [ ] Afficher le fallback Wayland dans Settings et documenter les permissions
+  macOS réellement nécessaires.
 
 ### Phase E — Finitions
 
-- Deep link `shelldeck://assistant` et hand-off single-instance.
-- Icône tray template macOS.
-- Restauration portable de la géométrie du Dock.
-- Masquage du Dock et de la palette à la perte de focus.
-- État visuel d'une tâche IA en cours dans le tray.
-- Accessibilité clavier complète et traductions FR/EN.
+- [ ] Deep link `shelldeck://assistant` et hand-off single-instance.
+- [ ] Icône tray template macOS (`tray-icon` expose
+  `with_icon_as_template`, mais ShellDeck ne l'utilise pas encore).
+- [ ] Restauration portable/persistante de la géométrie du Dock. Le placement
+  sur l'écran contenant le pointeur et la migration multi-écran sont déjà
+  fonctionnels, mais aucune géométrie n'est persistée.
+- [x] Masquage du Dock et de la palette à la perte de focus.
+- [ ] État visuel d'une tâche IA en cours dans le tray. Les notifications de
+  fin existent déjà.
+- [ ] Accessibilité clavier complète et traductions FR/EN. Le Dock est localisé
+  et Escape/focus sont câblés ; le menu tray conserve encore plusieurs
+  libellés français codés en dur.
 
 ## Critères d'acceptation V1
 
@@ -327,6 +366,27 @@ Au début de l'implémentation, allouer les nouveaux IDs conformément à
 Les vues GPUI ne doivent pas recevoir de tests artificiels. Extraire le routage,
 le parsing du raccourci et la machine d'état des fenêtres en fonctions pures,
 puis tester ces contrats.
+
+### Couverture constatée le 2026-07-23
+
+Les tests ciblés existants passent :
+
+- décision create/show/hide du Dock ;
+- ancrage à droite de l'écran ;
+- parsing des raccourcis Dock et palette ;
+- routage des entrées tray ;
+- fallback visible de `start_hidden` sans tray ;
+- compatibilité serde de `CompanionConfig`.
+
+Les lacunes restantes sont :
+
+- le test de politique de boot prouve que le démarrage caché diffère
+  `Workspace`, mais aucun harnais GPUI ne vérifie encore l'absence effective de
+  chaque poller ;
+- aucun test d'enregistrement global réel sur macOS/Windows ;
+- aucun test du fallback Wayland visible dans l'interface ;
+- aucun test GPUI de perte de focus ;
+- aucune couverture des mises à jour live du tray macOS/Windows.
 
 ## Hors périmètre initial
 
