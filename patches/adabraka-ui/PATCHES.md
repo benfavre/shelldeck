@@ -455,6 +455,22 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — generic overflow fix suitable for
   upstreaming.
 
+### SDPATCH-024 — Propagate non-text paste from focused Inputs
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState::paste`
+  - `src/components/editor.rs` — `EditorState::paste`
+- **Markers**:
+  - `src/components/input_state.rs` — `// ShellDeck patch: SDPATCH-024 — a focused text input owns the`
+  - `src/components/editor.rs` — `// ShellDeck patch: SDPATCH-024 — let an ancestor attachment`
+- **Why**: a focused `Input` owns the Ctrl/Cmd+V action even when the
+  clipboard contains only an image. Its text-only paste handler previously did
+  nothing while still preventing an ancestor attachment picker from receiving
+  the action. Non-text paste now propagates; ordinary text paste remains owned
+  by the Input.
+- **Upstream status**: not filed yet — generic action propagation fix suitable
+  for upstreaming.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -519,6 +535,9 @@ carries no marker of its own — see its entry).
   long rows with a deterministic ellipsis. Marker count 57 → 68.
 - **2026-07-22** — added SDPATCH-023: constrained Badge labels now shrink and
   ellipsize without consuming their parent's end padding. Marker count 68 → 69.
+- **2026-07-23** — added SDPATCH-024: focused Inputs and Editors propagate
+  non-text paste so ancestor image-attachment pickers can handle Ctrl/Cmd+V.
+  Marker count 69 → 71.
 - **2026-07-07** — SDPATCH-010: replaced the multi_line renderer's
   `shape_line`-per-`\n`-segment with gpui's `shape_text` at the input's
   inner width so long paragraphs actually wrap instead of running past

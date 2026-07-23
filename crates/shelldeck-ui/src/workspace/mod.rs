@@ -1,6 +1,6 @@
 use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
     install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
@@ -12048,6 +12048,13 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
+            .on_action(cx.listener(move |this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(target, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                 let generation = this.issue_attachment_generation;
                 this.import_attachment_paths(target, paths.paths().to_vec(), generation, cx);
@@ -12238,7 +12245,15 @@ impl Workspace {
             .min_rows(4);
 
         let ai_enabled = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Issue);
-        let mut inner = div().flex().flex_col().gap(px(10.0));
+        let mut inner = div().flex().flex_col().gap(px(10.0)).on_action(cx.listener(
+            |this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(IssueAttachmentTarget::NewRequest, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            },
+        ));
         if ai_enabled {
             let model = if self.app_config.ai.model.trim().is_empty() {
                 self.app_config.ai.backend.default_model().to_string()
@@ -12535,6 +12550,13 @@ impl Workspace {
             .flex_col()
             .gap(px(8.0))
             .mt(px(10.0))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                if this.paste_issue_attachment(IssueAttachmentTarget::Comment, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(
                 div()
                     .flex()
