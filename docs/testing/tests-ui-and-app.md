@@ -263,6 +263,8 @@ parallel `cargo test`.
 | SDTEST-1391 | `main::tests::hidden_companion_start_defers_workspace_creation` | SDUC-435 | Green | The boot policy constructs `Workspace` only for a visible main-window start; hidden companion startup keeps the lightweight root until a command needs application state. |
 | SDTEST-1392 | Linux runtime smoke: hidden start → `Ctrl+Shift+Space` | SDUC-434, SDUC-435 | Green | The Dock opened at 480×1048 while the `initializing full Workspace` trace remained absent, proving the standalone controller path does not start Workspace views or pollers. |
 | SDTEST-1393 | `main::tests::companion_runtime_owns_global_shortcut_routing` | SDUC-434, SDUC-436 | Green | The application-level runtime maps only the two registered global IDs to Dock/palette commands and rejects unknown IDs. |
+| SDTEST-1394 | `main::tests::deferred_workspace_data_merge_preserves_ssh_alias_precedence` | SDUC-435 | Green | The deferred loader preserves startup merge semantics: SSH aliases retain precedence and unique manual connections are appended. |
+| SDTEST-1395 | Linux runtime smoke: hidden start → Dock → palette | SDUC-434, SDUC-435, SDUC-436 | Green | Hidden startup and Dock-only use emitted no SSH/store/Workspace trace; the first palette invocation emitted `loading deferred Workspace connection data` exactly when the full surface became necessary. |
 
 ---
 

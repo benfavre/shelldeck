@@ -431,8 +431,6 @@ enum CompanionCommand {
 /// alive without constructing every Workspace view and network poller.
 struct CompanionRoot {
     config: Option<AppConfig>,
-    connections: Option<Vec<Connection>>,
-    store: Option<ConnectionStore>,
     runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
@@ -442,8 +440,6 @@ struct CompanionRoot {
 impl CompanionRoot {
     fn new(
         config: AppConfig,
-        connections: Vec<Connection>,
-        store: ConnectionStore,
         workspace_slot: WorkspaceSlot,
         tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
         main_window: gpui::AnyWindowHandle,
@@ -458,8 +454,6 @@ impl CompanionRoot {
         );
         Self {
             config: Some(config),
-            connections: Some(connections),
-            store: Some(store),
             runtime: CompanionRuntime {
                 main_window,
                 ai_companion,
@@ -502,8 +496,9 @@ impl CompanionRoot {
             .config
             .take()
             .expect("CompanionRoot config consumed before Workspace creation");
-        let connections = self.connections.take().unwrap_or_default();
-        let store = self.store.take().unwrap_or_default();
+        let sync_on_startup =
+            config.cloud_sync.is_configured() && config.cloud_sync.sync_on_startup;
+        let (connections, store) = load_workspace_data();
         let controller = self.runtime.ai_companion.read(cx);
         let ai_dock_assistant = controller.assistant();
         let ai_tasks = controller.tasks();
@@ -527,6 +522,9 @@ impl CompanionRoot {
         workspace.update(cx, |ws, cx| ws.restore_session(cx));
         workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
         workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
+        if sync_on_startup {
+            workspace.update(cx, |ws, cx| ws.cloud_sync_on_startup(cx));
+        }
 
         if let Some(state_tx) = self.runtime.tray_state_tx.clone() {
             workspace.update(cx, |ws, cx| {
@@ -1158,6 +1156,51 @@ fn dispatch_deep_link(
     }
 }
 
+fn merge_workspace_connections(
+    mut ssh_connections: Vec<Connection>,
+    manual_connections: &[Connection],
+) -> Vec<Connection> {
+    for connection in manual_connections {
+        if !ssh_connections
+            .iter()
+            .any(|existing| existing.alias == connection.alias)
+        {
+            ssh_connections.push(connection.clone());
+        }
+    }
+    ssh_connections
+}
+
+/// Load data used only by the full application surface.
+///
+/// Keeping this behind `CompanionRoot::ensure_workspace` prevents a hidden
+/// companion start from parsing SSH config or loading scripts, forwards and
+/// managed connections that the Dock/tray runtime does not consume.
+fn load_workspace_data() -> (Vec<Connection>, ConnectionStore) {
+    tracing::info!("loading deferred Workspace connection data");
+    let ssh_connections = parse_ssh_config().unwrap_or_else(|error| {
+        tracing::warn!("Failed to parse SSH config: {error}");
+        Vec::new()
+    });
+    tracing::info!(
+        "Loaded {} connections from SSH config",
+        ssh_connections.len()
+    );
+
+    let store = ConnectionStore::load().unwrap_or_else(|error| {
+        tracing::warn!("Failed to load connection store: {error}");
+        ConnectionStore::default()
+    });
+    tracing::info!(
+        "Loaded {} manual connections, {} scripts, {} port forwards",
+        store.connections.len(),
+        store.scripts.len(),
+        store.port_forwards.len()
+    );
+    let connections = merge_workspace_connections(ssh_connections, &store.connections);
+    (connections, store)
+}
+
 fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -1209,62 +1252,6 @@ fn main() -> Result<()> {
         Ok(actual) => tracing::info!("autostart reconciled: {actual}"),
         Err(e) => tracing::warn!("autostart reconcile skipped: {e}"),
     }
-
-    // Parse SSH config
-    let ssh_connections = parse_ssh_config().unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse SSH config: {}", e);
-        Vec::new()
-    });
-
-    tracing::info!(
-        "Loaded {} connections from SSH config",
-        ssh_connections.len()
-    );
-
-    // Load connection store (manual connections, scripts, forwards)
-    let mut store = ConnectionStore::load().unwrap_or_else(|e| {
-        tracing::warn!("Failed to load connection store: {}", e);
-        ConnectionStore::default()
-    });
-
-    tracing::info!(
-        "Loaded {} manual connections, {} scripts, {} port forwards",
-        store.connections.len(),
-        store.scripts.len(),
-        store.port_forwards.len()
-    );
-
-    // Cloud Sync: pull remote SSH profiles at startup (best-effort). Network
-    // failure never blocks launch — the fetch is bounded by 4s connect / 10s
-    // total timeouts. On a successful merge we reload the store so the freshly
-    // synced connections feed the workspace.
-    if config.cloud_sync.is_configured() && config.cloud_sync.sync_on_startup {
-        match shelldeck_core::config::cloud_sync::sync_now(
-            &config.cloud_sync,
-            shelldeck_core::VERSION,
-        ) {
-            Ok(stats) => {
-                tracing::info!(
-                    "Cloud sync: {} added, {} updated, {} removed",
-                    stats.added,
-                    stats.updated,
-                    stats.removed
-                );
-                if stats.changed() {
-                    match ConnectionStore::load() {
-                        Ok(s) => store = s,
-                        Err(e) => {
-                            tracing::warn!("Failed to reload store after cloud sync: {}", e)
-                        }
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("Cloud sync failed: {}", e),
-        }
-    }
-
-    // Keep store for passing to workspace
-    let store_for_workspace = store.clone();
 
     // Start GPUI application
     Application::new().with_assets(Assets).run(move |cx| {
@@ -1331,17 +1318,6 @@ fn main() -> Result<()> {
             }
         }
 
-        // Combine SSH config connections with manual ones
-        let all_connections = {
-            let mut conns = ssh_connections;
-            for manual_conn in &store.connections {
-                if !conns.iter().any(|c| c.alias == manual_conn.alias) {
-                    conns.push(manual_conn.clone());
-                }
-            }
-            conns
-        };
-
         // Open main window
         let mut window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
@@ -1407,8 +1383,6 @@ fn main() -> Result<()> {
             let root = cx.new(|cx| {
                 CompanionRoot::new(
                     config.clone(),
-                    all_connections,
-                    store_for_workspace.clone(),
                     workspace_slot.clone(),
                     tray_state_tx,
                     main_window,
@@ -1731,11 +1705,13 @@ mod tests {
     use super::{
         ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        workspace_created_at_boot, AiDockToggleAction, CompanionCommand, CompanionRuntime,
-        AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        merge_workspace_connections, workspace_created_at_boot, AiDockToggleAction,
+        CompanionCommand, CompanionRuntime, AI_DOCK_GLOBAL_HOTKEY_ID,
+        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
+    use shelldeck_core::models::connection::Connection;
 
     // SDTEST-1381
     #[test]
@@ -1773,6 +1749,32 @@ mod tests {
             Some(CompanionCommand::ToggleCommandPalette)
         );
         assert_eq!(CompanionRuntime::command_for_hotkey(u32::MAX), None);
+    }
+
+    // SDTEST-1394
+    #[test]
+    fn deferred_workspace_data_merge_preserves_ssh_alias_precedence() {
+        let ssh = Connection::new_manual(
+            "shared".to_string(),
+            "ssh.example.test".to_string(),
+            "ssh-user".to_string(),
+        );
+        let duplicate = Connection::new_manual(
+            "shared".to_string(),
+            "manual.example.test".to_string(),
+            "manual-user".to_string(),
+        );
+        let manual = Connection::new_manual(
+            "manual".to_string(),
+            "manual-only.example.test".to_string(),
+            "manual-user".to_string(),
+        );
+
+        let merged = merge_workspace_connections(vec![ssh], &[duplicate, manual]);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].hostname, "ssh.example.test");
+        assert_eq!(merged[1].alias, "manual");
     }
 
     #[test]

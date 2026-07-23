@@ -4163,21 +4163,39 @@ impl Workspace {
     /// (never the UI thread), and on completion the merged connections are
     /// reloaded into the sidebar/dashboard and a toast reports the stats.
     pub fn cloud_sync_now(&mut self, cx: &mut Context<Self>) {
+        self.start_cloud_sync(true, cx);
+    }
+
+    /// Run the configured startup sync after the main Workspace exists.
+    ///
+    /// Unlike the manual action, this does not announce a redundant
+    /// "started" toast; completion and failures remain visible.
+    pub fn cloud_sync_on_startup(&mut self, cx: &mut Context<Self>) {
+        if self.app_config.cloud_sync.sync_on_startup {
+            self.start_cloud_sync(false, cx);
+        }
+    }
+
+    fn start_cloud_sync(&mut self, announce_started: bool, cx: &mut Context<Self>) {
         let cfg = self.app_config.cloud_sync.clone();
         if !cfg.is_configured() {
-            self.show_toast(
-                t!("toast.cloud_sync.not_configured").to_string(),
-                ToastLevel::Warning,
-                cx,
-            );
+            if announce_started {
+                self.show_toast(
+                    t!("toast.cloud_sync.not_configured").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
+            }
             return;
         }
 
-        self.show_toast(
-            t!("toast.cloud_sync.started").to_string(),
-            ToastLevel::Info,
-            cx,
-        );
+        if announce_started {
+            self.show_toast(
+                t!("toast.cloud_sync.started").to_string(),
+                ToastLevel::Info,
+                cx,
+            );
+        }
         let version = shelldeck_core::VERSION;
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
