@@ -9,9 +9,10 @@ use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
+use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{AiDockView, CommandPaletteWindowView, Workspace};
-use std::borrow::Cow;
+use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
 
 /// Embed Lucide SVGs at `icons/lucide/{name}.svg`. Add new slugs here when
@@ -381,11 +382,135 @@ fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<(
     Ok(())
 }
 
+#[derive(Clone, Default)]
+struct WorkspaceSlot(Rc<RefCell<Option<gpui::WeakEntity<Workspace>>>>);
+
+impl WorkspaceSlot {
+    fn set(&self, workspace: &gpui::Entity<Workspace>) {
+        *self.0.borrow_mut() = Some(workspace.downgrade());
+    }
+
+    fn upgrade(&self) -> Option<gpui::Entity<Workspace>> {
+        self.0.borrow().as_ref().and_then(gpui::WeakEntity::upgrade)
+    }
+}
+
+/// Lightweight root kept in the hidden main window until a surface actually
+/// needs the full application. It lets the tray and global shortcuts stay
+/// alive without constructing every Workspace view and network poller.
+struct CompanionRoot {
+    config: Option<AppConfig>,
+    connections: Option<Vec<Connection>>,
+    store: Option<ConnectionStore>,
+    workspace: Option<gpui::Entity<Workspace>>,
+    workspace_slot: WorkspaceSlot,
+    tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+}
+
+impl CompanionRoot {
+    fn new(
+        config: AppConfig,
+        connections: Vec<Connection>,
+        store: ConnectionStore,
+        workspace_slot: WorkspaceSlot,
+        tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+    ) -> Self {
+        Self {
+            config: Some(config),
+            connections: Some(connections),
+            store: Some(store),
+            workspace: None,
+            workspace_slot,
+            tray_state_tx,
+        }
+    }
+
+    fn ensure_workspace(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> gpui::Entity<Workspace> {
+        if let Some(workspace) = &self.workspace {
+            return workspace.clone();
+        }
+
+        let config = self
+            .config
+            .take()
+            .expect("CompanionRoot config consumed before Workspace creation");
+        let connections = self.connections.take().unwrap_or_default();
+        let store = self.store.take().unwrap_or_default();
+        let workspace = cx.new(|cx| Workspace::new(cx, config, connections, store));
+
+        workspace.update(cx, |ws, cx| {
+            ws.start_git_polling(window.window_handle(), cx);
+        });
+        workspace.read(cx).focus_handle.focus(window);
+        workspace.update(cx, |ws, cx| ws.restore_session(cx));
+        workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
+        workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
+
+        if let Some(state_tx) = self.tray_state_tx.clone() {
+            workspace.update(cx, |ws, cx| {
+                ws.set_tray_state_publisher(Box::new(move |counters| {
+                    let state = tray::TrayState {
+                        active_ssh: counters.active_ssh,
+                        open_tunnels: counters.open_tunnels,
+                        unread_tickets: counters.unread_tickets,
+                        jean_pending: counters.jean_pending,
+                        pinned_connections: counters
+                            .pinned_connections
+                            .into_iter()
+                            .map(|connection| tray::PinnedConnection {
+                                id: connection.id,
+                                name: connection.name,
+                            })
+                            .collect(),
+                    };
+                    if let Err(error) = state_tx.send(state) {
+                        tracing::debug!(
+                            error = %error,
+                            "tray state dropped because its worker stopped"
+                        );
+                    }
+                }));
+                ws.set_tray_notifier(Box::new(|notification| {
+                    std::thread::spawn(move || {
+                        if let Err(error) = show_tray_notification(notification) {
+                            tracing::warn!("OS notification failed: {error}");
+                        }
+                    });
+                }));
+                ws.publish_tray_state(cx);
+            });
+        }
+
+        self.workspace_slot.set(&workspace);
+        self.workspace = Some(workspace.clone());
+        cx.notify();
+        workspace
+    }
+}
+
+impl gpui::Render for CompanionRoot {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let mut root = div().size_full();
+        if let Some(workspace) = &self.workspace {
+            root = root.child(workspace.clone());
+        }
+        root
+    }
+}
+
 /// Route a menu-click coming out of the system tray onto the workspace.
 /// Runs on the GPUI foreground thread — safe to touch `App` state.
 fn dispatch_tray_command(
     cmd: tray::TrayCommand,
-    ws: gpui::WeakEntity<Workspace>,
+    root: gpui::WeakEntity<CompanionRoot>,
     window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
@@ -395,29 +520,37 @@ fn dispatch_tray_command(
             // Restore + focus the main window (or a no-op if already
             // frontmost). `activate_window` is the portable way to say
             // "give this window the OS focus".
-            if let Err(error) = window.update(cx, |_, window, _cx| {
+            if let Err(error) = window.update(cx, |_, window, cx| {
+                if let Some(root) = root.upgrade() {
+                    root.update(cx, |root, cx| {
+                        root.ensure_workspace(window, cx);
+                    });
+                }
                 window.show_window();
                 window.activate_window();
             }) {
                 tracing::warn!(error = %error, "tray could not show the main window");
             }
         }
-        TrayCommand::ToggleAiDock => toggle_ai_dock(ws, window, cx),
-        TrayCommand::OpenPalette => toggle_companion_command_palette(ws, window, cx),
+        TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
+        TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
         TrayCommand::ConnectPinned(id) => {
-            if let Some(ws) = ws.upgrade() {
-                if let Err(error) = window.update(cx, |_, window, cx| {
+            if let Err(error) = window.update(cx, |_, window, cx| {
+                if let Some(root) = root.upgrade() {
+                    let ws = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
                     ws.update(cx, |ws, cx| ws.connect_pinned_connection(id, cx));
                     window.show_window();
                     window.activate_window();
-                }) {
-                    tracing::warn!(error = %error, "tray could not open a pinned connection");
                 }
+            }) {
+                tracing::warn!(error = %error, "tray could not open a pinned connection");
             }
         }
         TrayCommand::Quit => {
-            if let Some(ws) = ws.upgrade() {
-                ws.update(cx, |ws, cx| ws.shutdown(cx));
+            if let Some(root) = root.upgrade() {
+                if let Some(ws) = root.read(cx).workspace.clone() {
+                    ws.update(cx, |ws, cx| ws.shutdown(cx));
+                }
             }
             cx.quit();
         }
@@ -441,6 +574,10 @@ fn ai_dock_toggle_action(visible: Option<bool>) -> AiDockToggleAction {
 
 fn companion_main_window_visible(start_hidden: bool, tray_available: bool) -> bool {
     !start_hidden || !tray_available
+}
+
+fn workspace_created_at_boot(main_window_visible: bool) -> bool {
+    main_window_visible
 }
 
 const AI_DOCK_GLOBAL_HOTKEY_ID: u32 = 1;
@@ -700,14 +837,23 @@ fn command_palette_bounds(
 /// Hidden windows remain registered in GPUI, so scanning by root type gives us
 /// single-instance behavior without a second global window registry.
 fn toggle_ai_dock(
-    workspace: gpui::WeakEntity<Workspace>,
+    root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
     use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
 
-    let Some(workspace) = workspace.upgrade() else {
+    let Some(root) = root.upgrade() else {
         return;
+    };
+    let workspace = match main_window.update(cx, |_, window, cx| {
+        root.update(cx, |root, cx| root.ensure_workspace(window, cx))
+    }) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to initialize Workspace for AI Dock");
+            return;
+        }
     };
     let Some(display) = companion_display(main_window, cx) else {
         tracing::error!("failed to open AI Dock: no display available");
@@ -787,14 +933,23 @@ fn toggle_ai_dock(
 }
 
 fn toggle_companion_command_palette(
-    workspace: gpui::WeakEntity<Workspace>,
+    root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
     use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
 
-    let Some(workspace) = workspace.upgrade() else {
+    let Some(root) = root.upgrade() else {
         return;
+    };
+    let workspace = match main_window.update(cx, |_, window, cx| {
+        root.update(cx, |root, cx| root.ensure_workspace(window, cx))
+    }) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to initialize Workspace for command palette");
+            return;
+        }
     };
     let Some(display) = companion_display(main_window, cx) else {
         tracing::error!("failed to open command palette: no display available");
@@ -889,7 +1044,7 @@ fn toggle_companion_command_palette(
 /// the deep link visibly lands. Runs on the GPUI foreground thread.
 fn dispatch_deep_link(
     payload: String,
-    ws: gpui::WeakEntity<Workspace>,
+    root: gpui::WeakEntity<CompanionRoot>,
     window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
@@ -897,7 +1052,8 @@ fn dispatch_deep_link(
     if let Err(error) = window.update(cx, |_, window, cx| {
         window.show_window();
         window.activate_window();
-        if let (Some(link), Some(ws)) = (link, ws.upgrade()) {
+        if let (Some(link), Some(root)) = (link, root.upgrade()) {
+            let ws = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
             ws.update(cx, |ws, cx| ws.open_deep_link(link, cx));
         }
     }) {
@@ -1142,85 +1298,40 @@ fn main() -> Result<()> {
             );
         }
 
+        let create_workspace_immediately = workspace_created_at_boot(window_options.show);
+        let (tray_rx, tray_state_tx) = match tray_handles {
+            Some((rx, state_tx)) => (Some(rx), Some(state_tx)),
+            None => (None, None),
+        };
+        let workspace_slot = WorkspaceSlot::default();
+
         match cx.open_window(window_options, |window, cx| {
-            let workspace = cx.new(|cx| {
-                Workspace::new(
-                    cx,
+            let root = cx.new(|_cx| {
+                CompanionRoot::new(
                     config.clone(),
                     all_connections,
                     store_for_workspace.clone(),
+                    workspace_slot.clone(),
+                    tray_state_tx,
                 )
             });
-            workspace.update(cx, |ws, cx| {
-                ws.start_git_polling(window.window_handle(), cx);
-            });
-            // Focus the workspace root so keyboard shortcuts dispatch correctly
-            workspace.read(cx).focus_handle.focus(window);
-
-            // Restore the previous session's tabs when auto-connect-on-startup
-            // is enabled. No-op when the setting is off, keeping default startup
-            // (empty terminal view) unchanged.
-            workspace.update(cx, |ws, cx| ws.restore_session(cx));
-
-            // Background whoami to light up the titlebar account status dot and
-            // refresh the account name (or flag a revoked token).
-            workspace.update(cx, |ws, cx| ws.check_account_on_startup(cx));
-            // Activate the persisted app mode (loads Support data + poll if the
-            // last session was in Support mode).
-            workspace.update(cx, |ws, cx| ws.activate_current_mode(cx));
-
-            // Route tray menu clicks to workspace actions AND publish
-            // workspace counter changes back into the tray menu.
-            if let Some((rx, state_tx)) = tray_handles {
-                // Publisher for the tray counters. Ships a boxed
-                // closure into the workspace so `shelldeck-ui` doesn't
-                // need to know about the tray crate.
-                workspace.update(cx, |ws, cx| {
-                    ws.set_tray_state_publisher(Box::new(move |counters| {
-                        let state = tray::TrayState {
-                            active_ssh: counters.active_ssh,
-                            open_tunnels: counters.open_tunnels,
-                            unread_tickets: counters.unread_tickets,
-                            jean_pending: counters.jean_pending,
-                            pinned_connections: counters
-                                .pinned_connections
-                                .into_iter()
-                                .map(|connection| tray::PinnedConnection {
-                                    id: connection.id,
-                                    name: connection.name,
-                                })
-                                .collect(),
-                        };
-                        if let Err(error) = state_tx.send(state) {
-                            tracing::debug!(error = %error, "tray state dropped because its worker stopped");
-                        }
-                    }));
-                    // OS notifications on deltas. Notify-rust's .show()
-                    // is a synchronous D-Bus call on Linux; fire off a
-                    // detached thread so a slow notification daemon
-                    // never stalls the workspace.
-                    ws.set_tray_notifier(Box::new(|n| {
-                        std::thread::spawn(move || {
-                            if let Err(e) = show_tray_notification(n) {
-                                tracing::warn!("OS notification failed: {e}");
-                            }
-                        });
-                    }));
-                    // Push a first snapshot so the tray doesn't sit at
-                    // "0 / 0 / 0 / 0" until the first mutation. The
-                    // first publish also seeds `last_tray_counters`
-                    // *without* firing notifications, so pre-existing
-                    // unread tickets don't spam the OS on startup.
-                    ws.publish_tray_state(cx);
+            if create_workspace_immediately {
+                root.update(cx, |root, cx| {
+                    root.ensure_workspace(window, cx);
                 });
+            }
+
+            // Route tray menu clicks through the lightweight root. Commands
+            // that need application state initialize the Workspace once.
+            if let Some(rx) = tray_rx {
                 let mut rx = rx;
-                let ws_handle = workspace.downgrade();
+                let root_handle = root.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
                     while let Some(cmd) = rx.recv().await {
-                        let ws_handle = ws_handle.clone();
+                        let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| {
-                            dispatch_tray_command(cmd, ws_handle, window_handle, cx);
+                            dispatch_tray_command(cmd, root_handle, window_handle, cx);
                         }) {
                             tracing::debug!(error = %error, "tray command dropped during shutdown");
                             break;
@@ -1234,13 +1345,13 @@ fn main() -> Result<()> {
             // forwards a URL, then routes it onto the workspace.
             {
                 let mut deep_link_rx = deep_link_rx;
-                let ws_handle = workspace.downgrade();
+                let root_handle = root.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
                     while let Some(payload) = deep_link_rx.recv().await {
-                        let ws_handle = ws_handle.clone();
+                        let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| {
-                            dispatch_deep_link(payload, ws_handle, window_handle, cx);
+                            dispatch_deep_link(payload, root_handle, window_handle, cx);
                         }) {
                             tracing::debug!(error = %error, "deep link dropped during shutdown");
                             break;
@@ -1255,17 +1366,17 @@ fn main() -> Result<()> {
             // receiver mirrors the tray/deep-link routing loops.
             {
                 let mut global_hotkey_rx = global_hotkey_rx;
-                let ws_handle = workspace.downgrade();
+                let root_handle = root.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
                     while let Some(id) = global_hotkey_rx.recv().await {
-                        let ws_handle = ws_handle.clone();
+                        let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| match id {
                             AI_DOCK_GLOBAL_HOTKEY_ID => {
-                                toggle_ai_dock(ws_handle, window_handle, cx);
+                                toggle_ai_dock(root_handle, window_handle, cx);
                             }
                             COMMAND_PALETTE_GLOBAL_HOTKEY_ID => {
-                                toggle_companion_command_palette(ws_handle, window_handle, cx);
+                                toggle_companion_command_palette(root_handle, window_handle, cx);
                             }
                             _ => {}
                         }) {
@@ -1286,7 +1397,7 @@ fn main() -> Result<()> {
             // enabled + tray up: hide the window and return false so
             // the app stays alive in the tray.
             {
-                let w = workspace.downgrade();
+                let w = workspace_slot.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     if let Some(ws) = w.upgrade() {
                         let hide = ws.read(cx).should_hide_to_tray();
@@ -1313,7 +1424,7 @@ fn main() -> Result<()> {
                 use actions::*;
                 use shelldeck_ui::workspace::ActiveView;
 
-                let w = workspace.downgrade();
+                let w = workspace_slot.clone();
                 cx.on_action({
                     let w = w.clone();
                     move |_: &NewTerminal, cx| {
@@ -1494,7 +1605,7 @@ fn main() -> Result<()> {
                 });
             }
 
-            workspace
+            root
         }) {
             Ok(_) => {}
             Err(e) => {
@@ -1514,7 +1625,7 @@ mod tests {
     use super::{
         ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        AiDockToggleAction,
+        workspace_created_at_boot, AiDockToggleAction,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -1534,6 +1645,13 @@ mod tests {
         assert!(companion_main_window_visible(false, true));
         assert!(companion_main_window_visible(true, false));
         assert!(!companion_main_window_visible(true, true));
+    }
+
+    // SDTEST-1391
+    #[test]
+    fn hidden_companion_start_defers_workspace_creation() {
+        assert!(workspace_created_at_boot(true));
+        assert!(!workspace_created_at_boot(false));
     }
 
     #[test]

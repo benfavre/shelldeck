@@ -260,6 +260,7 @@ parallel `cargo test`.
 | SDTEST-1386 | `main::tests::command_palette_global_shortcut_is_parseable` | SDUC-436 | Green | The standalone palette's platform-specific global shortcut is accepted by GPUI's keystroke parser. |
 | SDTEST-1388 | `main::tests::reachable_dynamic_icons_are_embedded` | SDUC-438 | Green | Every dynamically selected icon used by AI actions and Alert variants resolves to an SVG embedded in the application binary. |
 | SDTEST-1390 | *to write* — New Request site picker searches, defaults, resets, and submits the exact site | SDUC-222, SDUC-228 | **Red / P1** | GPUI wiring: options mirror the Manage directory, the active site is selected on open, « Aucun site précis » clears targeting, close resets the draft, and submission resolves the selected id back through the current directory before posting. |
+| SDTEST-1391 | `main::tests::hidden_companion_start_defers_workspace_creation` | SDUC-435 | Green | The boot policy constructs `Workspace` only for a visible main-window start; hidden companion startup keeps the lightweight root until a command needs application state. |
 
 ---
 

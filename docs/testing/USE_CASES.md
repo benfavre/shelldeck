@@ -1547,9 +1547,12 @@ when the system tray was created successfully. The default remains a visible
 start for old and fresh configurations. If the tray backend is unavailable,
 ShellDeck ignores the hidden-start preference and opens its main window so the
 process is always recoverable. Tray and deep-link show actions explicitly show
-the hidden window before activating it. When `tray.close_to_tray` is enabled,
-both the native window-close request and ShellDeck's custom titlebar × hide the
-main window without shutting down the workspace or tray.
+the hidden window before activating it. A hidden start initially owns only a
+lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
+its pollers until a tray, deep-link, Dock or palette command needs application
+state. When `tray.close_to_tray` is enabled, both the native window-close
+request and ShellDeck's custom titlebar × hide the main window without shutting
+down the workspace or tray.
 
 ### SDUC-436 — The global shortcut opens only the standalone command palette
 
