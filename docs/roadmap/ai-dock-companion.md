@@ -293,7 +293,10 @@ fortement la mémoire ou le temps de démarrage.
 
 - [x] Ne plus construire `Workspace`, ses vues et ses pollers au démarrage
   caché.
-- [ ] Extraire `AiCompanionController` du `Workspace`.
+- [x] Extraire `AiCompanionController` du `Workspace`. Il possède l'assistant
+  global, la configuration partagée et le traitement des complétions. Ouvrir
+  le Dock ou converser ne construit plus le `Workspace`; seules les actions de
+  tâche qui doivent rejoindre un ticket, terminal ou script l'initialisent.
 - [ ] Introduire le `CompanionRuntime` applicatif qui possède le tray, les
   raccourcis et les handles de fenêtres sans dépendre d'un `Workspace`.
 - [ ] Charger uniquement config, keychain, conversations/tâches et services
@@ -304,8 +307,10 @@ fortement la mémoire ou le temps de démarrage.
   premier besoin de la fenêtre principale, ou documenter les données minimales
   réellement nécessaires au runtime compagnon.
 - [ ] Mesurer le RSS et le temps de démarrage avant/après.
-- [ ] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
-  seul.
+- [x] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
+  seul. Smoke Linux effectué le 2026-07-23 : démarrage caché puis
+  Ctrl+Shift+Space ouvre un Dock 480×1048 sans trace
+  `initializing full Workspace`.
 
 ### Phase D — Raccourci global
 

@@ -12,8 +12,8 @@ use shelldeck_core::ai::{
     ai_action_disposition, configured_cli_available, create_client, host_context,
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
     parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
-    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiContext,
-    AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiConfig,
+    AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -34,12 +34,15 @@ use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
 use shelldeck_ssh::tunnel::TunnelHandle;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::{DerefMut, Range};
+use std::rc::Rc;
 use uuid::Uuid;
 
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
+use crate::ai_companion::AiCompanionEvent;
 use crate::ai_workflow::{
     AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
 };
@@ -275,6 +278,7 @@ pub struct Workspace {
     settings: Entity<SettingsView>,
     ai_assistant: Entity<AiAssistantView>,
     ai_dock_assistant: Entity<AiAssistantView>,
+    ai_companion_config: Rc<RefCell<AiConfig>>,
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
@@ -316,7 +320,6 @@ pub struct Workspace {
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
     _ai_assistant_sub: Subscription,
-    _ai_dock_assistant_sub: Subscription,
     _ai_workflow_sub: Option<Subscription>,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
@@ -539,6 +542,9 @@ impl Workspace {
         config: AppConfig,
         connections: Vec<Connection>,
         store: ConnectionStore,
+        ai_dock_assistant: Entity<AiAssistantView>,
+        ai_tasks: Vec<AiTask>,
+        ai_companion_config: Rc<RefCell<AiConfig>>,
     ) -> Self {
         crate::i18n::apply_ui_language(&config.general.ui_language);
         let issue_site_select = Self::build_issue_site_select(&[], None, cx);
@@ -662,36 +668,12 @@ impl Workspace {
                 cx,
             )
         });
-        let ai_dock_assistant = cx.new(|cx| {
-            AiAssistantView::new(
-                AiContext::new(
-                    AiSurface::Global,
-                    t!("ai.context.global").to_string(),
-                    serde_json::json!({}),
-                ),
-                cx,
-            )
-        });
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
         let support = cx.new(SupportView::new);
         let jean_view = cx.new(JeanView::new);
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
-        let mut ai_tasks = AiTaskStore::load().unwrap_or_else(|error| {
-            tracing::warn!("Failed to load AI tasks: {error}");
-            Vec::new()
-        });
-        let mut recovered = false;
-        for task in &mut ai_tasks {
-            if task.status.is_active() {
-                task.set_status(AiTaskStatus::Cancelled, None);
-                recovered = true;
-            }
-        }
-        if recovered {
-            let _ = AiTaskStore::save(&ai_tasks);
-        }
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
         ai_dock_assistant.update(cx, |view, cx| {
             view.set_history_open(false, cx);
@@ -785,13 +767,6 @@ impl Workspace {
             cx.subscribe(&ai_assistant, |this, view, event: &AiAssistantEvent, cx| {
                 this.handle_ai_assistant_event(view, event.clone(), cx);
             });
-        let ai_dock_assistant_sub = cx.subscribe(
-            &ai_dock_assistant,
-            |this, view, event: &AiAssistantEvent, cx| {
-                this.handle_ai_assistant_event(view, event.clone(), cx);
-            },
-        );
-
         // Subscribe to script editor events
         let scripts_sub = cx.subscribe(&scripts, |this, _scripts, event: &ScriptEvent, cx| {
             this.handle_script_event(event, cx);
@@ -906,6 +881,7 @@ impl Workspace {
             settings,
             ai_assistant,
             ai_dock_assistant,
+            ai_companion_config,
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,
@@ -941,7 +917,6 @@ impl Workspace {
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
             _ai_assistant_sub: ai_assistant_sub,
-            _ai_dock_assistant_sub: ai_dock_assistant_sub,
             _ai_workflow_sub: None,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
@@ -1680,6 +1655,7 @@ impl Workspace {
                 self.app_config.tray = config.tray.clone();
                 self.app_config.companion = config.companion.clone();
                 self.app_config.ai = config.ai.clone();
+                *self.ai_companion_config.borrow_mut() = config.ai.clone();
                 let dock_available =
                     self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
                 self.ai_dock_assistant.update(cx, |assistant, cx| {
@@ -1862,53 +1838,14 @@ impl Workspace {
         self.open_ai_assistant_with_context(context, cx);
     }
 
-    /// Prepare the shared assistant entity for the standalone companion Dock.
-    /// The Dock intentionally starts with a bounded global context rather than
-    /// silently inheriting terminal, ticket or script data from the main UI.
-    pub fn prepare_ai_dock(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
-        let available = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
-        // Both views persist the complete conversation list. Keep only one
-        // editor visible so concurrent saves cannot overwrite each other.
-        self.ai_sheet = None;
-        self.ai_dock_assistant.update(cx, |assistant, cx| {
-            assistant.reload_conversations(cx);
-            assistant.set_backend(
-                self.app_config.ai.backend,
-                self.app_config.ai.model.clone(),
-                cx,
-            );
-            assistant.set_context(
-                AiContext::new(
-                    AiSurface::Global,
-                    t!("ai.context.global").to_string(),
-                    serde_json::json!({}),
-                ),
-                cx,
-            );
-            assistant.set_available(available, cx);
-        });
-        cx.notify();
-        self.ai_dock_assistant.clone()
-    }
-
     pub fn companion_ui_font_family(&self) -> Option<String> {
         (self.ui_font_family != "System Default").then(|| self.ui_font_family.clone())
     }
 
-    /// Refresh the hidden Dock before showing it again without touching its
-    /// context request gate, so an in-flight completion remains valid.
-    pub fn refresh_ai_dock(&mut self, cx: &mut Context<Self>) {
-        let available = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+    /// Keep a single conversation editor active when the standalone Dock is
+    /// opened alongside an already-initialized main workspace.
+    pub fn close_ai_sheet_for_companion(&mut self, cx: &mut Context<Self>) {
         self.ai_sheet = None;
-        self.ai_dock_assistant.update(cx, |assistant, cx| {
-            assistant.reload_conversations(cx);
-            assistant.set_backend(
-                self.app_config.ai.backend,
-                self.app_config.ai.model.clone(),
-                cx,
-            );
-            assistant.set_available(available, cx);
-        });
         cx.notify();
     }
 
@@ -3661,6 +3598,45 @@ impl Workspace {
                 self.stop_ai_task(task_id, cx);
             }
             AiAssistantEvent::DeleteTask(task_id) => {
+                let active = self
+                    .ai_tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .is_some_and(|task| task.status.is_active());
+                if !active {
+                    self.ai_tasks.retain(|task| task.id != task_id);
+                    self.sync_ai_tasks(cx);
+                }
+            }
+        }
+    }
+
+    pub fn handle_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut Context<Self>) {
+        match event {
+            AiCompanionEvent::ResumeTask(task_id) => {
+                let target = self
+                    .ai_tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .and_then(AiWorkflowTarget::from_task);
+                if let Some(target) = target {
+                    self.ai_sheet = None;
+                    self.open_ai_workflow(target, cx);
+                } else {
+                    self.show_toast(
+                        t!("toast.ai.task_unavailable").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                }
+            }
+            AiCompanionEvent::OpenTaskTarget(task_id) => {
+                self.open_ai_task_target(task_id, cx);
+            }
+            AiCompanionEvent::StopTask(task_id) => {
+                self.stop_ai_task(task_id, cx);
+            }
+            AiCompanionEvent::DeleteTask(task_id) => {
                 let active = self
                     .ai_tasks
                     .iter()

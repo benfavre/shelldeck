@@ -1532,6 +1532,10 @@ in-flight request alive. It inherits ShellDeck's UI font and scale, uses a
 bounded global context, shares durable conversations and tasks with the main
 assistant, exposes an explicit action to reopen ShellDeck, and disables
 submission with an explanation when no usable global AI backend is configured.
+The Dock's global chat is owned by an independent `AiCompanionController`:
+opening it and completing a conversation do not initialize `Workspace`.
+Selecting a task action may initialize `Workspace` when its terminal, ticket,
+or script target is required.
 The enabled-by-default global shortcut toggles that same single Dock from any
 application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
 The Dock opens on the display containing the pointer, moves to that display on
@@ -1549,8 +1553,9 @@ ShellDeck ignores the hidden-start preference and opens its main window so the
 process is always recoverable. Tray and deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
-its pollers until a tray, deep-link, Dock or palette command needs application
-state. When `tray.close_to_tray` is enabled, both the native window-close
+its pollers until a tray, deep-link, palette, or task-target command needs
+application state. The standalone AI Dock is served directly by the companion
+controller and is not such a command. When `tray.close_to_tray` is enabled, both the native window-close
 request and ShellDeck's custom titlebar × hide the main window without shutting
 down the workspace or tray.
 
