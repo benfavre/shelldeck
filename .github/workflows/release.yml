@@ -274,9 +274,14 @@ jobs:
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
           if (-not $signtool) { throw "signtool.exe was not found" }
-          & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
-            /f $certificate /p $certificatePassword `
-            "target/release/shelldeck.exe"
+          if ($useSelfSignedCertificate) {
+            & $signtool sign /fd SHA256 /f $certificate /p $certificatePassword `
+              "target/release/shelldeck.exe"
+          } else {
+            & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+              /f $certificate /p $certificatePassword `
+              "target/release/shelldeck.exe"
+          }
           & $signtool verify /pa /all /v "target/release/shelldeck.exe"
 
       - name: Build NSIS installer
@@ -305,15 +310,21 @@ jobs:
           } else {
             $env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
           }
+          $useSelfSignedCertificate = -not $hasProductionCertificate
           if (-not $certificatePassword) {
             throw "Windows Authenticode certificate password is missing"
           }
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
           if (-not $signtool) { throw "signtool.exe was not found" }
-          & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
-            /f $certificate /p $certificatePassword `
-            "dist/ShellDeck-windows-x86_64-setup.exe"
+          if ($useSelfSignedCertificate) {
+            & $signtool sign /fd SHA256 /f $certificate /p $certificatePassword `
+              "dist/ShellDeck-windows-x86_64-setup.exe"
+          } else {
+            & $signtool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+              /f $certificate /p $certificatePassword `
+              "dist/ShellDeck-windows-x86_64-setup.exe"
+          }
           & $signtool verify /pa /all /v "dist/ShellDeck-windows-x86_64-setup.exe"
 
       - name: Package signed auto-update archive
