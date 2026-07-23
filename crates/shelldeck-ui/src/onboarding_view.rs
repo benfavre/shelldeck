@@ -29,13 +29,12 @@ enum OnboardingStep {
 impl OnboardingStep {
     /// Optional embedded media (GIF/WebP/PNG). `None` → styled placeholder slot.
     fn media_asset(self) -> Option<&'static str> {
-        // Per-step — enable when the asset exists + is wired in main.rs:
-        // Self::Welcome => Some("images/onboarding/welcome.gif"),
-        // Self::Modes => Some("images/onboarding/modes.gif"),
-        // Self::Surfaces => Some("images/onboarding/surfaces.gif"),
-        // Self::Shortcuts => Some("images/onboarding/shortcuts.gif"),
-        let _ = self;
-        None
+        Some(match self {
+            Self::Welcome => "images/onboarding/welcome.png",
+            Self::Modes => "images/onboarding/modes.png",
+            Self::Surfaces => "images/onboarding/surfaces.png",
+            Self::Shortcuts => "images/onboarding/shortcuts.png",
+        })
     }
 
     fn placeholder_icon(self) -> &'static str {
@@ -150,7 +149,7 @@ impl OnboardingView {
             .border_color(ShellDeckColors::border());
 
         if let Some(path) = step.media_asset() {
-            zone = zone.child(img(path).w_full().h_full().object_fit(ObjectFit::Cover));
+            zone = zone.child(img(path).w_full().h_full().object_fit(ObjectFit::Contain));
         } else {
             let mut inner = div()
                 .flex()
@@ -181,32 +180,42 @@ impl OnboardingView {
             zone = zone.child(inner);
         }
 
-        zone.child(
-            div()
-                .absolute()
-                .bottom(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .px(px(12.0))
+        let mut caption_bar = div()
+            .absolute()
+            .bottom(px(0.0))
+            .left(px(0.0))
+            .right(px(0.0))
+            .px(px(12.0));
+
+        if has_media {
+            caption_bar = caption_bar
+                .pt(px(30.0))
+                .pb(px(8.0))
+                .bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(gpui::transparent_black(), 0.0),
+                    gpui::linear_color_stop(gpui::black().opacity(0.68), 1.0),
+                ));
+        } else {
+            caption_bar = caption_bar
                 .py(px(8.0))
-                .bg(if has_media {
-                    gpui::black().opacity(0.45)
-                } else {
-                    ShellDeckColors::bg_surface().opacity(0.92)
-                })
+                .bg(ShellDeckColors::bg_surface().opacity(0.92))
                 .border_t_1()
-                .border_color(ShellDeckColors::border())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(if has_media {
-                            gpui::white().opacity(0.92)
-                        } else {
-                            ShellDeckColors::text_muted()
-                        })
-                        .child(caption),
-                ),
+                .border_color(ShellDeckColors::border());
+        }
+
+        zone.child(
+            caption_bar.child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if has_media {
+                        gpui::white().opacity(0.92)
+                    } else {
+                        ShellDeckColors::text_muted()
+                    })
+                    .child(caption),
+            ),
         )
     }
 

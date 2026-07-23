@@ -102,6 +102,16 @@ enum IssueAttachmentTarget {
     Comment,
 }
 
+struct NewIssueDraft {
+    title: String,
+    body: String,
+    priority: String,
+    source: &'static str,
+    site_id: String,
+    site_label: String,
+    attachments: Vec<AttachmentDraft>,
+}
+
 impl AccountStatus {
     fn dot_color(self) -> Hsla {
         match self {
@@ -7106,21 +7116,11 @@ impl Workspace {
         self.issues_list.retain(|i| i.id != id);
     }
 
-    fn create_issue_now(
-        &mut self,
-        title: String,
-        body: String,
-        priority: String,
-        source: &'static str,
-        site_id: String,
-        site_label: String,
-        attachments: Vec<AttachmentDraft>,
-        cx: &mut Context<Self>,
-    ) {
+    fn create_issue_now(&mut self, draft: NewIssueDraft, cx: &mut Context<Self>) {
         if self.issue_attachment_busy {
             return;
         }
-        let title = title.trim().to_string();
+        let title = draft.title.trim().to_string();
         if title.is_empty() {
             return;
         }
@@ -7137,17 +7137,20 @@ impl Workspace {
                     let created = issues::create_issue(
                         &base,
                         &token,
-                        &title,
-                        &body,
-                        &priority,
-                        source,
-                        &site_id,
-                        &site_label,
+                        issues::CreateIssue {
+                            title: &title,
+                            body: &draft.body,
+                            priority: &draft.priority,
+                            source: draft.source,
+                            site_id: &draft.site_id,
+                            site_label: &draft.site_label,
+                        },
                     )?;
-                    if attachments.is_empty() {
+                    if draft.attachments.is_empty() {
                         return Ok::<_, shelldeck_core::ShellDeckError>((created, None));
                     }
-                    let uploads = attachments
+                    let uploads = draft
+                        .attachments
                         .iter()
                         .map(AttachmentDraft::upload)
                         .collect::<Vec<_>>();
@@ -7819,13 +7822,15 @@ impl Workspace {
             .unwrap_or_default();
         let attachments = self.issue_new_attachments.clone();
         self.create_issue_now(
-            title,
-            body,
-            prio,
-            source,
-            site_id,
-            site_label,
-            attachments,
+            NewIssueDraft {
+                title,
+                body,
+                priority: prio,
+                source,
+                site_id,
+                site_label,
+                attachments,
+            },
             cx,
         );
     }

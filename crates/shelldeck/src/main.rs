@@ -223,6 +223,20 @@ impl AssetSource for Assets {
             "images/brand/png/themes/monolith-rose-pine-128.png" => {
                 include_bytes!("../assets/images/brand/png/themes/monolith-rose-pine-128.png")
             }
+            // First-run onboarding artwork — exported at 2× from the editable
+            // HTML/CSS brand study under docs/design/.
+            "images/onboarding/welcome.png" => {
+                include_bytes!("../assets/images/onboarding/welcome.png")
+            }
+            "images/onboarding/modes.png" => {
+                include_bytes!("../assets/images/onboarding/modes.png")
+            }
+            "images/onboarding/surfaces.png" => {
+                include_bytes!("../assets/images/onboarding/surfaces.png")
+            }
+            "images/onboarding/shortcuts.png" => {
+                include_bytes!("../assets/images/onboarding/shortcuts.png")
+            }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
             // Vertical three-dot "kebab" menu handle used by list row actions.
@@ -280,6 +294,10 @@ impl AssetSource for Assets {
             SharedString::from("images/brand/png/themes/monolith-one-dark-128.png"),
             SharedString::from("images/brand/png/themes/monolith-monokai-128.png"),
             SharedString::from("images/brand/png/themes/monolith-rose-pine-128.png"),
+            SharedString::from("images/onboarding/welcome.png"),
+            SharedString::from("images/onboarding/modes.png"),
+            SharedString::from("images/onboarding/surfaces.png"),
+            SharedString::from("images/onboarding/shortcuts.png"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),
@@ -753,8 +771,7 @@ fn toggle_ai_dock(
     };
 
     match cx.open_window(options, move |window, cx| {
-        let dock = cx.new(|cx| AiDockView::new(assistant, main_window, font_family, window, cx));
-        dock
+        cx.new(|cx| AiDockView::new(assistant, main_window, font_family, window, cx))
     }) {
         Ok(handle) => {
             cx.activate(true);

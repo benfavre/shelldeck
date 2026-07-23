@@ -480,33 +480,33 @@ pub fn get_issue(base_url: &str, token: &str, id: &str) -> Result<Issue> {
 
 // ── writes (anyone) ──────────────────────────────────────────────────────
 
-/// File a new request. `source` = "user" (default) or "support".
-pub fn create_issue(
-    base_url: &str,
-    token: &str,
-    title: &str,
-    body: &str,
-    priority: &str,
-    source: &str,
-    site_id: &str,
-    site_label: &str,
-) -> Result<Issue> {
-    let mut b = serde_json::json!({ "action": "create", "title": title });
+/// Fields used when filing a request. `source` = "user" (default) or "support".
+pub struct CreateIssue<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub priority: &'a str,
+    pub source: &'a str,
+    pub site_id: &'a str,
+    pub site_label: &'a str,
+}
+
+pub fn create_issue(base_url: &str, token: &str, issue: CreateIssue<'_>) -> Result<Issue> {
+    let mut b = serde_json::json!({ "action": "create", "title": issue.title });
     let obj = b.as_object_mut().unwrap();
-    if !body.is_empty() {
-        obj.insert("body".into(), serde_json::json!(body));
+    if !issue.body.is_empty() {
+        obj.insert("body".into(), serde_json::json!(issue.body));
     }
-    if !priority.is_empty() {
-        obj.insert("priority".into(), serde_json::json!(priority));
+    if !issue.priority.is_empty() {
+        obj.insert("priority".into(), serde_json::json!(issue.priority));
     }
-    if !source.is_empty() {
-        obj.insert("source".into(), serde_json::json!(source));
+    if !issue.source.is_empty() {
+        obj.insert("source".into(), serde_json::json!(issue.source));
     }
-    if !site_id.is_empty() {
-        obj.insert("site_id".into(), serde_json::json!(site_id));
+    if !issue.site_id.is_empty() {
+        obj.insert("site_id".into(), serde_json::json!(issue.site_id));
     }
-    if !site_label.is_empty() {
-        obj.insert("site_label".into(), serde_json::json!(site_label));
+    if !issue.site_label.is_empty() {
+        obj.insert("site_label".into(), serde_json::json!(issue.site_label));
     }
     post_issue(base_url, token, b)
 }
@@ -880,12 +880,14 @@ mod tests {
         let created = create_issue(
             &b,
             &t,
-            "Nouveau",
-            "corps",
-            "high",
-            "support",
-            "site-42",
-            "Acme — Boutique",
+            CreateIssue {
+                title: "Nouveau",
+                body: "corps",
+                priority: "high",
+                source: "support",
+                site_id: "site-42",
+                site_label: "Acme — Boutique",
+            },
         )
         .expect("create");
         assert_eq!(created.id, "iss_1");
@@ -1092,9 +1094,33 @@ mod tests {
         let (b, t) = cfg(&m);
 
         // Empty source ⇒ omitted from body.
-        create_issue(&b, &t, "titre A", "", "", "", "", "").expect("empty source");
+        create_issue(
+            &b,
+            &t,
+            CreateIssue {
+                title: "titre A",
+                body: "",
+                priority: "",
+                source: "",
+                site_id: "",
+                site_label: "",
+            },
+        )
+        .expect("empty source");
         // Explicit support source ⇒ present.
-        create_issue(&b, &t, "titre B", "", "", "support", "", "").expect("source=support");
+        create_issue(
+            &b,
+            &t,
+            CreateIssue {
+                title: "titre B",
+                body: "",
+                priority: "",
+                source: "support",
+                site_id: "",
+                site_label: "",
+            },
+        )
+        .expect("source=support");
 
         let posts = m.posts.lock().unwrap();
         let a = serde_json::from_str::<serde_json::Value>(&posts[0]).unwrap();
@@ -1122,15 +1148,29 @@ mod tests {
         create_issue(
             &b,
             &t,
-            "site ciblé",
-            "",
-            "normal",
-            "user",
-            "site-123",
-            "Acme — Vitrine",
+            CreateIssue {
+                title: "site ciblé",
+                body: "",
+                priority: "normal",
+                source: "user",
+                site_id: "site-123",
+                site_label: "Acme — Vitrine",
+            },
         )
         .expect("targeted create");
-        create_issue(&b, &t, "général", "", "normal", "user", "", "").expect("untargeted create");
+        create_issue(
+            &b,
+            &t,
+            CreateIssue {
+                title: "général",
+                body: "",
+                priority: "normal",
+                source: "user",
+                site_id: "",
+                site_label: "",
+            },
+        )
+        .expect("untargeted create");
 
         let posts = m.posts.lock().unwrap();
         let targeted: serde_json::Value = serde_json::from_str(&posts[0]).unwrap();

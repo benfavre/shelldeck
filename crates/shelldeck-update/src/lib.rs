@@ -1,6 +1,8 @@
 pub mod installer;
 pub mod platform;
 
+use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use gpui::*;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -61,11 +63,64 @@ impl std::fmt::Display for AutoUpdateStatus {
 /// Release information returned by the update server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseInfo {
+    pub platform: String,
     pub version: String,
     pub url: String,
     pub sha256: String,
     pub size: u64,
     pub pub_date: String,
+    pub signature: String,
+}
+
+/// Stable byte representation signed by the release workflow.
+///
+/// Keep this in lockstep with `scripts/sign-update-manifest.sh`.
+pub fn release_signing_message(release: &ReleaseInfo) -> String {
+    format!(
+        "ShellDeck update manifest v1\nplatform={}\npub_date={}\nsha256={}\nsize={}\nurl={}\nversion={}\n",
+        release.platform,
+        release.pub_date,
+        release.sha256,
+        release.size,
+        release.url,
+        release.version,
+    )
+}
+
+/// Verify that release metadata was produced by ShellDeck's offline update key.
+///
+/// Development builds may compile without a key, but then update checks fail
+/// closed. Tagged release builds are prevented from compiling without the key
+/// by `.github/workflows/release.yml`.
+pub fn verify_release_signature(release: &ReleaseInfo) -> anyhow::Result<()> {
+    let encoded_key = option_env!("SHELLDECK_UPDATE_PUBLIC_KEY_BASE64")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Update verification key is not configured"))?;
+    verify_release_signature_with_key(release, encoded_key)
+}
+
+fn verify_release_signature_with_key(
+    release: &ReleaseInfo,
+    encoded_key: &str,
+) -> anyhow::Result<()> {
+    let key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded_key.trim())
+        .map_err(|_| anyhow::anyhow!("Update verification key is invalid"))?;
+    let key_bytes: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Update verification key must contain 32 bytes"))?;
+    let verifying_key = VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| anyhow::anyhow!("Update verification key is invalid"))?;
+
+    let signature_bytes = base64::engine::general_purpose::STANDARD
+        .decode(release.signature.trim())
+        .map_err(|_| anyhow::anyhow!("Update manifest signature is invalid"))?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|_| anyhow::anyhow!("Update manifest signature is invalid"))?;
+
+    verifying_key
+        .verify(release_signing_message(release).as_bytes(), &signature)
+        .map_err(|_| anyhow::anyhow!("Update manifest signature verification failed"))
 }
 
 /// Events emitted by the auto-updater for the workspace to react to.
@@ -146,6 +201,7 @@ impl AutoUpdater {
                         anyhow::bail!("Server returned HTTP {}", response.status().as_u16());
                     }
                     let release: ReleaseInfo = response.json().await?;
+                    verify_release_signature(&release)?;
                     Ok(release)
                 })
                 .await
@@ -303,6 +359,54 @@ impl AutoUpdater {
         self.status = status.clone();
         cx.emit(AutoUpdateEvent::StatusChanged(status));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{release_signing_message, verify_release_signature_with_key, ReleaseInfo};
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signed_release() -> (ReleaseInfo, String) {
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().as_bytes());
+        let mut release = ReleaseInfo {
+            platform: "linux-x86_64".into(),
+            version: "9.8.7".into(),
+            url: "https://example.test/shelldeck.tar.gz".into(),
+            sha256: "a".repeat(64),
+            size: 42,
+            pub_date: "2026-07-23T12:00:00Z".into(),
+            signature: String::new(),
+        };
+        release.signature = base64::engine::general_purpose::STANDARD.encode(
+            signing_key
+                .sign(release_signing_message(&release).as_bytes())
+                .to_bytes(),
+        );
+        (release, public_key)
+    }
+
+    // SDTEST-1222 — pin the complete, signed Worker response contract.
+    #[test]
+    fn release_info_parses_signed_worker_contract() {
+        let (expected, _) = signed_release();
+        let json = serde_json::to_string(&expected).unwrap();
+        let parsed: ReleaseInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.platform, "linux-x86_64");
+        assert_eq!(parsed.version, "9.8.7");
+        assert!(!parsed.signature.is_empty());
+    }
+
+    #[test]
+    fn signed_release_is_accepted_and_tampering_is_rejected() {
+        let (mut release, public_key) = signed_release();
+        verify_release_signature_with_key(&release, &public_key).unwrap();
+
+        release.url.push_str("?mirror=attacker");
+        assert!(verify_release_signature_with_key(&release, &public_key).is_err());
     }
 }
 

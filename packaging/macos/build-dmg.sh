@@ -68,6 +68,8 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>shelldeck</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Benjamin Favre — Webdesign29</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
@@ -137,10 +139,26 @@ with open('$TEMP_PNG', 'wb') as f:
     fi
 fi
 
-# Ad-hoc codesign (required for macOS Gatekeeper on ARM)
-codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || {
-    echo "WARNING: codesign failed (expected on Linux CI). Skipping."
-}
+SIGNING_IDENTITY="${SHELLDECK_MACOS_SIGNING_IDENTITY:--}"
+if [ "${SHELLDECK_REQUIRE_SIGNING:-0}" = "1" ] && [ "$SIGNING_IDENTITY" = "-" ]; then
+    echo "ERROR: A Developer ID Application identity is required" >&2
+    exit 1
+fi
+
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+    echo "==> Applying ad-hoc signature for local development"
+    codesign --force --deep --sign - "$APP_DIR"
+else
+    echo "==> Signing app as $SIGNING_IDENTITY"
+    codesign --force --deep --strict --options runtime --timestamp \
+        --sign "$SIGNING_IDENTITY" "$APP_DIR"
+    codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+fi
+
+if [ "${SHELLDECK_MACOS_APP_ONLY:-0}" = "1" ]; then
+    echo "==> App bundle ready at dist/ShellDeck.app"
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Create DMG
@@ -183,8 +201,13 @@ else
         -ov -format UDZO "$DMG_PATH"
 fi
 
-# Cleanup staging
-rm -rf "$DMG_TEMP" "$APP_DIR"
+# Cleanup staging. Keep the app bundle for the signed auto-update ZIP.
+rm -rf "$DMG_TEMP"
+
+if [ "$SIGNING_IDENTITY" != "-" ]; then
+    codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_PATH"
+    codesign --verify --verbose=2 "$DMG_PATH"
+fi
 
 echo ""
 if [ -f "$DMG_PATH" ]; then

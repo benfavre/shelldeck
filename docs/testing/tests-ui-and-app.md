@@ -152,7 +152,7 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 |---|---|---|---|---|
 | SDTEST-1220 | *to write* — poll cadence: first check immediate, then hourly | SDUC-281 | **Red / P0** | Use a mockable clock or an `Instant`-injecting trait. |
 | SDTEST-1221 | *to write* — set_enabled(false) cancels the poll task and no-ops check_for_update | SDUC-285 | **Red / P0** | User can turn it off. |
-| SDTEST-1222 | *to write* — ReleaseInfo parses the Worker JSON contract example | SDUC-282 | **Red / P0** | Mock TcpListener with the canonical response. |
+| SDTEST-1222 | `shelldeck-update::tests::release_info_parses_signed_worker_contract` | SDUC-282 | Green | Pins the platform, digest, size, publication date and Ed25519 signature returned by the Worker. |
 | SDTEST-1223 | *to write* — ReleaseInfo Errs on a missing per-platform URL | SDUC-282 | **Red / P1** | |
 | SDTEST-1224 | *to write* — AutoUpdateEvent stream fires the expected transitions | SDUC-281 | **Red / P1** | State machine — Idle → Checking → Available/UpToDate → Downloading → Ready → Installed. |
 
@@ -160,9 +160,9 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1240 | *to write* — download_and_verify Errs on SHA-256 mismatch (does not install) | SDUC-283 | **Red / P0** | Security-critical. Feed a fixture archive + wrong hash. |
+| SDTEST-1240 | `installer::tests::sha256_mismatch_removes_partial_download` | SDUC-283 | Green | Streams a fixture through a local HTTP socket, rejects the digest and leaves neither destination nor partial archive. |
 | SDTEST-1241 | *to write* — download_and_verify streams bytes (does not buffer the whole archive) | SDUC-283 | **Red / P1** | Regression sensor for memory on macOS DMG (~200 MB). |
-| SDTEST-1242 | *to write* — install replaces binary atomically on Unix | SDUC-284 | **Red / P0** | Unix CI. |
+| SDTEST-1242 | `installer::tests::linux_binary_replacement_is_atomic_and_keeps_backup` | SDUC-284 | Green | Verifies the same-filesystem rename and retained rollback copy on Linux. |
 | SDTEST-1243 | *to write* — install uses pending-replace pattern on Windows | SDUC-284 | **Red / P0** | Windows CI. |
 | SDTEST-1244 | *to write* — install fails cleanly if archive is corrupt (no partial writes) | SDUC-284 | **Red / P1** | |
 
