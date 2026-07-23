@@ -278,22 +278,222 @@ pub mod x11 {
 #[cfg(feature = "wayland")]
 pub mod wayland {
     use super::*;
+    use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
+    use calloop::channel::Sender;
+    use futures::StreamExt as _;
+    use std::time::Duration;
+
+    use crate::{BackgroundExecutor, Task};
+
+    // ShellDeck patch: bridge GPUI global-hotkey registrations through the
+    // XDG Global Shortcuts portal when Wayland forbids compositor key grabs.
+    const PORTAL_REGISTRATION_DEBOUNCE: Duration = Duration::from_millis(100);
+    const PORTAL_SHORTCUT_PREFIX: &str = "gpui-";
+
+    fn portal_shortcut_id(id: u32) -> String {
+        format!("{PORTAL_SHORTCUT_PREFIX}{id}")
+    }
+
+    fn id_from_portal_shortcut(shortcut_id: &str) -> Option<u32> {
+        shortcut_id
+            .strip_prefix(PORTAL_SHORTCUT_PREFIX)?
+            .parse()
+            .ok()
+    }
+
+    fn portal_key_name(key: &str) -> Option<String> {
+        if key.len() == 1 && key.chars().all(|character| character.is_ascii_alphanumeric()) {
+            return Some(key.to_ascii_lowercase());
+        }
+        let name = match key.to_ascii_lowercase().as_str() {
+            "space" => "space",
+            "enter" | "return" => "Return",
+            "tab" => "Tab",
+            "escape" => "Escape",
+            "backspace" => "BackSpace",
+            "delete" => "Delete",
+            "insert" => "Insert",
+            "home" => "Home",
+            "end" => "End",
+            "pageup" => "Page_Up",
+            "pagedown" => "Page_Down",
+            "left" => "Left",
+            "up" => "Up",
+            "right" => "Right",
+            "down" => "Down",
+            "-" => "minus",
+            "=" => "equal",
+            "[" => "bracketleft",
+            "]" => "bracketright",
+            "\\" => "backslash",
+            ";" => "semicolon",
+            "'" => "apostrophe",
+            "`" => "grave",
+            "," => "comma",
+            "." => "period",
+            "/" => "slash",
+            key if key.len() > 1
+                && key.starts_with('f')
+                && key[1..]
+                    .parse::<u8>()
+                    .is_ok_and(|number| (1..=35).contains(&number)) =>
+            {
+                return Some(key.to_ascii_uppercase());
+            }
+            _ => return None,
+        };
+        Some(name.to_string())
+    }
+
+    fn keystroke_to_portal_trigger(keystroke: &Keystroke) -> Result<String> {
+        let mut parts = Vec::with_capacity(5);
+        if keystroke.modifiers.control {
+            parts.push("CTRL".to_string());
+        }
+        if keystroke.modifiers.alt {
+            parts.push("ALT".to_string());
+        }
+        if keystroke.modifiers.shift {
+            parts.push("SHIFT".to_string());
+        }
+        if keystroke.modifiers.platform {
+            parts.push("LOGO".to_string());
+        }
+        parts.push(portal_key_name(&keystroke.key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported key for Wayland global shortcut: {}",
+                keystroke.key
+            )
+        })?);
+        Ok(parts.join("+"))
+    }
+
+    async fn run_portal_session(
+        registrations: Vec<(u32, Keystroke)>,
+        activation_tx: Sender<u32>,
+    ) -> Result<()> {
+        let proxy = GlobalShortcuts::new().await?;
+        let session = proxy.create_session().await?;
+        let shortcuts = registrations
+            .into_iter()
+            .map(|(id, keystroke)| {
+                let trigger = keystroke_to_portal_trigger(&keystroke)?;
+                let description = format!("Global shortcut {trigger}");
+                Ok(NewShortcut::new(portal_shortcut_id(id), description)
+                    .preferred_trigger(Some(trigger.as_str())))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let request = proxy.bind_shortcuts(&session, &shortcuts, None).await?;
+        let bound = request.response()?;
+        if bound.shortcuts().is_empty() {
+            return Err(anyhow::anyhow!(
+                "Wayland Global Shortcuts portal did not bind any shortcut"
+            ));
+        }
+
+        log::info!(
+            "Wayland Global Shortcuts portal bound {} shortcut(s)",
+            bound.shortcuts().len()
+        );
+        let mut activated = proxy.receive_activated().await?;
+        while let Some(event) = activated.next().await {
+            let Some(id) = id_from_portal_shortcut(event.shortcut_id()) else {
+                continue;
+            };
+            if activation_tx.send(id).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
 
     pub struct WaylandGlobalHotkey {
-        _inner: LinuxGlobalHotkey,
+        inner: LinuxGlobalHotkey,
+        background_executor: BackgroundExecutor,
+        activation_tx: Sender<u32>,
+        portal_task: Option<Task<()>>,
     }
 
     impl WaylandGlobalHotkey {
-        pub fn new() -> Self {
+        pub fn new(background_executor: BackgroundExecutor, activation_tx: Sender<u32>) -> Self {
             Self {
-                _inner: LinuxGlobalHotkey::new(),
+                inner: LinuxGlobalHotkey::new(),
+                background_executor,
+                activation_tx,
+                portal_task: None,
             }
         }
 
-        pub fn register(&mut self, _id: u32, _keystroke: &Keystroke) -> Result<()> {
-            Err(anyhow::anyhow!("Global hotkeys not supported on Wayland"))
+        pub fn register(&mut self, id: u32, keystroke: &Keystroke) -> Result<()> {
+            keystroke_to_portal_trigger(keystroke)?;
+            self.inner.register(id, keystroke)?;
+            self.schedule_portal_session();
+            Ok(())
         }
 
-        pub fn unregister(&mut self, _id: u32) {}
+        pub fn unregister(&mut self, id: u32) {
+            self.inner.unregister(id);
+            self.schedule_portal_session();
+        }
+
+        fn schedule_portal_session(&mut self) {
+            let mut registrations = self
+                .inner
+                .registered
+                .iter()
+                .map(|(id, keystroke)| (*id, keystroke.clone()))
+                .collect::<Vec<_>>();
+            registrations.sort_by_key(|(id, _)| *id);
+            if registrations.is_empty() {
+                self.portal_task = None;
+                return;
+            }
+
+            let executor = self.background_executor.clone();
+            let activation_tx = self.activation_tx.clone();
+            self.portal_task = Some(self.background_executor.spawn(async move {
+                executor.timer(PORTAL_REGISTRATION_DEBOUNCE).await;
+                if let Err(error) = run_portal_session(registrations, activation_tx).await {
+                    log::warn!("Wayland Global Shortcuts portal unavailable: {error:#}");
+                }
+            }));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Keystroke;
+
+        #[test]
+        fn portal_trigger_uses_xdg_shortcut_syntax() {
+            let shortcut = Keystroke::parse("ctrl-shift-space").expect("valid shortcut");
+            assert_eq!(
+                keystroke_to_portal_trigger(&shortcut).unwrap(),
+                "CTRL+SHIFT+space"
+            );
+
+            let shortcut = Keystroke::parse("alt-super-f12").expect("valid shortcut");
+            assert_eq!(
+                keystroke_to_portal_trigger(&shortcut).unwrap(),
+                "ALT+LOGO+F12"
+            );
+        }
+
+        #[test]
+        fn portal_ids_round_trip_and_reject_foreign_values() {
+            assert_eq!(id_from_portal_shortcut(&portal_shortcut_id(42)), Some(42));
+            assert_eq!(id_from_portal_shortcut("other-42"), None);
+            assert_eq!(id_from_portal_shortcut("gpui-not-a-number"), None);
+        }
+
+        #[test]
+        fn unsupported_portal_key_is_rejected_before_requesting_permission() {
+            let shortcut = Keystroke {
+                key: "💥".to_string(),
+                ..Default::default()
+            };
+            assert!(keystroke_to_portal_trigger(&shortcut).is_err());
+        }
     }
 }

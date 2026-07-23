@@ -1543,8 +1543,10 @@ application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
 The Dock opens on the display containing the pointer, moves to that display on
 the next invocation if necessary, and hides on Escape or when its window loses
 focus.
-Registration failure (notably Wayland without a shortcuts portal) is non-fatal
-and leaves the tray path available.
+On Wayland, both startup shortcuts are submitted together through one XDG
+Global Shortcuts portal session; accepted `Activated` signals route through
+the same runtime IDs as native backends. Portal absence, user refusal, or an
+empty accepted set is non-fatal and leaves the tray path available.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 

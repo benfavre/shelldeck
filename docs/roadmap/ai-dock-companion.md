@@ -12,20 +12,18 @@ ShellDeck et démarrage caché récupérable.
 
 La phase D est **partielle** :
 
-- le raccourci fixe fonctionne dans le code sur Windows, macOS et Linux/X11
-  avec `Ctrl+Shift+Space` (`Cmd+Shift+Space` sur macOS) ;
-- le portail Global Shortcuts Wayland reste à réaliser ;
+- le raccourci fixe fonctionne sur Windows, macOS, Linux/X11 et passe par le
+  portail XDG Global Shortcuts sous Wayland, avec `Ctrl+Shift+Space`
+  (`Cmd+Shift+Space` sur macOS) ;
 - l'enregistrement/désenregistrement dynamique n'est pas câblé : les toggles
   Settings prennent effet au prochain lancement ;
 - il n'existe pas encore de capture de combinaison ni d'état d'erreur visible
   dans Settings.
 
-La première tranche de la phase C est livrée : avec `start_hidden`, la fenêtre
-principale possède un `CompanionRoot` léger et ne construit plus immédiatement
-le `Workspace`, ses vues ou ses pollers. `main.rs` charge encore les connexions,
-le store et peut lancer le Cloud Sync avant GPUI. Le Dock et la palette
-initialisent encore le `Workspace` à leur première ouverture tant que
-`AiCompanionController` n'en a pas été extrait.
+La phase C est livrée : avec `start_hidden`, la fenêtre principale possède un
+`CompanionRoot` léger ; `AiCompanionController` sert le Dock sans construire le
+`Workspace`, et le parsing SSH, le store, les vues/pollers et le Cloud Sync sont
+différés jusqu'à la première surface principale qui en a besoin.
 
 La phase E est **partiellement livrée** : le Dock et la palette se masquent
 déjà à la perte de focus et leur placement multi-écran est câblé. Restent le
@@ -323,8 +321,10 @@ fortement la mémoire ou le temps de démarrage.
 ### Phase D — Raccourci global
 
 - [x] Implémenter les backends Windows, macOS et Linux/X11.
-- [ ] Implémenter le portail Global Shortcuts sous Wayland ; le backend actuel
-  renvoie explicitement « Global hotkeys not supported on Wayland ».
+- [x] Implémenter le portail Global Shortcuts sous Wayland. Les raccourcis de
+  démarrage sont regroupés dans une session et un seul `BindShortcuts`; les
+  activations reviennent sur calloop avant le callback GPUI. Absence du
+  portail, refus ou ensemble accepté vide restent non fatals.
 - [ ] Ajouter l'enregistrement/désenregistrement dynamique.
 - [ ] Ajouter la capture de combinaison et l'état d'erreur dans Settings.
 - [x] Toggle du Dock, focus composer et restauration de fenêtre.
@@ -397,6 +397,10 @@ Les lacunes restantes sont :
   `Workspace`, mais aucun harnais GPUI ne vérifie encore l'absence effective de
   chaque poller ;
 - aucun test d'enregistrement global réel sur macOS/Windows ;
+- aucun environnement Wayland avec backend portail n'est disponible sur cette
+  machine X11 pour valider le dialogue et une activation réelle ; la conversion
+  XDG, les IDs et le refus précoce des touches non supportées sont couverts en
+  tests unitaires du fork ;
 - aucun test du fallback Wayland visible dans l'interface ;
 - aucun test GPUI de perte de focus ;
 - aucune couverture des mises à jour live du tray macOS/Windows.

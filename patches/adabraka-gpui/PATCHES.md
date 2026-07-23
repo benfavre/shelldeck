@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **22**
+Total markers in code: **26**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -172,6 +172,27 @@ only, out of the src/-scoped marker convention.)
   removes the misleading error.
 - **Upstream status**: not filed yet — lifecycle hardening suitable for an
   upstream PR.
+
+### SDPATCH-109 — Register Wayland global shortcuts through the XDG portal
+
+- **Files / symbols**:
+  - `src/platform/linux/global_hotkey.rs` — `wayland::WaylandGlobalHotkey`
+  - `src/platform/linux/wayland/client.rs` — `WaylandClientState`,
+    `WaylandClient::new`, `LinuxClient for WaylandClient`
+- **Markers**:
+  - `src/platform/linux/global_hotkey.rs` — `// ShellDeck patch: bridge GPUI global-hotkey registrations through the`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: retain the portal session manager with the Wayland client.`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: marshal portal activations back onto calloop before`
+  - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: expose the Wayland portal manager through LinuxClient.`
+- **Why**: Wayland deliberately forbids the root-window grabs used by the X11
+  backend. The XDG Global Shortcuts portal is the compositor-supported path:
+  GPUI batches synchronous startup registrations into one portal session and
+  one `BindShortcuts` request, emits XDG-spec preferred triggers, listens for
+  `Activated`, then marshals IDs through calloop before invoking the existing
+  foreground callback. Portal absence, denial, or an empty accepted set stays
+  non-fatal and leaves ShellDeck's tray fallback available.
+- **Upstream status**: not filed yet — generic GPUI capability suitable for an
+  upstream PR after live validation on GNOME and KDE portal backends.
 
 ## Preserved files (do not overwrite on sync)
 

@@ -1287,6 +1287,10 @@ fn main() -> Result<()> {
             match gpui::Keystroke::parse(ai_dock_global_shortcut()) {
                 Ok(keystroke) => {
                     match cx.register_global_hotkey(AI_DOCK_GLOBAL_HOTKEY_ID, &keystroke) {
+                        Ok(()) if cx.compositor_name() == "Wayland" => tracing::info!(
+                            shortcut = ai_dock_global_shortcut(),
+                            "AI Dock global shortcut requested through Wayland portal"
+                        ),
                         Ok(()) => tracing::info!(
                             shortcut = ai_dock_global_shortcut(),
                             "AI Dock global shortcut registered"
@@ -1304,6 +1308,10 @@ fn main() -> Result<()> {
             match gpui::Keystroke::parse(command_palette_global_shortcut()) {
                 Ok(keystroke) => {
                     match cx.register_global_hotkey(COMMAND_PALETTE_GLOBAL_HOTKEY_ID, &keystroke) {
+                        Ok(()) if cx.compositor_name() == "Wayland" => tracing::info!(
+                            shortcut = command_palette_global_shortcut(),
+                            "command palette shortcut requested through Wayland portal"
+                        ),
                         Ok(()) => tracing::info!(
                             shortcut = command_palette_global_shortcut(),
                             "command palette global shortcut registered"

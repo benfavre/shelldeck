@@ -266,6 +266,7 @@ parallel `cargo test`.
 | SDTEST-1394 | `main::tests::deferred_workspace_data_merge_preserves_ssh_alias_precedence` | SDUC-435 | Green | The deferred loader preserves startup merge semantics: SSH aliases retain precedence and unique manual connections are appended. |
 | SDTEST-1395 | Linux runtime smoke: hidden start → Dock → palette | SDUC-434, SDUC-435, SDUC-436 | Green | Hidden startup and Dock-only use emitted no SSH/store/Workspace trace; the first palette invocation emitted `loading deferred Workspace connection data` exactly when the full surface became necessary. |
 | SDTEST-1396 | Linux controlled process benchmark (`2e0501c` vs `4139880`) | SDUC-435 | Green | Same debug target/config: hidden-ready time moved from 663 ms to 478 ms (−28 %); RSS after 1 s remained effectively flat at 182004 vs 182092 KiB and thread count stayed 32. Indicative local measurement, not a release-build performance gate. |
+| SDTEST-1397 | `global_hotkey::wayland::tests::{portal_trigger_uses_xdg_shortcut_syntax,portal_ids_round_trip_and_reject_foreign_values,unsupported_portal_key_is_rejected_before_requesting_permission}` | SDUC-434, SDUC-436 | Green | GPUI fork tests pin XDG trigger syntax (`CTRL+SHIFT+space`), activation-ID routing, and rejection before any permission request for keys the portal cannot express. Live portal dialogue/activation remains an environment test on Wayland. |
 
 ---
 
