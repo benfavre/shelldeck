@@ -1,5 +1,6 @@
 mod ai_action_dialog;
 pub mod ai_assistant;
+pub mod ai_companion;
 pub mod ai_dock;
 pub mod ai_workflow;
 pub mod bext_cloud_view;
@@ -49,6 +50,7 @@ macro_rules! t {
     };
 }
 
+pub use ai_companion::{AiCompanionController, AiCompanionEvent};
 pub use ai_dock::AiDockView;
 pub use command_palette_window::CommandPaletteWindowView;
 pub use i18n::{apply_ui_language, rel_time};

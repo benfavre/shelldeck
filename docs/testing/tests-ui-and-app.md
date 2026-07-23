@@ -261,6 +261,7 @@ parallel `cargo test`.
 | SDTEST-1388 | `main::tests::reachable_dynamic_icons_are_embedded` | SDUC-438 | Green | Every dynamically selected icon used by AI actions and Alert variants resolves to an SVG embedded in the application binary. |
 | SDTEST-1390 | *to write* — New Request site picker searches, defaults, resets, and submits the exact site | SDUC-222, SDUC-228 | **Red / P1** | GPUI wiring: options mirror the Manage directory, the active site is selected on open, « Aucun site précis » clears targeting, close resets the draft, and submission resolves the selected id back through the current directory before posting. |
 | SDTEST-1391 | `main::tests::hidden_companion_start_defers_workspace_creation` | SDUC-435 | Green | The boot policy constructs `Workspace` only for a visible main-window start; hidden companion startup keeps the lightweight root until a command needs application state. |
+| SDTEST-1392 | Linux runtime smoke: hidden start → `Ctrl+Shift+Space` | SDUC-434, SDUC-435 | Green | The Dock opened at 480×1048 while the `initializing full Workspace` trace remained absent, proving the standalone controller path does not start Workspace views or pollers. |
 
 ---
 

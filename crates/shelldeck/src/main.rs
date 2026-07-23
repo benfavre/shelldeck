@@ -11,7 +11,9 @@ use shelldeck_core::config::ssh_config::parse_ssh_config;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
-use shelldeck_ui::{AiDockView, CommandPaletteWindowView, Workspace};
+use shelldeck_ui::{
+    AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
+};
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
 
@@ -402,9 +404,12 @@ struct CompanionRoot {
     config: Option<AppConfig>,
     connections: Option<Vec<Connection>>,
     store: Option<ConnectionStore>,
+    ai_companion: gpui::Entity<AiCompanionController>,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
     tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+    main_window: gpui::AnyWindowHandle,
+    _ai_companion_sub: gpui::Subscription,
 }
 
 impl CompanionRoot {
@@ -414,15 +419,42 @@ impl CompanionRoot {
         store: ConnectionStore,
         workspace_slot: WorkspaceSlot,
         tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+        main_window: gpui::AnyWindowHandle,
+        cx: &mut gpui::Context<Self>,
     ) -> Self {
+        let ai_companion = cx.new(|cx| AiCompanionController::new(config.ai.clone(), cx));
+        let ai_companion_sub = cx.subscribe(
+            &ai_companion,
+            |this, _controller, event: &AiCompanionEvent, cx| {
+                this.route_ai_companion_event(event.clone(), cx);
+            },
+        );
         Self {
             config: Some(config),
             connections: Some(connections),
             store: Some(store),
+            ai_companion,
             workspace: None,
             workspace_slot,
             tray_state_tx,
+            main_window,
+            _ai_companion_sub: ai_companion_sub,
         }
+    }
+
+    fn route_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut gpui::Context<Self>) {
+        let main_window = self.main_window;
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let _ = main_window.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |root, cx| {
+                    let workspace = root.ensure_workspace(window, cx);
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.handle_ai_companion_event(event, cx);
+                    });
+                });
+            });
+        })
+        .detach();
     }
 
     fn ensure_workspace(
@@ -434,13 +466,28 @@ impl CompanionRoot {
             return workspace.clone();
         }
 
+        tracing::info!("initializing full Workspace on first main-surface demand");
         let config = self
             .config
             .take()
             .expect("CompanionRoot config consumed before Workspace creation");
         let connections = self.connections.take().unwrap_or_default();
         let store = self.store.take().unwrap_or_default();
-        let workspace = cx.new(|cx| Workspace::new(cx, config, connections, store));
+        let controller = self.ai_companion.read(cx);
+        let ai_dock_assistant = controller.assistant();
+        let ai_tasks = controller.tasks();
+        let ai_companion_config = controller.shared_config();
+        let workspace = cx.new(|cx| {
+            Workspace::new(
+                cx,
+                config,
+                connections,
+                store,
+                ai_dock_assistant,
+                ai_tasks,
+                ai_companion_config,
+            )
+        });
 
         workspace.update(cx, |ws, cx| {
             ws.start_git_polling(window.window_handle(), cx);
@@ -489,6 +536,16 @@ impl CompanionRoot {
         self.workspace = Some(workspace.clone());
         cx.notify();
         workspace
+    }
+
+    fn companion_ui_font_family(&self, cx: &gpui::App) -> Option<String> {
+        if let Some(workspace) = &self.workspace {
+            return workspace.read(cx).companion_ui_font_family();
+        }
+        self.config.as_ref().and_then(|config| {
+            (config.general.ui_font_family != "System Default")
+                .then(|| config.general.ui_font_family.clone())
+        })
     }
 }
 
@@ -846,15 +903,14 @@ fn toggle_ai_dock(
     let Some(root) = root.upgrade() else {
         return;
     };
-    let workspace = match main_window.update(cx, |_, window, cx| {
-        root.update(cx, |root, cx| root.ensure_workspace(window, cx))
-    }) {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to initialize Workspace for AI Dock");
-            return;
+    let (ai_companion, font_family) = root.update(cx, |root, cx| {
+        if let Some(workspace) = &root.workspace {
+            workspace.update(cx, |workspace, cx| {
+                workspace.close_ai_sheet_for_companion(cx);
+            });
         }
-    };
+        (root.ai_companion.clone(), root.companion_ui_font_family(cx))
+    });
     let Some(display) = companion_display(main_window, cx) else {
         tracing::error!("failed to open AI Dock: no display available");
         return;
@@ -875,7 +931,7 @@ fn toggle_ai_dock(
                         window.remove_window();
                         return true;
                     }
-                    workspace.update(cx, |workspace, cx| workspace.refresh_ai_dock(cx));
+                    ai_companion.update(cx, |controller, cx| controller.refresh(cx));
                     window.show_window();
                     window.activate_window();
                     dock.focus_composer(window, cx);
@@ -896,12 +952,7 @@ fn toggle_ai_dock(
         }
     }
 
-    let (assistant, font_family) = workspace.update(cx, |workspace, cx| {
-        (
-            workspace.prepare_ai_dock(cx),
-            workspace.companion_ui_font_family(),
-        )
-    });
+    let assistant = ai_companion.update(cx, |controller, cx| controller.prepare(cx));
     let bounds = ai_dock_bounds(display.bounds);
     let options = WindowOptions {
         titlebar: None,
@@ -1306,13 +1357,16 @@ fn main() -> Result<()> {
         let workspace_slot = WorkspaceSlot::default();
 
         match cx.open_window(window_options, |window, cx| {
-            let root = cx.new(|_cx| {
+            let main_window = window.window_handle();
+            let root = cx.new(|cx| {
                 CompanionRoot::new(
                     config.clone(),
                     all_connections,
                     store_for_workspace.clone(),
                     workspace_slot.clone(),
                     tray_state_tx,
+                    main_window,
+                    cx,
                 )
             });
             if create_workspace_immediately {
