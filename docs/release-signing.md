@@ -44,7 +44,8 @@ secrets `WINDOWS_CERTIFICATE_*` sont présents, le workflow leur donne la
 priorité. Une configuration de production partielle bloque la release.
 Le certificat auto-signé utilise l'API Authenticode locale de PowerShell sans
 appeler de service d'horodatage ou de validation externe, mais reste non
-approuvé par défaut sur les PC des utilisateurs. Un certificat public conserve
+approuvé par défaut sur les PC des utilisateurs. Le runner éphémère ne l'ajoute
+pas non plus aux autorités racines de Windows. Un certificat public conserve
 `signtool`, la validation de chaîne et l'horodatage SHA-256.
 
 ## Secrets et variable GitHub

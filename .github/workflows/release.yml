@@ -262,14 +262,7 @@ jobs:
               $certificatePassword,
               $flags
             )
-            $rootStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-              "Root",
-              [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-            )
-            $rootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $rootStore.Add($testCertificate)
-            $rootStore.Close()
-            Write-Host "Trusted the self-signed certificate on this ephemeral runner only"
+            Write-Host "Loaded the self-signed certificate without modifying Windows trust stores"
           }
           if ($useSelfSignedCertificate) {
             $signature = Set-AuthenticodeSignature `
