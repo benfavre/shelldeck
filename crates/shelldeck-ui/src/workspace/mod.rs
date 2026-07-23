@@ -18,7 +18,7 @@ use shelldeck_core::ai::{
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
 };
-use shelldeck_core::config::app_config::{AppConfig, ThemePreference};
+use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePreference};
 use shelldeck_core::config::bext_cloud::{self, BextCloudConfig};
 use shelldeck_core::config::bext_instance;
 use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
@@ -487,6 +487,9 @@ pub struct Workspace {
     /// `publish_tray_state` on positive deltas and from
     /// `apply_tick_result` on Fleet job completion.
     tray_notifier: Option<Box<dyn Fn(TrayNotification) + Send + Sync>>,
+    /// Publishes Settings-owned companion changes back to the binary-level
+    /// runtime, which owns the platform global-hotkey registrations.
+    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig) + Send + Sync>>,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -1002,6 +1005,7 @@ impl Workspace {
             terminal_theme_before_preview: None,
             tray_state_publisher: None,
             tray_notifier: None,
+            companion_config_publisher: None,
             last_tray_counters: None,
         }
     }
@@ -1022,6 +1026,18 @@ impl Workspace {
     /// every subsequent emit is a no-op.
     pub fn set_tray_notifier(&mut self, notifier: Box<dyn Fn(TrayNotification) + Send + Sync>) {
         self.tray_notifier = Some(notifier);
+    }
+
+    /// Wire dynamic companion settings to the binary-level runtime.
+    ///
+    /// The UI crate persists the preference, while `main.rs` owns the native
+    /// global-hotkey APIs. Keeping the bridge as a callback preserves that
+    /// dependency boundary.
+    pub fn set_companion_config_publisher(
+        &mut self,
+        publisher: Box<dyn Fn(CompanionConfig) + Send + Sync>,
+    ) {
+        self.companion_config_publisher = Some(publisher);
     }
 
     /// Fire an OS notification if the notifier is wired. Public so
@@ -1642,6 +1658,7 @@ impl Workspace {
         match event {
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
+                let companion_changed = self.app_config.companion != config.companion;
                 if self.app_config.ai != config.ai {
                     self.ai_sheet = None;
                     self.ai_workflow_sheet = None;
@@ -1700,6 +1717,11 @@ impl Workspace {
                     updater.set_enabled(auto_update, cx);
                 });
                 crate::i18n::apply_ui_language(&self.app_config.general.ui_language);
+                if companion_changed {
+                    if let Some(publisher) = self.companion_config_publisher.as_ref() {
+                        publisher(self.app_config.companion.clone());
+                    }
+                }
                 self.refresh_command_palette(cx);
                 cx.notify();
             }

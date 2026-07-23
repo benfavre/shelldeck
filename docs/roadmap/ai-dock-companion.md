@@ -15,8 +15,8 @@ La phase D est **partielle** :
 - le raccourci fixe fonctionne sur Windows, macOS, Linux/X11 et passe par le
   portail XDG Global Shortcuts sous Wayland, avec `Ctrl+Shift+Space`
   (`Cmd+Shift+Space` sur macOS) ;
-- l'enregistrement/désenregistrement dynamique n'est pas câblé : les toggles
-  Settings prennent effet au prochain lancement ;
+- l'enregistrement/désenregistrement dynamique est câblé : les toggles
+  Settings prennent effet immédiatement ;
 - il n'existe pas encore de capture de combinaison ni d'état d'erreur visible
   dans Settings.
 
@@ -325,7 +325,10 @@ fortement la mémoire ou le temps de démarrage.
   démarrage sont regroupés dans une session et un seul `BindShortcuts`; les
   activations reviennent sur calloop avant le callback GPUI. Absence du
   portail, refus ou ensemble accepté vide restent non fatals.
-- [ ] Ajouter l'enregistrement/désenregistrement dynamique.
+- [x] Ajouter l'enregistrement/désenregistrement dynamique. `Workspace`
+  publie uniquement la tranche `CompanionConfig` modifiée vers
+  `CompanionRuntime`, qui conserve l'état réellement enregistré et applique
+  `register`/`unregister` sans redémarrage.
 - [ ] Ajouter la capture de combinaison et l'état d'erreur dans Settings.
 - [x] Toggle du Dock, focus composer et restauration de fenêtre.
 - [x] Échec d'enregistrement non fatal avec fallback tray.

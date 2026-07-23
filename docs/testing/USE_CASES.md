@@ -1547,6 +1547,10 @@ On Wayland, both startup shortcuts are submitted together through one XDG
 Global Shortcuts portal session; accepted `Activated` signals route through
 the same runtime IDs as native backends. Portal absence, user refusal, or an
 empty accepted set is non-fatal and leaves the tray path available.
+Changing either global-shortcut toggle in Settings registers or unregisters
+that shortcut immediately without restarting ShellDeck. The runtime tracks
+successful registrations, avoids duplicate work for unchanged settings, and
+can retry a failed registration on the next enable/sync transition.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1611,6 +1615,9 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-23** — Extended SDUC-434 with immediate dynamic registration and
+  unregistration from the two Companion Settings toggles
+  (SDTEST-1398/1399).
 - **2026-07-22** — Extended SDUC-222/228 with the searchable request-site
   target and added SDTEST-1389/1390 for its wire contract and UI wiring.
 - **2026-07-22** — Added SDUC-438 and SDTEST-1388 after auditing reachable
