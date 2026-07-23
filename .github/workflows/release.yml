@@ -161,8 +161,12 @@ jobs:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
         run: |
+          if [ -z "$APPLE_DEVELOPER_ID_P12_BASE64" ] && [ -z "$APPLE_DEVELOPER_ID_P12_PASSWORD" ]; then
+            echo "No Apple Developer ID certificate configured; using ad-hoc signing"
+            exit 0
+          fi
           if [ -z "$APPLE_DEVELOPER_ID_P12_BASE64" ] || [ -z "$APPLE_DEVELOPER_ID_P12_PASSWORD" ]; then
-            echo "Apple Developer ID certificate secrets are missing" >&2
+            echo "Apple Developer ID certificate configuration is incomplete" >&2
             exit 1
           fi
           KEYCHAIN="$RUNNER_TEMP/shelldeck-signing.keychain-db"
@@ -183,7 +187,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           SHELLDECK_MACOS_SIGNING_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '-' }}
-          SHELLDECK_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+          SHELLDECK_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY != '' && '1' || '0' }}
         run: bash packaging/macos/build-dmg.sh
 
       - name: Notarize macOS update and disk image
@@ -194,8 +198,12 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
+          if [ -z "$APPLE_NOTARY_KEY_P8_BASE64" ] && [ -z "$APPLE_NOTARY_KEY_ID" ] && [ -z "$APPLE_NOTARY_ISSUER_ID" ]; then
+            echo "No Apple notarization credentials configured; skipping notarization"
+            exit 0
+          fi
           if [ -z "$APPLE_NOTARY_KEY_P8_BASE64" ] || [ -z "$APPLE_NOTARY_KEY_ID" ] || [ -z "$APPLE_NOTARY_ISSUER_ID" ]; then
-            echo "Apple notarization secrets are missing" >&2
+            echo "Apple notarization configuration is incomplete" >&2
             exit 1
           fi
           NOTARY_KEY="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"

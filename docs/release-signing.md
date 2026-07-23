@@ -16,15 +16,20 @@ chaîne déclarative.
 
 ## Politique
 
-Une version taguée est bloquée si une seule des garanties suivantes manque :
+Une version taguée auto-signe tout ce qui peut l'être sans autorité externe :
 
 - archive auto-update signée par un manifeste Ed25519 vérifié dans le client ;
-- exécutable et installateur Windows signés Authenticode avec horodatage SHA-256 ;
-- bundle et DMG macOS signés avec un certificat Developer ID Application,
-  Hardened Runtime activé, puis soumis à `notarytool` ;
+- exécutable et installateur Windows signés Authenticode avec horodatage SHA-256,
+  avec le PFX public s'il existe ou le PFX auto-signé sinon ;
+- bundle macOS signé avec le certificat Developer ID s'il existe, ou avec une
+  signature ad hoc sinon ;
 - AppImage Linux signée dans ses sections de signature avec GPG ;
 - `SHA256SUMS.txt` accompagné d'une signature détachée
   `SHA256SUMS.txt.asc` et de la clé publique `ShellDeck-signing-key.asc`.
+
+La notarisation macOS n'est exécutée que lorsque les trois identifiants Apple
+sont configurés. Sans compte Apple Developer, la release macOS reste
+installable manuellement mais n'est pas approuvée par Gatekeeper.
 
 Les exécutions manuelles sans tag restent utilisables comme builds de
 diagnostic non signés. Elles ne peuvent ni créer une GitHub Release, ni publier
