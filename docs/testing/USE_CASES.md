@@ -1557,7 +1557,10 @@ the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, or task-target command needs
 application state. The standalone AI Dock is served directly by the companion
-controller and is not such a command. When `tray.close_to_tray` is enabled, both the native window-close
+controller and is not such a command. SSH config parsing and the connection
+store are deferred to that first Workspace demand; configured startup Cloud
+Sync begins afterward on the background executor instead of blocking process
+startup or the UI thread. When `tray.close_to_tray` is enabled, both the native window-close
 request and ShellDeck's custom titlebar × hide the main window without shutting
 down the workspace or tray.
 

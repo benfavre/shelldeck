@@ -300,13 +300,15 @@ fortement la mémoire ou le temps de démarrage.
 - [x] Introduire le `CompanionRuntime` applicatif qui possède le bridge d'état
   tray, le routage des raccourcis globaux, le contrôleur IA et les handles des
   fenêtres Dock/palette sans dépendre d'un `Workspace`.
-- [ ] Charger uniquement config, keychain, conversations/tâches et services
-  compagnon au démarrage caché.
-- [ ] Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement à
-  l'ouverture de la fenêtre principale.
-- [ ] Repousser le parsing SSH, le chargement du store et le Cloud Sync au
-  premier besoin de la fenêtre principale, ou documenter les données minimales
-  réellement nécessaires au runtime compagnon.
+- [x] Charger uniquement config, conversations/tâches et services compagnon au
+  démarrage caché. Le keychain reste consulté à la demande par le backend IA ;
+  aucune lecture SSH/store n'est nécessaire au Dock seul.
+- [x] Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement
+  à la première surface qui requiert le `Workspace` (fenêtre principale,
+  palette ou action de tâche ciblée).
+- [x] Repousser le parsing SSH et le chargement du store au premier besoin du
+  `Workspace`. Le Cloud Sync de démarrage part ensuite sur
+  `background_executor`, sans bloquer l'affichage.
 - [ ] Mesurer le RSS et le temps de démarrage avant/après.
 - [x] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
   seul. Smoke Linux effectué le 2026-07-23 : démarrage caché puis
