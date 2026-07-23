@@ -30,13 +30,15 @@ Les exécutions manuelles sans tag restent utilisables comme builds de
 diagnostic non signés. Elles ne peuvent ni créer une GitHub Release, ni publier
 un manifeste d'auto-update.
 
-Pour tester la mécanique Authenticode sans certificat public, un build manuel
-peut activer `test_windows_signing`. Il utilise exclusivement
+En l'absence de certificat Authenticode public, les releases Windows utilisent
+le PFX auto-signé configuré dans
 `WINDOWS_TEST_CERTIFICATE_PFX_BASE64` et
-`WINDOWS_TEST_CERTIFICATE_PASSWORD`. Ces secrets ne sont jamais sélectionnés
-sur un tag : une vraie release reste bloquée si le certificat de production
-manque. Le certificat auto-signé valide la chaîne technique mais reste
-volontairement non approuvé sur les PC des utilisateurs.
+`WINDOWS_TEST_CERTIFICATE_PASSWORD`. Un build manuel doit activer
+`test_windows_signing` pour tester cette même mécanique. Dès que les deux
+secrets `WINDOWS_CERTIFICATE_*` sont présents, le workflow leur donne la
+priorité. Une configuration de production partielle bloque la release.
+Le certificat auto-signé valide la chaîne technique mais reste non approuvé
+par défaut sur les PC des utilisateurs.
 
 ## Secrets et variable GitHub
 

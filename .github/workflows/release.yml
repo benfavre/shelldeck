@@ -225,9 +225,14 @@ jobs:
           WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TEST_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PFX_BASE64 }}
           WINDOWS_TEST_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PASSWORD }}
-          WINDOWS_SELF_SIGNED_TEST: ${{ !startsWith(github.ref, 'refs/tags/v') && inputs.test_windows_signing && '1' || '0' }}
         run: |
-          if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+          $hasProductionCertificate = [bool]$env:WINDOWS_PRODUCTION_CERTIFICATE_PFX_BASE64
+          $hasProductionPassword = [bool]$env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
+          if ($hasProductionCertificate -ne $hasProductionPassword) {
+            throw "Windows production certificate configuration is incomplete"
+          }
+          $useSelfSignedCertificate = -not $hasProductionCertificate
+          if ($useSelfSignedCertificate) {
             $certificateBase64 = $env:WINDOWS_TEST_CERTIFICATE_PFX_BASE64
             $certificatePassword = $env:WINDOWS_TEST_CERTIFICATE_PASSWORD
           } else {
@@ -242,7 +247,7 @@ jobs:
             $certificate,
             [Convert]::FromBase64String($certificateBase64)
           )
-          if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+          if ($useSelfSignedCertificate) {
             $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
             $testCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
               $certificate,
@@ -277,12 +282,17 @@ jobs:
         if: runner.os == 'Windows' && (startsWith(github.ref, 'refs/tags/v') || inputs.test_windows_signing)
         shell: pwsh
         env:
+          WINDOWS_PRODUCTION_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
           WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TEST_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_TEST_CERTIFICATE_PASSWORD }}
-          WINDOWS_SELF_SIGNED_TEST: ${{ !startsWith(github.ref, 'refs/tags/v') && inputs.test_windows_signing && '1' || '0' }}
         run: |
           $certificate = Join-Path $env:RUNNER_TEMP "shelldeck-signing.pfx"
-          $certificatePassword = if ($env:WINDOWS_SELF_SIGNED_TEST -eq "1") {
+          $hasProductionCertificate = [bool]$env:WINDOWS_PRODUCTION_CERTIFICATE_PFX_BASE64
+          $hasProductionPassword = [bool]$env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
+          if ($hasProductionCertificate -ne $hasProductionPassword) {
+            throw "Windows production certificate configuration is incomplete"
+          }
+          $certificatePassword = if (-not $hasProductionCertificate) {
             $env:WINDOWS_TEST_CERTIFICATE_PASSWORD
           } else {
             $env:WINDOWS_PRODUCTION_CERTIFICATE_PASSWORD
