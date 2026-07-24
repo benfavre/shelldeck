@@ -13745,17 +13745,7 @@ impl Render for Workspace {
             root = root
                 .rounded(px(16.0))
                 .border_1()
-                .border_color(ShellDeckColors::border())
-                .shadow(
-                    vec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.45),
-                        offset: point(px(0.0), px(2.0)),
-                        blur_radius: px(16.0),
-                        spread_radius: px(0.0),
-                        inset: false,
-                    }]
-                    .into(),
-                );
+                .border_color(ShellDeckColors::border());
         }
 
         // Sidebar resize drag
