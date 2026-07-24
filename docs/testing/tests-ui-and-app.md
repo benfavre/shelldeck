@@ -190,7 +190,7 @@ parallel `cargo test`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1300 | `i18n.rs::locale_fr_and_en` | SDUC-401, SDUC-403 | Green | Fused fr+en scenario — deliberate (locale is process-global). |
+| SDTEST-1300 | `i18n.rs::locale_fr_and_en` | SDUC-401, SDUC-403, SDUC-434 | Green | Fused fr+en scenario — deliberate (locale is process-global); also pins translated tray action and plural-counter labels. |
 | SDTEST-1301 | `i18n.rs::resolve_locale_system_is_fr_or_en` | SDUC-401 | Green | Smoke test that `System` resolves to a known locale on the CI runner regardless of OS. |
 | SDTEST-1302 | `i18n.rs::fr_en_locale_key_parity` | SDUC-403 | Green | Added 2026-07-09. Loads both TOMLs via `include_str!`, diffs the `toml::Table` key sets. Adds a `toml` dev-dependency to `shelldeck-ui` (workspace version). |
 | SDTEST-1303 | ~~missing key falls back to the French value~~ | ~~SDUC-403~~ | **Retired** | Subsumed by SDTEST-1302 (strict parity means the fallback path is never exercised in practice) and SDTEST-1300 (which proves the locale actually switches by asserting `"Se connecter"` ≠ `"Sign in"` — if fallback were silently masking, en would return the fr value). Any manufactured "canary key" would itself break parity. Kept in the inventory to preserve the sticky ID. |
@@ -274,6 +274,7 @@ parallel `cargo test`.
 | SDTEST-1403 | `main::tests::wayland_portal_result_replaces_pending_status` | SDUC-434 | Green | The runtime state reducer replaces Wayland pending with Registered or the exact asynchronous portal error. |
 | SDTEST-1404 | `global_hotkey::wayland::tests::portal_registration_results_report_partial_acceptance` | SDUC-434 | Green | A partial portal response reports accepted IDs and explicit failure for omitted shortcuts, allowing Settings to leave pending state per shortcut. |
 | SDTEST-1405 | `main::tests::assistant_deep_link_show_is_idempotent` | SDUC-407, SDUC-434, SDUC-435 | Green | The Assistant deep link creates a missing Dock and shows a hidden or already-visible Dock without toggling it off; routing remains independent from Workspace creation. |
+| SDTEST-1406 | `command_palette::tests::keyboard_navigation_wraps_and_pages_without_leaving_results` | SDUC-436 | Green | Arrow/Tab navigation wraps, Home/End select bounds, Page Up/Page Down clamp by eight results, and an empty result set stays at index zero. |
 
 ---
 

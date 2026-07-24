@@ -1727,6 +1727,7 @@ impl Workspace {
                     updater.set_enabled(auto_update, cx);
                 });
                 crate::i18n::apply_ui_language(&self.app_config.general.ui_language);
+                self.publish_tray_state(cx);
                 if companion_changed {
                     if let Some(publisher) = self.companion_config_publisher.as_ref() {
                         publisher(self.app_config.companion.clone());

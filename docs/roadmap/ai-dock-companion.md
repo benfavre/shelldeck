@@ -79,9 +79,10 @@ configurations sans section `[companion]` restent compatibles.
 
 ## Phase E — finitions
 
-- [ ] **Accessibilité clavier et i18n FR/EN**
-  - traduire le menu tray encore codé en français ;
-  - vérifier ordre de focus, activation clavier et libellés accessibles.
+- [x] **Accessibilité clavier et i18n FR/EN**
+  - tray entièrement traduite, pluriels compris, avec mise à jour live Linux ;
+  - Dock nommé au clavier et palette dotée d'un champ accessible ainsi que de
+    la navigation Tab/flèches/Home/End/Page Up/Page Down.
 - [ ] **État des tâches IA dans le tray**
   - afficher les tâches en génération/exécution ;
   - ouvrir le centre de tâches depuis l'indicateur.
@@ -105,6 +106,7 @@ configurations sans section `[companion]` restent compatibles.
   raccourcis ;
 - SDTEST-1397 : conversion et retours du portail Wayland ;
 - SDTEST-1405 : deep link Assistant idempotent ;
+- SDTEST-1300/1302/1406 : traductions tray et navigation clavier bornée ;
 - smoke Linux : Dock seul sans initialisation de `Workspace` ;
 - benchmark Linux debug : démarrage caché environ 28 % plus rapide, RSS
   pratiquement inchangé.

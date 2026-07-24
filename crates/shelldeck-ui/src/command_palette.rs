@@ -19,6 +19,38 @@ use crate::workspace::{
 actions!(shelldeck, [ToggleCommandPalette]);
 
 const RECENT_ACTION_LIMIT: usize = 5;
+const PAGE_NAVIGATION_STEP: usize = 8;
+
+#[derive(Clone, Copy)]
+enum PaletteNavigation {
+    Previous,
+    Next,
+    First,
+    Last,
+    PageUp,
+    PageDown,
+}
+
+fn navigated_index(selected: usize, result_count: usize, navigation: PaletteNavigation) -> usize {
+    if result_count == 0 {
+        return 0;
+    }
+    let selected = selected.min(result_count - 1);
+    match navigation {
+        PaletteNavigation::Previous => {
+            if selected == 0 {
+                result_count - 1
+            } else {
+                selected - 1
+            }
+        }
+        PaletteNavigation::Next => (selected + 1) % result_count,
+        PaletteNavigation::First => 0,
+        PaletteNavigation::Last => result_count - 1,
+        PaletteNavigation::PageUp => selected.saturating_sub(PAGE_NAVIGATION_STEP),
+        PaletteNavigation::PageDown => (selected + PAGE_NAVIGATION_STEP).min(result_count - 1),
+    }
+}
 
 /// Apply a terminal color theme by name. Carried as data so a single action
 /// type can drive every built-in theme entry in the command palette.
@@ -180,7 +212,7 @@ impl CommandPalette {
             self.selected_index = 0;
             self.update_filter();
             // Focus the `Input` widget so typing goes straight into it;
-            // Up/Down/Escape bubble to the palette root's `on_key_down`.
+            // navigation keys are intercepted by the palette root capture.
             let input_focus = self.query_state.read(cx).focus_handle(cx);
             input_focus.focus(window);
         }
@@ -240,19 +272,51 @@ impl CommandPalette {
     }
 
     pub fn select_next(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.filtered.len();
-        }
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::Next,
+        );
     }
 
     pub fn select_prev(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.filtered.len() - 1
-            } else {
-                self.selected_index - 1
-            };
-        }
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::Previous,
+        );
+    }
+
+    fn select_first(&mut self) {
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::First,
+        );
+    }
+
+    fn select_last(&mut self) {
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::Last,
+        );
+    }
+
+    fn select_page_up(&mut self) {
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::PageUp,
+        );
+    }
+
+    fn select_page_down(&mut self) {
+        self.selected_index = navigated_index(
+            self.selected_index,
+            self.filtered.len(),
+            PaletteNavigation::PageDown,
+        );
     }
 
     pub fn selected_action(&self) -> Option<&PaletteAction> {
@@ -286,21 +350,59 @@ impl CommandPalette {
 
     /// Non-text keys only — typing is handled inside the focused `Input`
     /// widget (which also fires `on_enter` for Enter). We intercept the
-    /// list-navigation keys (Up/Down) and Escape.
+    /// list-navigation keys and Escape. Tab stays inside this composite
+    /// control and moves the active result, matching Shift+Tab in reverse.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
             "escape" => {
+                cx.stop_propagation();
                 cx.emit(CommandPaletteEvent::Dismissed);
                 self.dismiss(cx);
                 cx.notify();
             }
             "up" => {
+                cx.stop_propagation();
                 self.select_prev();
                 self.emit_selection_preview(cx);
                 cx.notify();
             }
             "down" => {
+                cx.stop_propagation();
                 self.select_next();
+                self.emit_selection_preview(cx);
+                cx.notify();
+            }
+            "home" => {
+                cx.stop_propagation();
+                self.select_first();
+                self.emit_selection_preview(cx);
+                cx.notify();
+            }
+            "end" => {
+                cx.stop_propagation();
+                self.select_last();
+                self.emit_selection_preview(cx);
+                cx.notify();
+            }
+            "pageup" => {
+                cx.stop_propagation();
+                self.select_page_up();
+                self.emit_selection_preview(cx);
+                cx.notify();
+            }
+            "pagedown" => {
+                cx.stop_propagation();
+                self.select_page_down();
+                self.emit_selection_preview(cx);
+                cx.notify();
+            }
+            "tab" => {
+                cx.stop_propagation();
+                if event.keystroke.modifiers.shift {
+                    self.select_prev();
+                } else {
+                    self.select_next();
+                }
                 self.emit_selection_preview(cx);
                 cx.notify();
             }
@@ -490,6 +592,8 @@ impl Render for CommandPalette {
                         Input::new(&self.query_state)
                             .size(InputSize::Md)
                             .placeholder(t!("palette.placeholder").to_string())
+                            .aria_label(t!("palette.search_label").to_string())
+                            .aria_description(t!("palette.search_description").to_string())
                             .prefix(lucide_icon("search", 14.0, ShellDeckColors::text_muted()))
                             .on_change({
                                 let entity = cx.entity();
@@ -531,7 +635,7 @@ impl Render for CommandPalette {
         let root = div()
             .id("command-palette")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }));
         if self.standalone {
@@ -567,7 +671,10 @@ fn section_label(label: &str) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_match, recent_action_order, PaletteAction, RECENT_ACTION_LIMIT};
+    use super::{
+        fuzzy_match, navigated_index, recent_action_order, PaletteAction, PaletteNavigation,
+        RECENT_ACTION_LIMIT,
+    };
     use gpui::Action;
 
     #[derive(Clone, PartialEq, Debug, Action)]
@@ -633,5 +740,22 @@ mod tests {
         let (order, recent_count) = recent_action_order(&actions, &recent);
         assert_eq!(recent_count, RECENT_ACTION_LIMIT - 1);
         assert_eq!(order, vec![5, 1, 4, 3, 0, 2]);
+    }
+
+    // SDTEST-1406 — every keyboard-navigation operation remains bounded;
+    // arrows/Tab wrap while positional and page keys clamp.
+    #[test]
+    fn keyboard_navigation_wraps_and_pages_without_leaving_results() {
+        use PaletteNavigation::*;
+
+        assert_eq!(navigated_index(0, 0, Next), 0);
+        assert_eq!(navigated_index(0, 10, Previous), 9);
+        assert_eq!(navigated_index(9, 10, Next), 0);
+        assert_eq!(navigated_index(6, 10, First), 0);
+        assert_eq!(navigated_index(2, 10, Last), 9);
+        assert_eq!(navigated_index(9, 10, PageUp), 1);
+        assert_eq!(navigated_index(1, 10, PageUp), 0);
+        assert_eq!(navigated_index(1, 10, PageDown), 9);
+        assert_eq!(navigated_index(42, 10, PageDown), 9);
     }
 }

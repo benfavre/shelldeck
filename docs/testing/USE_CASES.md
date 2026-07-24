@@ -1562,7 +1562,13 @@ active, portal-pending, conflict, and native error states. Wayland portal
 acceptance or refusal replaces the pending state asynchronously.
 Following `shelldeck://assistant` creates or focuses this same Dock
 idempotently: an already visible Dock stays visible instead of being toggled
-off, and the main ShellDeck window remains hidden.
+off, and the main ShellDeck window remains hidden. Every visible tray label,
+including zero/one/many counter forms and the empty pinned-connections row,
+follows the selected French or English UI locale. A live language change
+republishes the tray snapshot so Linux updates the native menu immediately;
+macOS/Windows retain their documented live-menu limitation. The Dock toolbar
+uses keyboard-focusable buttons with visible localized names and tooltips;
+Escape remains an explicit hide action.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1594,7 +1600,10 @@ displays on its next invocation. Commands that navigate ShellDeck reveal the
 main window after selection; background commands can complete without showing
 it. Labels, icons and shortcut hints remain contained at the minimum palette
 width. Linux/Wayland registration failure remains non-fatal and the tray entry
-opens the same standalone palette.
+opens the same standalone palette. The search field exposes a localized
+accessible name and keyboard description. Up/Down and Tab/Shift+Tab wrap
+through results, Home/End jump to the edges, Page Up/Page Down move by a bounded
+page, Enter activates the selected command, and Escape dismisses the palette.
 
 ---
 
@@ -1628,6 +1637,9 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-24** — Extended SDUC-434/436 and SDTEST-1300/1302/1406 with
+  complete FR/EN tray labels, live Linux relocalization, named Dock controls,
+  an accessible palette search field, and bounded full-keyboard navigation.
 - **2026-07-24** — Extended SDUC-406/407/434/435 and SDTEST-1320/1405
   for the idempotent `shelldeck://assistant` hand-off into the lightweight
   Dock runtime.

@@ -54,10 +54,16 @@ mod tests {
         apply_ui_language(&UiLanguage::Fr);
         assert_eq!(resolve_locale(&UiLanguage::Fr), "fr");
         assert_eq!(crate::t!("login.submit").as_ref(), "Se connecter");
+        let tray_fr = crate::ai_dock::TrayLabels::localized();
+        assert_eq!(tray_fr.show, "Ouvrir ShellDeck");
+        assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 tickets non lus");
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
         assert_eq!(crate::t!("login.submit").as_ref(), "Sign in");
+        let tray_en = crate::ai_dock::TrayLabels::localized();
+        assert_eq!(tray_en.show, "Open ShellDeck");
+        assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 unread tickets");
     }
 
     #[test]

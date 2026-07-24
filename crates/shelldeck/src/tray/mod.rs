@@ -53,6 +53,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use uuid::Uuid;
 
+pub use shelldeck_ui::ai_dock::TrayLabels;
+
 /// Actions the tray can request from the running app. The workspace
 /// polls a receiver on the foreground executor and dispatches these
 /// onto the main GPUI thread.
@@ -87,6 +89,10 @@ pub struct TrayState {
     pub jean_pending: usize,
     /// Persisted quick-access connections, in sidebar order.
     pub pinned_connections: Vec<PinnedConnection>,
+    /// Localized copy used by the native menu thread. Keeping it in the
+    /// snapshot makes a live language change observable even when counters do
+    /// not move.
+    pub labels: TrayLabels,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +215,10 @@ struct CounterItems {
 }
 
 struct MenuItems {
+    assistant: MenuItem,
+    show: MenuItem,
+    palette: MenuItem,
+    quit: MenuItem,
     counters: CounterItems,
     pinned_menu: Submenu,
     pinned_items: Vec<MenuItem>,
@@ -219,14 +229,14 @@ struct MenuItems {
 /// rewritten on state updates), Quit at the bottom.
 fn build_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
+    let labels = TrayLabels::localized();
 
-    let assistant_label = shelldeck_ui::ai_dock::dock_tray_label();
-    let assistant_item = MenuItem::with_id(ASSISTANT_ID, &assistant_label, true, None);
-    let show_item = MenuItem::with_id(SHOW_ID, "Ouvrir ShellDeck", true, None);
-    let palette_item = MenuItem::with_id(PALETTE_ID, "Palette de commandes", true, None);
-    let quit_item = MenuItem::with_id(QUIT_ID, "Quitter", true, None);
-    let pinned_menu = Submenu::new("Connexions épinglées", true);
-    let no_pinned = MenuItem::new("Aucune connexion épinglée", false, None);
+    let assistant_item = MenuItem::with_id(ASSISTANT_ID, &labels.assistant, true, None);
+    let show_item = MenuItem::with_id(SHOW_ID, &labels.show, true, None);
+    let palette_item = MenuItem::with_id(PALETTE_ID, &labels.palette, true, None);
+    let quit_item = MenuItem::with_id(QUIT_ID, &labels.quit, true, None);
+    let pinned_menu = Submenu::new(&labels.pinned, true);
+    let no_pinned = MenuItem::new(&labels.no_pinned, false, None);
     pinned_menu
         .append(&no_pinned)
         .context("append empty pinned row")?;
@@ -261,6 +271,10 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     Ok((
         menu,
         MenuItems {
+            assistant: assistant_item,
+            show: show_item,
+            palette: palette_item,
+            quit: quit_item,
             counters,
             pinned_menu,
             pinned_items: vec![no_pinned],
@@ -273,25 +287,33 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
 /// identical publishes. Must run on the GTK thread on Linux.
 fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     let counters = &items.counters;
-    if prev.active_ssh != next.active_ssh {
+    let language_changed = prev.labels != next.labels;
+    if language_changed {
+        items.assistant.set_text(&next.labels.assistant);
+        items.show.set_text(&next.labels.show);
+        items.palette.set_text(&next.labels.palette);
+        items.quit.set_text(&next.labels.quit);
+        items.pinned_menu.set_text(&next.labels.pinned);
+    }
+    if language_changed || prev.active_ssh != next.active_ssh {
         counters.ssh.set_text(counter_label_ssh(next.active_ssh));
     }
-    if prev.open_tunnels != next.open_tunnels {
+    if language_changed || prev.open_tunnels != next.open_tunnels {
         counters
             .tunnels
             .set_text(counter_label_tunnels(next.open_tunnels));
     }
-    if prev.unread_tickets != next.unread_tickets {
+    if language_changed || prev.unread_tickets != next.unread_tickets {
         counters
             .tickets
             .set_text(counter_label_tickets(next.unread_tickets));
     }
-    if prev.jean_pending != next.jean_pending {
+    if language_changed || prev.jean_pending != next.jean_pending {
         counters
             .jean
             .set_text(counter_label_jean(next.jean_pending));
     }
-    if prev.pinned_connections != next.pinned_connections {
+    if language_changed || prev.pinned_connections != next.pinned_connections {
         for item in items.pinned_items.drain(..) {
             if let Err(error) = items.pinned_menu.remove(&item) {
                 tracing::warn!("failed to remove pinned tray item: {error}");
@@ -299,7 +321,7 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
         }
 
         if next.pinned_connections.is_empty() {
-            let item = MenuItem::new("Aucune connexion épinglée", false, None);
+            let item = MenuItem::new(&next.labels.no_pinned, false, None);
             if let Err(error) = items.pinned_menu.append(&item) {
                 tracing::warn!("failed to append empty pinned tray row: {error}");
             }
@@ -322,40 +344,23 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     *prev = next;
 }
 
-// Label formatters. French to match the app's default locale; plurals
-// are hand-picked because a single-count row is common enough to be
-// worth the specialisation.
+// Label formatters use explicit zero/one/many keys because rust-i18n does not
+// infer the app's desired wording for these compact native-menu rows.
 
 fn counter_label_ssh(n: usize) -> String {
-    match n {
-        0 => "Aucune connexion SSH active".to_string(),
-        1 => "1 connexion SSH active".to_string(),
-        n => format!("{n} connexions SSH actives"),
-    }
+    shelldeck_ui::ai_dock::tray_counter_ssh(n)
 }
 
 fn counter_label_tunnels(n: usize) -> String {
-    match n {
-        0 => "Aucun tunnel ouvert".to_string(),
-        1 => "1 tunnel ouvert".to_string(),
-        n => format!("{n} tunnels ouverts"),
-    }
+    shelldeck_ui::ai_dock::tray_counter_tunnels(n)
 }
 
 fn counter_label_tickets(n: usize) -> String {
-    match n {
-        0 => "Aucun ticket non lu".to_string(),
-        1 => "1 ticket non lu".to_string(),
-        n => format!("{n} tickets non lus"),
-    }
+    shelldeck_ui::ai_dock::tray_counter_tickets(n)
 }
 
 fn counter_label_jean(n: usize) -> String {
-    match n {
-        0 => "Aucune validation Jean en attente".to_string(),
-        1 => "1 validation Jean en attente".to_string(),
-        n => format!("{n} validations Jean en attente"),
-    }
+    shelldeck_ui::ai_dock::tray_counter_jean(n)
 }
 
 /// Load the tray PNG. 32 px is the sweet spot for tray display across

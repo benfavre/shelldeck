@@ -561,6 +561,7 @@ impl CompanionRoot {
                                 name: connection.name,
                             })
                             .collect(),
+                        labels: tray::TrayLabels::localized(),
                     };
                     if let Err(error) = state_tx.send(state) {
                         tracing::debug!(

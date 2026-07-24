@@ -18,27 +18,23 @@
 | Connexions épinglées | Livré | `AppConfig.pinned_connections`, sidebar et sous-menu tray |
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
-| AI Dock Companion | Phases A–D livrées ; finitions en cours | [`ai-dock-companion.md`](ai-dock-companion.md) |
+| AI Dock Companion | Phases A–D et finition accessibilité/i18n livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
 
 ## Next
 
 Ordre recommandé pour terminer la V1 :
 
-1. **Accessibilité clavier et i18n du tray**
-   - remplacer les libellés français codés en dur par les clés FR/EN ;
-   - vérifier l'ordre de focus, les actions au clavier et les libellés
-     accessibles du Dock et de la palette.
-2. **État des tâches IA dans le tray**
+1. **État des tâches IA dans le tray**
    - publier le nombre de tâches `Generating`/`Executing` ;
    - ouvrir le centre de tâches depuis l'indicateur ;
    - conserver les notifications de fin existantes.
-3. **Icône tray template macOS**
+2. **Icône tray template macOS**
    - fournir un asset monochrome transparent dédié ;
    - activer `with_icon_as_template(true)` uniquement sur macOS.
-4. **Géométrie persistante du Dock**
+3. **Géométrie persistante du Dock**
    - restaurer l'écran et les dimensions valides ;
    - retomber sur le placement courant si l'écran a disparu ou changé.
-5. **Validation comportementale multiplateforme**
+4. **Validation comportementale multiplateforme**
    - tester `autostart + start_hidden` sur Linux, macOS et Windows ;
    - tester les raccourcis réels sur macOS/Windows et le portail sur Wayland ;
    - valider les mises à jour live du tray hors Linux.
@@ -78,6 +74,8 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   raccourci ; les erreurs restent non fatales et visibles dans Settings ;
 - `shelldeck://assistant` suit le hand-off authentifié et ouvre le Dock de façon
   idempotente sans révéler la fenêtre principale ;
+- la tray suit la locale FR/EN, le Dock expose des contrôles nommés et la
+  palette couvre Tab, flèches, Home/End et Page Up/Page Down ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
   Terminal séquentiels bornés.
