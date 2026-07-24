@@ -4,13 +4,13 @@
 > accessible depuis le système, sans devoir afficher ni initialiser toute
 > l'interface principale.
 
-## Statut vérifié au 2026-07-23
+## Statut vérifié au 2026-07-24
 
 🚧 Phases A et B livrées le 2026-07-21 : Dock single-instance depuis le tray,
 conversation globale séparée, focus composer, fermeture-vers-tray, retour vers
 ShellDeck et démarrage caché récupérable.
 
-La phase D est **partielle** :
+La phase D est **livrée** :
 
 - les raccourcis personnalisables fonctionnent sur Windows, macOS, Linux/X11
   et passent par le portail XDG Global Shortcuts sous Wayland ;
@@ -18,7 +18,9 @@ La phase D est **partielle** :
   Settings prennent effet immédiatement ;
 - Settings capture les combinaisons, refuse les doublons/combinaisons sans
   modificateur, restaure les valeurs par défaut et affiche l'état réel, y
-  compris l'acceptation ou le refus asynchrone du portail Wayland.
+  compris l'acceptation ou le refus asynchrone du portail Wayland ;
+- les permissions réellement nécessaires au moniteur global macOS sont
+  documentées, avec le menu tray comme fallback sans permission.
 
 La phase C est livrée : avec `start_hidden`, la fenêtre principale possède un
 `CompanionRoot` léger ; `AiCompanionController` sert le Dock sans construire le
@@ -26,9 +28,10 @@ La phase C est livrée : avec `start_hidden`, la fenêtre principale possède un
 différés jusqu'à la première surface principale qui en a besoin.
 
 La phase E est **partiellement livrée** : le Dock et la palette se masquent
-déjà à la perte de focus et leur placement multi-écran est câblé. Restent le
-deep link Assistant, l'icône tray macOS template, l'état visuel des tâches IA
-dans le tray, la géométrie persistante et les finitions d'accessibilité/i18n.
+déjà à la perte de focus, leur placement multi-écran est câblé et le deep link
+Assistant ouvre le Dock sans initialiser `Workspace`. Restent l'icône tray
+macOS template, l'état visuel des tâches IA dans le tray, la géométrie
+persistante et les finitions d'accessibilité/i18n.
 
 La palette de commandes possède aussi une fenêtre compagnon autonome, ouverte
 par `Ctrl+Alt+Space` (`Cmd+Alt+Space` sur macOS) sans afficher la fenêtre
@@ -338,7 +341,10 @@ fortement la mémoire ou le temps de démarrage.
 - [x] Échec d'enregistrement non fatal avec fallback tray.
 - [x] Afficher le fallback Wayland dans Settings : état en attente pendant le
   dialogue puis actif ou erreur selon le résultat asynchrone du portail.
-- [ ] Documenter les permissions macOS réellement nécessaires.
+- [x] Documenter les permissions macOS réellement nécessaires dans
+  [`docs/macos-permissions.md`](../macos-permissions.md) : le moniteur global
+  `NSEvent` des raccourcis clavier exige l'approbation Accessibilité/TCC ;
+  Dock, tray et deep links n'exigent aucune permission supplémentaire.
 
 ### Phase E — Finitions
 
