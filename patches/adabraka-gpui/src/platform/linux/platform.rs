@@ -120,6 +120,9 @@ pub(crate) struct PlatformHandlers {
     pub(crate) tray_icon_event: Option<Box<dyn FnMut(TrayIconEvent)>>,
     pub(crate) tray_menu_action: Option<Box<dyn FnMut(SharedString)>>,
     pub(crate) global_hotkey: Option<Box<dyn FnMut(u32)>>,
+    // ShellDeck patch: retain the Wayland portal registration-result callback.
+    pub(crate) global_hotkey_registration:
+        Option<Box<dyn FnMut(crate::GlobalHotkeyRegistrationEvent)>>,
     pub(crate) system_power: Option<Box<dyn FnMut(SystemPowerEvent)>>,
     pub(crate) network_status_change: Option<Box<dyn FnMut(NetworkStatus)>>,
     pub(crate) media_key: Option<Box<dyn FnMut(MediaKeyEvent)>>,
@@ -704,6 +707,14 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn on_global_hotkey(&self, callback: Box<dyn FnMut(u32)>) {
         self.with_common(|common| common.callbacks.global_hotkey = Some(callback));
+    }
+
+    // ShellDeck patch: route asynchronous Wayland registration outcomes.
+    fn on_global_hotkey_registration(
+        &self,
+        callback: Box<dyn FnMut(crate::GlobalHotkeyRegistrationEvent)>,
+    ) {
+        self.with_common(|common| common.callbacks.global_hotkey_registration = Some(callback));
     }
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {

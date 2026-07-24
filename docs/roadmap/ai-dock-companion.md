@@ -12,13 +12,13 @@ ShellDeck et démarrage caché récupérable.
 
 La phase D est **partielle** :
 
-- le raccourci fixe fonctionne sur Windows, macOS, Linux/X11 et passe par le
-  portail XDG Global Shortcuts sous Wayland, avec `Ctrl+Shift+Space`
-  (`Cmd+Shift+Space` sur macOS) ;
+- les raccourcis personnalisables fonctionnent sur Windows, macOS, Linux/X11
+  et passent par le portail XDG Global Shortcuts sous Wayland ;
 - l'enregistrement/désenregistrement dynamique est câblé : les toggles
   Settings prennent effet immédiatement ;
-- il n'existe pas encore de capture de combinaison ni d'état d'erreur visible
-  dans Settings.
+- Settings capture les combinaisons, refuse les doublons/combinaisons sans
+  modificateur, restaure les valeurs par défaut et affiche l'état réel, y
+  compris l'acceptation ou le refus asynchrone du portail Wayland.
 
 La phase C est livrée : avec `start_hidden`, la fenêtre principale possède un
 `CompanionRoot` léger ; `AiCompanionController` sert le Dock sans construire le
@@ -202,6 +202,8 @@ enabled = true
 start_hidden = false
 global_shortcut_enabled = true
 global_palette_shortcut_enabled = true
+global_shortcut = "ctrl-shift-space"
+global_palette_shortcut = "ctrl-alt-space"
 hide_dock_on_escape = true
 hide_dock_on_focus_loss = true
 always_on_top = false
@@ -329,11 +331,14 @@ fortement la mémoire ou le temps de démarrage.
   publie uniquement la tranche `CompanionConfig` modifiée vers
   `CompanionRuntime`, qui conserve l'état réellement enregistré et applique
   `register`/`unregister` sans redémarrage.
-- [ ] Ajouter la capture de combinaison et l'état d'erreur dans Settings.
+- [x] Ajouter la capture de combinaison et l'état d'erreur dans Settings :
+  modificateur obligatoire, conflit Dock/palette visible, reset par défaut et
+  résultat natif renvoyé à l'interface.
 - [x] Toggle du Dock, focus composer et restauration de fenêtre.
 - [x] Échec d'enregistrement non fatal avec fallback tray.
-- [ ] Afficher le fallback Wayland dans Settings et documenter les permissions
-  macOS réellement nécessaires.
+- [x] Afficher le fallback Wayland dans Settings : état en attente pendant le
+  dialogue puis actif ou erreur selon le résultat asynchrone du portail.
+- [ ] Documenter les permissions macOS réellement nécessaires.
 
 ### Phase E — Finitions
 
@@ -404,7 +409,8 @@ Les lacunes restantes sont :
   machine X11 pour valider le dialogue et une activation réelle ; la conversion
   XDG, les IDs et le refus précoce des touches non supportées sont couverts en
   tests unitaires du fork ;
-- aucun test du fallback Wayland visible dans l'interface ;
+- aucun test GPUI de rendu du badge Wayland, mais la transition
+  attente → actif/erreur est couverte sans portail réel ;
 - aucun test GPUI de perte de focus ;
 - aucune couverture des mises à jour live du tray macOS/Windows.
 

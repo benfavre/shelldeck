@@ -290,6 +290,12 @@ pub mod wayland {
     const PORTAL_REGISTRATION_DEBOUNCE: Duration = Duration::from_millis(100);
     const PORTAL_SHORTCUT_PREFIX: &str = "gpui-";
 
+    #[derive(Debug, Clone)]
+    pub enum WaylandGlobalHotkeyEvent {
+        Activated(u32),
+        Registration(crate::GlobalHotkeyRegistrationEvent),
+    }
+
     fn portal_shortcut_id(id: u32) -> String {
         format!("{PORTAL_SHORTCUT_PREFIX}{id}")
     }
@@ -299,6 +305,30 @@ pub mod wayland {
             .strip_prefix(PORTAL_SHORTCUT_PREFIX)?
             .parse()
             .ok()
+    }
+
+    fn portal_registration_results(
+        requested: &[(u32, String)],
+        bound_ids: &std::collections::HashSet<u32>,
+    ) -> Vec<crate::GlobalHotkeyRegistrationEvent> {
+        requested
+            .iter()
+            .map(|(id, shortcut)| {
+                if bound_ids.contains(id) {
+                    crate::GlobalHotkeyRegistrationEvent::Registered {
+                        id: *id,
+                        shortcut: shortcut.clone(),
+                    }
+                } else {
+                    crate::GlobalHotkeyRegistrationEvent::Failed {
+                        id: *id,
+                        shortcut: shortcut.clone(),
+                        error: "Wayland Global Shortcuts portal did not accept this shortcut"
+                            .to_string(),
+                    }
+                }
+            })
+            .collect()
     }
 
     fn portal_key_name(key: &str) -> Option<String> {
@@ -370,8 +400,12 @@ pub mod wayland {
 
     async fn run_portal_session(
         registrations: Vec<(u32, Keystroke)>,
-        activation_tx: Sender<u32>,
+        event_tx: Sender<WaylandGlobalHotkeyEvent>,
     ) -> Result<()> {
+        let requested = registrations
+            .iter()
+            .map(|(id, keystroke)| (*id, keystroke.unparse()))
+            .collect::<Vec<_>>();
         let proxy = GlobalShortcuts::new().await?;
         let session = proxy.create_session().await?;
         let shortcuts = registrations
@@ -390,6 +424,19 @@ pub mod wayland {
                 "Wayland Global Shortcuts portal did not bind any shortcut"
             ));
         }
+        let bound_ids = bound
+            .shortcuts()
+            .iter()
+            .filter_map(|shortcut| id_from_portal_shortcut(shortcut.id()))
+            .collect::<std::collections::HashSet<_>>();
+        for registration in portal_registration_results(&requested, &bound_ids) {
+            if event_tx
+                .send(WaylandGlobalHotkeyEvent::Registration(registration))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
 
         log::info!(
             "Wayland Global Shortcuts portal bound {} shortcut(s)",
@@ -400,7 +447,10 @@ pub mod wayland {
             let Some(id) = id_from_portal_shortcut(event.shortcut_id()) else {
                 continue;
             };
-            if activation_tx.send(id).is_err() {
+            if event_tx
+                .send(WaylandGlobalHotkeyEvent::Activated(id))
+                .is_err()
+            {
                 break;
             }
         }
@@ -410,16 +460,19 @@ pub mod wayland {
     pub struct WaylandGlobalHotkey {
         inner: LinuxGlobalHotkey,
         background_executor: BackgroundExecutor,
-        activation_tx: Sender<u32>,
+        event_tx: Sender<WaylandGlobalHotkeyEvent>,
         portal_task: Option<Task<()>>,
     }
 
     impl WaylandGlobalHotkey {
-        pub fn new(background_executor: BackgroundExecutor, activation_tx: Sender<u32>) -> Self {
+        pub fn new(
+            background_executor: BackgroundExecutor,
+            event_tx: Sender<WaylandGlobalHotkeyEvent>,
+        ) -> Self {
             Self {
                 inner: LinuxGlobalHotkey::new(),
                 background_executor,
-                activation_tx,
+                event_tx,
                 portal_task: None,
             }
         }
@@ -450,11 +503,30 @@ pub mod wayland {
             }
 
             let executor = self.background_executor.clone();
-            let activation_tx = self.activation_tx.clone();
+            let event_tx = self.event_tx.clone();
+            let registrations_for_result = registrations
+                .iter()
+                .map(|(id, keystroke)| (*id, keystroke.unparse()))
+                .collect::<Vec<_>>();
             self.portal_task = Some(self.background_executor.spawn(async move {
                 executor.timer(PORTAL_REGISTRATION_DEBOUNCE).await;
-                if let Err(error) = run_portal_session(registrations, activation_tx).await {
+                if let Err(error) = run_portal_session(registrations, event_tx.clone()).await {
                     log::warn!("Wayland Global Shortcuts portal unavailable: {error:#}");
+                    let error = format!("{error:#}");
+                    for (id, shortcut) in registrations_for_result {
+                        if event_tx
+                            .send(WaylandGlobalHotkeyEvent::Registration(
+                                crate::GlobalHotkeyRegistrationEvent::Failed {
+                                    id,
+                                    shortcut,
+                                    error: error.clone(),
+                                },
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }));
         }
@@ -494,6 +566,33 @@ pub mod wayland {
                 ..Default::default()
             };
             assert!(keystroke_to_portal_trigger(&shortcut).is_err());
+        }
+
+        #[test]
+        fn portal_registration_results_report_partial_acceptance() {
+            let bound = std::collections::HashSet::from([1]);
+            assert_eq!(
+                portal_registration_results(
+                    &[
+                        (1, "ctrl-shift-space".to_string()),
+                        (2, "ctrl-alt-space".to_string()),
+                    ],
+                    &bound,
+                ),
+                vec![
+                    crate::GlobalHotkeyRegistrationEvent::Registered {
+                        id: 1,
+                        shortcut: "ctrl-shift-space".to_string(),
+                    },
+                    crate::GlobalHotkeyRegistrationEvent::Failed {
+                        id: 2,
+                        shortcut: "ctrl-alt-space".to_string(),
+                        error:
+                            "Wayland Global Shortcuts portal did not accept this shortcut"
+                                .to_string(),
+                    },
+                ]
+            );
         }
     }
 }

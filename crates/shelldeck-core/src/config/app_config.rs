@@ -268,6 +268,10 @@ pub struct CompanionConfig {
     pub global_shortcut_enabled: bool,
     /// Register the system-wide shortcut that toggles the command palette.
     pub global_palette_shortcut_enabled: bool,
+    /// GPUI keystroke syntax for the Assistant Dock global shortcut.
+    pub global_shortcut: String,
+    /// GPUI keystroke syntax for the command-palette global shortcut.
+    pub global_palette_shortcut: String,
 }
 
 impl Default for CompanionConfig {
@@ -276,6 +280,26 @@ impl Default for CompanionConfig {
             start_hidden: false,
             global_shortcut_enabled: true,
             global_palette_shortcut_enabled: true,
+            global_shortcut: Self::default_global_shortcut().to_string(),
+            global_palette_shortcut: Self::default_global_palette_shortcut().to_string(),
+        }
+    }
+}
+
+impl CompanionConfig {
+    pub fn default_global_shortcut() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "cmd-shift-space"
+        } else {
+            "ctrl-shift-space"
+        }
+    }
+
+    pub fn default_global_palette_shortcut() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "cmd-alt-space"
+        } else {
+            "ctrl-alt-space"
         }
     }
 }
@@ -538,6 +562,40 @@ start_hidden = true
         let serialized = toml::to_string(&configured).expect("serialize companion config");
         let reloaded: AppConfig = toml::from_str(&serialized).expect("reload companion config");
         assert!(reloaded.companion.start_hidden);
+    }
+
+    // SDTEST-1400
+    #[test]
+    fn companion_shortcuts_default_for_old_configs_and_round_trip_custom_values() {
+        let mut config: AppConfig = toml::from_str(
+            r#"
+theme = "Dark"
+
+[terminal]
+
+[general]
+
+[companion]
+global_shortcut_enabled = true
+global_palette_shortcut_enabled = true
+"#,
+        )
+        .expect("parse old companion config");
+        assert_eq!(
+            config.companion.global_shortcut,
+            CompanionConfig::default_global_shortcut()
+        );
+        assert_eq!(
+            config.companion.global_palette_shortcut,
+            CompanionConfig::default_global_palette_shortcut()
+        );
+
+        config.companion.global_shortcut = "ctrl-alt-k".to_string();
+        config.companion.global_palette_shortcut = "ctrl-alt-p".to_string();
+        let serialized = toml::to_string(&config).expect("serialize custom shortcuts");
+        let reloaded: AppConfig = toml::from_str(&serialized).expect("reload custom shortcuts");
+        assert_eq!(reloaded.companion.global_shortcut, "ctrl-alt-k");
+        assert_eq!(reloaded.companion.global_palette_shortcut, "ctrl-alt-p");
     }
 
     #[test]

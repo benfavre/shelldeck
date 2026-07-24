@@ -65,7 +65,7 @@ use crate::recent_view::{RecentEvent, RecentView};
 use crate::script_editor::{ScriptEditorView, ScriptEvent};
 use crate::script_form::ScriptForm;
 use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
-use crate::settings::{SettingsEvent, SettingsView};
+use crate::settings::{CompanionShortcutStatuses, SettingsEvent, SettingsView};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
@@ -1038,6 +1038,16 @@ impl Workspace {
         publisher: Box<dyn Fn(CompanionConfig) + Send + Sync>,
     ) {
         self.companion_config_publisher = Some(publisher);
+    }
+
+    pub fn set_companion_shortcut_statuses(
+        &mut self,
+        statuses: CompanionShortcutStatuses,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.update(cx, |settings, cx| {
+            settings.set_companion_shortcut_statuses(statuses, cx);
+        });
     }
 
     /// Fire an OS notification if the notifier is wired. Public so

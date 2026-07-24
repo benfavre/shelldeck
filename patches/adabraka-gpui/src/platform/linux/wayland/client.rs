@@ -503,26 +503,50 @@ impl WaylandClient {
 
         // ShellDeck patch: marshal portal activations back onto calloop before
         // invoking GPUI's foreground-only application callback.
-        let (global_hotkey_tx, global_hotkey_rx) = calloop::channel::channel::<u32>();
+        let (global_hotkey_tx, global_hotkey_rx) =
+            calloop::channel::channel::<
+                crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent,
+            >();
         handle
             .insert_source(
                 global_hotkey_rx,
                 move |event, _, client: &mut WaylandClientStatePtr| {
-                    let calloop::channel::Event::Msg(id) = event else {
+                    let calloop::channel::Event::Msg(event) = event else {
                         return;
                     };
                     let Some(client) = client.0.upgrade() else {
                         return;
                     };
-                    let callback = client
-                        .borrow_mut()
-                        .common
-                        .callbacks
-                        .global_hotkey
-                        .take();
-                    if let Some(mut callback) = callback {
-                        callback(id);
-                        client.borrow_mut().common.callbacks.global_hotkey = Some(callback);
+                    match event {
+                        crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent::Activated(id) => {
+                            let callback = client
+                                .borrow_mut()
+                                .common
+                                .callbacks
+                                .global_hotkey
+                                .take();
+                            if let Some(mut callback) = callback {
+                                callback(id);
+                                client.borrow_mut().common.callbacks.global_hotkey =
+                                    Some(callback);
+                            }
+                        }
+                        crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent::Registration(event) => {
+                            let callback = client
+                                .borrow_mut()
+                                .common
+                                .callbacks
+                                .global_hotkey_registration
+                                .take();
+                            if let Some(mut callback) = callback {
+                                callback(event);
+                                client
+                                    .borrow_mut()
+                                    .common
+                                    .callbacks
+                                    .global_hotkey_registration = Some(callback);
+                            }
+                        }
                     }
                 },
             )

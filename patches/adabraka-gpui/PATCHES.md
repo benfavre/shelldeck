@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **26**
+Total markers in code: **31**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -176,10 +176,18 @@ only, out of the src/-scoped marker convention.)
 ### SDPATCH-109 — Register Wayland global shortcuts through the XDG portal
 
 - **Files / symbols**:
+  - `src/platform.rs` — `GlobalHotkeyRegistrationEvent`, `Platform`
+  - `src/app.rs` — `App::on_global_hotkey_registration`
+  - `src/platform/linux/platform.rs` — `PlatformHandlers`, `Platform for LinuxPlatform`
   - `src/platform/linux/global_hotkey.rs` — `wayland::WaylandGlobalHotkey`
   - `src/platform/linux/wayland/client.rs` — `WaylandClientState`,
     `WaylandClient::new`, `LinuxClient for WaylandClient`
 - **Markers**:
+  - `src/platform.rs` — `// ShellDeck patch: surface asynchronous Wayland portal registration results.`
+  - `src/platform.rs` — `// ShellDeck patch: let clients observe portal acceptance or refusal.`
+  - `src/app.rs` — `// ShellDeck patch: expose asynchronous portal registration outcomes.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: retain the Wayland portal registration-result callback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route asynchronous Wayland registration outcomes.`
   - `src/platform/linux/global_hotkey.rs` — `// ShellDeck patch: bridge GPUI global-hotkey registrations through the`
   - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: retain the portal session manager with the Wayland client.`
   - `src/platform/linux/wayland/client.rs` — `// ShellDeck patch: marshal portal activations back onto calloop before`
@@ -189,8 +197,10 @@ only, out of the src/-scoped marker convention.)
   GPUI batches synchronous startup registrations into one portal session and
   one `BindShortcuts` request, emits XDG-spec preferred triggers, listens for
   `Activated`, then marshals IDs through calloop before invoking the existing
-  foreground callback. Portal absence, denial, or an empty accepted set stays
-  non-fatal and leaves ShellDeck's tray fallback available.
+  foreground callback. Portal acceptance/refusal is also returned
+  asynchronously to the application so Settings can leave its pending state
+  and display the real outcome. Portal absence, denial, or an empty accepted
+  set stays non-fatal and leaves ShellDeck's tray fallback available.
 - **Upstream status**: not filed yet — generic GPUI capability suitable for an
   upstream PR after live validation on GNOME and KDE portal backends.
 

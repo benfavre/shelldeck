@@ -1065,6 +1065,16 @@ impl App {
         self.platform.on_global_hotkey(Box::new(callback));
     }
 
+    // ShellDeck patch: expose asynchronous portal registration outcomes.
+    /// Register a callback for asynchronous global-hotkey registration results.
+    pub fn on_global_hotkey_registration(
+        &self,
+        callback: impl FnMut(crate::GlobalHotkeyRegistrationEvent) + 'static,
+    ) {
+        self.platform
+            .on_global_hotkey_registration(Box::new(callback));
+    }
+
     /// Get information about the currently focused window from any application.
     pub fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         self.platform.focused_window_info()

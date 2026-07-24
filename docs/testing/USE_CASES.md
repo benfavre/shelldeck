@@ -1551,6 +1551,12 @@ Changing either global-shortcut toggle in Settings registers or unregisters
 that shortcut immediately without restarting ShellDeck. The runtime tracks
 successful registrations, avoids duplicate work for unchanged settings, and
 can retry a failed registration on the next enable/sync transition.
+Each shortcut can be captured independently and persists in GPUI keystroke
+syntax; old configs receive platform defaults. Capture requires Ctrl, Alt,
+Cmd, or Super, rejects a duplicate Dock/palette combination, supports reset
+to default, and applies immediately. Settings shows disabled, applying,
+active, portal-pending, conflict, and native error states. Wayland portal
+acceptance or refusal replaces the pending state asynchronously.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1616,8 +1622,9 @@ silently rendering an empty fixed-size slot in the interface.
 ## Change log
 
 - **2026-07-23** — Extended SDUC-434 with immediate dynamic registration and
-  unregistration from the two Companion Settings toggles
-  (SDTEST-1398/1399).
+  unregistration plus persisted shortcut capture, validation, reset, visible
+  native results, and asynchronous Wayland portal outcomes
+  (SDTEST-1398..1404).
 - **2026-07-22** — Extended SDUC-222/228 with the searchable request-site
   target and added SDTEST-1389/1390 for its wire contract and UI wiring.
 - **2026-07-22** — Added SDUC-438 and SDTEST-1388 after auditing reachable
