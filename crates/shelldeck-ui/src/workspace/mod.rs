@@ -507,6 +507,7 @@ pub struct TrayCounters {
     pub open_tunnels: usize,
     pub unread_tickets: usize,
     pub jean_pending: usize,
+    pub ai_tasks_running: usize,
     pub pinned_connections: Vec<TrayPinnedConnection>,
 }
 
@@ -1066,7 +1067,7 @@ impl Workspace {
     /// seeds `last_tray_counters` without notifying — otherwise a
     /// launch with existing unread tickets would spam the OS.
     ///
-    /// Cheap enough (four vec-scans + a small notify-rust dispatch on
+    /// Cheap enough (a few vec-scans + a small notify-rust dispatch on
     /// deltas) to call from every spot that changes user-facing state.
     /// The tray thread diffs the counters against its last known
     /// state, so redundant publishes are silently dropped.
@@ -1079,6 +1080,11 @@ impl Workspace {
         let open_tunnels = self.active_tunnels.len();
         let unread_tickets = self.support.read(cx).unread_ticket_count();
         let jean_pending = self.runtime_awaiting.len();
+        let ai_tasks_running = self
+            .ai_tasks
+            .iter()
+            .filter(|task| task.status.is_running())
+            .count();
         let pinned_connections = self
             .app_config
             .pinned_connections
@@ -1098,6 +1104,7 @@ impl Workspace {
             open_tunnels,
             unread_tickets,
             jean_pending,
+            ai_tasks_running,
             pinned_connections,
         };
 
@@ -2049,6 +2056,7 @@ impl Workspace {
             .update(cx, |view, cx| view.set_tasks(tasks.clone(), cx));
         self.ai_dock_assistant
             .update(cx, |view, cx| view.set_tasks(tasks, cx));
+        self.publish_tray_state(cx);
         cx.notify();
     }
 

@@ -275,6 +275,8 @@ parallel `cargo test`.
 | SDTEST-1404 | `global_hotkey::wayland::tests::portal_registration_results_report_partial_acceptance` | SDUC-434 | Green | A partial portal response reports accepted IDs and explicit failure for omitted shortcuts, allowing Settings to leave pending state per shortcut. |
 | SDTEST-1405 | `main::tests::assistant_deep_link_show_is_idempotent` | SDUC-407, SDUC-434, SDUC-435 | Green | The Assistant deep link creates a missing Dock and shows a hidden or already-visible Dock without toggling it off; routing remains independent from Workspace creation. |
 | SDTEST-1406 | `command_palette::tests::keyboard_navigation_wraps_and_pages_without_leaving_results` | SDUC-436 | Green | Arrow/Tab navigation wraps, Home/End select bounds, Page Up/Page Down clamp by eight results, and an empty result set stays at index zero. |
+| SDTEST-1408 | `tray::tests::ai_tasks_menu_id_routes_to_task_center` | SDUC-429, SDUC-434 | Green | The stable clickable AI-task row routes to the task center command rather than toggling the Dock or revealing the main window. |
+| SDTEST-1409 | `main::tests::task_center_request_always_shows_the_existing_dock` | SDUC-429, SDUC-434 | Green | A missing Dock is created and a hidden or visible Dock is shown idempotently, so selecting the tray task indicator never hides it. |
 
 ---
 

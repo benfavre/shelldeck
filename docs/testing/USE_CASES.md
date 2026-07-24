@@ -1471,7 +1471,12 @@ Actionable tasks contribute to the titlebar assistant badge; a task can reopen
 its exact workflow or target, and active Terminal/Script actions reuse their
 existing Stop path. A generation completed after its workflow closes produces
 one in-app result notification. Restarted active states become cancelled rather
-than pretending that a lost process or request is still running.
+than pretending that a lost process or request is still running. The system
+tray exposes a localized running count limited to `Generating` and `Executing`;
+confirmation waits and ready drafts do not inflate it. Selecting that indicator
+shows the existing single-instance Dock directly on its Tasks tab without
+revealing the main window. Linux updates the count live; macOS/Windows retain
+the separately tracked native-menu mutation limitation.
 
 ### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
 
@@ -1637,6 +1642,8 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-24** — Extended SDUC-429 and added SDTEST-1407..1409 for the
+  running AI-task tray count and direct single-instance Tasks-tab routing.
 - **2026-07-24** — Extended SDUC-434/436 and SDTEST-1300/1302/1406 with
   complete FR/EN tray labels, live Linux relocalization, named Dock controls,
   an accessible palette search field, and bounded full-keyboard navigation.

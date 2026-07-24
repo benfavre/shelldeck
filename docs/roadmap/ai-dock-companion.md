@@ -83,9 +83,9 @@ configurations sans section `[companion]` restent compatibles.
   - tray entièrement traduite, pluriels compris, avec mise à jour live Linux ;
   - Dock nommé au clavier et palette dotée d'un champ accessible ainsi que de
     la navigation Tab/flèches/Home/End/Page Up/Page Down.
-- [ ] **État des tâches IA dans le tray**
-  - afficher les tâches en génération/exécution ;
-  - ouvrir le centre de tâches depuis l'indicateur.
+- [x] **État des tâches IA dans le tray**
+  - compteur live Linux limité aux tâches `Generating`/`Executing` ;
+  - indicateur cliquable ouvrant directement l'onglet Tâches du Dock unique.
 - [ ] **Icône tray template macOS**
   - ajouter un PNG monochrome transparent dédié ;
   - utiliser `with_icon_as_template(true)` uniquement sur macOS.
@@ -107,6 +107,7 @@ configurations sans section `[companion]` restent compatibles.
 - SDTEST-1397 : conversion et retours du portail Wayland ;
 - SDTEST-1405 : deep link Assistant idempotent ;
 - SDTEST-1300/1302/1406 : traductions tray et navigation clavier bornée ;
+- SDTEST-1407..1409 : comptage des tâches IA et ouverture du centre ;
 - smoke Linux : Dock seul sans initialisation de `Workspace` ;
 - benchmark Linux debug : démarrage caché environ 28 % plus rapide, RSS
   pratiquement inchangé.

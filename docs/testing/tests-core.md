@@ -354,6 +354,7 @@ Existing: **0 tests**.
 | SDTEST-1367 | `ai.rs::legacy_ai_drafts_load_as_pending_tasks_and_status_changes_persist` | SDUC-418, SDUC-429 | Green | Proves old draft JSON remains readable as a pending task and that the new durable lifecycle status survives the same bounded store. |
 | SDTEST-1369 | `ai.rs::ai_action_policies_default_to_confirmation_and_map_exact_capabilities` | SDUC-430 | Green | Pins safe defaults, exact capability mapping, moderate automatic execution, and forced confirmation for every high-risk plan. |
 | SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
+| SDTEST-1407 | `ai.rs::ai_running_status_excludes_drafts_and_confirmation_waits` | SDUC-429 | Green | The tray-running contract includes only `Generating` and `Executing`; ready/pending drafts, confirmation waits, and terminal states remain excluded. |
 
 ---
 

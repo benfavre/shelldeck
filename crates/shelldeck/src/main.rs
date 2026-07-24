@@ -553,6 +553,7 @@ impl CompanionRoot {
                         open_tunnels: counters.open_tunnels,
                         unread_tickets: counters.unread_tickets,
                         jean_pending: counters.jean_pending,
+                        ai_tasks_running: counters.ai_tasks_running,
                         pinned_connections: counters
                             .pinned_connections
                             .into_iter()
@@ -639,6 +640,7 @@ fn dispatch_tray_command(
             }
         }
         TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
+        TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
         TrayCommand::ConnectPinned(id) => {
             if let Err(error) = window.update(cx, |_, window, cx| {
@@ -667,6 +669,7 @@ fn dispatch_tray_command(
 enum AiDockRequest {
     Toggle,
     Show,
+    ShowTasks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,7 +682,9 @@ enum AiDockWindowAction {
 fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDockWindowAction {
     match (visible, request) {
         (None, _) => AiDockWindowAction::Create,
-        (Some(false), _) | (Some(true), AiDockRequest::Show) => AiDockWindowAction::Show,
+        (Some(false), _) | (Some(true), AiDockRequest::Show | AiDockRequest::ShowTasks) => {
+            AiDockWindowAction::Show
+        }
         (Some(true), AiDockRequest::Toggle) => AiDockWindowAction::Hide,
     }
 }
@@ -1118,6 +1123,14 @@ fn show_ai_dock(
     open_ai_dock(root, main_window, AiDockRequest::Show, cx);
 }
 
+fn show_ai_task_center(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::ShowTasks, cx);
+}
+
 fn open_ai_dock(
     root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
@@ -1156,7 +1169,13 @@ fn open_ai_dock(
                         window.remove_window();
                         return (true, true);
                     }
-                    ai_companion.update(cx, |controller, cx| controller.refresh(cx));
+                    ai_companion.update(cx, |controller, cx| {
+                        if request == AiDockRequest::ShowTasks {
+                            controller.prepare_task_center(cx);
+                        } else {
+                            controller.refresh(cx);
+                        }
+                    });
                     window.show_window();
                     window.activate_window();
                     dock.focus_composer(window, cx);
@@ -1185,7 +1204,13 @@ fn open_ai_dock(
         }
     }
 
-    let assistant = ai_companion.update(cx, |controller, cx| controller.prepare(cx));
+    let assistant = ai_companion.update(cx, |controller, cx| {
+        if request == AiDockRequest::ShowTasks {
+            controller.prepare_task_center(cx)
+        } else {
+            controller.prepare(cx)
+        }
+    });
     let bounds = ai_dock_bounds(display.bounds);
     let options = WindowOptions {
         titlebar: None,
@@ -2016,6 +2041,23 @@ mod tests {
         );
         assert_eq!(
             ai_dock_window_action(Some(true), AiDockRequest::Show),
+            AiDockWindowAction::Show
+        );
+    }
+
+    // SDTEST-1409
+    #[test]
+    fn task_center_request_always_shows_the_existing_dock() {
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::ShowTasks),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::ShowTasks),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::ShowTasks),
             AiDockWindowAction::Show
         );
     }

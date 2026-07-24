@@ -125,6 +125,11 @@ impl AiAssistantView {
         cx.notify();
     }
 
+    pub fn show_tasks(&mut self, cx: &mut Context<Self>) {
+        self.active_tab = AiAssistantTab::Tasks;
+        cx.notify();
+    }
+
     /// Reload the durable conversation list before a separately hosted
     /// assistant surface becomes visible. The main sheet and companion Dock
     /// use distinct view entities so their focus/request gates cannot interfere,

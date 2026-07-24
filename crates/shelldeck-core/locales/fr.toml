@@ -320,6 +320,9 @@ tray.counter.tickets.many = "%{count} tickets non lus"
 tray.counter.jean.zero = "Aucune validation Jean en attente"
 tray.counter.jean.one = "1 validation Jean en attente"
 tray.counter.jean.many = "%{count} validations Jean en attente"
+tray.counter.ai_tasks.zero = "Aucune tâche IA en cours"
+tray.counter.ai_tasks.one = "1 tâche IA en cours"
+tray.counter.ai_tasks.many = "%{count} tâches IA en cours"
 
 # Scripts
 scripts.title = "Scripts"

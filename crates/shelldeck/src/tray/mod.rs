@@ -65,6 +65,8 @@ pub enum TrayCommand {
     ShowWindow,
     /// Show or hide the compact standalone AI assistant window.
     ToggleAiDock,
+    /// Open the Dock directly on its durable AI task center.
+    OpenAiTasks,
     /// Open the command palette.
     OpenPalette,
     /// Connect one of the persisted quick-access hosts.
@@ -87,6 +89,8 @@ pub struct TrayState {
     pub unread_tickets: usize,
     /// Jean fleet jobs waiting for user confirmation before running.
     pub jean_pending: usize,
+    /// AI tasks currently generating or executing.
+    pub ai_tasks_running: usize,
     /// Persisted quick-access connections, in sidebar order.
     pub pinned_connections: Vec<PinnedConnection>,
     /// Localized copy used by the native menu thread. Keeping it in the
@@ -181,6 +185,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
     match id {
         SHOW_ID => Some(TrayCommand::ShowWindow),
         ASSISTANT_ID => Some(TrayCommand::ToggleAiDock),
+        AI_TASKS_ID => Some(TrayCommand::OpenAiTasks),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
         QUIT_ID => Some(TrayCommand::Quit),
         _ => id
@@ -192,6 +197,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
 
 const SHOW_ID: &str = "shelldeck.tray.show";
 const ASSISTANT_ID: &str = "shelldeck.tray.assistant";
+const AI_TASKS_ID: &str = "shelldeck.tray.ai_tasks";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
 const QUIT_ID: &str = "shelldeck.tray.quit";
 const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
@@ -204,7 +210,7 @@ const COUNTER_TUNNELS_ID: &str = "shelldeck.tray.counter.tunnels";
 const COUNTER_TICKETS_ID: &str = "shelldeck.tray.counter.tickets";
 const COUNTER_JEAN_ID: &str = "shelldeck.tray.counter.jean";
 
-/// The four counter `MenuItem`s live here, produced by [`build_menu`]
+/// The counter `MenuItem`s live here, produced by [`build_menu`]
 /// alongside their parent menu. Kept together so the tray-thread's
 /// state-drain closure can reach them via a single move-capture.
 struct CounterItems {
@@ -212,6 +218,7 @@ struct CounterItems {
     tunnels: MenuItem,
     tickets: MenuItem,
     jean: MenuItem,
+    ai_tasks: MenuItem,
 }
 
 struct MenuItems {
@@ -224,9 +231,9 @@ struct MenuItems {
     pinned_items: Vec<MenuItem>,
 }
 
-/// Build the tray menu — click actions on top, live counters in the
-/// middle (disabled = non-clickable placeholders whose text is
-/// rewritten on state updates), Quit at the bottom.
+/// Build the tray menu — click actions on top, live counters in the middle,
+/// then Quit. Informational counters are disabled; the AI task row remains
+/// enabled because it opens the task center.
 fn build_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
     let labels = TrayLabels::localized();
@@ -248,6 +255,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, counter_label_tunnels(0), false, None),
         tickets: MenuItem::with_id(COUNTER_TICKETS_ID, counter_label_tickets(0), false, None),
         jean: MenuItem::with_id(COUNTER_JEAN_ID, counter_label_jean(0), false, None),
+        ai_tasks: MenuItem::with_id(AI_TASKS_ID, counter_label_ai_tasks(0), true, None),
     };
 
     menu.append(&assistant_item)
@@ -264,6 +272,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     menu.append(&counters.tickets)
         .context("append tickets counter")?;
     menu.append(&counters.jean).context("append Jean counter")?;
+    menu.append(&counters.ai_tasks)
+        .context("append AI tasks counter")?;
     menu.append(&PredefinedMenuItem::separator())
         .context("append separator quit-top")?;
     menu.append(&quit_item).context("append Quit item")?;
@@ -313,6 +323,11 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
             .jean
             .set_text(counter_label_jean(next.jean_pending));
     }
+    if language_changed || prev.ai_tasks_running != next.ai_tasks_running {
+        counters
+            .ai_tasks
+            .set_text(counter_label_ai_tasks(next.ai_tasks_running));
+    }
     if language_changed || prev.pinned_connections != next.pinned_connections {
         for item in items.pinned_items.drain(..) {
             if let Err(error) = items.pinned_menu.remove(&item) {
@@ -361,6 +376,10 @@ fn counter_label_tickets(n: usize) -> String {
 
 fn counter_label_jean(n: usize) -> String {
     shelldeck_ui::ai_dock::tray_counter_jean(n)
+}
+
+fn counter_label_ai_tasks(n: usize) -> String {
+    shelldeck_ui::ai_dock::tray_counter_ai_tasks(n)
 }
 
 /// Load the tray PNG. 32 px is the sweet spot for tray display across
@@ -464,6 +483,15 @@ mod tests {
         assert!(matches!(
             command_for_menu_id(ASSISTANT_ID),
             Some(TrayCommand::ToggleAiDock)
+        ));
+    }
+
+    // SDTEST-1408
+    #[test]
+    fn ai_tasks_menu_id_routes_to_task_center() {
+        assert!(matches!(
+            command_for_menu_id(AI_TASKS_ID),
+            Some(TrayCommand::OpenAiTasks)
         ));
     }
 

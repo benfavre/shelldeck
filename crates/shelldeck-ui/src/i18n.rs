@@ -57,6 +57,10 @@ mod tests {
         let tray_fr = crate::ai_dock::TrayLabels::localized();
         assert_eq!(tray_fr.show, "Ouvrir ShellDeck");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 tickets non lus");
+        assert_eq!(
+            crate::ai_dock::tray_counter_ai_tasks(2),
+            "2 tâches IA en cours"
+        );
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
@@ -64,6 +68,10 @@ mod tests {
         let tray_en = crate::ai_dock::TrayLabels::localized();
         assert_eq!(tray_en.show, "Open ShellDeck");
         assert_eq!(crate::ai_dock::tray_counter_tickets(3), "3 unread tickets");
+        assert_eq!(
+            crate::ai_dock::tray_counter_ai_tasks(2),
+            "2 AI tasks running"
+        );
     }
 
     #[test]

@@ -77,6 +77,14 @@ pub fn tray_counter_jean(n: usize) -> String {
     }
 }
 
+pub fn tray_counter_ai_tasks(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.ai_tasks.zero").to_string(),
+        1 => t!("tray.counter.ai_tasks.one").to_string(),
+        n => t!("tray.counter.ai_tasks.many", count = n).to_string(),
+    }
+}
+
 /// Compact root view hosted by the screen-edge Assistant Dock.
 ///
 /// The actual conversation surface remains `AiAssistantView`, shared with the
