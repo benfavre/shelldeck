@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="180" viewBox="0 0 400 180"><defs><style>
+            @keyframes fadeIn {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+
+            @keyframes dropDown {
+              from {
+                transform: translateY(-20px);
+                opacity: 0;
+              }
+              to {
+                transform: translateY(0);
+                opacity: 1;
+              }
+            }
+
+            @keyframes growUp {
+              from {
+                transform: scaleY(0);
+                transform-origin: bottom;
+              }
+              to {
+                transform: scaleY(1);
+                transform-origin: bottom;
+              }
+            }
+
+            @keyframes drawSmile {
+              from {
+                stroke-dashoffset: 100;
+              }
+              to {
+                stroke-dashoffset: 0;
+              }
+            }
+
+            @keyframes slideInRight {
+              from {
+                transform: translateX(-20px);
+                opacity: 0;
+              }
+              to {
+                transform: translateX(0);
+                opacity: 1;
+              }
+            }
+
+            .blue-rect {
+              animation: fadeIn 0.6s ease-out forwards;
+            }
+
+            .i-dot {
+              animation: dropDown 0.4s ease-out 0.3s forwards;
+              opacity: 0;
+            }
+
+            .i-stem {
+              animation: growUp 0.5s ease-out 0.5s forwards;
+              transform: scaleY(0);
+              transform-origin: bottom;
+            }
+
+            .smile {
+              stroke-dasharray: 100;
+              stroke-dashoffset: 100;
+              animation: drawSmile 0.6s ease-out 0.8s forwards;
+            }
+
+            .text {
+              animation: slideInRight 0.6s ease-out 1s forwards;
+              opacity: 0;
+            }
+          </style></defs><rect class="blue-rect" x="30" y="30" width="78" height="118" rx="24" ry="24" fill="#146BFF"></rect><circle class="i-dot" cx="69" cy="60" r="8" fill="#FFFFFF"></circle><rect class="i-stem" x="61" y="72" width="16" height="40" rx="7" ry="7" fill="#FFFFFF"></rect><path class="smile" d="M46 111 C 52 126, 86 126, 92 111" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"></path><text class="text" x="135" y="118" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="72" font-weight="700" fill="#F5F7FB">Inklura</text></svg>
