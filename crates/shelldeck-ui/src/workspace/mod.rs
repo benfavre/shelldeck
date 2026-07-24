@@ -8489,6 +8489,10 @@ impl Workspace {
     pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         tracing::info!("deep link: {link:?}");
         match link {
+            // The application-level CompanionRuntime owns this target so it
+            // can show the Dock without revealing or initializing Workspace.
+            // Keep the arm inert if another caller accidentally forwards it.
+            DeepLink::Assistant => {}
             DeepLink::OpenConnection(id) => {
                 if !self.connections.iter().any(|c| c.id == id) {
                     self.show_toast(

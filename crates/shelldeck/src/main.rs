@@ -663,17 +663,23 @@ fn dispatch_tray_command(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AiDockToggleAction {
+enum AiDockRequest {
+    Toggle,
+    Show,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiDockWindowAction {
     Create,
     Show,
     Hide,
 }
 
-fn ai_dock_toggle_action(visible: Option<bool>) -> AiDockToggleAction {
-    match visible {
-        None => AiDockToggleAction::Create,
-        Some(false) => AiDockToggleAction::Show,
-        Some(true) => AiDockToggleAction::Hide,
+fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDockWindowAction {
+    match (visible, request) {
+        (None, _) => AiDockWindowAction::Create,
+        (Some(false), _) | (Some(true), AiDockRequest::Show) => AiDockWindowAction::Show,
+        (Some(true), AiDockRequest::Toggle) => AiDockWindowAction::Hide,
     }
 }
 
@@ -1098,6 +1104,25 @@ fn toggle_ai_dock(
     main_window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
+    open_ai_dock(root, main_window, AiDockRequest::Toggle, cx);
+}
+
+/// Show and focus the Assistant Dock without toggling an already visible
+/// window off. This is the idempotent entry point used by deep links.
+fn show_ai_dock(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::Show, cx);
+}
+
+fn open_ai_dock(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    request: AiDockRequest,
+    cx: &mut gpui::App,
+) {
     use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
 
     let Some(root) = root.upgrade() else {
@@ -1121,8 +1146,8 @@ fn toggle_ai_dock(
     };
     if let Some(handle) = existing {
         let (recreate, clear_handle) = match handle.update(cx, |dock, window, cx| {
-            match ai_dock_toggle_action(Some(window.is_window_visible())) {
-                AiDockToggleAction::Show => {
+            match ai_dock_window_action(Some(window.is_window_visible()), request) {
+                AiDockWindowAction::Show => {
                     if !display
                         .bounds
                         .contains(&window.window_bounds().get_bounds().center())
@@ -1136,11 +1161,11 @@ fn toggle_ai_dock(
                     dock.focus_composer(window, cx);
                     (false, false)
                 }
-                AiDockToggleAction::Hide => {
+                AiDockWindowAction::Hide => {
                     window.remove_window();
                     (false, true)
                 }
-                AiDockToggleAction::Create => unreachable!(),
+                AiDockWindowAction::Create => unreachable!(),
             }
         }) {
             Ok(result) => result,
@@ -1306,8 +1331,9 @@ fn toggle_companion_command_palette(
 }
 
 /// Parse + route a `shelldeck://…` payload (a bare focus ping arrives as an
-/// empty string) onto the workspace, then bring the window to the front so
-/// the deep link visibly lands. Runs on the GPUI foreground thread.
+/// empty string). The Assistant target stays entirely inside the lightweight
+/// companion runtime; other targets bring the main window forward and route
+/// through the Workspace. Runs on the GPUI foreground thread.
 fn dispatch_deep_link(
     payload: String,
     root: gpui::WeakEntity<CompanionRoot>,
@@ -1315,6 +1341,10 @@ fn dispatch_deep_link(
     cx: &mut gpui::App,
 ) {
     let link = DeepLink::parse(&payload);
+    if matches!(link, Some(DeepLink::Assistant)) {
+        show_ai_dock(root, window, cx);
+        return;
+    }
     if let Err(error) = window.update(cx, |_, window, cx| {
         window.show_window();
         window.activate_window();
@@ -1914,9 +1944,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot, AiDockToggleAction,
+        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
         CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
         ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
@@ -1958,9 +1988,35 @@ mod tests {
     // SDTEST-1381
     #[test]
     fn ai_dock_toggle_reuses_the_existing_window() {
-        assert_eq!(ai_dock_toggle_action(None), AiDockToggleAction::Create);
-        assert_eq!(ai_dock_toggle_action(Some(false)), AiDockToggleAction::Show);
-        assert_eq!(ai_dock_toggle_action(Some(true)), AiDockToggleAction::Hide);
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::Toggle),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::Toggle),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::Toggle),
+            AiDockWindowAction::Hide
+        );
+    }
+
+    // SDTEST-1405
+    #[test]
+    fn assistant_deep_link_show_is_idempotent() {
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::Show),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::Show),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::Show),
+            AiDockWindowAction::Show
+        );
     }
 
     // SDTEST-1383

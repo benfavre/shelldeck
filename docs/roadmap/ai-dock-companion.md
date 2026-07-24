@@ -342,7 +342,9 @@ fortement la mémoire ou le temps de démarrage.
 
 ### Phase E — Finitions
 
-- [ ] Deep link `shelldeck://assistant` et hand-off single-instance.
+- [x] Deep link `shelldeck://assistant` et hand-off single-instance : le lien
+  crée ou focalise le Dock de façon idempotente sans révéler la fenêtre
+  principale ni initialiser `Workspace`.
 - [ ] Icône tray template macOS (`tray-icon` expose
   `with_icon_as_template`, mais ShellDeck ne l'utilise pas encore).
 - [ ] Restauration portable/persistante de la géométrie du Dock. Le placement

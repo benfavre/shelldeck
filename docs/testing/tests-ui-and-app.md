@@ -273,6 +273,7 @@ parallel `cargo test`.
 | SDTEST-1402 | `main::tests::custom_shortcuts_replace_native_registration_and_surface_conflicts` | SDUC-434 | Green | Changing a persisted combination unregisters the previous native binding before registering the replacement; a duplicate leaves only one binding and exposes Conflict for the other. |
 | SDTEST-1403 | `main::tests::wayland_portal_result_replaces_pending_status` | SDUC-434 | Green | The runtime state reducer replaces Wayland pending with Registered or the exact asynchronous portal error. |
 | SDTEST-1404 | `global_hotkey::wayland::tests::portal_registration_results_report_partial_acceptance` | SDUC-434 | Green | A partial portal response reports accepted IDs and explicit failure for omitted shortcuts, allowing Settings to leave pending state per shortcut. |
+| SDTEST-1405 | `main::tests::assistant_deep_link_show_is_idempotent` | SDUC-407, SDUC-434, SDUC-435 | Green | The Assistant deep link creates a missing Dock and shows a hidden or already-visible Dock without toggling it off; routing remains independent from Workspace creation. |
 
 ---
 

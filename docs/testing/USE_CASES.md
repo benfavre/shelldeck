@@ -1229,7 +1229,7 @@ without erroring.
 ### SDUC-406 — `shelldeck://…` URLs parse to typed actions
 
 `DeepLink::parse` turns an OS-delivered URL into a typed variant
-(`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
+(`Assistant`/`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
 `OpenTicket`/`JeanConfirm`). The scheme is case-insensitive; embedded
 UUIDs are validated (bad UUID → `None`); query strings, fragments and
 trailing slashes are ignored; unknown verbs and wrong schemes parse to
@@ -1247,6 +1247,9 @@ shared token, then exits — never a duplicate window. A stale discovery
 file (crashed primary) is taken over by the next launch instead of
 stranding it, and a hand-off carrying the wrong token is dropped so a
 rogue local process cannot inject links.
+The `shelldeck://assistant` payload follows the same authenticated hand-off,
+but lands directly in the lightweight companion runtime instead of creating
+the full Workspace or revealing the main window.
 
 ---
 
@@ -1557,6 +1560,9 @@ Cmd, or Super, rejects a duplicate Dock/palette combination, supports reset
 to default, and applies immediately. Settings shows disabled, applying,
 active, portal-pending, conflict, and native error states. Wayland portal
 acceptance or refusal replaces the pending state asynchronously.
+Following `shelldeck://assistant` creates or focuses this same Dock
+idempotently: an already visible Dock stays visible instead of being toggled
+off, and the main ShellDeck window remains hidden.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1568,8 +1574,9 @@ process is always recoverable. Tray and deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, or task-target command needs
-application state. The standalone AI Dock is served directly by the companion
-controller and is not such a command. SSH config parsing and the connection
+application state. The standalone AI Dock, including the
+`shelldeck://assistant` route, is served directly by the companion controller
+and is not such a command. SSH config parsing and the connection
 store are deferred to that first Workspace demand; configured startup Cloud
 Sync begins afterward on the background executor instead of blocking process
 startup or the UI thread. When `tray.close_to_tray` is enabled, both the native window-close
@@ -1621,6 +1628,9 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-24** — Extended SDUC-406/407/434/435 and SDTEST-1320/1405
+  for the idempotent `shelldeck://assistant` hand-off into the lightweight
+  Dock runtime.
 - **2026-07-23** — Extended SDUC-434 with immediate dynamic registration and
   unregistration plus persisted shortcut capture, validation, reset, visible
   native results, and asynchronous Wayland portal outcomes
