@@ -40,9 +40,9 @@
 //!
 //! - **Linux**: `libayatana-appindicator3` or `libappindicator3`,
 //!   typically pre-installed on GNOME/KDE.
-//! - **macOS**: `NSStatusItem`. Colored icons render as-is; a template
-//!   (monochrome + alpha) is nicer but not shipped yet. Live counter
-//!   updates are a follow-up (needs a `dispatch_async(main_queue)`
+//! - **macOS**: `NSStatusItem` with a dedicated monochrome template asset,
+//!   allowing AppKit to adapt it to light/dark/pressed menu-bar states. Live
+//!   counter updates are a follow-up (needs a `dispatch_async(main_queue)`
 //!   bridge instead of the GTK timeout).
 //! - **Windows**: `Shell_NotifyIcon`. Live counter updates likewise
 //!   need `PostMessage` glue; not wired yet.
@@ -385,8 +385,12 @@ fn counter_label_ai_tasks(n: usize) -> String {
 /// Load the tray PNG. 32 px is the sweet spot for tray display across
 /// DEs; the platform scales it to whatever the tray area needs.
 fn load_icon() -> Result<tray_icon::Icon> {
-    // Embedded at compile time so the binary is self-contained (no
-    // runtime file lookup, no path-in-release-artifact problem).
+    // Embedded at compile time so the binary is self-contained. macOS gets a
+    // 36 px monochrome alpha mask (18 pt @2x); Linux and Windows keep the
+    // colored 32 px app icon.
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../../../../packaging/icons/shelldeck-tray-template-macos.png");
+    #[cfg(not(target_os = "macos"))]
     let bytes = include_bytes!("../../../../packaging/icons/shelldeck-32.png");
     let img = image::load_from_memory(bytes)
         .context("decode embedded tray PNG")?
@@ -495,6 +499,37 @@ mod tests {
         ));
     }
 
+    // SDTEST-1410
+    #[test]
+    fn macos_template_asset_is_retina_monochrome_with_transparent_background() {
+        let image = image::load_from_memory(include_bytes!(
+            "../../../../packaging/icons/shelldeck-tray-template-macos.png"
+        ))
+        .expect("decode macOS tray template")
+        .to_rgba8();
+        assert_eq!(image.dimensions(), (36, 36));
+
+        let mut visible = 0usize;
+        for pixel in image.pixels() {
+            if pixel.0[3] > 0 {
+                visible += 1;
+                assert_eq!(
+                    &pixel.0[..3],
+                    &[0, 0, 0],
+                    "template RGB must stay black; AppKit colors the alpha mask"
+                );
+            }
+        }
+        assert!(visible > 36 * 36 / 8, "template mark is unexpectedly empty");
+        assert!(
+            visible < 36 * 36 * 3 / 4,
+            "template background is not transparent"
+        );
+        for (x, y) in [(0, 0), (35, 0), (0, 35), (35, 35)] {
+            assert_eq!(image.get_pixel(x, y).0[3], 0);
+        }
+    }
+
     #[test]
     fn unknown_or_malformed_menu_id_is_ignored() {
         assert!(command_for_menu_id("shelldeck.tray.counter.ssh").is_none());
@@ -510,12 +545,13 @@ fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> R
     // binding — we intentionally leak it so it lives for the whole
     // process (dropping the icon removes the tray entry).
     let (menu, _counters) = build_menu()?;
-    let tray = tray_icon::TrayIconBuilder::new()
+    let builder = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("ShellDeck")
-        .with_icon(icon)
-        .build()
-        .context("build tray icon")?;
+        .with_icon(icon);
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_as_template(true);
+    let tray = builder.build().context("build tray icon")?;
     Box::leak(Box::new(tray));
 
     // TODO(companion/tray-macos-windows): live-counter updates need a

@@ -1573,7 +1573,10 @@ follows the selected French or English UI locale. A live language change
 republishes the tray snapshot so Linux updates the native menu immediately;
 macOS/Windows retain their documented live-menu limitation. The Dock toolbar
 uses keyboard-focusable buttons with visible localized names and tooltips;
-Escape remains an explicit hide action.
+Escape remains an explicit hide action. On macOS, the tray uses a dedicated
+36 px black-and-alpha Monolith mark as an AppKit template image, so the system
+controls its light, dark, pressed, and accessibility appearance. Linux and
+Windows retain the colored app icon.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1642,6 +1645,8 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-24** — Extended SDUC-434 and added SDTEST-1410 for the dedicated
+  Retina macOS tray template generated from the canonical Monolith mark.
 - **2026-07-24** — Extended SDUC-429 and added SDTEST-1407..1409 for the
   running AI-task tray count and direct single-instance Tasks-tab routing.
 - **2026-07-24** — Extended SDUC-434/436 and SDTEST-1300/1302/1406 with

@@ -18,19 +18,16 @@
 | Connexions épinglées | Livré | `AppConfig.pinned_connections`, sidebar et sous-menu tray |
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
-| AI Dock Companion | Phases A–D, accessibilité/i18n et tâches tray livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
+| AI Dock Companion | Phases A–D et trois finitions livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
 
 ## Next
 
 Ordre recommandé pour terminer la V1 :
 
-1. **Icône tray template macOS**
-   - fournir un asset monochrome transparent dédié ;
-   - activer `with_icon_as_template(true)` uniquement sur macOS.
-2. **Géométrie persistante du Dock**
+1. **Géométrie persistante du Dock**
    - restaurer l'écran et les dimensions valides ;
    - retomber sur le placement courant si l'écran a disparu ou changé.
-3. **Validation comportementale multiplateforme**
+2. **Validation comportementale multiplateforme**
    - tester `autostart + start_hidden` sur Linux, macOS et Windows ;
    - tester les raccourcis réels sur macOS/Windows et le portail sur Wayland ;
    - valider les mises à jour live du tray hors Linux.
@@ -74,6 +71,8 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   palette couvre Tab, flèches, Home/End et Page Up/Page Down ;
 - la tray Linux compte les tâches IA en génération/exécution et son indicateur
   ouvre directement leur centre dans le Dock sans révéler la fenêtre principale ;
+- macOS reçoit un masque tray Monolith Retina dédié et laisse AppKit gérer ses
+  états clair, sombre et pressé ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
   Terminal séquentiels bornés.

@@ -86,9 +86,9 @@ configurations sans section `[companion]` restent compatibles.
 - [x] **État des tâches IA dans le tray**
   - compteur live Linux limité aux tâches `Generating`/`Executing` ;
   - indicateur cliquable ouvrant directement l'onglet Tâches du Dock unique.
-- [ ] **Icône tray template macOS**
-  - ajouter un PNG monochrome transparent dédié ;
-  - utiliser `with_icon_as_template(true)` uniquement sur macOS.
+- [x] **Icône tray template macOS**
+  - masque Monolith noir + alpha 36 px exporté depuis le SVG canonique ;
+  - `with_icon_as_template(true)` activé uniquement dans le backend macOS.
 - [ ] **Géométrie persistante**
   - restaurer l'écran et des dimensions valides ;
   - migrer proprement si l'écran sauvegardé n'existe plus.
@@ -108,6 +108,8 @@ configurations sans section `[companion]` restent compatibles.
 - SDTEST-1405 : deep link Assistant idempotent ;
 - SDTEST-1300/1302/1406 : traductions tray et navigation clavier bornée ;
 - SDTEST-1407..1409 : comptage des tâches IA et ouverture du centre ;
+- SDTEST-1410 : dimensions, monochromie, transparence et couverture du masque
+  tray macOS ;
 - smoke Linux : Dock seul sans initialisation de `Workspace` ;
 - benchmark Linux debug : démarrage caché environ 28 % plus rapide, RSS
   pratiquement inchangé.
@@ -121,7 +123,6 @@ Les preuves exhaustives et les lacunes de harnais GPUI restent dans
 - aucun smoke du portail sur la machine X11 actuelle ;
 - pas de garantie `layer-shell` sous Wayland ;
 - mutations live du menu tray non câblées sur macOS/Windows ;
-- l'icône couleur actuelle ne convient pas comme masque template macOS.
 
 ## Hors scope V1
 

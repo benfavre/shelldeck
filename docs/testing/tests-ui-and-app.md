@@ -277,6 +277,7 @@ parallel `cargo test`.
 | SDTEST-1406 | `command_palette::tests::keyboard_navigation_wraps_and_pages_without_leaving_results` | SDUC-436 | Green | Arrow/Tab navigation wraps, Home/End select bounds, Page Up/Page Down clamp by eight results, and an empty result set stays at index zero. |
 | SDTEST-1408 | `tray::tests::ai_tasks_menu_id_routes_to_task_center` | SDUC-429, SDUC-434 | Green | The stable clickable AI-task row routes to the task center command rather than toggling the Dock or revealing the main window. |
 | SDTEST-1409 | `main::tests::task_center_request_always_shows_the_existing_dock` | SDUC-429, SDUC-434 | Green | A missing Dock is created and a hidden or visible Dock is shown idempotently, so selecting the tray task indicator never hides it. |
+| SDTEST-1410 | `tray::tests::macos_template_asset_is_retina_monochrome_with_transparent_background` | SDUC-434 | Green | The dedicated 36×36 Retina asset decodes, contains only black visible pixels, keeps transparent corners/background, and has non-trivial bounded mark coverage. macOS alone enables AppKit template rendering. |
 
 ---
 
