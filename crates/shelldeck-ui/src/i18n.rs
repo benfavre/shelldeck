@@ -61,6 +61,14 @@ mod tests {
             crate::ai_dock::tray_counter_ai_tasks(2),
             "2 tâches IA en cours"
         );
+        assert_eq!(
+            crate::workspace::TrayNotification::SshDisconnected {
+                name: "production".to_string(),
+            }
+            .localized_text()
+            .1,
+            "Connexion interrompue : production"
+        );
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
@@ -71,6 +79,14 @@ mod tests {
         assert_eq!(
             crate::ai_dock::tray_counter_ai_tasks(2),
             "2 AI tasks running"
+        );
+        assert_eq!(
+            crate::workspace::TrayNotification::SshDisconnected {
+                name: "production".to_string(),
+            }
+            .localized_text()
+            .1,
+            "Connection interrupted: production"
         );
     }
 

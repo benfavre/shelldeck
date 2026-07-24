@@ -1287,7 +1287,8 @@ connection also removes its stale pin.
 
 ### SDUC-412 — Tray quick access connects the selected pinned host
 
-The Linux tray submenu mirrors the current persisted pins. Each menu id embeds
+The native tray submenu mirrors the current persisted pins on every desktop
+platform. Each menu id embeds
 the connection UUID, so clicks route to that exact host even after the list is
 updated. Selecting an entry restores ShellDeck and starts the same SSH flow as
 the sidebar connection action. Unknown and malformed menu ids are ignored.
@@ -1642,10 +1643,26 @@ shared Alert variants is present in the curated asset directory and registered
 in the binary asset source. Missing icon names must fail a unit test instead of
 silently rendering an empty fixed-size slot in the interface.
 
+### SDUC-439 — Only unexpected SSH transport loss produces an OS notification
+
+Each primary SSH terminal reports an explicit lifecycle result to the
+Workspace. Closing its tab and exiting the remote shell normally update the
+connection state without an OS notification. A transport that disappears
+without EOF, channel close, or an exit status is treated as unexpected: the
+connection leaves its active state, the tray counter refreshes, and—when the
+existing SSH notification preference is enabled—the OS notification names the
+exact connection. Another live tab for the same connection keeps the shared
+sidebar status connected. Notification copy follows the selected French or
+English locale.
+
 ---
 
 ## Change log
 
+- **2026-07-24** — Added SDUC-439 and SDTEST-1412/1413 for session-scoped SSH
+  lifecycle reporting: protocol terminators, voluntary tab closes and clean
+  remote exits stay silent, while unexpected transport loss identifies the
+  exact connection.
 - **2026-07-24** — Extended SDUC-429/434 and added SDTEST-1411 for live
   counter, pinned-connection and locale snapshots on the native tray owner
   thread across Linux, macOS and Windows.

@@ -28,26 +28,6 @@ La recette sur de vraies sessions Linux/X11, Wayland, macOS et Windows reste
 une vérification de release, pas une fonctionnalité produit à maintenir dans
 la roadmap.
 
-## Bloqué
-
-- **Tags des demandes par l'IA** : l'API Issues n'expose pas encore de mutation
-  dédiée. Aucun état local divergent ne doit être ajouté en attendant.
-- **Boutons “Ouvrir dans ShellDeck” côté Manage** : travail dans le dépôt
-  serveur/Manage, pas dans ShellDeck.
-- **Tests GPUI d'intégration** : plusieurs scénarios P0/P1 restent `Red` dans
-  [`tests-ui-and-app.md`](../testing/tests-ui-and-app.md). Les contrats purs
-  associés sont testés, mais le câblage de vues n'a pas encore de harnais
-  maintenable.
-
-## Later
-
-- rendre les compteurs tray cliquables vers leur surface ;
-- enrichir la notification SSH avec l'identité de la connexion ;
-- ajouter reconnexion rapide, déconnexion et changement de mode au tray ;
-- ajouter un spotlight facultatif à l'onboarding ;
-- reprendre exactement une ancienne session terminal lorsque son contenu sera
-  sérialisable.
-
 ## Audit des éléments livrés
 
 Vérification effectuée le 2026-07-24 contre le code et les inventaires :
@@ -64,13 +44,16 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   idempotente sans révéler la fenêtre principale ;
 - la tray suit la locale FR/EN, le Dock expose des contrôles nommés et la
   palette couvre Tab, flèches, Home/End et Page Up/Page Down ;
-- la tray Linux compte les tâches IA en génération/exécution et son indicateur
+- la tray compte les tâches IA en génération/exécution et son indicateur
   ouvre directement leur centre dans le Dock sans révéler la fenêtre principale ;
 - macOS reçoit un masque tray Monolith Retina dédié et laisse AppKit gérer ses
   états clair, sombre et pressé ;
 - Linux applique les snapshots tray sur son thread GTK ; macOS et Windows les
   appliquent sur l'exécuteur foreground GPUI, sans déplacer les handles natifs
   non-`Send`, de sorte que compteurs, favoris et traductions restent live ;
+- une fermeture d'onglet SSH et une sortie propre du shell restent silencieuses ;
+  seule une perte de transport inattendue notifie avec le nom exact de la
+  connexion et met à jour son état ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
   Terminal séquentiels bornés.

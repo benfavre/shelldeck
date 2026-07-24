@@ -522,22 +522,64 @@ pub struct TrayPinnedConnection {
 /// human, SSH session dropped, Fleet job finished). `main.rs` wires
 /// this to `notify-rust`; other UIs (headless tests, mock harness) can
 /// stub the notifier with a no-op or a spy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayNotification {
     /// N new unread support tickets appeared since the last publish.
     NewTickets { count: usize },
     /// N new Jean fleet jobs are awaiting user confirmation.
     JeanPending { count: usize },
-    /// N previously-active SSH sessions dropped since the last publish.
-    /// Coarse — we don't know *which* host from the counter alone;
-    /// finer notifications would need per-session hooks.
-    SshDisconnected { count: usize },
+    /// One active SSH transport disappeared without a normal shell exit or an
+    /// explicit tab close.
+    SshDisconnected { name: String },
     /// A Fleet job finished. `success = false` means the executor
     /// returned a non-zero exit or an error surfaced to the toast.
     FleetJobDone { success: bool },
     /// An AI generation or executable action finished while the main window
     /// was not active.
     AiTaskDone { success: bool },
+}
+
+impl TrayNotification {
+    pub fn localized_text(&self) -> (String, String) {
+        match self {
+            Self::NewTickets { count } => (
+                t!("notification.support.summary").to_string(),
+                if *count == 1 {
+                    t!("notification.support.one").to_string()
+                } else {
+                    t!("notification.support.many", count = *count).to_string()
+                },
+            ),
+            Self::JeanPending { count } => (
+                t!("notification.jean.summary").to_string(),
+                if *count == 1 {
+                    t!("notification.jean.one").to_string()
+                } else {
+                    t!("notification.jean.many", count = *count).to_string()
+                },
+            ),
+            Self::SshDisconnected { name } => (
+                t!("notification.ssh.summary").to_string(),
+                t!("notification.ssh.connection_lost", name = name).to_string(),
+            ),
+            Self::FleetJobDone { success } => (
+                t!("notification.fleet.summary").to_string(),
+                if *success {
+                    t!("notification.fleet.success").to_string()
+                } else {
+                    t!("notification.fleet.failed").to_string()
+                },
+            ),
+            Self::AiTaskDone { success } => (
+                t!("notification.ai.summary").to_string(),
+                if *success {
+                    t!("notification.ai.success").to_string()
+                } else {
+                    t!("notification.ai.failed").to_string()
+                },
+            ),
+        }
+    }
 }
 
 impl Workspace {
@@ -1063,8 +1105,9 @@ impl Workspace {
 
     /// Compute current tray counters + push into the publisher AND
     /// fire OS notifications for positive deltas (new tickets, Jean
-    /// pending) or SSH-disconnect decrements. The first publish just
-    /// seeds `last_tray_counters` without notifying — otherwise a
+    /// pending). SSH transport loss is emitted by the individual session
+    /// lifecycle because a counter cannot distinguish expected exits. The
+    /// first publish just seeds `last_tray_counters` without notifying — otherwise a
     /// launch with existing unread tickets would spam the OS.
     ///
     /// Cheap enough (a few vec-scans + a small notify-rust dispatch on
@@ -1121,11 +1164,6 @@ impl Workspace {
             if cfg.notify_jean_pending && counters.jean_pending > prev.jean_pending {
                 self.emit_tray_notification(TrayNotification::JeanPending {
                     count: counters.jean_pending - prev.jean_pending,
-                });
-            }
-            if cfg.notify_ssh_disconnect && counters.active_ssh < prev.active_ssh {
-                self.emit_tray_notification(TrayNotification::SshDisconnected {
-                    count: prev.active_ssh - counters.active_ssh,
                 });
             }
         }

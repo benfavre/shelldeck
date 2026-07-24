@@ -2,14 +2,34 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
 use shelldeck_ssh::client::SshClient;
-use shelldeck_terminal::session::TerminalSession;
+use shelldeck_terminal::session::{SessionState, TerminalSession};
 use uuid::Uuid;
 
 use crate::t;
 use crate::terminal_view::SplitDirection;
 use crate::toast::ToastLevel;
 
-use super::Workspace;
+use super::{TrayNotification, Workspace};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshSessionEnd {
+    UserClosed,
+    CleanRemoteExit,
+    UnexpectedDisconnect,
+}
+
+#[derive(Debug)]
+enum SshLifecycleEvent {
+    Connected,
+    ConnectFailed(String),
+    Ended(SshSessionEnd),
+}
+
+fn disconnect_notification(end: SshSessionEnd, name: &str) -> Option<TrayNotification> {
+    matches!(end, SshSessionEnd::UnexpectedDisconnect).then(|| TrayNotification::SshDisconnected {
+        name: name.to_string(),
+    })
+}
 
 impl Workspace {
     /// Update a connection's status and refresh sidebar.
@@ -34,6 +54,7 @@ impl Workspace {
             view.set_connections(conns);
         });
         self.update_dashboard_stats(cx);
+        self.publish_tray_state(cx);
     }
 
     /// Initiate an SSH connection to `connection`.
@@ -52,6 +73,7 @@ impl Workspace {
                     return;
                 }
             };
+        let session_id = session.id;
 
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
         session.set_resize_fn(Box::new(move |rows, cols| {
@@ -68,8 +90,11 @@ impl Workspace {
         // Mark as connecting
         self.set_connection_status(conn_id, ConnectionStatus::Connecting, cx);
 
-        // Channel for SSH status feedback
-        let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        // Channel for the complete SSH lifecycle. It crosses the dedicated
+        // runtime thread without polling and lets the Workspace distinguish a
+        // closed tab, a clean shell exit, and a lost transport.
+        let (lifecycle_tx, mut lifecycle_rx) =
+            tokio::sync::mpsc::unbounded_channel::<SshLifecycleEvent>();
 
         let conn = connection;
         let spawn_result = std::thread::Builder::new()
@@ -81,7 +106,7 @@ impl Workspace {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        let _ = status_tx.send(Err(
+                        let _ = lifecycle_tx.send(SshLifecycleEvent::ConnectFailed(
                             t!("toast.ssh.runtime_failed", error = e.to_string()).to_string(),
                         ));
                         return;
@@ -100,7 +125,8 @@ impl Workspace {
                             )
                             .to_string();
                             tracing::error!("{}", msg);
-                            let _ = status_tx.send(Err(msg));
+                            let _ =
+                                lifecycle_tx.send(SshLifecycleEvent::ConnectFailed(msg));
                             return;
                         }
                     };
@@ -116,14 +142,14 @@ impl Workspace {
                             )
                             .to_string();
                             tracing::error!("{}", msg);
-                            let _ = status_tx.send(Err(msg));
+                            let _ =
+                                lifecycle_tx.send(SshLifecycleEvent::ConnectFailed(msg));
                             return;
                         }
                     };
                     tracing::info!("SSH shell opened for {}", conn.display_name());
 
-                    // Notify success
-                    let _ = status_tx.send(Ok(()));
+                    let _ = lifecycle_tx.send(SshLifecycleEvent::Connected);
 
                     let (mut channel_reader, mut channel_writer) = channel.split();
 
@@ -132,17 +158,23 @@ impl Workspace {
                         use tokio::io::AsyncWriteExt;
                         // Auto-attach (or create) a tmux session at session start
                         // when enabled. Runs exactly once before the input loop.
-                        if attach_tmux {
-                            let _ = channel_writer
+                        if attach_tmux
+                            && channel_writer
                                 .write_all(b"tmux new-session -A -s main\n")
-                                .await;
+                                .await
+                                .is_err()
+                        {
+                            return SshSessionEnd::UnexpectedDisconnect;
                         }
-                        while let Some(data) = input_rx.recv().await {
-                            if channel_writer.write_all(&data).await.is_err() {
-                                break;
+                        loop {
+                            match input_rx.recv().await {
+                                Some(data) if channel_writer.write_all(&data).await.is_err() => {
+                                    return SshSessionEnd::UnexpectedDisconnect;
+                                }
+                                Some(_) => {}
+                                None => return SshSessionEnd::UserClosed,
                             }
                         }
-                        tracing::info!("SSH write loop ended");
                     });
 
                     let mut resize_rx = resize_rx;
@@ -158,25 +190,38 @@ impl Workspace {
                                 }
                                 msg = channel_reader.read() => {
                                     match msg {
-                                        Some(SshChannelData::Data(data)) => {
+                                        SshChannelData::Data(data) => {
                                             if data_tx.send(data).is_err() {
-                                                break;
+                                                return SshSessionEnd::UserClosed;
                                             }
                                         }
-                                        Some(SshChannelData::Eof) | None => break,
+                                        SshChannelData::CleanEnd => {
+                                            return SshSessionEnd::CleanRemoteExit;
+                                        }
+                                        SshChannelData::ConnectionLost => {
+                                            return SshSessionEnd::UnexpectedDisconnect;
+                                        }
                                     }
                                 }
                             }
                         }
-                        tracing::info!("SSH read loop ended");
                     });
 
-                    tokio::select! {
-                        _ = read_task => {}
-                        _ = write_task => {}
-                    }
+                    let end = tokio::select! {
+                        // Closing a tab makes both sides unwind; prefer the
+                        // explicit input-channel close over a secondary read
+                        // failure so voluntary closes never notify.
+                        biased;
+                        result = write_task => result.unwrap_or(SshSessionEnd::UnexpectedDisconnect),
+                        result = read_task => result.unwrap_or(SshSessionEnd::UnexpectedDisconnect),
+                    };
 
-                    tracing::info!("SSH session ended for {}", conn.display_name());
+                    tracing::info!(
+                        end = ?end,
+                        "SSH session ended for {}",
+                        conn.display_name()
+                    );
+                    let _ = lifecycle_tx.send(SshLifecycleEvent::Ended(end));
                 });
             });
         if let Err(e) = spawn_result {
@@ -201,19 +246,13 @@ impl Workspace {
             return;
         }
 
-        // Spawn a GPUI task to listen for SSH status feedback
+        // Apply every lifecycle event on GPUI's foreground executor.
         let weak = cx.entity().downgrade();
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
-            // Poll in a non-blocking way on the background executor
-            let result = cx
-                .background_executor()
-                .spawn(async move { status_rx.recv().ok() })
-                .await;
-
-            if let Some(status) = result {
+            while let Some(event) = lifecycle_rx.recv().await {
                 let _ = weak.update(cx, |ws, cx| {
-                    match status {
-                        Ok(()) => {
+                    match event {
+                        SshLifecycleEvent::Connected => {
                             ws.set_connection_status(conn_id, ConnectionStatus::Connected, cx);
                             ws.show_toast(
                                 t!("toast.ssh.connected", name = title.as_str()).to_string(),
@@ -221,13 +260,62 @@ impl Workspace {
                                 cx,
                             );
                         }
-                        Err(msg) => {
+                        SshLifecycleEvent::ConnectFailed(msg) => {
                             ws.set_connection_status(
                                 conn_id,
                                 ConnectionStatus::Error(msg.clone()),
                                 cx,
                             );
                             ws.show_toast(msg, ToastLevel::Error, cx);
+                        }
+                        SshLifecycleEvent::Ended(end) => {
+                            let connection_lost =
+                                t!("toast.ssh.connection_lost", name = title.as_str()).to_string();
+                            let session_state = match end {
+                                SshSessionEnd::UserClosed => None,
+                                SshSessionEnd::CleanRemoteExit => Some(SessionState::Exited(0)),
+                                SshSessionEnd::UnexpectedDisconnect => {
+                                    Some(SessionState::Error(connection_lost.clone()))
+                                }
+                            };
+                            if let Some(session_state) = session_state {
+                                ws.terminal.update(cx, |terminal, cx| {
+                                    if let Some(tab) =
+                                        terminal.tabs.iter_mut().find(|tab| tab.id == session_id)
+                                    {
+                                        tab.state = session_state.clone();
+                                    }
+                                    if let Some(session) = terminal
+                                        .pane
+                                        .sessions
+                                        .iter_mut()
+                                        .find(|session| session.id == session_id)
+                                    {
+                                        session.state = session_state;
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                            let has_other_session = ws.terminal.read(cx).tabs.iter().any(|tab| {
+                                tab.id != session_id
+                                    && tab.connection_id == Some(conn_id)
+                                    && tab.state == SessionState::Running
+                            });
+                            if !has_other_session {
+                                let status = if end == SshSessionEnd::UnexpectedDisconnect {
+                                    ConnectionStatus::Error(connection_lost)
+                                } else {
+                                    ConnectionStatus::Disconnected
+                                };
+                                ws.set_connection_status(conn_id, status, cx);
+                            }
+                            if ws.app_config.tray.notify_ssh_disconnect {
+                                if let Some(notification) =
+                                    disconnect_notification(end, title.as_str())
+                                {
+                                    ws.emit_tray_notification(notification);
+                                }
+                            }
                         }
                     }
                     cx.notify();
@@ -338,12 +426,13 @@ impl Workspace {
                                 }
                                 msg = channel_reader.read() => {
                                     match msg {
-                                        Some(SshChannelData::Data(data)) => {
+                                        SshChannelData::Data(data) => {
                                             if data_tx.send(data).is_err() {
                                                 break;
                                             }
                                         }
-                                        Some(SshChannelData::Eof) | None => break,
+                                        SshChannelData::CleanEnd
+                                        | SshChannelData::ConnectionLost => break,
                                     }
                                 }
                             }
@@ -378,6 +467,31 @@ impl Workspace {
             t!("toast.ssh.split_connecting", name = title.as_str()).to_string(),
             ToastLevel::Info,
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{disconnect_notification, SshSessionEnd};
+    use crate::workspace::TrayNotification;
+
+    // SDTEST-1412
+    #[test]
+    fn only_unexpected_ssh_transport_loss_notifies_with_exact_identity() {
+        assert_eq!(
+            disconnect_notification(SshSessionEnd::UserClosed, "production"),
+            None
+        );
+        assert_eq!(
+            disconnect_notification(SshSessionEnd::CleanRemoteExit, "production"),
+            None
+        );
+        assert_eq!(
+            disconnect_notification(SshSessionEnd::UnexpectedDisconnect, "production"),
+            Some(TrayNotification::SshDisconnected {
+                name: "production".to_string(),
+            })
         );
     }
 }

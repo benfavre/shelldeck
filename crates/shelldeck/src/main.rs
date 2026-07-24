@@ -336,46 +336,7 @@ impl AssetSource for Assets {
 /// notification daemons pick it up. On macOS/Windows `notify-rust`
 /// falls back gracefully when the icon can't be resolved.
 fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<()> {
-    use shelldeck_ui::TrayNotification;
-    let (summary, body) = match n {
-        TrayNotification::NewTickets { count } => (
-            "ShellDeck — Support".to_string(),
-            match count {
-                1 => "1 nouveau ticket support".to_string(),
-                n => format!("{n} nouveaux tickets support"),
-            },
-        ),
-        TrayNotification::JeanPending { count } => (
-            "ShellDeck — Jean".to_string(),
-            match count {
-                1 => "Un job Jean attend votre validation".to_string(),
-                n => format!("{n} jobs Jean attendent votre validation"),
-            },
-        ),
-        TrayNotification::SshDisconnected { count } => (
-            "ShellDeck — SSH".to_string(),
-            match count {
-                1 => "Une connexion SSH s'est terminée".to_string(),
-                n => format!("{n} connexions SSH se sont terminées"),
-            },
-        ),
-        TrayNotification::FleetJobDone { success } => (
-            "ShellDeck — Fleet".to_string(),
-            if success {
-                "Job Fleet terminé".to_string()
-            } else {
-                "Job Fleet échoué".to_string()
-            },
-        ),
-        TrayNotification::AiTaskDone { success } => (
-            "ShellDeck — Assistant IA".to_string(),
-            if success {
-                "Une tâche IA est terminée".to_string()
-            } else {
-                "Une tâche IA a échoué".to_string()
-            },
-        ),
-    };
+    let (summary, body) = n.localized_text();
     notify_rust::Notification::new()
         .appname("ShellDeck")
         .summary(&summary)
