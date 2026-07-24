@@ -9608,13 +9608,20 @@ impl Workspace {
         // Subtle vertical divider between the chrome control clusters.
         let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
 
-        div()
+        let mut titlebar = div()
             .flex()
             .items_center()
             .w_full()
             .flex_shrink_0()
             .h(px(40.0))
-            .bg(titlebar_bg)
+            .bg(titlebar_bg);
+        // Rounded clipping does not propagate to child backgrounds in GPUI.
+        // This element owns the titlebar background, so it must own the
+        // floating window's top radius as well.
+        if !is_maximized {
+            titlebar = titlebar.rounded_t(px(16.0));
+        }
+        titlebar
             .border_b_1()
             .border_color(titlebar_border)
             .child(title_area)
@@ -11102,22 +11109,23 @@ impl Workspace {
                     .h(px(132.0))
                     .flex_shrink_0()
                     .overflow_hidden()
-                    .rounded(px(14.0))
+                    .rounded(px(20.0))
                     .border_1()
                     .border_color(ShellDeckColors::primary().opacity(0.40))
-                    .bg(black())
+                    // Match the surrounding page so GPUI's rectangular
+                    // background paint cannot show behind the curved border.
+                    // The dark artwork itself stays safely inset below.
+                    .bg(ShellDeckColors::bg_primary())
                     .child(
                         img("images/home/user-dashboard-network-v1.webp")
                             .absolute()
                             .inset_0()
                             .size_full()
-                            .object_fit(ObjectFit::Cover),
+                            // The asset is exported at this exact aspect ratio
+                            // with its gradient and 20px-equivalent alpha
+                            // corners baked in, so GPUI has nothing to mask.
+                            .object_fit(ObjectFit::Fill),
                     )
-                    .child(div().absolute().inset_0().bg(gpui::linear_gradient(
-                        90.0,
-                        gpui::linear_color_stop(transparent_black(), 0.0),
-                        gpui::linear_color_stop(black().opacity(0.94), 1.0),
-                    )))
                     .child(
                         div()
                             .relative()
@@ -13735,7 +13743,7 @@ impl Render for Workspace {
             root = root.rounded(px(0.0));
         } else {
             root = root
-                .rounded(px(10.0))
+                .rounded(px(16.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
                 .shadow(

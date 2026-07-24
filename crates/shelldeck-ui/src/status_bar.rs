@@ -58,8 +58,9 @@ impl StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_maximized = window.is_maximized();
+        let mut bar = div()
             .flex()
             .flex_shrink_0()
             .w_full()
@@ -67,8 +68,14 @@ impl Render for StatusBar {
             .items_center()
             .justify_between()
             .px(px(12.0))
-            .bg(ShellDeckColors::bg_sidebar())
-            .border_t_1()
+            .bg(ShellDeckColors::bg_sidebar());
+        // This surface owns the bottom window background, so it also owns the
+        // floating window's bottom radius. Parent overflow clipping is
+        // rectangular in GPUI and cannot provide this mask for us.
+        if !is_maximized {
+            bar = bar.rounded_b(px(16.0));
+        }
+        bar.border_t_1()
             .border_color(ShellDeckColors::border())
             .child(
                 // Left: status items
