@@ -245,8 +245,8 @@ impl AssetSource for Assets {
             }
             // Dashboard-specific artwork. It deliberately leaves the right
             // half quiet so localized copy remains readable over the image.
-            "images/home/user-dashboard-network-v1.webp" => {
-                include_bytes!("../assets/images/home/user-dashboard-network-v1.webp")
+            "images/home/user-dashboard-colorful-watermark-v1.webp" => {
+                include_bytes!("../assets/images/home/user-dashboard-colorful-watermark-v1.webp")
             }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
@@ -309,7 +309,7 @@ impl AssetSource for Assets {
             SharedString::from("images/onboarding/modes.png"),
             SharedString::from("images/onboarding/surfaces.png"),
             SharedString::from("images/onboarding/shortcuts.png"),
-            SharedString::from("images/home/user-dashboard-network-v1.webp"),
+            SharedString::from("images/home/user-dashboard-colorful-watermark-v1.webp"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),

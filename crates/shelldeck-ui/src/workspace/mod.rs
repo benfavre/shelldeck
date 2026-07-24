@@ -9619,7 +9619,7 @@ impl Workspace {
         // This element owns the titlebar background, so it must own the
         // floating window's top radius as well.
         if !is_maximized {
-            titlebar = titlebar.rounded_t(px(16.0));
+            titlebar = titlebar.rounded_t(use_theme().tokens.radius_lg);
         }
         titlebar
             .border_b_1()
@@ -11109,7 +11109,7 @@ impl Workspace {
                     .h(px(132.0))
                     .flex_shrink_0()
                     .overflow_hidden()
-                    .rounded(px(20.0))
+                    .rounded(use_theme().tokens.radius_lg)
                     .border_1()
                     .border_color(ShellDeckColors::primary().opacity(0.40))
                     // Match the surrounding page so GPUI's rectangular
@@ -11117,12 +11117,12 @@ impl Workspace {
                     // The dark artwork itself stays safely inset below.
                     .bg(ShellDeckColors::bg_primary())
                     .child(
-                        img("images/home/user-dashboard-network-v1.webp")
+                        img("images/home/user-dashboard-colorful-watermark-v1.webp")
                             .absolute()
                             .inset_0()
                             .size_full()
                             // The asset is exported at this exact aspect ratio
-                            // with its gradient and 20px-equivalent alpha
+                            // with its gradient and Card-equivalent alpha
                             // corners baked in, so GPUI has nothing to mask.
                             .object_fit(ObjectFit::Fill),
                     )
@@ -13735,15 +13735,15 @@ impl Render for Workspace {
 
         // Window chrome: clip children to the root so the custom titlebar and
         // status bar follow the window's rounded corners. When floating (not
-        // maximized) draw a soft drop shadow and a 1px frame inside the 5px
-        // client inset; when maximized the window is edge-to-edge with square
-        // corners and no frame.
+        // maximized) draw a 1px frame inside the 5px client inset; when
+        // maximized the window is edge-to-edge with square corners and no
+        // frame. The floating radius matches the standard Card component.
         root = root.overflow_hidden();
         if is_maximized {
             root = root.rounded(px(0.0));
         } else {
             root = root
-                .rounded(px(16.0))
+                .rounded(use_theme().tokens.radius_lg)
                 .border_1()
                 .border_color(ShellDeckColors::border());
         }

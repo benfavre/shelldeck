@@ -1,3 +1,4 @@
+use adabraka_ui::prelude::use_theme;
 use gpui::*;
 
 use crate::t;
@@ -73,7 +74,7 @@ impl Render for StatusBar {
         // floating window's bottom radius. Parent overflow clipping is
         // rectangular in GPUI and cannot provide this mask for us.
         if !is_maximized {
-            bar = bar.rounded_b(px(16.0));
+            bar = bar.rounded_b(use_theme().tokens.radius_lg);
         }
         bar.border_t_1()
             .border_color(ShellDeckColors::border())
