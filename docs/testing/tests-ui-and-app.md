@@ -67,14 +67,14 @@ Existing: **0 tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1050 | *(covered by SDTEST-184)* — effective_mode(): logged-out → Dev | SDUC-309, SDUC-152 | Green | 2026-07-09 — port cross-linked to shelldeck-core, see tests-core.md § SDTEST-184. |
+| SDTEST-1050 | *(covered by SDTEST-184)* — effective_mode(): logged-out → defensive User behind welcome | SDUC-309, SDUC-152 | Green | Pure resolver is safe even if a future render path misses the welcome interception. |
 | SDTEST-1051 | *(covered by SDTEST-184)* — effective_mode(): superadmin returns persisted mode | SDUC-309 | Green | Same file/test as SDTEST-184. |
-| SDTEST-1052 | `cloud_account.rs::resolve_effective_mode_non_superadmin_forced_to_user` (+ full-truth-table sibling) | SDUC-309, SDUC-152 | Green | 2026-07-09. **P0 security invariant** — a non-super-admin CANNOT land on Support even if `cloud_sync.mode="Support"` is hand-persisted. Test sweeps all 3 persisted values × non-superadmin ⇒ forced User. |
-| SDTEST-1053 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` | SDUC-309 | Green | 2026-07-09. Pure predicate — signed-in super-admin only. |
+| SDTEST-1052 | `cloud_account.rs::resolve_effective_mode_regular_user_and_client_admin_forced_to_user` (+ full-truth-table sibling) | SDUC-309, SDUC-152 | Green | **P0 security invariant** — regular/customer-admin accounts cannot land on Support or Dev; `inklura_support` is clamped to User/Support; super-admin gets all three. |
+| SDTEST-1053 | `cloud_account.rs::can_switch_true_for_signed_in_inklura_support_or_superadmin` | SDUC-309 | Green | Pure predicate for the dedicated Support and super-admin tiers. |
 | SDTEST-1054 | `jeanclaude.rs::resolve_effective_{local_wins_over_server, falls_back_to_server_when_local_unset, falls_back_to_server_when_local_none, none_when_neither_set}` | SDUC-185 | Green | 4 tests, 2026-07-09. Precedence contract from AGENTS.md § JeanClaude pinned as a pure fn on `JeanConfig`. Cross-linked to tests-core.md § SDTEST-1054 (jean). |
 | SDTEST-1055 | *(covered by SDTEST-1054)* — effective_jean_config prefers local over server | SDUC-185 | Green | Same fn as SDTEST-1054 (`resolve_effective_local_wins_over_server`). |
 | SDTEST-1056 | *to write* — refresh_command_palette produces stable action list for stable input | SDUC-303 | **Red / P1** | Reducer-style test on the action-builder. |
-| SDTEST-1057 | `cloud_account.rs::can_switch_only_true_for_signed_in_superadmin` (+ palette gating in `Workspace::base_palette_actions`) | SDUC-152, SDUC-303 | Green | 2026-07-09. Pure predicate under test; the palette-side gating (`if can_switch_mode { for m in AppMode::all() ... }`) fixed a **real leak** — before this cluster, mode entries were unconditionally added to `base_palette_actions`, so a regular user saw three actions that no-op'd on dispatch. Working-tree draft; call site lands with the delegate follow-up commit. |
+| SDTEST-1057 | `cloud_account.rs::allowed_modes_matches_the_tier_table` | SDUC-152, SDUC-303 | Green | Pins User-only, User+Support, and full User+Support+Dev mode lists. Workspace switcher and palette consume this exact list. |
 | SDTEST-1058 | *to write* — action-list contains SwitchSite entries capped at 20 | SDUC-303 | **Red / P2** | |
 | SDTEST-1059 | *to write* — poll schedulers no-op when the relevant surface is not visible | SDUC-168, SDUC-188, SDUC-227, SDUC-249 | **Red / P0** | Regression class: burning bandwidth / cache lines. Test as a pure predicate `should_poll(active_view, feature)`. |
 
@@ -244,7 +244,8 @@ parallel `cargo test`.
 | SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each step revalidates the active session and opens high-risk confirmation, full-plan execution advances only after matching OSC 133 completion, stops on failure, and Ctrl+C remains available. |
 | SDTEST-1374 | `issue_attachments.rs::rejects_extension_spoofing` + `recognizes_png_magic` | SDUC-432 | Green | Pure local intake guard: accepted formats are identified by bytes, never filename alone. |
 | SDTEST-1375 | *to write* — attachment picker routes URL/paste/drop/file/capture drafts to the exact composer | SDUC-432 | **Red / P0** | GPUI integration: each source adds one removable preview to the active New Request, request comment, Support request comment, ticket reply, or internal note; changing target clears drafts; submission uploads once and preserves drafts on failure. |
-| SDTEST-1376 | *to write* — shared multi-line Input follows native wrapped-line editing semantics | SDUC-433 | **Red / P0** | GPUI integration: Up/Down retain visual X, Shift selection paints across hard/soft lines, Home/End stay on the visual row, mouse placement matches the glyph, and `max_rows` scroll keeps the caret visible. |
+| SDTEST-1376 | *to write* — shared multi-line Input follows native wrapped-line editing semantics | SDUC-433 | **Red / P0** | GPUI integration: Up/Down retain visual X, Shift selection paints across hard/soft lines, Home/End stay on the visual row, mouse placement matches the glyph, wheel input scrolls a capped field, and `max_rows` keeps the caret visible. |
+| SDTEST-1377 | *to write* — role boundaries cover palette, shortcuts, deep links, and Settings | SDUC-152, SDUC-310 | **Red / P0** | GPUI integration: regular users cannot spawn Dev work; Support never sees Dev; super-admin can enter all modes; Settings opens/closes from every authenticated mode and hides Terminal/Editor for non-Dev accounts. |
 
 ---
 
@@ -280,6 +281,7 @@ parallel `cargo test`.
 | SDTEST-1410 | `tray::tests::macos_template_asset_is_retina_monochrome_with_transparent_background` | SDUC-434 | Green | The dedicated 36×36 Retina asset decodes, contains only black visible pixels, keeps transparent corners/background, and has non-trivial bounded mark coverage. macOS alone enables AppKit template rendering. |
 | SDTEST-1411 | `tray::tests::tray_state_pump_forwards_every_snapshot_until_shutdown` | SDUC-429, SDUC-434 | Green | The shared async pump forwards every live snapshot until all publishers close. Linux consumes it on the GTK owner thread; macOS/Windows retain `muda` handles on GPUI's foreground executor. Native visual smoke remains a release check. |
 | SDTEST-1412 | `workspace::ssh::tests::only_unexpected_ssh_transport_loss_notifies_with_exact_identity` | SDUC-439 | Green | The session-end reducer keeps explicit tab closes and clean remote exits silent, while unexpected transport loss emits one notification carrying the exact connection display name. |
+| SDTEST-1414 | *to write* — User/Support home dashboards route to their operational tabs | SDUC-440 | **Red / P1** | GPUI integration: both modes start on Accueil, counters reflect their caches, quick actions select the exact list/composer, a recent request opens its detail, sync acts on the current Manage account, and onboarding omits Dev cards/media/shortcuts for non-Dev roles. |
 
 ---
 

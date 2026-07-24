@@ -106,6 +106,8 @@ pub enum SettingsTab {
 pub enum SettingsEvent {
     ConfigChanged(AppConfig),
     ThemeChanged(ThemePreference),
+    /// Leave the global Settings surface and return to the current app mode.
+    CloseRequested,
     /// User flipped the "Launch at login" toggle to `desired`. Workspace
     /// applies the OS-level change on a background thread, then either
     /// commits the config field (on success) or toasts + leaves the
@@ -172,6 +174,7 @@ pub enum AiConnectionState {
 pub struct SettingsView {
     pub config: AppConfig,
     pub active_tab: SettingsTab,
+    dev_tabs_enabled: bool,
     pub unsaved_changes: bool,
     /// Adabraka `Select` entities. Each keeps its own open/highlighted state
     /// and is rebuilt in `sync_selects` whenever the underlying config
@@ -206,6 +209,7 @@ impl SettingsView {
         Self {
             config,
             active_tab: SettingsTab::General,
+            dev_tabs_enabled: false,
             unsaved_changes: false,
             editor_font_family_select,
             editor_tab_size_select,
@@ -485,6 +489,14 @@ impl SettingsView {
         }
         self.unsaved_changes = false;
         cx.emit(SettingsEvent::ConfigChanged(self.config.clone()));
+        cx.notify();
+    }
+
+    pub fn set_dev_tabs_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.dev_tabs_enabled = enabled;
+        if !enabled && matches!(self.active_tab, SettingsTab::Terminal | SettingsTab::Editor) {
+            self.active_tab = SettingsTab::General;
+        }
         cx.notify();
     }
 
@@ -2192,6 +2204,13 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let close_button = IconButton::new("x")
+            .variant(ButtonVariant::Ghost)
+            .size(gpui::px(30.0))
+            .icon_size(gpui::px(14.0))
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsEvent::CloseRequested);
+            }));
         let mut header = div()
             .flex()
             .items_center()
@@ -2211,20 +2230,29 @@ impl Render for SettingsView {
         if self.unsaved_changes {
             header = header.child(
                 div()
-                    .id("save-settings-btn")
-                    .px(px(16.0))
-                    .py(px(6.0))
-                    .rounded(px(4.0))
-                    .bg(ShellDeckColors::primary())
-                    .text_color(white())
-                    .text_size(px(13.0))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.8)))
-                    .child(t!("settings.save").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.save_config(cx);
-                    })),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("save-settings-btn")
+                            .px(px(16.0))
+                            .py(px(6.0))
+                            .rounded(px(4.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_color(white())
+                            .text_size(px(13.0))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.8)))
+                            .child(t!("settings.save").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_config(cx);
+                            })),
+                    )
+                    .child(close_button),
             );
+        } else {
+            header = header.child(close_button);
         }
 
         // Tab content — scrolls vertically inside its own column.
@@ -2276,8 +2304,8 @@ impl Render for SettingsView {
                     .id("settings-body")
                     .overflow_hidden()
                     // Tab sidebar
-                    .child(
-                        div()
+                    .child({
+                        let mut tabs = div()
                             .flex()
                             .flex_col()
                             .flex_shrink_0()
@@ -2290,33 +2318,36 @@ impl Render for SettingsView {
                                 SettingsTab::General,
                                 t!("settings.tab.general").as_ref(),
                                 cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Terminal,
-                                t!("settings.tab.terminal").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Editor,
-                                t!("settings.tab.editor").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Ai,
-                                t!("settings.tab.ai").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Appearance,
-                                t!("settings.tab.appearance").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::About,
-                                t!("settings.tab.about").as_ref(),
-                                cx,
-                            )),
-                    )
+                            ));
+                        if self.dev_tabs_enabled {
+                            tabs = tabs
+                                .child(self.render_tab_button(
+                                    SettingsTab::Terminal,
+                                    t!("settings.tab.terminal").as_ref(),
+                                    cx,
+                                ))
+                                .child(self.render_tab_button(
+                                    SettingsTab::Editor,
+                                    t!("settings.tab.editor").as_ref(),
+                                    cx,
+                                ));
+                        }
+                        tabs.child(self.render_tab_button(
+                            SettingsTab::Ai,
+                            t!("settings.tab.ai").as_ref(),
+                            cx,
+                        ))
+                        .child(self.render_tab_button(
+                            SettingsTab::Appearance,
+                            t!("settings.tab.appearance").as_ref(),
+                            cx,
+                        ))
+                        .child(self.render_tab_button(
+                            SettingsTab::About,
+                            t!("settings.tab.about").as_ref(),
+                            cx,
+                        ))
+                    })
                     // Tab content — scrolls independently
                     .child(scrollable_vertical(tab_content)),
             )

@@ -651,13 +651,17 @@ OIDC endpoint.
 ### SDUC-151 — App mode default is Dev
 
 `AppMode::default()` is `Dev`; `CloudSyncConfig.mode` back-compat →
-Dev when the field is absent.
+Dev when the field is absent. This persistence default never bypasses
+authentication: a logged-out workspace renders the welcome screen.
 
 ### SDUC-152 — Mode enforcement per role
 
-Non-superadmin users are forced to User mode regardless of the
-persisted value. Only `can_switch_mode()` (signed-in superadmin) may
-change modes.
+Logged-out users are intercepted by the welcome screen. Authenticated
+regular users and customer admins are forced to User mode.
+`inklura_support` accounts may switch between User and Support;
+super-admins may additionally enter Dev. The titlebar, command palette,
+keyboard actions, activity links, and deep links must expose and execute
+only operations allowed by that same role matrix.
 
 ### SDUC-153 — Login persists identity, enables cloud sync, toasts profile count
 
@@ -1108,13 +1112,19 @@ renders only nav icons.
 
 ### SDUC-309 — Effective app mode
 
-`Workspace::effective_mode()` — logged out → Dev; superadmin →
-persisted; non-superadmin → forced User (matches SDUC-152).
+`Workspace::effective_mode()` delegates to the tested role matrix:
+logged out → defensive User fallback behind the welcome screen;
+regular/customer-admin → forced User; `inklura_support` → persisted
+User/Support with Dev clamped to User; super-admin → persisted mode.
 
-### SDUC-310 — Active view mode switch preserves terminal tabs
+### SDUC-310 — Mode and Settings switches preserve active surfaces
 
 Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
+Settings is a closable personal surface available in every authenticated
+mode. User/Support expose General, AI, Appearance and About; Dev-capable
+accounts additionally expose Terminal and Editor. Opening Settings pauses
+surface-only polling and closing it returns to the intact current mode.
 
 ### SDUC-311 — Toasts respect level
 
@@ -1527,8 +1537,9 @@ Every multi-line Input uses its wrapped visual layout for cursor movement and
 selection. Up/Down retain the preferred visual column, Shift+Up/Down extends
 the selection, and Home/End move to the current visual line edges. Selections
 remain visible across hard newlines and soft wraps. When `max_rows` caps the
-field, keyboard editing scrolls the internal viewport to keep the caret
-visible instead of growing the surrounding screen or typing off-screen.
+field, mouse-wheel scrolling moves through the whole value and keyboard
+editing scrolls the internal viewport to keep the caret visible instead of
+growing the surrounding screen or typing off-screen.
 
 ### SDUC-434 — The tray toggles one standalone AI Dock
 
@@ -1655,6 +1666,19 @@ exact connection. Another live tab for the same connection keeps the shared
 sidebar status connected. Notification copy follows the selected French or
 English locale.
 
+### SDUC-440 — User and Support modes have a real home
+
+User mode opens on an Accueil tab summarizing available sites and open
+requests, with direct actions for Sites, Requests, and a new request. Its three
+most recent requests open directly from the dashboard, while a compact status
+card exposes the Manage session, active site, synchronized directory, and a
+manual sync action. A dashboard-specific network illustration with a contrast
+gradient gives the page a clear identity without reducing the readability of
+those operational cards. Support mode opens on its own Accueil tab with open,
+SLA-risk, unassigned, and hosted request counters plus direct triage actions.
+Operational lists remain separate tabs. Onboarding only describes modes and
+shortcuts the signed-in role can actually reach.
+
 ---
 
 ## Change log
@@ -1700,6 +1724,13 @@ English locale.
   Terminal diagnostic plans and separately confirmed read-only steps.
 - **2026-07-21** — Added SDUC-433 and SDTEST-1376 for native wrapped-line
   cursor, selection, and caret-follow behavior in shared multi-line Inputs.
+- **2026-07-24** — Amended SDUC-433 and SDTEST-1376 to explicitly cover
+  mouse-wheel scrolling inside capped multi-line Inputs.
+- **2026-07-24** — Corrected SDUC-151/152/309/310 to the deployed three-tier
+  role model, capability-filtered actions, mandatory welcome screen, and
+  cross-mode personal Settings surface.
+- **2026-07-24** — Added SDUC-440 and SDTEST-1414 for role-specific User and
+  Support home dashboards and capability-filtered onboarding.
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.

@@ -59,6 +59,9 @@ impl Workspace {
 
     /// Initiate an SSH connection to `connection`.
     pub(super) fn connect_ssh(&mut self, connection: Connection, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let title = connection.display_name().to_string();
         let conn_id = connection.id;
 
@@ -332,6 +335,9 @@ impl Workspace {
         direction: SplitDirection,
         cx: &mut Context<Self>,
     ) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let title = format!("{} (split)", connection.display_name());
         let _conn_id = connection.id;
 

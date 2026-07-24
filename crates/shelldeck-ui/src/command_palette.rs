@@ -76,7 +76,7 @@ pub struct OpenManageArea {
     pub path: String,
 }
 
-/// Switch the app mode (super-admins only; a no-op otherwise).
+/// Switch the app mode when it belongs to the account's allowed mode set.
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = shelldeck, no_json)]
 pub struct SetAppMode {

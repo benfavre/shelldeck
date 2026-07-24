@@ -77,7 +77,7 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (76 icons)
+## Inventory (78 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
@@ -115,6 +115,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `flag` | support | priority / flag ticket |
 | `globe` | infra | sites, public URL |
 | `grid-2x2` | view | Sites view — cards mode toggle |
+| `house` | navigation | User and Support home tabs |
 | `inbox` | support | ticket queue empty state |
 | `info` | status | info banners |
 | `key` | ssh | SSH keys, credentials |
@@ -153,6 +154,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `upload` | action | import, push |
 | `user` | account | single user |
 | `user-check` | support | assignee, agent |
+| `user-x` | support | unassigned queue |
 | `users` | support | agents list, assign picker |
 | `x` | chrome | close, dismiss |
 | `zap` | dashboard | quick-connect section header |

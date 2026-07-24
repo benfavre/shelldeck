@@ -15,6 +15,7 @@ use crate::theme::ShellDeckColors;
 use adabraka_ui::prelude::*;
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::cloud_account::AppMode;
 
 /// Which slide is shown. `Modes` is omitted when the signed-in user cannot
 /// switch modes (forced User).
@@ -68,21 +69,23 @@ impl EventEmitter<OnboardingEvent> for OnboardingView {}
 
 pub struct OnboardingView {
     steps: Vec<OnboardingStep>,
+    allowed_modes: Vec<AppMode>,
     index: usize,
     focus_handle: FocusHandle,
     needs_focus: bool,
 }
 
 impl OnboardingView {
-    pub fn new(can_switch_mode: bool, cx: &mut Context<Self>) -> Self {
+    pub fn new(allowed_modes: &[AppMode], cx: &mut Context<Self>) -> Self {
         let mut steps = vec![OnboardingStep::Welcome];
-        if can_switch_mode {
+        if allowed_modes.len() > 1 {
             steps.push(OnboardingStep::Modes);
         }
         steps.push(OnboardingStep::Surfaces);
         steps.push(OnboardingStep::Shortcuts);
         Self {
             steps,
+            allowed_modes: allowed_modes.to_vec(),
             index: 0,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
@@ -134,9 +137,15 @@ impl OnboardingView {
     }
 
     /// Hero media slot — placeholder until `media_asset()` is set for a step.
-    fn render_media_zone(step: OnboardingStep) -> impl IntoElement {
+    fn render_media_zone(&self, step: OnboardingStep) -> impl IntoElement {
         let caption = step.media_caption();
-        let has_media = step.media_asset().is_some();
+        let media_asset =
+            if step == OnboardingStep::Modes && !self.allowed_modes.contains(&AppMode::Dev) {
+                None
+            } else {
+                step.media_asset()
+            };
+        let has_media = media_asset.is_some();
 
         let mut zone = div()
             .relative()
@@ -148,7 +157,7 @@ impl OnboardingView {
             .border_b_1()
             .border_color(ShellDeckColors::border());
 
-        if let Some(path) = step.media_asset() {
+        if let Some(path) = media_asset {
             zone = zone.child(img(path).w_full().h_full().object_fit(ObjectFit::Contain));
         } else {
             let mut inner = div()
@@ -303,51 +312,72 @@ impl OnboardingView {
 
     fn render_step_body(&self) -> impl IntoElement {
         match self.current() {
-            OnboardingStep::Welcome => div()
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("onboarding.welcome.body").to_string()),
-                )
-                .child(Self::bullet(
-                    "cloud",
-                    t!("onboarding.welcome.bullet_sync_title").to_string(),
-                    t!("onboarding.welcome.bullet_sync_body").to_string(),
-                ))
-                .child(Self::bullet(
-                    "terminal",
-                    t!("onboarding.welcome.bullet_ssh_title").to_string(),
-                    t!("onboarding.welcome.bullet_ssh_body").to_string(),
-                )),
-            OnboardingStep::Modes => div()
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .child(
+            OnboardingStep::Welcome => {
+                let dev = self.allowed_modes.contains(&AppMode::Dev);
+                let mut welcome = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(if dev {
+                                t!("onboarding.welcome.body").to_string()
+                            } else {
+                                t!("onboarding.welcome.user_body").to_string()
+                            }),
+                    )
+                    .child(Self::bullet(
+                        "cloud",
+                        t!("onboarding.welcome.bullet_sync_title").to_string(),
+                        t!("onboarding.welcome.bullet_sync_body").to_string(),
+                    ));
+                welcome = if dev {
+                    welcome.child(Self::bullet(
+                        "terminal",
+                        t!("onboarding.welcome.bullet_ssh_title").to_string(),
+                        t!("onboarding.welcome.bullet_ssh_body").to_string(),
+                    ))
+                } else {
+                    welcome.child(Self::bullet(
+                        "inbox",
+                        t!("onboarding.welcome.bullet_requests_title").to_string(),
+                        t!("onboarding.welcome.bullet_requests_body").to_string(),
+                    ))
+                };
+                welcome
+            }
+            OnboardingStep::Modes => {
+                let mut modes = div().flex().flex_col().gap(px(10.0)).child(
                     div()
                         .text_size(px(13.0))
                         .text_color(ShellDeckColors::text_muted())
                         .child(t!("onboarding.modes.intro").to_string()),
-                )
-                .child(Self::bullet(
-                    "user",
-                    t!("onboarding.modes.user_title").to_string(),
-                    t!("onboarding.modes.user_body").to_string(),
-                ))
-                .child(Self::bullet(
-                    "shield-check",
-                    t!("onboarding.modes.support_title").to_string(),
-                    t!("onboarding.modes.support_body").to_string(),
-                ))
-                .child(Self::bullet(
-                    "cpu",
-                    t!("onboarding.modes.dev_title").to_string(),
-                    t!("onboarding.modes.dev_body").to_string(),
-                )),
+                );
+                if self.allowed_modes.contains(&AppMode::User) {
+                    modes = modes.child(Self::bullet(
+                        "user",
+                        t!("onboarding.modes.user_title").to_string(),
+                        t!("onboarding.modes.user_body").to_string(),
+                    ));
+                }
+                if self.allowed_modes.contains(&AppMode::Support) {
+                    modes = modes.child(Self::bullet(
+                        "shield-check",
+                        t!("onboarding.modes.support_title").to_string(),
+                        t!("onboarding.modes.support_body").to_string(),
+                    ));
+                }
+                if self.allowed_modes.contains(&AppMode::Dev) {
+                    modes = modes.child(Self::bullet(
+                        "cpu",
+                        t!("onboarding.modes.dev_title").to_string(),
+                        t!("onboarding.modes.dev_body").to_string(),
+                    ));
+                }
+                modes
+            }
             OnboardingStep::Surfaces => div()
                 .flex()
                 .flex_col()
@@ -373,33 +403,38 @@ impl OnboardingView {
                     t!("onboarding.surfaces.palette_title").to_string(),
                     t!("onboarding.surfaces.palette_body").to_string(),
                 )),
-            OnboardingStep::Shortcuts => div()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .mb(px(8.0))
-                        .text_size(px(13.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("onboarding.shortcuts.intro").to_string()),
-                )
-                .child(Self::shortcut_row(
-                    "Ctrl+Shift+P",
-                    t!("onboarding.shortcuts.palette").to_string(),
-                ))
-                .child(Self::shortcut_row(
-                    "Ctrl+T",
-                    t!("onboarding.shortcuts.terminal").to_string(),
-                ))
-                .child(Self::shortcut_row(
-                    "Ctrl+B",
-                    t!("onboarding.shortcuts.sidebar").to_string(),
-                ))
-                .child(Self::shortcut_row(
+            OnboardingStep::Shortcuts => {
+                let mut shortcuts = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .mb(px(8.0))
+                            .text_size(px(13.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("onboarding.shortcuts.intro").to_string()),
+                    )
+                    .child(Self::shortcut_row(
+                        "Ctrl+Shift+P",
+                        t!("onboarding.shortcuts.palette").to_string(),
+                    ));
+                if self.allowed_modes.contains(&AppMode::Dev) {
+                    shortcuts = shortcuts
+                        .child(Self::shortcut_row(
+                            "Ctrl+T",
+                            t!("onboarding.shortcuts.terminal").to_string(),
+                        ))
+                        .child(Self::shortcut_row(
+                            "Ctrl+B",
+                            t!("onboarding.shortcuts.sidebar").to_string(),
+                        ));
+                }
+                shortcuts.child(Self::shortcut_row(
                     "Ctrl+,",
                     t!("onboarding.shortcuts.settings").to_string(),
-                )),
+                ))
+            }
         }
     }
 
@@ -489,7 +524,7 @@ impl Render for OnboardingView {
                 ),
         );
 
-        card = card.child(Self::render_media_zone(current_step));
+        card = card.child(self.render_media_zone(current_step));
 
         card = card.child(self.render_step_dots());
 

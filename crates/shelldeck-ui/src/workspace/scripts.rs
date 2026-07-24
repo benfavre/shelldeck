@@ -943,6 +943,9 @@ impl Workspace {
     }
 
     pub(super) fn show_template_browser(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let browser = cx.new(TemplateBrowser::new);
 
         let sub = cx.subscribe(
@@ -1127,6 +1130,9 @@ impl Workspace {
     }
 
     pub(super) fn show_script_form(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let connections: Vec<(Uuid, String, String)> = self
             .connections
             .iter()

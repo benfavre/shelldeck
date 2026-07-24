@@ -74,7 +74,8 @@ Do not duplicate ad-hoc clears. One function:
 - Saves to disk + `sync_settings_config`
 - Stops `_support_poll_task` / `_issues_poll`
 - `sidebar.set_site_filter(None)`
-- `activate_current_mode(cx)` → Dev surface when logged out
+- `activate_current_mode(cx)` stops authenticated surface polls; render returns
+  to the mandatory welcome screen when logged out
 
 Server-side logout (`cloud_account::logout`) is best-effort **before**
 `invalidate_cloud_session`.
@@ -104,7 +105,8 @@ clear on 401.
 
 ## Debugging “ghost login”
 
-Symptoms: logged out but Support/User returns, or Karim chip with 401 toasts.
+Symptoms: logged out but Support/User returns instead of the welcome screen, or
+the account chip returns with 401 toasts.
 
 1. Grep `app_config = config.clone()` — should be **zero** hits outside tests.
 2. Check `settings.config.account` vs `workspace.app_config.account` mentally —

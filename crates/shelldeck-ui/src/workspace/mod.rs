@@ -1,4 +1,6 @@
+use crate::i18n::rel_time;
 use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
+use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
@@ -147,14 +149,12 @@ impl Render for WorkspaceTooltip {
     }
 }
 
-/// The three tabs of the User-mode home. `Sites` is the default (matches
-/// the pre-tabs layout), `Demandes` migrates the previous inline list into
-/// its own surface, and `Infos` is the new "quel compte / quel device"
-/// summary — surfaces every field the `/whoami` payload returns so the
-/// user can see exactly what ShellDeck knows about them.
+/// User-mode navigation. `Home` is the landing dashboard; the remaining tabs
+/// keep sites, requests, and account/device details as focused work surfaces.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum UserHomeTab {
     #[default]
+    Home,
     Sites,
     Requests,
     Infos,
@@ -299,6 +299,10 @@ pub struct Workspace {
     template_browser: Option<Entity<TemplateBrowser>>,
     variable_prompt: Option<Entity<VariablePrompt>>,
     active_view: ActiveView,
+    /// Settings is a global personal surface, available from every app mode.
+    /// Keeping this separate from `active_view` preserves the hidden Dev view
+    /// (including live terminal tabs) while Settings is open.
+    settings_open: bool,
     sidebar_visible: bool,
     sidebar_width: f32,
     /// Application UI font family ("System Default" means no override).
@@ -770,13 +774,13 @@ impl Workspace {
             // Initial palette build — no account state yet, so no mode
             // switcher. `refresh_command_palette` will rebuild with the
             // right gating on login / whoami.
-            palette.set_actions(Self::base_palette_actions(false, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
             palette
         });
         let companion_command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
             palette.set_standalone(true);
-            palette.set_actions(Self::base_palette_actions(false, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
             palette
         });
 
@@ -948,6 +952,7 @@ impl Workspace {
             template_browser: None,
             variable_prompt: None,
             active_view: ActiveView::Dashboard,
+            settings_open: false,
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,
             ui_font_family,
@@ -989,7 +994,7 @@ impl Workspace {
             _login_form_sub: None,
             _onboarding_sub: None,
             last_whoami: None,
-            user_home_tab: UserHomeTab::Sites,
+            user_home_tab: UserHomeTab::Home,
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,
@@ -1282,6 +1287,11 @@ impl Workspace {
     fn handle_sidebar_event(&mut self, event: &SidebarEvent, cx: &mut Context<Self>) {
         match event {
             SidebarEvent::SectionChanged(section) => {
+                if *section == SidebarSection::Settings {
+                    self.open_settings(cx);
+                    return;
+                }
+                self.settings_open = false;
                 self.switch_to_section(*section);
                 if *section == SidebarSection::Scripts {
                     self.populate_script_editor_connections(cx);
@@ -1711,6 +1721,11 @@ impl Workspace {
 
     fn handle_settings_event(&mut self, event: &SettingsEvent, cx: &mut Context<Self>) {
         match event {
+            SettingsEvent::CloseRequested => {
+                self.settings_open = false;
+                self.activate_current_mode(cx);
+                cx.notify();
+            }
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
                 let companion_changed = self.app_config.companion != config.companion;
@@ -3741,9 +3756,10 @@ impl Workspace {
         self.ai_sheet = None;
         match task.surface {
             AiSurface::Support => {
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Support, cx);
+                if !self.can_access_mode(AppMode::Support) {
+                    return;
                 }
+                self.set_mode(AppMode::Support, cx);
                 self.support.update(cx, |view, cx| {
                     view.set_section(crate::support_view::SupportSection::Tickets);
                     cx.notify();
@@ -4032,6 +4048,9 @@ impl Workspace {
                 self.activate_dev_section(SidebarSection::Terminals, cx);
             }
             ActivityAction::OpenConnection | ActivityAction::ConnectConnection => {
+                if !self.enter_dev_mode(cx) {
+                    return;
+                }
                 let Some(id) = entry
                     .target_id
                     .as_deref()
@@ -4039,9 +4058,6 @@ impl Workspace {
                 else {
                     return;
                 };
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Dev, cx);
-                }
                 self.sidebar.update(cx, |s, cx| {
                     s.focus_connection(id);
                     cx.notify();
@@ -4076,16 +4092,18 @@ impl Workspace {
                 cx.notify();
             }
             ActivityAction::OpenSupport => {
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Support, cx);
+                if !self.can_access_mode(AppMode::Support) {
+                    return;
                 }
+                self.set_mode(AppMode::Support, cx);
                 self.refresh_support(cx);
                 cx.notify();
             }
             ActivityAction::OpenTicket => {
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Support, cx);
+                if !self.can_access_mode(AppMode::Support) {
+                    return;
                 }
+                self.set_mode(AppMode::Support, cx);
                 if let Some(id) = entry.target_id {
                     self.select_support_ticket(id, cx);
                 }
@@ -4126,6 +4144,9 @@ impl Workspace {
     }
 
     pub fn show_connection_form(&mut self, conn: Option<Connection>, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let form = cx.new(|form_cx| {
             if let Some(ref c) = conn {
                 ConnectionForm::from_connection(c, form_cx)
@@ -4490,8 +4511,8 @@ impl Workspace {
         if !self.signed_in() {
             return;
         }
-        let can_switch = self.can_switch_mode();
-        let form = cx.new(|form_cx| OnboardingView::new(can_switch, form_cx));
+        let allowed_modes = self.allowed_modes();
+        let form = cx.new(|form_cx| OnboardingView::new(allowed_modes, form_cx));
         let sub = cx.subscribe(
             &form,
             |this, _form, event: &OnboardingEvent, cx| match event {
@@ -4753,8 +4774,9 @@ impl Workspace {
         self.push_account_to_support(cx);
         self.account_status = AccountStatus::Unknown;
         self.account_menu_open = false;
+        self.settings_open = false;
         self.last_whoami = None;
-        self.user_home_tab = UserHomeTab::Sites;
+        self.user_home_tab = UserHomeTab::Home;
         self.site_directory = None;
         self.issue_new_site_id = None;
         self.rebuild_issue_site_select(cx);
@@ -5018,23 +5040,15 @@ impl Workspace {
     /// The fixed command-palette entries (everything except the runtime-dependent
     /// manage-area entries, which [`refresh_command_palette`] appends).
     ///
-    /// `can_switch_mode` gates the "Mode : …" rows per SDUC-152 / SDTEST-1057
-    /// — non-super-admins never see them in the palette, so no dispatched
-    /// `SetAppMode` action can silently no-op on their end.
-    fn base_palette_actions(can_switch_mode: bool, ai_configured: bool) -> Vec<PaletteAction> {
+    /// The palette mirrors the current surface: personal actions are global,
+    /// while Support and Dev actions only exist when that surface is active.
+    /// Mode rows are built from the caller's exact allowed set.
+    fn base_palette_actions(
+        allowed_modes: &'static [AppMode],
+        current_mode: AppMode,
+        ai_configured: bool,
+    ) -> Vec<PaletteAction> {
         let mut actions = vec![
-            PaletteAction::new(
-                t!("palette.new_terminal").to_string(),
-                Some("Ctrl+T"),
-                "terminal",
-                Box::new(NewTerminal),
-            ),
-            PaletteAction::new(
-                t!("palette.toggle_sidebar").to_string(),
-                Some("Ctrl+B"),
-                "chevron-left",
-                Box::new(ToggleSidebar),
-            ),
             PaletteAction::new(
                 t!("palette.open_settings").to_string(),
                 Some("Ctrl+,"),
@@ -5042,64 +5056,10 @@ impl Workspace {
                 Box::new(OpenSettings),
             ),
             PaletteAction::new(
-                t!("palette.close_tab").to_string(),
-                Some("Ctrl+W"),
-                "x",
-                Box::new(CloseTab),
-            ),
-            PaletteAction::new(
-                t!("palette.next_tab").to_string(),
-                Some("Ctrl+Tab"),
-                "chevron-right",
-                Box::new(NextTab),
-            ),
-            PaletteAction::new(
-                t!("palette.prev_tab").to_string(),
-                Some("Ctrl+Shift+Tab"),
-                "chevron-left",
-                Box::new(PrevTab),
-            ),
-            PaletteAction::new(
                 t!("palette.quit").to_string(),
                 Some("Ctrl+Q"),
                 "x",
                 Box::new(Quit),
-            ),
-            PaletteAction::new(
-                t!("palette.browse_templates").to_string(),
-                None,
-                "scroll-text",
-                Box::new(OpenTemplateBrowser),
-            ),
-            PaletteAction::new(
-                t!("palette.new_script").to_string(),
-                None,
-                "plus",
-                Box::new(NewScript),
-            ),
-            PaletteAction::new(
-                t!("palette.open_server_sync").to_string(),
-                None,
-                "refresh-cw",
-                Box::new(OpenServerSync),
-            ),
-            PaletteAction::new(
-                t!("palette.open_sites").to_string(),
-                None,
-                "globe",
-                Box::new(OpenSites),
-            ),
-            PaletteAction::new(
-                t!("palette.open_recent").to_string(),
-                None,
-                "activity",
-                Box::new(OpenRecent),
-            ),
-            PaletteAction::new(
-                t!("palette.open_file_editor").to_string(),
-                Some("Ctrl+E"),
-                "pencil",
-                Box::new(OpenFileEditorView),
             ),
             PaletteAction::new(
                 t!("palette.cloud_sync_now").to_string(),
@@ -5114,60 +5074,128 @@ impl Workspace {
                 Box::new(SwitchSite),
             ),
             PaletteAction::new(
-                t!("palette.jean_open").to_string(),
-                None,
-                "cpu",
-                Box::new(OpenJeanConsole),
-            ),
-            PaletteAction::new(
-                t!("palette.jean_pause").to_string(),
-                None,
-                "clock",
-                Box::new(JeanTogglePause),
-            ),
-            PaletteAction::new(
-                t!("palette.fleet_open").to_string(),
-                None,
-                "box",
-                Box::new(OpenFleet),
-            ),
-            PaletteAction::new(
-                t!("palette.fleet_runtime").to_string(),
-                None,
-                "cpu",
-                Box::new(ToggleJeanRuntime),
-            ),
-            PaletteAction::new(
                 t!("palette.new_request").to_string(),
                 None,
                 "plus",
                 Box::new(NewRequest),
             ),
-            PaletteAction::new(
+        ];
+
+        if current_mode == AppMode::Support && allowed_modes.contains(&AppMode::Support) {
+            actions.push(PaletteAction::new(
                 t!("palette.support_requests").to_string(),
                 None,
                 "inbox",
                 Box::new(OpenSupportRequests),
-            ),
-            PaletteAction::new(
-                t!("palette.bext_open").to_string(),
-                None,
-                "cloud",
-                Box::new(OpenBextCloud),
-            ),
-            PaletteAction::new(
-                t!("palette.bext_connect").to_string(),
-                None,
-                "key",
-                Box::new(ConnectBextCloud),
-            ),
-            PaletteAction::new(
-                t!("palette.bext_new_site").to_string(),
-                None,
-                "cloud",
-                Box::new(OpenBextCloud),
-            ),
-        ];
+            ));
+        }
+
+        if current_mode == AppMode::Dev && allowed_modes.contains(&AppMode::Dev) {
+            actions.extend([
+                PaletteAction::new(
+                    t!("palette.new_terminal").to_string(),
+                    Some("Ctrl+T"),
+                    "terminal",
+                    Box::new(NewTerminal),
+                ),
+                PaletteAction::new(
+                    t!("palette.toggle_sidebar").to_string(),
+                    Some("Ctrl+B"),
+                    "chevron-left",
+                    Box::new(ToggleSidebar),
+                ),
+                PaletteAction::new(
+                    t!("palette.close_tab").to_string(),
+                    Some("Ctrl+W"),
+                    "x",
+                    Box::new(CloseTab),
+                ),
+                PaletteAction::new(
+                    t!("palette.next_tab").to_string(),
+                    Some("Ctrl+Tab"),
+                    "chevron-right",
+                    Box::new(NextTab),
+                ),
+                PaletteAction::new(
+                    t!("palette.prev_tab").to_string(),
+                    Some("Ctrl+Shift+Tab"),
+                    "chevron-left",
+                    Box::new(PrevTab),
+                ),
+                PaletteAction::new(
+                    t!("palette.browse_templates").to_string(),
+                    None,
+                    "scroll-text",
+                    Box::new(OpenTemplateBrowser),
+                ),
+                PaletteAction::new(
+                    t!("palette.new_script").to_string(),
+                    None,
+                    "plus",
+                    Box::new(NewScript),
+                ),
+                PaletteAction::new(
+                    t!("palette.open_server_sync").to_string(),
+                    None,
+                    "refresh-cw",
+                    Box::new(OpenServerSync),
+                ),
+                PaletteAction::new(
+                    t!("palette.open_sites").to_string(),
+                    None,
+                    "globe",
+                    Box::new(OpenSites),
+                ),
+                PaletteAction::new(
+                    t!("palette.open_recent").to_string(),
+                    None,
+                    "activity",
+                    Box::new(OpenRecent),
+                ),
+                PaletteAction::new(
+                    t!("palette.open_file_editor").to_string(),
+                    Some("Ctrl+E"),
+                    "pencil",
+                    Box::new(OpenFileEditorView),
+                ),
+                PaletteAction::new(
+                    t!("palette.jean_open").to_string(),
+                    None,
+                    "cpu",
+                    Box::new(OpenJeanConsole),
+                ),
+                PaletteAction::new(
+                    t!("palette.jean_pause").to_string(),
+                    None,
+                    "clock",
+                    Box::new(JeanTogglePause),
+                ),
+                PaletteAction::new(
+                    t!("palette.fleet_open").to_string(),
+                    None,
+                    "box",
+                    Box::new(OpenFleet),
+                ),
+                PaletteAction::new(
+                    t!("palette.fleet_runtime").to_string(),
+                    None,
+                    "cpu",
+                    Box::new(ToggleJeanRuntime),
+                ),
+                PaletteAction::new(
+                    t!("palette.bext_open").to_string(),
+                    None,
+                    "cloud",
+                    Box::new(OpenBextCloud),
+                ),
+                PaletteAction::new(
+                    t!("palette.bext_connect").to_string(),
+                    None,
+                    "key",
+                    Box::new(ConnectBextCloud),
+                ),
+            ]);
+        }
 
         if ai_configured {
             actions.push(PaletteAction::new(
@@ -5177,12 +5205,8 @@ impl Workspace {
                 Box::new(OpenAiAssistant),
             ));
         }
-        // Mode switcher entries — super-admins only, per SDUC-152 (leaks
-        // to a non-super-admin would show an action that then no-ops on
-        // dispatch; SDTEST-1057 gates it at construction so nothing leaks
-        // to the UI in the first place).
-        if can_switch_mode {
-            for m in AppMode::all() {
+        if allowed_modes.len() > 1 {
+            for &m in allowed_modes {
                 actions.push(PaletteAction::new(
                     t!("palette.mode", mode = m.label()).to_string(),
                     None,
@@ -5199,13 +5223,15 @@ impl Workspace {
                 Box::new(ApplyAppTheme { pref: pref.clone() }),
             ));
         }
-        for theme in TerminalTheme::builtins() {
-            actions.push(PaletteAction::new(
-                t!("palette.terminal_theme", name = theme.name).to_string(),
-                None,
-                "terminal",
-                Box::new(ApplyTerminalTheme { name: theme.name }),
-            ));
+        if current_mode == AppMode::Dev && allowed_modes.contains(&AppMode::Dev) {
+            for theme in TerminalTheme::builtins() {
+                actions.push(PaletteAction::new(
+                    t!("palette.terminal_theme", name = theme.name).to_string(),
+                    None,
+                    "terminal",
+                    Box::new(ApplyTerminalTheme { name: theme.name }),
+                ));
+            }
         }
         actions
     }
@@ -5215,7 +5241,8 @@ impl Workspace {
     /// the active site changes.
     fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
         let mut actions = Self::base_palette_actions(
-            self.can_switch_mode(),
+            self.allowed_modes(),
+            self.effective_mode(),
             self.ai_available_for_current_surface(cx),
         );
         if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
@@ -5281,8 +5308,7 @@ impl Workspace {
         } else if action.as_any().is::<ToggleSidebar>() {
             self.toggle_sidebar(cx);
         } else if action.as_any().is::<OpenSettings>() {
-            self.set_active_view(ActiveView::Settings);
-            cx.notify();
+            self.open_settings(cx);
         } else if action.as_any().is::<CloseTab>() {
             self.close_active_tab(cx);
         } else if action.as_any().is::<NextTab>() {
@@ -5390,6 +5416,30 @@ impl Workspace {
         )
     }
 
+    fn allowed_modes(&self) -> &'static [AppMode] {
+        if !self.signed_in() {
+            return &[];
+        }
+        AppMode::allowed_modes(self.is_inklura_support(), self.is_superadmin())
+    }
+
+    fn can_access_mode(&self, mode: AppMode) -> bool {
+        self.allowed_modes().contains(&mode)
+    }
+
+    fn enter_dev_mode(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.can_access_mode(AppMode::Dev) {
+            return false;
+        }
+        let was_settings_open = self.settings_open;
+        self.set_mode(AppMode::Dev, cx);
+        self.settings_open = false;
+        if was_settings_open {
+            self.activate_current_mode(cx);
+        }
+        true
+    }
+
     /// The surface to present. Logged-out → the welcome landing intercepts
     /// the render before this hits; the User fallback is defensive. Signed-
     /// in super-admin → persisted mode; inklura_support → persisted
@@ -5407,13 +5457,14 @@ impl Workspace {
         )
     }
 
-    /// Switch the app mode (super-admins only). Dev surfaces are hidden, not
-    /// destroyed — running terminal sessions keep going.
+    /// Switch to an allowed app mode. Dev surfaces are hidden, not destroyed —
+    /// running terminal sessions keep going.
     pub fn set_mode(&mut self, mode: AppMode, cx: &mut Context<Self>) {
-        if !self.can_switch_mode() || self.app_config.cloud_sync.mode == mode {
+        if !self.can_access_mode(mode) || self.app_config.cloud_sync.mode == mode {
             return;
         }
         self.app_config.cloud_sync.mode = mode;
+        self.settings_open = false;
         if let Err(e) = self.app_config.save() {
             tracing::error!("Failed to save app mode: {}", e);
         }
@@ -5427,6 +5478,20 @@ impl Workspace {
         // `issue_selected`/`issue_detail`.
         self.reset_issue_selection(cx);
 
+        self.activate_current_mode(cx);
+        cx.notify();
+    }
+
+    /// Open personal Settings without destroying or replacing the current
+    /// mode-specific surface.
+    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
+        self.settings_open = true;
+        self.theme_menu_open = false;
+        self.account_menu_open = false;
+        self.site_menu_open = false;
         self.activate_current_mode(cx);
         cx.notify();
     }
@@ -5453,6 +5518,10 @@ impl Workspace {
     /// Start/stop the support poll and load support data for the current mode.
     /// Call after login / startup / a mode change.
     pub fn activate_current_mode(&mut self, cx: &mut Context<Self>) {
+        let dev_tabs_enabled = self.can_access_mode(AppMode::Dev);
+        self.settings.update(cx, |settings, cx| {
+            settings.set_dev_tabs_enabled(dev_tabs_enabled, cx);
+        });
         self.sync_support_poll(cx);
         if self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured() {
             self.refresh_support(cx);
@@ -5466,8 +5535,9 @@ impl Workspace {
     }
 
     fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
-        let want =
-            self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured();
+        let want = !self.settings_open
+            && self.effective_mode() == AppMode::Support
+            && self.app_config.cloud_sync.is_configured();
         if want {
             if self._support_poll_task.is_none() {
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
@@ -5476,7 +5546,7 @@ impl Workspace {
                         .await;
                     let keep_going = this
                         .update(cx, |ws, cx| {
-                            if ws.effective_mode() == AppMode::Support {
+                            if !ws.settings_open && ws.effective_mode() == AppMode::Support {
                                 ws.refresh_support(cx);
                                 true
                             } else {
@@ -5776,7 +5846,7 @@ impl Workspace {
 
     /// Whether a Jean surface is currently on screen (so polling is worthwhile).
     fn jean_surface_visible(&self) -> bool {
-        if !self.has_jean() {
+        if self.settings_open || !self.has_jean() {
             return false;
         }
         match self.effective_mode() {
@@ -6080,7 +6150,8 @@ impl Workspace {
     }
 
     fn fleet_visible(&self) -> bool {
-        self.fleet_base_token().is_some()
+        !self.settings_open
+            && self.fleet_base_token().is_some()
             && self.effective_mode() == AppMode::Dev
             && self.active_view == ActiveView::Fleet
     }
@@ -6259,6 +6330,9 @@ impl Workspace {
     /// starts the loop. The safety gate is that the loop only *executes* jobs
     /// when enabled AND the instance autonomy is "auto"; "confirm" needs a click.
     pub fn toggle_jean_runtime(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         if self.fleet_base_token().is_none() {
             self.show_toast(
                 t!("toast.jean.login_required_runtime").to_string(),
@@ -6630,6 +6704,9 @@ impl Workspace {
 
     /// Open the Fleet view (palette / action) in Dev mode.
     pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         if self.fleet_base_token().is_none() {
             self.show_toast(
                 t!("toast.jean.login_required_fleet").to_string(),
@@ -6637,9 +6714,6 @@ impl Workspace {
                 cx,
             );
             return;
-        }
-        if self.can_switch_mode() {
-            self.set_mode(AppMode::Dev, cx);
         }
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
@@ -7005,6 +7079,9 @@ impl Workspace {
 
     /// Palette: open the Support console's Demandes tab.
     pub fn open_support_requests(&mut self, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Support) {
+            return;
+        }
         if !self.app_config.cloud_sync.is_configured() {
             self.show_toast(
                 t!("toast.issue.login_required_list").to_string(),
@@ -7013,9 +7090,7 @@ impl Workspace {
             );
             return;
         }
-        if self.can_switch_mode() {
-            self.set_mode(AppMode::Support, cx);
-        }
+        self.set_mode(AppMode::Support, cx);
         self.support.update(cx, |v, cx| {
             v.set_section(crate::support_view::SupportSection::Requests);
             cx.notify();
@@ -7026,7 +7101,8 @@ impl Workspace {
 
     /// A Jean/issues surface is on screen (User home, or Support mode).
     fn issues_relevant(&self) -> bool {
-        self.app_config.cloud_sync.is_configured()
+        !self.settings_open
+            && self.app_config.cloud_sync.is_configured()
             && matches!(self.effective_mode(), AppMode::User | AppMode::Support)
     }
 
@@ -7924,13 +8000,15 @@ impl Workspace {
     // --- bext Cloud (control plane + single-instance SDK) ---
 
     fn bext_visible(&self) -> bool {
-        self.effective_mode() == AppMode::Dev && self.active_view == ActiveView::BextCloud
+        !self.settings_open
+            && self.effective_mode() == AppMode::Dev
+            && self.active_view == ActiveView::BextCloud
     }
 
     /// Open the bext Cloud view (palette / sidebar).
     pub fn open_bext_cloud(&mut self, cx: &mut Context<Self>) {
-        if self.effective_mode() != AppMode::Dev && self.can_switch_mode() {
-            self.set_mode(AppMode::Dev, cx);
+        if !self.enter_dev_mode(cx) {
+            return;
         }
         self.active_view = ActiveView::BextCloud;
         self.on_active_view_changed(cx);
@@ -7939,6 +8017,9 @@ impl Workspace {
 
     /// Palette: open the view and immediately start the cloud connect flow.
     pub fn connect_bext_cloud_action(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.open_bext_cloud(cx);
         self.connect_bext(cx);
     }
@@ -7946,6 +8027,9 @@ impl Workspace {
     /// Per-connection "Gérer bext": open the Instance tab. v1 targets the local
     /// loopback SDK (remote reach via SSH tunnel is a follow-up).
     pub fn manage_bext_for_connection(&mut self, conn_id: Uuid, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         let app_id = self
             .connections
             .iter()
@@ -7953,9 +8037,6 @@ impl Workspace {
             .map(|c| c.alias.clone())
             .filter(|a| !a.is_empty())
             .unwrap_or_else(|| "default".to_string());
-        if self.effective_mode() != AppMode::Dev && self.can_switch_mode() {
-            self.set_mode(AppMode::Dev, cx);
-        }
         self.active_view = ActiveView::BextCloud;
         let base = "http://127.0.0.1".to_string();
         self.bext_view.update(cx, |v, cx| {
@@ -8511,6 +8592,9 @@ impl Workspace {
     /// Open the JeanClaude console (palette / action). Switches to Dev mode for
     /// super-admins so the console is actually on screen.
     pub fn open_jean_console(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         if !self.has_jean() {
             self.show_toast(
                 t!("toast.jean.not_configured").to_string(),
@@ -8518,9 +8602,6 @@ impl Workspace {
                 cx,
             );
             return;
-        }
-        if self.can_switch_mode() {
-            self.set_mode(AppMode::Dev, cx);
         }
         self.active_view = ActiveView::JeanConsole;
         self.on_active_view_changed(cx);
@@ -8541,6 +8622,9 @@ impl Workspace {
             // Keep the arm inert if another caller accidentally forwards it.
             DeepLink::Assistant => {}
             DeepLink::OpenConnection(id) => {
+                if !self.enter_dev_mode(cx) {
+                    return;
+                }
                 if !self.connections.iter().any(|c| c.id == id) {
                     self.show_toast(
                         t!("toast.deeplink.connection_not_found").to_string(),
@@ -8548,9 +8632,6 @@ impl Workspace {
                         cx,
                     );
                     return;
-                }
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Dev, cx);
                 }
                 self.switch_to_section(SidebarSection::Connections);
                 self.sidebar.update(cx, |s, cx| {
@@ -8561,8 +8642,8 @@ impl Workspace {
                 cx.notify();
             }
             DeepLink::SshConnect(id) => {
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Dev, cx);
+                if !self.enter_dev_mode(cx) {
+                    return;
                 }
                 if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
                     let title = conn.display_name().to_string();
@@ -8588,8 +8669,8 @@ impl Workspace {
                 }
             }
             DeepLink::TunnelStart(id) => {
-                if self.can_switch_mode() {
-                    self.set_mode(AppMode::Dev, cx);
+                if !self.enter_dev_mode(cx) {
+                    return;
                 }
                 self.switch_to_section(SidebarSection::PortForwards);
                 self.on_active_view_changed(cx);
@@ -8620,7 +8701,7 @@ impl Workspace {
                 cx.notify();
             }
             DeepLink::OpenTicket(id) => {
-                if !self.can_switch_mode() {
+                if !self.can_access_mode(AppMode::Support) {
                     self.show_toast(
                         t!("toast.deeplink.support_only").to_string(),
                         ToastLevel::Warning,
@@ -8696,6 +8777,9 @@ impl Workspace {
 
     /// Toggle JeanClaude's paused state (palette / action).
     pub fn jean_toggle_pause(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         if !self.has_jean() {
             return;
         }
@@ -8738,6 +8822,9 @@ impl Workspace {
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.sidebar_visible = !self.sidebar_visible;
         self.sidebar.update(cx, |sidebar, _cx| {
             sidebar.toggle_collapsed();
@@ -8770,8 +8857,8 @@ impl Workspace {
     }
 
     fn activate_dev_section(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
-        if self.can_switch_mode() {
-            self.set_mode(AppMode::Dev, cx);
+        if !self.enter_dev_mode(cx) {
+            return;
         }
         self.switch_to_section(section);
         self.sidebar.update(cx, |sidebar, cx| {
@@ -8799,6 +8886,9 @@ impl Workspace {
     }
 
     pub fn next_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.terminal.update(cx, |t, cx| {
             t.next_tab();
             cx.notify();
@@ -8806,6 +8896,9 @@ impl Workspace {
     }
 
     pub fn prev_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.terminal.update(cx, |t, cx| {
             t.prev_tab();
             cx.notify();
@@ -8813,6 +8906,9 @@ impl Workspace {
     }
 
     pub fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.terminal.update(cx, |t, cx| {
             if let Some(tab) = t.tabs.get(t.pane.active_index) {
                 let id = tab.id;
@@ -8905,6 +9001,9 @@ impl Workspace {
     }
 
     pub fn open_new_terminal(&mut self, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.terminal.update(cx, |terminal, cx| {
             terminal.spawn_local_terminal(cx);
         });
@@ -9041,7 +9140,7 @@ impl Workspace {
         site_menu_open: bool,
         active_site_label: Option<String>,
         sites_loaded: bool,
-        mode_switch: Option<AppMode>,
+        mode_switch: Option<(AppMode, &'static [AppMode])>,
         ui_font_size: f32,
         ai_configured: bool,
         ai_task_count: usize,
@@ -9196,6 +9295,20 @@ impl Workspace {
             theme_btn = theme_btn.bg(ShellDeckColors::hover_bg());
         }
 
+        // Settings is a personal surface shared by User, Support and Dev.
+        let settings_btn = account.as_ref().map(|_| {
+            let settings_handle = handle.clone();
+            IconButton::new("settings")
+                .variant(ButtonVariant::Ghost)
+                .size(gpui::px(28.0))
+                .icon_size(gpui::px(14.0))
+                .on_click(move |_, _, cx| {
+                    if let Some(ws) = settings_handle.upgrade() {
+                        ws.update(cx, |ws, cx| ws.open_settings(cx));
+                    }
+                })
+        });
+
         // Account chip — "Se connecter" when logged out, otherwise an
         // avatar-initial + name with a health status dot. Toggles the account
         // dropdown.
@@ -9285,8 +9398,8 @@ impl Workspace {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
 
-        // Mode switcher — a three-segment control, super-admins only.
-        let mode_switcher = mode_switch.map(|current| {
+        // Mode switcher — only the exact modes granted to this account.
+        let mode_switcher = mode_switch.map(|(current, allowed_modes)| {
             let mut seg = div()
                 .flex()
                 .items_center()
@@ -9294,7 +9407,7 @@ impl Workspace {
                 .p(px(2.0))
                 .rounded(px(6.0))
                 .bg(ShellDeckColors::badge_bg());
-            for m in AppMode::all() {
+            for &m in allowed_modes {
                 let active = m == current;
                 let mut btn = div()
                     .id(ElementId::from(SharedString::from(format!(
@@ -9518,6 +9631,7 @@ impl Workspace {
                     .child(account_btn)
                     .children(mode_switcher)
                     .children(site_chip)
+                    .children(settings_btn)
                     .child(theme_btn)
                     .child(divider())
                     .child(minimize_btn)
@@ -10676,8 +10790,8 @@ impl Workspace {
         )
     }
 
-    /// Tab bar for the User-mode home. Three tabs (Sites / Demandes /
-    /// Infos), same visual shape as `SupportView::render_section_tabs`
+    /// Tab bar for the User-mode home. Same visual shape as
+    /// `SupportView::render_section_tabs`
     /// (compact_filter_button + icon, `Default` variant when active).
     fn render_user_home_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = |label: String,
@@ -10718,6 +10832,13 @@ impl Workspace {
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(tab(
+                t!("user.tabs.home").to_string(),
+                "house",
+                UserHomeTab::Home,
+                current,
+                cx,
+            ))
+            .child(tab(
                 t!("user.tabs.sites").to_string(),
                 "globe",
                 UserHomeTab::Sites,
@@ -10738,6 +10859,468 @@ impl Workspace {
                 current,
                 cx,
             ))
+    }
+
+    fn render_user_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sites = self
+            .site_directory
+            .as_ref()
+            .map(|payload| payload.sites.len())
+            .unwrap_or(0);
+        let open_requests = self
+            .issues_list
+            .iter()
+            .filter(|issue| !matches!(issue.status.as_str(), "closed" | "resolved"))
+            .count();
+
+        let stat = |icon: &'static str, value: usize, label: String| {
+            adabraka_ui::display::card::Card::new()
+                .content(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .size(px(38.0))
+                                .rounded(px(10.0))
+                                .bg(ShellDeckColors::primary().opacity(0.12))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(lucide_icon(icon, 18.0, ShellDeckColors::primary())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(24.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(value.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(label),
+                                ),
+                        ),
+                )
+                .min_w(px(180.0))
+                .flex_1()
+        };
+
+        let entity = cx.entity();
+        let sites_action = Button::new("home-open-sites", t!("user.home.open_sites").to_string())
+            .variant(ButtonVariant::Outline)
+            .icon(IconSource::from("globe"))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.user_home_tab = UserHomeTab::Sites;
+                    cx.notify();
+                });
+            });
+        let entity = cx.entity();
+        let requests_action = Button::new(
+            "home-open-requests",
+            t!("user.home.open_requests").to_string(),
+        )
+        .variant(ButtonVariant::Outline)
+        .icon(IconSource::from("tag"))
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |this, cx| {
+                this.user_home_tab = UserHomeTab::Requests;
+                cx.notify();
+            });
+        });
+        let entity = cx.entity();
+        let new_request = Button::new("home-new-request", t!("user.home.new_request").to_string())
+            .icon(IconSource::from("plus"))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| this.open_new_request(cx));
+            });
+
+        let recent_requests = if self.issues_list.is_empty() {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .min_h(px(132.0))
+                .child(lucide_icon("inbox", 24.0, ShellDeckColors::text_muted()))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("user.home.recent_empty").to_string()),
+                )
+                .into_any_element()
+        } else {
+            let rows = self
+                .issues_list
+                .iter()
+                .take(3)
+                .cloned()
+                .enumerate()
+                .map(|(index, issue)| {
+                    let issue_id = issue.id.clone();
+                    let entity = cx.entity();
+                    let updated = rel_time(issue.updated_at);
+                    div()
+                        .id(("home-recent-request", index))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .px(px(2.0))
+                        .py(px(10.0))
+                        .border_b_1()
+                        .border_color(ShellDeckColors::border().opacity(0.65))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.user_home_tab = UserHomeTab::Requests;
+                                this.select_issue(issue_id.clone(), cx);
+                                cx.notify();
+                            });
+                        })
+                        .child(
+                            div()
+                                .size(px(30.0))
+                                .rounded(px(8.0))
+                                .bg(ShellDeckColors::primary().opacity(0.10))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .flex_shrink_0()
+                                .child(lucide_icon("inbox", 14.0, ShellDeckColors::primary())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .overflow_hidden()
+                                        .child(issue.title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(updated),
+                                ),
+                        )
+                        .child(issue_status_badge(&issue.status))
+                })
+                .collect::<Vec<_>>();
+            div().flex().flex_col().children(rows).into_any_element()
+        };
+
+        let account_status = match self.account_status {
+            AccountStatus::Ok => t!("user.home.status.connected").to_string(),
+            AccountStatus::Rejected => t!("user.home.status.expired").to_string(),
+            AccountStatus::Offline => t!("user.home.status.offline").to_string(),
+            AccountStatus::Unknown => t!("user.home.status.checking").to_string(),
+        };
+        let active_site = self
+            .app_config
+            .cloud_sync
+            .active_site_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| t!("user.home.no_active_site").to_string());
+        let status_row = |icon: &'static str, label: String, value: String, color: Hsla| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .py(px(7.0))
+                .child(
+                    div()
+                        .size(px(28.0))
+                        .rounded(px(7.0))
+                        .bg(color.opacity(0.10))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(lucide_icon(icon, 13.0, color)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(ShellDeckColors::text_primary())
+                                .overflow_hidden()
+                                .child(value),
+                        ),
+                )
+        };
+        let entity = cx.entity();
+        let sync_action = Button::new("home-sync", t!("user.home.sync").to_string())
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("refresh-cw"))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| this.cloud_sync_now(cx));
+            });
+
+        div()
+            .id("user-overview-scroll")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .overflow_y_scroll()
+            .gap(px(16.0))
+            .p(px(16.0))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(132.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .rounded(px(14.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::primary().opacity(0.40))
+                    .bg(black())
+                    .child(
+                        img("images/home/user-dashboard-network-v1.webp")
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(div().absolute().inset_0().bg(gpui::linear_gradient(
+                        90.0,
+                        gpui::linear_color_stop(transparent_black(), 0.0),
+                        gpui::linear_color_stop(black().opacity(0.94), 1.0),
+                    )))
+                    .child(
+                        div()
+                            .relative()
+                            .ml_auto()
+                            .w(relative(0.52))
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .items_start()
+                            .gap(px(7.0))
+                            .px(px(24.0))
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(3.0))
+                                    .rounded_full()
+                                    .bg(ShellDeckColors::primary().opacity(0.22))
+                                    .border_1()
+                                    .border_color(ShellDeckColors::primary().opacity(0.45))
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(hsla(0.47, 0.78, 0.72, 1.0))
+                                    .child(
+                                        t!("user.home.directory_count", count = sites).to_string(),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(21.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(white())
+                                    .child(t!("user.home.title").to_string()),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(430.0))
+                                    .text_size(px(12.0))
+                                    .text_color(white().opacity(0.72))
+                                    .child(t!("user.home.subtitle").to_string()),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.0))
+                    .child(stat("globe", sites, t!("user.home.sites").to_string()))
+                    .child(stat(
+                        "inbox",
+                        open_requests,
+                        t!("user.home.open_requests_count").to_string(),
+                    )),
+            )
+            .child(
+                adabraka_ui::display::card::Card::new().content(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(t!("user.home.quick_actions").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(ShellDeckColors::text_muted())
+                                        .child(t!("user.home.quick_actions_hint").to_string()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .child(sites_action)
+                                .child(requests_action)
+                                .child(new_request),
+                        ),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap(px(12.0))
+                    .child(
+                        adabraka_ui::display::card::Card::new()
+                            .content(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(8.0))
+                                            .pb(px(6.0))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .child(lucide_icon(
+                                                        "tag",
+                                                        15.0,
+                                                        ShellDeckColors::primary(),
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.0))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(
+                                                                ShellDeckColors::text_primary(),
+                                                            )
+                                                            .child(
+                                                                t!("user.home.recent_requests")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .text_color(ShellDeckColors::text_muted())
+                                                    .child(
+                                                        t!("user.home.latest_three").to_string(),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(recent_requests),
+                            )
+                            .min_w(px(300.0))
+                            .flex_1(),
+                    )
+                    .child(
+                        adabraka_ui::display::card::Card::new()
+                            .content(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .pb(px(6.0))
+                                            .child(lucide_icon(
+                                                "activity",
+                                                15.0,
+                                                ShellDeckColors::primary(),
+                                            ))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.0))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(ShellDeckColors::text_primary())
+                                                    .child(
+                                                        t!("user.home.workspace_status")
+                                                            .to_string(),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(status_row(
+                                        "shield",
+                                        t!("user.home.account").to_string(),
+                                        account_status,
+                                        self.account_status.dot_color(),
+                                    ))
+                                    .child(status_row(
+                                        "globe",
+                                        t!("user.home.active_site").to_string(),
+                                        active_site,
+                                        ShellDeckColors::primary(),
+                                    ))
+                                    .child(status_row(
+                                        "database",
+                                        t!("user.home.directory").to_string(),
+                                        t!("user.home.directory_count", count = sites).to_string(),
+                                        ShellDeckColors::success(),
+                                    ))
+                                    .child(
+                                        div().flex().justify_end().pt(px(6.0)).child(sync_action),
+                                    ),
+                            )
+                            .min_w(px(260.0))
+                            .flex_1(),
+                    ),
+            )
     }
 
     /// User-mode "Mes informations" tab — surfaces every field the
@@ -11582,6 +12165,9 @@ impl Workspace {
             .child(header)
             .child(tab_bar);
         match tab {
+            UserHomeTab::Home => {
+                body = body.child(self.render_user_overview(cx));
+            }
             UserHomeTab::Sites => {
                 body = body
                     .child({
@@ -12928,13 +13514,13 @@ impl Render for Workspace {
         let mut main_area = div().flex().flex_grow().min_h(px(0.0)).overflow_hidden();
 
         // Pre-login landing: intercepts before `effective_mode()` gets a say.
-        // Only shown on a fresh install (or after an explicit config wipe) —
-        // once the user picks "Se connecter" (logs in) or "Continuer en
-        // local" (`welcome_bypass = true`), we never come back here.
+        // There is no guest/local bypass; logout returns here as well.
         if self.show_welcome() {
             main_area = main_area.child(self.render_welcome_screen(_cx));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
+        } else if self.settings_open {
+            main_area = main_area.child(self.settings.clone());
         } else {
             // The app mode selects the whole surface. User/Support are full-pane
             // manage surfaces (no sidebar); Dev is the classic terminal workspace.
@@ -13023,8 +13609,7 @@ impl Render for Workspace {
             .on_action(move |_: &OpenSettings, _window, cx| {
                 if let Some(ws) = h3.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.set_active_view(ActiveView::Settings);
-                        cx.notify();
+                        ws.open_settings(cx);
                     });
                 }
             })
@@ -13365,7 +13950,7 @@ impl Render for Workspace {
             self.app_config.cloud_sync.active_site_label.clone(),
             self.site_directory.is_some(),
             if self.can_switch_mode() {
-                Some(self.effective_mode())
+                Some((self.effective_mode(), self.allowed_modes()))
             } else {
                 None
             },
@@ -13410,7 +13995,7 @@ impl Render for Workspace {
         // User-mode "Mes demandes" sheets: composer + selected-request detail.
         // Both live at workspace root so they slide over the list without
         // pushing it down (their inline predecessors did the pushing).
-        if matches!(self.effective_mode(), AppMode::User) {
+        if !self.settings_open && matches!(self.effective_mode(), AppMode::User) {
             if self.user_new_request_sheet_open {
                 root = root.child(self.render_user_new_request_sheet(_cx));
             } else if let Some(iss) = self.issue_detail.clone() {
