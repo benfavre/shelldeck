@@ -84,6 +84,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 | SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
 | SDTEST-1382 | `app_config.rs::config_without_companion_section_defaults_to_visible_start` | SDUC-435 | Green | Old configs remain visible by default; an explicit `[companion] start_hidden = true` round-trips through serde. |
+| SDTEST-1400 | `app_config.rs::companion_shortcuts_default_for_old_configs_and_round_trip_custom_values` | SDUC-434 | Green | Older `[companion]` sections receive platform-specific Dock/palette defaults; custom GPUI keystroke strings survive TOML serialization. |
 
 ---
 
@@ -204,7 +205,7 @@ Existing: **0 tests**.
 | SDTEST-181 | *to write* — login_password sends `{action:"login", email, password}` body | SDUC-140 | **Red / P0** | Only URL/whoami paths are covered; the login body shape is not. Mock TcpListener assertion. |
 | SDTEST-182 | *to write* — logout POSTs `{action:"logout"}` and swallows errors | SDUC-143 | **Red / P1** | Assert local state clears even when server 500s. |
 | SDTEST-183 | *to write* — provider=None targets the password page URL | SDUC-149 | **Red / P1** | Regression sensor for the URL shape. |
-| SDTEST-184 | `cloud_account.rs::resolve_effective_mode_logged_out_is_dev` + `resolve_effective_mode_superadmin_honours_persisted` + `resolve_effective_mode_non_superadmin_forced_to_user` + `resolve_effective_mode_covers_every_cell_of_the_truth_table` + `can_switch_only_true_for_signed_in_superadmin` | SDUC-152 | Green | 5 tests, added 2026-07-09. Ported `AppMode::resolve_effective(signed_in, is_superadmin, persisted) -> AppMode` + `AppMode::can_switch(signed_in, is_superadmin) -> bool` as pure fns on cloud_account.rs. Full truth-table sweep (12 cells) proves non-super-admins can't reach Support even via a hand-edited `shelldeck.toml`. `Workspace::effective_mode` / `can_switch_mode` will delegate in a follow-up commit (working-tree draft blocked on WIP merge). This is the same use case as SDTEST-1052. |
+| SDTEST-184 | `cloud_account.rs::resolve_effective_mode_*` + `can_switch_true_for_signed_in_inklura_support_or_superadmin` + `allowed_modes_matches_the_tier_table` | SDUC-152 | Green | Full 24-cell role/mode truth table: logged-out is defensive User behind welcome; regular/customer-admin is User-only; `inklura_support` gets User+Support; super-admin gets all three. Workspace delegates effective mode, switcher, palette and execution guards to this matrix. |
 
 ---
 
@@ -328,7 +329,7 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1320 | `deep_link.rs::parses_every_documented_verb` (+ `scheme_is_case_insensitive_but_id_is_not`, `ignores_query_and_fragment_and_trailing_slash`, `rejects_bad_scheme_and_unknown_verbs`, `rejects_malformed_uuid`, `looks_like_prefix_check`) | SDUC-406 | Green | Single choke point every OS-delivered URL flows through. |
+| SDTEST-1320 | `deep_link.rs::parses_every_documented_verb` (+ `scheme_is_case_insensitive_but_id_is_not`, `ignores_query_and_fragment_and_trailing_slash`, `rejects_bad_scheme_and_unknown_verbs`, `rejects_malformed_uuid`, `looks_like_prefix_check`) | SDUC-406 | Green | Single choke point every OS-delivered URL flows through, including the standalone Assistant target. |
 | SDTEST-1321 | `single_instance.rs::primary_then_secondary_forwards_payload` | SDUC-407 | Green | First = primary, second forwards + bows out, primary receives the link. |
 | SDTEST-1322 | `single_instance.rs::stale_discovery_file_is_taken_over` | SDUC-407 | Green | Dead primary → next launch takes over instead of stranding. |
 | SDTEST-1323 | `single_instance.rs::wrong_token_handoff_is_rejected` | SDUC-407 | Green | Token guard drops a rogue local hand-off. |
@@ -353,6 +354,7 @@ Existing: **0 tests**.
 | SDTEST-1367 | `ai.rs::legacy_ai_drafts_load_as_pending_tasks_and_status_changes_persist` | SDUC-418, SDUC-429 | Green | Proves old draft JSON remains readable as a pending task and that the new durable lifecycle status survives the same bounded store. |
 | SDTEST-1369 | `ai.rs::ai_action_policies_default_to_confirmation_and_map_exact_capabilities` | SDUC-430 | Green | Pins safe defaults, exact capability mapping, moderate automatic execution, and forced confirmation for every high-risk plan. |
 | SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
+| SDTEST-1407 | `ai.rs::ai_running_status_excludes_drafts_and_confirmation_waits` | SDUC-429 | Green | The tray-running contract includes only `Generating` and `Executing`; ready/pending drafts, confirmation waits, and terminal states remain excluded. |
 
 ---
 

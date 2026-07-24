@@ -16,6 +16,75 @@ pub fn dock_tray_label() -> String {
     t!("ai.dock.tray_open").to_string()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayLabels {
+    pub show: String,
+    pub assistant: String,
+    pub palette: String,
+    pub quit: String,
+    pub pinned: String,
+    pub no_pinned: String,
+}
+
+impl TrayLabels {
+    pub fn localized() -> Self {
+        Self {
+            show: t!("tray.show").to_string(),
+            assistant: dock_tray_label(),
+            palette: t!("tray.palette").to_string(),
+            quit: t!("tray.quit").to_string(),
+            pinned: t!("tray.pinned").to_string(),
+            no_pinned: t!("tray.no_pinned").to_string(),
+        }
+    }
+}
+
+impl Default for TrayLabels {
+    fn default() -> Self {
+        Self::localized()
+    }
+}
+
+pub fn tray_counter_ssh(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.ssh.zero").to_string(),
+        1 => t!("tray.counter.ssh.one").to_string(),
+        n => t!("tray.counter.ssh.many", count = n).to_string(),
+    }
+}
+
+pub fn tray_counter_tunnels(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.tunnels.zero").to_string(),
+        1 => t!("tray.counter.tunnels.one").to_string(),
+        n => t!("tray.counter.tunnels.many", count = n).to_string(),
+    }
+}
+
+pub fn tray_counter_tickets(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.tickets.zero").to_string(),
+        1 => t!("tray.counter.tickets.one").to_string(),
+        n => t!("tray.counter.tickets.many", count = n).to_string(),
+    }
+}
+
+pub fn tray_counter_jean(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.jean.zero").to_string(),
+        1 => t!("tray.counter.jean.one").to_string(),
+        n => t!("tray.counter.jean.many", count = n).to_string(),
+    }
+}
+
+pub fn tray_counter_ai_tasks(n: usize) -> String {
+    match n {
+        0 => t!("tray.counter.ai_tasks.zero").to_string(),
+        1 => t!("tray.counter.ai_tasks.one").to_string(),
+        n => t!("tray.counter.ai_tasks.many", count = n).to_string(),
+    }
+}
+
 /// Compact root view hosted by the screen-edge Assistant Dock.
 ///
 /// The actual conversation surface remains `AiAssistantView`, shared with the
@@ -103,6 +172,7 @@ impl Render for AiDockView {
                         )
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
+                        .tooltip(t!("ai.dock.open_shelldeck").to_string())
                         .icon(IconSource::from("external-link"))
                         .on_click(move |_, dock_window, cx| {
                             if let Err(error) = main_window.update(cx, |_, main_window, _| {
@@ -118,7 +188,7 @@ impl Render for AiDockView {
                         }),
                     )
                     .child(
-                        Button::new("ai-dock-hide", "")
+                        Button::new("ai-dock-hide", t!("ai.dock.hide").to_string())
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .tooltip(t!("ai.dock.hide").to_string())

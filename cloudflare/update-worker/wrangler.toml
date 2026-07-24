@@ -10,3 +10,7 @@ routes = [
 [[kv_namespaces]]
 binding = "SHELLDECK_KV"
 id = "860e45ea2eb84055861d946e514c8497"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"

@@ -346,6 +346,7 @@ impl SshChannel {
         (
             SshChannelReader {
                 channel: self.channel,
+                saw_exit: false,
             },
             writer,
         )
@@ -358,37 +359,50 @@ impl SshChannel {
 /// while also providing `resize()` (which only needs `&self`).
 pub struct SshChannelReader {
     channel: Channel<client::Msg>,
+    saw_exit: bool,
 }
 
 /// Result from reading the SSH channel.
+#[derive(Debug, PartialEq, Eq)]
 pub enum SshChannelData {
     /// Data from the channel (stdout or stderr).
     Data(Vec<u8>),
-    /// Channel has been closed.
-    Eof,
+    /// The remote shell ended through EOF, close, or an exit status.
+    CleanEnd,
+    /// The transport disappeared without a normal channel terminator.
+    ConnectionLost,
+}
+
+fn classify_channel_message(
+    message: Option<ChannelMsg>,
+    saw_exit: &mut bool,
+) -> Option<SshChannelData> {
+    match message {
+        Some(ChannelMsg::Data { data }) => Some(SshChannelData::Data(data.to_vec())),
+        Some(ChannelMsg::ExtendedData { data, .. }) => Some(SshChannelData::Data(data.to_vec())),
+        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => Some(SshChannelData::CleanEnd),
+        Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::ExitSignal { .. }) => {
+            *saw_exit = true;
+            None
+        }
+        None if *saw_exit => Some(SshChannelData::CleanEnd),
+        None => Some(SshChannelData::ConnectionLost),
+        _ => None,
+    }
 }
 
 impl SshChannelReader {
     /// Wait for the next data from the channel.
     ///
-    /// Returns `Some(SshChannelData::Data(...))` for stdout/stderr,
-    /// `Some(SshChannelData::Eof)` when the channel closes, or
-    /// `None` when the channel is gone.
-    pub async fn read(&mut self) -> Option<SshChannelData> {
+    /// Returns data while the channel is active, [`SshChannelData::CleanEnd`]
+    /// for a normal shell exit, or [`SshChannelData::ConnectionLost`] when the
+    /// transport disappears without a normal channel terminator.
+    pub async fn read(&mut self) -> SshChannelData {
         loop {
-            match self.channel.wait().await {
-                Some(ChannelMsg::Data { data }) => {
-                    return Some(SshChannelData::Data(data.to_vec()));
-                }
-                Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    return Some(SshChannelData::Data(data.to_vec()));
-                }
-                Some(ChannelMsg::Eof) => return Some(SshChannelData::Eof),
-                Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::ExitSignal { .. }) => {
-                    continue; // skip these, wait for Eof
-                }
-                None => return None,
-                _ => continue,
+            if let Some(data) =
+                classify_channel_message(self.channel.wait().await, &mut self.saw_exit)
+            {
+                return data;
             }
         }
     }
@@ -399,5 +413,45 @@ impl SshChannelReader {
             .window_change(cols, rows, 0, 0)
             .await
             .map_err(|e| SshError::Channel(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod channel_end_tests {
+    use super::{classify_channel_message, SshChannelData};
+    use russh::ChannelMsg;
+
+    // SDTEST-1413
+    #[test]
+    fn protocol_terminators_are_clean_but_unmarked_channel_loss_is_unexpected() {
+        let mut saw_exit = false;
+        assert_eq!(
+            classify_channel_message(Some(ChannelMsg::Eof), &mut saw_exit),
+            Some(SshChannelData::CleanEnd)
+        );
+        assert_eq!(
+            classify_channel_message(Some(ChannelMsg::Close), &mut saw_exit),
+            Some(SshChannelData::CleanEnd)
+        );
+
+        let mut saw_exit = false;
+        assert_eq!(
+            classify_channel_message(
+                Some(ChannelMsg::ExitStatus { exit_status: 0 }),
+                &mut saw_exit,
+            ),
+            None
+        );
+        assert!(saw_exit);
+        assert_eq!(
+            classify_channel_message(None, &mut saw_exit),
+            Some(SshChannelData::CleanEnd)
+        );
+
+        let mut saw_exit = false;
+        assert_eq!(
+            classify_channel_message(None, &mut saw_exit),
+            Some(SshChannelData::ConnectionLost)
+        );
     }
 }

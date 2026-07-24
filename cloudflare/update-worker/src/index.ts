@@ -1,5 +1,10 @@
+import { renderMarketingLandingPage } from "./landing";
+
+const FALLBACK_VERSION = "0.5.3";
+
 export interface Env {
   SHELLDECK_KV: KVNamespace;
+  ASSETS: Fetcher;
 }
 
 interface PlatformRelease {
@@ -59,7 +64,7 @@ interface DownloadInfo {
 }
 
 async function getDownloadInfo(env: Env): Promise<DownloadInfo> {
-  const fallback: DownloadInfo = { version: "0.2.8" };
+  const fallback: DownloadInfo = { version: FALLBACK_VERSION };
   try {
     const raw = await env.SHELLDECK_KV.get("latest-release");
     if (!raw) return fallback;
@@ -812,7 +817,7 @@ function switchInstallTab(tab) {
 }
 
 async function renderInstallSh(env: Env): Promise<Response> {
-  let version = "0.2.8";
+  let version = FALLBACK_VERSION;
   let linuxX86Url = "";
   let linuxX86Sha = "";
   let darwinArm64Url = "";
@@ -1044,7 +1049,7 @@ echo ""
 }
 
 async function renderInstallPs1(env: Env): Promise<Response> {
-  let version = "0.2.8";
+  let version = FALLBACK_VERSION;
   let windowsUrl = "";
   let windowsSha = "";
 
@@ -1173,7 +1178,15 @@ export default {
     }
 
     if (url.pathname === "/" || url.pathname === "") {
-      return renderLandingPage(env);
+      return renderMarketingLandingPage(await getDownloadInfo(env));
+    }
+
+    if (
+      url.pathname.startsWith("/campaign/") ||
+      url.pathname.startsWith("/brand/") ||
+      url.pathname === "/favicon.svg"
+    ) {
+      return env.ASSETS.fetch(request);
     }
 
     if (url.pathname === "/health") {

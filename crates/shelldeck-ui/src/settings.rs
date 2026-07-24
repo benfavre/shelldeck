@@ -6,14 +6,15 @@ use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::components::toggle::Toggle;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Spinner,
+    SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 
 use crate::t;
 use shelldeck_core::ai::{configured_cli_available, AiAutonomyLevel, AiBackend};
-use shelldeck_core::config::app_config::{AppConfig, ThemePreference, UiLanguage};
+use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::theme::{palette_for, ShellDeckColors};
@@ -33,6 +34,62 @@ const MONOSPACE_FONTS: &[&str] = &[
 
 const EDITOR_TAB_SIZES: &[usize] = &[2, 4, 8];
 
+fn display_shortcut(shortcut: &str) -> String {
+    let Ok(keystroke) = Keystroke::parse(shortcut) else {
+        return shortcut.to_string();
+    };
+    let mut parts = Vec::with_capacity(5);
+    if keystroke.modifiers.control {
+        parts.push("Ctrl".to_string());
+    }
+    if keystroke.modifiers.alt {
+        parts.push("Alt".to_string());
+    }
+    if keystroke.modifiers.platform {
+        parts.push(if cfg!(target_os = "macos") {
+            "Cmd".to_string()
+        } else {
+            "Super".to_string()
+        });
+    }
+    if keystroke.modifiers.shift {
+        parts.push("Shift".to_string());
+    }
+    let mut chars = keystroke.key.chars();
+    parts.push(match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    });
+    parts.join("+")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShortcutCaptureValidation {
+    Accepted(String),
+    ModifierRequired,
+    Conflict,
+}
+
+fn validate_shortcut_capture(
+    keystroke: &Keystroke,
+    other_shortcut: &str,
+) -> ShortcutCaptureValidation {
+    let modifiers = keystroke.modifiers;
+    let modifier_key = matches!(
+        keystroke.key.as_str(),
+        "shift" | "control" | "ctrl" | "alt" | "platform" | "cmd" | "super" | "win" | "fn"
+    );
+    if modifier_key || !(modifiers.control || modifiers.alt || modifiers.platform) {
+        return ShortcutCaptureValidation::ModifierRequired;
+    }
+    let shortcut = keystroke.unparse();
+    if shortcut == other_shortcut {
+        ShortcutCaptureValidation::Conflict
+    } else {
+        ShortcutCaptureValidation::Accepted(shortcut)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
@@ -49,6 +106,8 @@ pub enum SettingsTab {
 pub enum SettingsEvent {
     ConfigChanged(AppConfig),
     ThemeChanged(ThemePreference),
+    /// Leave the global Settings surface and return to the current app mode.
+    CloseRequested,
     /// User flipped the "Launch at login" toggle to `desired`. Workspace
     /// applies the OS-level change on a background thread, then either
     /// commits the config field (on success) or toasts + leaves the
@@ -72,6 +131,37 @@ pub enum SettingsEvent {
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompanionShortcutKind {
+    AiDock,
+    CommandPalette,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortcutRegistrationStatus {
+    Disabled,
+    Applying,
+    Registered,
+    PendingPortal,
+    Conflict,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompanionShortcutStatuses {
+    pub ai_dock: ShortcutRegistrationStatus,
+    pub command_palette: ShortcutRegistrationStatus,
+}
+
+impl Default for CompanionShortcutStatuses {
+    fn default() -> Self {
+        Self {
+            ai_dock: ShortcutRegistrationStatus::Disabled,
+            command_palette: ShortcutRegistrationStatus::Disabled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum AiConnectionState {
     #[default]
@@ -84,6 +174,7 @@ pub enum AiConnectionState {
 pub struct SettingsView {
     pub config: AppConfig,
     pub active_tab: SettingsTab,
+    dev_tabs_enabled: bool,
     pub unsaved_changes: bool,
     /// Adabraka `Select` entities. Each keeps its own open/highlighted state
     /// and is rebuilt in `sync_selects` whenever the underlying config
@@ -98,6 +189,10 @@ pub struct SettingsView {
     ai_model_state: Entity<InputState>,
     ai_api_key_state: Entity<InputState>,
     ai_connection_state: AiConnectionState,
+    shortcut_capture: Option<CompanionShortcutKind>,
+    shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
+    shortcut_capture_focus: FocusHandle,
+    companion_shortcut_statuses: CompanionShortcutStatuses,
 }
 
 impl SettingsView {
@@ -110,9 +205,11 @@ impl SettingsView {
         let ui_font_family_select = build_ui_font_family_select(&config, cx);
         let ai_backend_select = build_ai_backend_select(&config, cx);
         let ai_model = config.ai.model.clone();
+        let shortcut_capture_focus = cx.focus_handle();
         Self {
             config,
             active_tab: SettingsTab::General,
+            dev_tabs_enabled: false,
             unsaved_changes: false,
             editor_font_family_select,
             editor_tab_size_select,
@@ -128,6 +225,10 @@ impl SettingsView {
             }),
             ai_api_key_state: cx.new(InputState::new),
             ai_connection_state: AiConnectionState::NotTested,
+            shortcut_capture: None,
+            shortcut_status_before_capture: None,
+            shortcut_capture_focus,
+            companion_shortcut_statuses: CompanionShortcutStatuses::default(),
         }
     }
 
@@ -215,6 +316,143 @@ impl SettingsView {
         self.config.theme.clone()
     }
 
+    pub fn set_companion_shortcut_statuses(
+        &mut self,
+        statuses: CompanionShortcutStatuses,
+        cx: &mut Context<Self>,
+    ) {
+        if self.companion_shortcut_statuses == statuses {
+            return;
+        }
+        if let Some(kind) = self.shortcut_capture {
+            let status = match kind {
+                CompanionShortcutKind::AiDock => statuses.ai_dock.clone(),
+                CompanionShortcutKind::CommandPalette => statuses.command_palette.clone(),
+            };
+            self.shortcut_status_before_capture = Some((kind, status));
+        }
+        self.companion_shortcut_statuses = statuses;
+        cx.notify();
+    }
+
+    fn shortcut_status(&self, kind: CompanionShortcutKind) -> &ShortcutRegistrationStatus {
+        match kind {
+            CompanionShortcutKind::AiDock => &self.companion_shortcut_statuses.ai_dock,
+            CompanionShortcutKind::CommandPalette => {
+                &self.companion_shortcut_statuses.command_palette
+            }
+        }
+    }
+
+    fn set_shortcut_status(
+        &mut self,
+        kind: CompanionShortcutKind,
+        status: ShortcutRegistrationStatus,
+    ) {
+        match kind {
+            CompanionShortcutKind::AiDock => {
+                self.companion_shortcut_statuses.ai_dock = status;
+            }
+            CompanionShortcutKind::CommandPalette => {
+                self.companion_shortcut_statuses.command_palette = status;
+            }
+        }
+    }
+
+    fn handle_shortcut_capture(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(kind) = self.shortcut_capture else {
+            return;
+        };
+        cx.stop_propagation();
+        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+            self.cancel_shortcut_capture();
+            cx.notify();
+            return;
+        }
+
+        let other = match kind {
+            CompanionShortcutKind::AiDock => &self.config.companion.global_palette_shortcut,
+            CompanionShortcutKind::CommandPalette => &self.config.companion.global_shortcut,
+        };
+        let shortcut = match validate_shortcut_capture(&event.keystroke, other) {
+            ShortcutCaptureValidation::Accepted(shortcut) => shortcut,
+            ShortcutCaptureValidation::ModifierRequired => {
+                self.set_shortcut_status(
+                    kind,
+                    ShortcutRegistrationStatus::Error(
+                        t!("settings.companion.shortcut.error.modifier_required").to_string(),
+                    ),
+                );
+                cx.notify();
+                return;
+            }
+            ShortcutCaptureValidation::Conflict => {
+                self.set_shortcut_status(kind, ShortcutRegistrationStatus::Conflict);
+                cx.notify();
+                return;
+            }
+        };
+        let current = match kind {
+            CompanionShortcutKind::AiDock => &self.config.companion.global_shortcut,
+            CompanionShortcutKind::CommandPalette => &self.config.companion.global_palette_shortcut,
+        };
+        if shortcut == *current {
+            self.cancel_shortcut_capture();
+            cx.notify();
+            return;
+        }
+
+        match kind {
+            CompanionShortcutKind::AiDock => {
+                self.config.companion.global_shortcut = shortcut;
+            }
+            CompanionShortcutKind::CommandPalette => {
+                self.config.companion.global_palette_shortcut = shortcut;
+            }
+        }
+        self.shortcut_capture = None;
+        self.shortcut_status_before_capture = None;
+        self.set_shortcut_status(kind, ShortcutRegistrationStatus::Applying);
+        self.save_config(cx);
+    }
+
+    fn reset_shortcut(&mut self, kind: CompanionShortcutKind, cx: &mut Context<Self>) {
+        let target = match kind {
+            CompanionShortcutKind::AiDock => CompanionConfig::default_global_shortcut(),
+            CompanionShortcutKind::CommandPalette => {
+                CompanionConfig::default_global_palette_shortcut()
+            }
+        };
+        let current = match kind {
+            CompanionShortcutKind::AiDock => &self.config.companion.global_shortcut,
+            CompanionShortcutKind::CommandPalette => &self.config.companion.global_palette_shortcut,
+        };
+        if current == target {
+            self.cancel_shortcut_capture();
+            cx.notify();
+            return;
+        }
+        match kind {
+            CompanionShortcutKind::AiDock => {
+                self.config.companion.global_shortcut = target.to_string();
+            }
+            CompanionShortcutKind::CommandPalette => {
+                self.config.companion.global_palette_shortcut = target.to_string();
+            }
+        }
+        self.shortcut_capture = None;
+        self.shortcut_status_before_capture = None;
+        self.set_shortcut_status(kind, ShortcutRegistrationStatus::Applying);
+        self.save_config(cx);
+    }
+
+    fn cancel_shortcut_capture(&mut self) {
+        if let Some((kind, status)) = self.shortcut_status_before_capture.take() {
+            self.set_shortcut_status(kind, status);
+        }
+        self.shortcut_capture = None;
+    }
+
     /// Update the persisted "sidebar top-nav collapsed" state. Called by the
     /// workspace when the user clicks the sidebar's collapse chevron.
     pub fn set_sidebar_nav_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -251,6 +489,14 @@ impl SettingsView {
         }
         self.unsaved_changes = false;
         cx.emit(SettingsEvent::ConfigChanged(self.config.clone()));
+        cx.notify();
+    }
+
+    pub fn set_dev_tabs_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.dev_tabs_enabled = enabled;
+        if !enabled && matches!(self.active_tab, SettingsTab::Terminal | SettingsTab::Editor) {
+            self.active_tab = SettingsTab::General;
+        }
         cx.notify();
     }
 
@@ -344,6 +590,149 @@ impl SettingsView {
                     // seam. See `.agents/spacing.md`.
                     .pr(px(4.0))
                     .child(control),
+            )
+    }
+
+    fn render_shortcut_control(
+        &self,
+        kind: CompanionShortcutKind,
+        enabled: bool,
+        shortcut: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let capturing = self.shortcut_capture == Some(kind);
+        let button_label = if capturing {
+            t!("settings.companion.shortcut.capture").to_string()
+        } else {
+            display_shortcut(shortcut)
+        };
+        let (status_label, status_variant) = if capturing {
+            (
+                t!("settings.companion.shortcut.status.capturing").to_string(),
+                BadgeVariant::Warning,
+            )
+        } else {
+            match self.shortcut_status(kind) {
+                ShortcutRegistrationStatus::Disabled => (
+                    t!("settings.companion.shortcut.status.disabled").to_string(),
+                    BadgeVariant::Secondary,
+                ),
+                ShortcutRegistrationStatus::Applying => (
+                    t!("settings.companion.shortcut.status.applying").to_string(),
+                    BadgeVariant::Warning,
+                ),
+                ShortcutRegistrationStatus::Registered => (
+                    t!("settings.companion.shortcut.status.registered").to_string(),
+                    BadgeVariant::Default,
+                ),
+                ShortcutRegistrationStatus::PendingPortal => (
+                    t!("settings.companion.shortcut.status.portal_pending").to_string(),
+                    BadgeVariant::Warning,
+                ),
+                ShortcutRegistrationStatus::Conflict => (
+                    t!("settings.companion.shortcut.status.conflict").to_string(),
+                    BadgeVariant::Destructive,
+                ),
+                ShortcutRegistrationStatus::Error(error) => {
+                    (error.clone(), BadgeVariant::Destructive)
+                }
+            }
+        };
+
+        let toggle_entity = entity.clone();
+        let capture_entity = entity.clone();
+        let reset_entity = entity;
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(6.0))
+            .max_w(px(310.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Toggle::new(match kind {
+                            CompanionShortcutKind::AiDock => "companion-global-shortcut",
+                            CompanionShortcutKind::CommandPalette => {
+                                "companion-global-palette-shortcut"
+                            }
+                        })
+                        .checked(enabled)
+                        .on_click(move |value, _window, cx| {
+                            let value = *value;
+                            toggle_entity.update(cx, |this, cx| {
+                                match kind {
+                                    CompanionShortcutKind::AiDock => {
+                                        this.config.companion.global_shortcut_enabled = value;
+                                    }
+                                    CompanionShortcutKind::CommandPalette => {
+                                        this.config.companion.global_palette_shortcut_enabled =
+                                            value;
+                                    }
+                                }
+                                this.set_shortcut_status(
+                                    kind,
+                                    if value {
+                                        ShortcutRegistrationStatus::Applying
+                                    } else {
+                                        ShortcutRegistrationStatus::Disabled
+                                    },
+                                );
+                                this.save_config(cx);
+                            });
+                        }),
+                    )
+                    .child(
+                        Button::new(
+                            match kind {
+                                CompanionShortcutKind::AiDock => "capture-ai-dock-shortcut",
+                                CompanionShortcutKind::CommandPalette => {
+                                    "capture-command-palette-shortcut"
+                                }
+                            },
+                            button_label,
+                        )
+                        .variant(ButtonVariant::Outline)
+                        .size(ButtonSize::Sm)
+                        .selected(capturing)
+                        .on_click(move |_, window, cx| {
+                            capture_entity.update(cx, |this, cx| {
+                                this.cancel_shortcut_capture();
+                                this.shortcut_capture = Some(kind);
+                                this.shortcut_status_before_capture =
+                                    Some((kind, this.shortcut_status(kind).clone()));
+                                this.shortcut_capture_focus.focus(window);
+                                cx.notify();
+                            });
+                        }),
+                    )
+                    .child(
+                        Button::new(
+                            match kind {
+                                CompanionShortcutKind::AiDock => "reset-ai-dock-shortcut",
+                                CompanionShortcutKind::CommandPalette => {
+                                    "reset-command-palette-shortcut"
+                                }
+                            },
+                            t!("settings.companion.shortcut.reset").to_string(),
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .on_click(move |_, _window, cx| {
+                            reset_entity.update(cx, |this, cx| {
+                                this.reset_shortcut(kind, cx);
+                            });
+                        }),
+                    ),
+            )
+            .child(
+                Badge::new(status_label)
+                    .variant(status_variant)
+                    .max_w(px(310.0)),
             )
     }
 
@@ -448,25 +837,21 @@ impl SettingsView {
             .child(Self::render_setting_row(
                 t!("settings.companion.global_shortcut.label").as_ref(),
                 t!("settings.companion.global_shortcut.description").as_ref(),
-                Self::bind_toggle(
-                    "companion-global-shortcut",
+                self.render_shortcut_control(
+                    CompanionShortcutKind::AiDock,
                     self.config.companion.global_shortcut_enabled,
-                    &entity,
-                    |this, value| {
-                        this.config.companion.global_shortcut_enabled = value;
-                    },
+                    &self.config.companion.global_shortcut,
+                    cx,
                 ),
             ))
             .child(Self::render_setting_row(
                 t!("settings.companion.global_palette_shortcut.label").as_ref(),
                 t!("settings.companion.global_palette_shortcut.description").as_ref(),
-                Self::bind_toggle(
-                    "companion-global-palette-shortcut",
+                self.render_shortcut_control(
+                    CompanionShortcutKind::CommandPalette,
                     self.config.companion.global_palette_shortcut_enabled,
-                    &entity,
-                    |this, value| {
-                        this.config.companion.global_palette_shortcut_enabled = value;
-                    },
+                    &self.config.companion.global_palette_shortcut,
+                    cx,
                 ),
             ))
             .child(Self::render_setting_row(
@@ -1819,6 +2204,13 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let close_button = IconButton::new("x")
+            .variant(ButtonVariant::Ghost)
+            .size(gpui::px(30.0))
+            .icon_size(gpui::px(14.0))
+            .on_click(cx.listener(|_this, _, _, cx| {
+                cx.emit(SettingsEvent::CloseRequested);
+            }));
         let mut header = div()
             .flex()
             .items_center()
@@ -1838,20 +2230,29 @@ impl Render for SettingsView {
         if self.unsaved_changes {
             header = header.child(
                 div()
-                    .id("save-settings-btn")
-                    .px(px(16.0))
-                    .py(px(6.0))
-                    .rounded(px(4.0))
-                    .bg(ShellDeckColors::primary())
-                    .text_color(white())
-                    .text_size(px(13.0))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.8)))
-                    .child(t!("settings.save").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.save_config(cx);
-                    })),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("save-settings-btn")
+                            .px(px(16.0))
+                            .py(px(6.0))
+                            .rounded(px(4.0))
+                            .bg(ShellDeckColors::primary())
+                            .text_color(white())
+                            .text_size(px(13.0))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(ShellDeckColors::primary().opacity(0.8)))
+                            .child(t!("settings.save").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_config(cx);
+                            })),
+                    )
+                    .child(close_button),
             );
+        } else {
+            header = header.child(close_button);
         }
 
         // Tab content — scrolls vertically inside its own column.
@@ -1887,6 +2288,10 @@ impl Render for SettingsView {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&self.shortcut_capture_focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                this.handle_shortcut_capture(event, cx);
+            }))
             .bg(ShellDeckColors::bg_primary())
             // Header
             .child(header)
@@ -1899,8 +2304,8 @@ impl Render for SettingsView {
                     .id("settings-body")
                     .overflow_hidden()
                     // Tab sidebar
-                    .child(
-                        div()
+                    .child({
+                        let mut tabs = div()
                             .flex()
                             .flex_col()
                             .flex_shrink_0()
@@ -1913,33 +2318,36 @@ impl Render for SettingsView {
                                 SettingsTab::General,
                                 t!("settings.tab.general").as_ref(),
                                 cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Terminal,
-                                t!("settings.tab.terminal").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Editor,
-                                t!("settings.tab.editor").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Ai,
-                                t!("settings.tab.ai").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::Appearance,
-                                t!("settings.tab.appearance").as_ref(),
-                                cx,
-                            ))
-                            .child(self.render_tab_button(
-                                SettingsTab::About,
-                                t!("settings.tab.about").as_ref(),
-                                cx,
-                            )),
-                    )
+                            ));
+                        if self.dev_tabs_enabled {
+                            tabs = tabs
+                                .child(self.render_tab_button(
+                                    SettingsTab::Terminal,
+                                    t!("settings.tab.terminal").as_ref(),
+                                    cx,
+                                ))
+                                .child(self.render_tab_button(
+                                    SettingsTab::Editor,
+                                    t!("settings.tab.editor").as_ref(),
+                                    cx,
+                                ));
+                        }
+                        tabs.child(self.render_tab_button(
+                            SettingsTab::Ai,
+                            t!("settings.tab.ai").as_ref(),
+                            cx,
+                        ))
+                        .child(self.render_tab_button(
+                            SettingsTab::Appearance,
+                            t!("settings.tab.appearance").as_ref(),
+                            cx,
+                        ))
+                        .child(self.render_tab_button(
+                            SettingsTab::About,
+                            t!("settings.tab.about").as_ref(),
+                            cx,
+                        ))
+                    })
                     // Tab content — scrolls independently
                     .child(scrollable_vertical(tab_content)),
             )
@@ -2325,4 +2733,33 @@ fn ai_policy_row(
         t!("settings.ai.policies.description").as_ref(),
         controls,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_shortcut, validate_shortcut_capture, ShortcutCaptureValidation};
+    use gpui::Keystroke;
+
+    // SDTEST-1401
+    #[test]
+    fn shortcut_capture_requires_modifier_and_rejects_duplicate() {
+        let bare = Keystroke::parse("space").unwrap();
+        assert_eq!(
+            validate_shortcut_capture(&bare, "ctrl-alt-space"),
+            ShortcutCaptureValidation::ModifierRequired
+        );
+
+        let duplicate = Keystroke::parse("ctrl-alt-space").unwrap();
+        assert_eq!(
+            validate_shortcut_capture(&duplicate, "ctrl-alt-space"),
+            ShortcutCaptureValidation::Conflict
+        );
+
+        let custom = Keystroke::parse("ctrl-shift-k").unwrap();
+        assert_eq!(
+            validate_shortcut_capture(&custom, "ctrl-alt-space"),
+            ShortcutCaptureValidation::Accepted("ctrl-shift-k".to_string())
+        );
+        assert_eq!(display_shortcut("ctrl-shift-k"), "Ctrl+Shift+K");
+    }
 }

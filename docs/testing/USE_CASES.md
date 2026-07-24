@@ -651,13 +651,17 @@ OIDC endpoint.
 ### SDUC-151 — App mode default is Dev
 
 `AppMode::default()` is `Dev`; `CloudSyncConfig.mode` back-compat →
-Dev when the field is absent.
+Dev when the field is absent. This persistence default never bypasses
+authentication: a logged-out workspace renders the welcome screen.
 
 ### SDUC-152 — Mode enforcement per role
 
-Non-superadmin users are forced to User mode regardless of the
-persisted value. Only `can_switch_mode()` (signed-in superadmin) may
-change modes.
+Logged-out users are intercepted by the welcome screen. Authenticated
+regular users and customer admins are forced to User mode.
+`inklura_support` accounts may switch between User and Support;
+super-admins may additionally enter Dev. The titlebar, command palette,
+keyboard actions, activity links, and deep links must expose and execute
+only operations allowed by that same role matrix.
 
 ### SDUC-153 — Login persists identity, enables cloud sync, toasts profile count
 
@@ -1108,13 +1112,19 @@ renders only nav icons.
 
 ### SDUC-309 — Effective app mode
 
-`Workspace::effective_mode()` — logged out → Dev; superadmin →
-persisted; non-superadmin → forced User (matches SDUC-152).
+`Workspace::effective_mode()` delegates to the tested role matrix:
+logged out → defensive User fallback behind the welcome screen;
+regular/customer-admin → forced User; `inklura_support` → persisted
+User/Support with Dev clamped to User; super-admin → persisted mode.
 
-### SDUC-310 — Active view mode switch preserves terminal tabs
+### SDUC-310 — Mode and Settings switches preserve active surfaces
 
 Switching between Dev / User / Support hides the Dev surface without
 destroying terminal sessions (SDUC-023 must not be interrupted).
+Settings is a closable personal surface available in every authenticated
+mode. User/Support expose General, AI, Appearance and About; Dev-capable
+accounts additionally expose Terminal and Editor. Opening Settings pauses
+surface-only polling and closing it returns to the intact current mode.
 
 ### SDUC-311 — Toasts respect level
 
@@ -1229,7 +1239,7 @@ without erroring.
 ### SDUC-406 — `shelldeck://…` URLs parse to typed actions
 
 `DeepLink::parse` turns an OS-delivered URL into a typed variant
-(`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
+(`Assistant`/`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
 `OpenTicket`/`JeanConfirm`). The scheme is case-insensitive; embedded
 UUIDs are validated (bad UUID → `None`); query strings, fragments and
 trailing slashes are ignored; unknown verbs and wrong schemes parse to
@@ -1247,6 +1257,9 @@ shared token, then exits — never a duplicate window. A stale discovery
 file (crashed primary) is taken over by the next launch instead of
 stranding it, and a hand-off carrying the wrong token is dropped so a
 rogue local process cannot inject links.
+The `shelldeck://assistant` payload follows the same authenticated hand-off,
+but lands directly in the lightweight companion runtime instead of creating
+the full Workspace or revealing the main window.
 
 ---
 
@@ -1284,7 +1297,8 @@ connection also removes its stale pin.
 
 ### SDUC-412 — Tray quick access connects the selected pinned host
 
-The Linux tray submenu mirrors the current persisted pins. Each menu id embeds
+The native tray submenu mirrors the current persisted pins on every desktop
+platform. Each menu id embeds
 the connection UUID, so clicks route to that exact host even after the list is
 updated. Selecting an entry restores ShellDeck and starts the same SSH flow as
 the sidebar connection action. Unknown and malformed menu ids are ignored.
@@ -1468,7 +1482,12 @@ Actionable tasks contribute to the titlebar assistant badge; a task can reopen
 its exact workflow or target, and active Terminal/Script actions reuse their
 existing Stop path. A generation completed after its workflow closes produces
 one in-app result notification. Restarted active states become cancelled rather
-than pretending that a lost process or request is still running.
+than pretending that a lost process or request is still running. The system
+tray exposes a localized running count limited to `Generating` and `Executing`;
+confirmation waits and ready drafts do not inflate it. Selecting that indicator
+shows the existing single-instance Dock directly on its Tasks tab without
+revealing the main window. Every desktop backend updates the count live on the
+thread that owns its native menu.
 
 ### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
 
@@ -1518,8 +1537,9 @@ Every multi-line Input uses its wrapped visual layout for cursor movement and
 selection. Up/Down retain the preferred visual column, Shift+Up/Down extends
 the selection, and Home/End move to the current visual line edges. Selections
 remain visible across hard newlines and soft wraps. When `max_rows` caps the
-field, keyboard editing scrolls the internal viewport to keep the caret
-visible instead of growing the surrounding screen or typing off-screen.
+field, mouse-wheel scrolling moves through the whole value and keyboard
+editing scrolls the internal viewport to keep the caret visible instead of
+growing the surrounding screen or typing off-screen.
 
 ### SDUC-434 — The tray toggles one standalone AI Dock
 
@@ -1543,8 +1563,33 @@ application: Ctrl+Shift+Space on Windows/Linux and Cmd+Shift+Space on macOS.
 The Dock opens on the display containing the pointer, moves to that display on
 the next invocation if necessary, and hides on Escape or when its window loses
 focus.
-Registration failure (notably Wayland without a shortcuts portal) is non-fatal
-and leaves the tray path available.
+On Wayland, both startup shortcuts are submitted together through one XDG
+Global Shortcuts portal session; accepted `Activated` signals route through
+the same runtime IDs as native backends. Portal absence, user refusal, or an
+empty accepted set is non-fatal and leaves the tray path available.
+Changing either global-shortcut toggle in Settings registers or unregisters
+that shortcut immediately without restarting ShellDeck. The runtime tracks
+successful registrations, avoids duplicate work for unchanged settings, and
+can retry a failed registration on the next enable/sync transition.
+Each shortcut can be captured independently and persists in GPUI keystroke
+syntax; old configs receive platform defaults. Capture requires Ctrl, Alt,
+Cmd, or Super, rejects a duplicate Dock/palette combination, supports reset
+to default, and applies immediately. Settings shows disabled, applying,
+active, portal-pending, conflict, and native error states. Wayland portal
+acceptance or refusal replaces the pending state asynchronously.
+Following `shelldeck://assistant` creates or focuses this same Dock
+idempotently: an already visible Dock stays visible instead of being toggled
+off, and the main ShellDeck window remains hidden. Every visible tray label,
+including zero/one/many counter forms and the empty pinned-connections row,
+follows the selected French or English UI locale. A live language change
+republishes the tray snapshot so every desktop backend updates the native menu
+immediately. Counters and pinned connections follow the same owner-thread
+snapshot path. The Dock toolbar
+uses keyboard-focusable buttons with visible localized names and tooltips;
+Escape remains an explicit hide action. On macOS, the tray uses a dedicated
+36 px black-and-alpha Monolith mark as an AppKit template image, so the system
+controls its light, dark, pressed, and accessibility appearance. Linux and
+Windows retain the colored app icon.
 
 ### SDUC-435 — Companion startup never strands an invisible process
 
@@ -1556,8 +1601,9 @@ process is always recoverable. Tray and deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
 its pollers until a tray, deep-link, palette, or task-target command needs
-application state. The standalone AI Dock is served directly by the companion
-controller and is not such a command. SSH config parsing and the connection
+application state. The standalone AI Dock, including the
+`shelldeck://assistant` route, is served directly by the companion controller
+and is not such a command. SSH config parsing and the connection
 store are deferred to that first Workspace demand; configured startup Cloud
 Sync begins afterward on the background executor instead of blocking process
 startup or the UI thread. When `tray.close_to_tray` is enabled, both the native window-close
@@ -1575,7 +1621,10 @@ displays on its next invocation. Commands that navigate ShellDeck reveal the
 main window after selection; background commands can complete without showing
 it. Labels, icons and shortcut hints remain contained at the minimum palette
 width. Linux/Wayland registration failure remains non-fatal and the tray entry
-opens the same standalone palette.
+opens the same standalone palette. The search field exposes a localized
+accessible name and keyboard description. Up/Down and Tab/Shift+Tab wrap
+through results, Home/End jump to the edges, Page Up/Page Down move by a bounded
+page, Enter activates the selected command, and Escape dismisses the palette.
 
 ---
 
@@ -1605,10 +1654,56 @@ shared Alert variants is present in the curated asset directory and registered
 in the binary asset source. Missing icon names must fail a unit test instead of
 silently rendering an empty fixed-size slot in the interface.
 
+### SDUC-439 — Only unexpected SSH transport loss produces an OS notification
+
+Each primary SSH terminal reports an explicit lifecycle result to the
+Workspace. Closing its tab and exiting the remote shell normally update the
+connection state without an OS notification. A transport that disappears
+without EOF, channel close, or an exit status is treated as unexpected: the
+connection leaves its active state, the tray counter refreshes, and—when the
+existing SSH notification preference is enabled—the OS notification names the
+exact connection. Another live tab for the same connection keeps the shared
+sidebar status connected. Notification copy follows the selected French or
+English locale.
+
+### SDUC-440 — User and Support modes have a real home
+
+User mode opens on an Accueil tab summarizing available sites and open
+requests, with direct actions for Sites, Requests, and a new request. Its three
+most recent requests open directly from the dashboard, while a compact status
+card exposes the Manage session, active site, synchronized directory, and a
+manual sync action. A dashboard-specific network illustration with a contrast
+gradient gives the page a clear identity without reducing the readability of
+those operational cards. Support mode opens on its own Accueil tab with open,
+SLA-risk, unassigned, and hosted request counters plus direct triage actions.
+Operational lists remain separate tabs. Onboarding only describes modes and
+shortcuts the signed-in role can actually reach.
+
 ---
 
 ## Change log
 
+- **2026-07-24** — Added SDUC-439 and SDTEST-1412/1413 for session-scoped SSH
+  lifecycle reporting: protocol terminators, voluntary tab closes and clean
+  remote exits stay silent, while unexpected transport loss identifies the
+  exact connection.
+- **2026-07-24** — Extended SDUC-429/434 and added SDTEST-1411 for live
+  counter, pinned-connection and locale snapshots on the native tray owner
+  thread across Linux, macOS and Windows.
+- **2026-07-24** — Extended SDUC-434 and added SDTEST-1410 for the dedicated
+  Retina macOS tray template generated from the canonical Monolith mark.
+- **2026-07-24** — Extended SDUC-429 and added SDTEST-1407..1409 for the
+  running AI-task tray count and direct single-instance Tasks-tab routing.
+- **2026-07-24** — Extended SDUC-434/436 and SDTEST-1300/1302/1406 with
+  complete FR/EN tray labels, live Linux relocalization, named Dock controls,
+  an accessible palette search field, and bounded full-keyboard navigation.
+- **2026-07-24** — Extended SDUC-406/407/434/435 and SDTEST-1320/1405
+  for the idempotent `shelldeck://assistant` hand-off into the lightweight
+  Dock runtime.
+- **2026-07-23** — Extended SDUC-434 with immediate dynamic registration and
+  unregistration plus persisted shortcut capture, validation, reset, visible
+  native results, and asynchronous Wayland portal outcomes
+  (SDTEST-1398..1404).
 - **2026-07-22** — Extended SDUC-222/228 with the searchable request-site
   target and added SDTEST-1389/1390 for its wire contract and UI wiring.
 - **2026-07-22** — Added SDUC-438 and SDTEST-1388 after auditing reachable
@@ -1629,6 +1724,13 @@ silently rendering an empty fixed-size slot in the interface.
   Terminal diagnostic plans and separately confirmed read-only steps.
 - **2026-07-21** — Added SDUC-433 and SDTEST-1376 for native wrapped-line
   cursor, selection, and caret-follow behavior in shared multi-line Inputs.
+- **2026-07-24** — Amended SDUC-433 and SDTEST-1376 to explicitly cover
+  mouse-wheel scrolling inside capped multi-line Inputs.
+- **2026-07-24** — Corrected SDUC-151/152/309/310 to the deployed three-tier
+  role model, capability-filtered actions, mandatory welcome screen, and
+  cross-mode personal Settings surface.
+- **2026-07-24** — Added SDUC-440 and SDTEST-1414 for role-specific User and
+  Support home dashboards and capability-filtered onboarding.
 - **2026-07-17** — Added SDUC-423 and SDTEST-1358/1359 for validated,
   explicitly confirmed AI priority and assignment triage.
 - **2026-07-17** — Added SDUC-424 for non-submitting Support-to-request drafts.

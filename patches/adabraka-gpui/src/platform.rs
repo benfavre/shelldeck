@@ -77,6 +77,28 @@ pub use app_menu::*;
 pub use keyboard::*;
 pub use keystroke::*;
 
+// ShellDeck patch: surface asynchronous Wayland portal registration results.
+/// Result of an asynchronous platform global-hotkey registration request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlobalHotkeyRegistrationEvent {
+    /// The platform accepted the shortcut with this application ID.
+    Registered {
+        /// Application-provided shortcut ID.
+        id: u32,
+        /// Canonical GPUI keystroke syntax that was accepted.
+        shortcut: String,
+    },
+    /// The platform rejected the shortcut.
+    Failed {
+        /// Application-provided shortcut ID.
+        id: u32,
+        /// Canonical GPUI keystroke syntax that was rejected.
+        shortcut: String,
+        /// Human-readable platform error.
+        error: String,
+    },
+}
+
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
@@ -296,6 +318,12 @@ pub(crate) trait Platform: 'static {
     }
     fn unregister_global_hotkey(&self, _id: u32) {}
     fn on_global_hotkey(&self, _callback: Box<dyn FnMut(u32)>) {}
+    // ShellDeck patch: let clients observe portal acceptance or refusal.
+    fn on_global_hotkey_registration(
+        &self,
+        _callback: Box<dyn FnMut(GlobalHotkeyRegistrationEvent)>,
+    ) {
+    }
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         None

@@ -55,9 +55,10 @@ pub struct AccountInfo {
     pub roles: Vec<String>,
 }
 
-/// Which audience surface the app presents. Only super-admins may switch;
-/// non-super-admins are forced to `User`, and a logged-out app runs as the
-/// classic full ShellDeck (treated like `Dev` for surface purposes).
+/// Which audience surface the app presents. Regular users are forced to
+/// `User`, Inklura Support may switch between User/Support, and super-admins
+/// additionally unlock Dev. Logged-out rendering is intercepted by the
+/// Workspace welcome screen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AppMode {
     User,

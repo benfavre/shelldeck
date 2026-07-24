@@ -238,6 +238,8 @@ pub(crate) struct WaylandClientState {
     event_loop: Option<EventLoop<'static, WaylandClientStatePtr>>,
     common: LinuxCommon,
     tray: crate::platform::linux::tray::LinuxTray,
+    // ShellDeck patch: retain the portal session manager with the Wayland client.
+    global_hotkey: crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkey,
 }
 
 pub struct DragState {
@@ -499,6 +501,62 @@ impl WaylandClient {
             })
             .unwrap();
 
+        // ShellDeck patch: marshal portal activations back onto calloop before
+        // invoking GPUI's foreground-only application callback.
+        let (global_hotkey_tx, global_hotkey_rx) =
+            calloop::channel::channel::<
+                crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent,
+            >();
+        handle
+            .insert_source(
+                global_hotkey_rx,
+                move |event, _, client: &mut WaylandClientStatePtr| {
+                    let calloop::channel::Event::Msg(event) = event else {
+                        return;
+                    };
+                    let Some(client) = client.0.upgrade() else {
+                        return;
+                    };
+                    match event {
+                        crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent::Activated(id) => {
+                            let callback = client
+                                .borrow_mut()
+                                .common
+                                .callbacks
+                                .global_hotkey
+                                .take();
+                            if let Some(mut callback) = callback {
+                                callback(id);
+                                client.borrow_mut().common.callbacks.global_hotkey =
+                                    Some(callback);
+                            }
+                        }
+                        crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkeyEvent::Registration(event) => {
+                            let callback = client
+                                .borrow_mut()
+                                .common
+                                .callbacks
+                                .global_hotkey_registration
+                                .take();
+                            if let Some(mut callback) = callback {
+                                callback(event);
+                                client
+                                    .borrow_mut()
+                                    .common
+                                    .callbacks
+                                    .global_hotkey_registration = Some(callback);
+                            }
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        let global_hotkey =
+            crate::platform::linux::global_hotkey::wayland::WaylandGlobalHotkey::new(
+                common.background_executor.clone(),
+                global_hotkey_tx,
+            );
+
         let gpu_context = BladeContext::new().expect("Unable to init GPU context");
 
         let seat = seat.unwrap();
@@ -617,6 +675,7 @@ impl WaylandClient {
             pending_activation: None,
             event_loop: Some(event_loop),
             tray: crate::platform::linux::tray::LinuxTray::new(),
+            global_hotkey,
         }));
 
         WaylandSource::new(conn, event_queue)
@@ -891,11 +950,17 @@ impl LinuxClient for WaylandClient {
         self.0.borrow_mut().tray.set_tooltip(tooltip);
     }
 
-    fn register_global_hotkey(&self, _id: u32, _keystroke: &Keystroke) -> crate::Result<()> {
-        Err(anyhow::anyhow!("Global hotkeys not supported on Wayland"))
+    // ShellDeck patch: expose the Wayland portal manager through LinuxClient.
+    fn register_global_hotkey(&self, id: u32, keystroke: &Keystroke) -> crate::Result<()> {
+        self.0
+            .borrow_mut()
+            .global_hotkey
+            .register(id, keystroke)
     }
 
-    fn unregister_global_hotkey(&self, _id: u32) {}
+    fn unregister_global_hotkey(&self, id: u32) {
+        self.0.borrow_mut().global_hotkey.unregister(id);
+    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStatePtr {

@@ -5,7 +5,8 @@
 //! URL focuses the app on the right view or fires the right action. The
 //! OS hands the URL to ShellDeck as a process argument; if an instance is
 //! already running, [`crate::config::single_instance`] forwards it to the
-//! live process, which routes it through `Workspace::open_deep_link`.
+//! live process, which routes it through the lightweight companion runtime
+//! or `Workspace::open_deep_link`, depending on the target.
 //!
 //! This module is deliberately **pure + std-only**: it turns a `&str`
 //! into a typed [`DeepLink`] (or `None`) and nothing else. All the side
@@ -16,6 +17,7 @@
 //!
 //! | URL | Variant |
 //! |-----|---------|
+//! | `shelldeck://assistant`              | [`DeepLink::Assistant`] |
 //! | `shelldeck://open/connection/<uuid>` | [`DeepLink::OpenConnection`] |
 //! | `shelldeck://ssh/connect/<uuid>`     | [`DeepLink::SshConnect`] |
 //! | `shelldeck://tunnel/start/<uuid>`    | [`DeepLink::TunnelStart`] |
@@ -40,6 +42,8 @@ pub const SCHEME: &str = "shelldeck";
 /// server owns their shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeepLink {
+    /// Show and focus the standalone AI Dock without opening the main window.
+    Assistant,
     /// Focus the connections view and highlight this connection (no SSH).
     OpenConnection(Uuid),
     /// Open the app and start an SSH session for this connection.
@@ -86,6 +90,7 @@ impl DeepLink {
         let verbs: Vec<String> = segments.iter().map(|s| s.to_ascii_lowercase()).collect();
         let verbs: Vec<&str> = verbs.iter().map(|s| s.as_str()).collect();
         match verbs.as_slice() {
+            ["assistant"] => Some(DeepLink::Assistant),
             ["open", "connection", _] => Uuid::parse_str(segments[2])
                 .ok()
                 .map(DeepLink::OpenConnection),
@@ -147,6 +152,10 @@ mod tests {
     // wrong view (or nowhere), so every documented verb is pinned.
     #[test]
     fn parses_every_documented_verb() {
+        assert_eq!(
+            DeepLink::parse("shelldeck://assistant"),
+            Some(DeepLink::Assistant)
+        );
         assert_eq!(
             DeepLink::parse(&format!("shelldeck://open/connection/{UUID}")),
             Some(DeepLink::OpenConnection(uuid()))

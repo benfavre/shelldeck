@@ -47,6 +47,10 @@ ShellDeck auto-updates itself once installed. To build from source instead, see 
 - **Linux**: `libssl-dev`, `pkg-config`, `libxkbcommon-dev`, `libwayland-dev`
 - **macOS**: Xcode Command Line Tools, OpenSSL (`brew install openssl`)
 
+Les raccourcis Companion utilisés depuis une autre application nécessitent
+l'approbation macOS décrite dans
+[`docs/macos-permissions.md`](docs/macos-permissions.md).
+
 ### Install system dependencies (Ubuntu/Debian)
 
 ```bash

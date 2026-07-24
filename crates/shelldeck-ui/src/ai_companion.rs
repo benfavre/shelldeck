@@ -150,6 +150,12 @@ impl AiCompanionController {
         self.assistant.clone()
     }
 
+    pub fn prepare_task_center(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
+        let assistant = self.prepare(cx);
+        assistant.update(cx, |assistant, cx| assistant.show_tasks(cx));
+        assistant
+    }
+
     /// Refresh a hidden Dock without invalidating an in-flight request.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let config = self.config.borrow().clone();

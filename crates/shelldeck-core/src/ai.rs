@@ -945,6 +945,12 @@ pub enum AiTaskStatus {
 }
 
 impl AiTaskStatus {
+    /// Work currently consuming an AI provider or executing an approved
+    /// action. Confirmation waits remain actionable, but are not running.
+    pub fn is_running(self) -> bool {
+        matches!(self, Self::Generating | Self::Executing)
+    }
+
     pub fn is_active(self) -> bool {
         matches!(
             self,
@@ -1702,6 +1708,25 @@ fn run_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SDTEST-1407 — the tray's running-task indicator counts only provider
+    // generation and approved execution, not drafts or confirmation waits.
+    #[test]
+    fn ai_running_status_excludes_drafts_and_confirmation_waits() {
+        assert!(AiTaskStatus::Generating.is_running());
+        assert!(AiTaskStatus::Executing.is_running());
+        for status in [
+            AiTaskStatus::Ready,
+            AiTaskStatus::Pending,
+            AiTaskStatus::AwaitingConfirmation,
+            AiTaskStatus::Applied,
+            AiTaskStatus::Succeeded,
+            AiTaskStatus::Failed,
+            AiTaskStatus::Cancelled,
+        ] {
+            assert!(!status.is_running(), "{status:?} must not count as running");
+        }
+    }
 
     #[test]
     fn config_defaults_to_opt_in_disabled_with_surfaces_ready() {

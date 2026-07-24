@@ -54,10 +54,10 @@ Existing: **0 tests.**
 | SDTEST-523 | *to write* — exec_streaming yields chunks without buffering the whole output | SDUC-046 | **Red / P1** | Assert the receiver observes chunks *before* the exit signal. |
 | SDTEST-524 | *to write* — exec_cancellable interrupts the future when the token fires | SDUC-047 | **Red / P0** | Regression class: leaked long-running remote work. |
 | SDTEST-525 | *to write* — resize propagates to the channel's window request | SDUC-044 | **Red / P1** | |
-| SDTEST-526 | *to write* — EOF triggers `SshChannel::read` → None | SDUC-044 | **Red / P2** | |
 | SDTEST-527 | *to write* — disconnect() drains the event channel cleanly | SDUC-044, SDUC-054 | **Red / P1** | No stray events after `disconnect`. |
 | SDTEST-528 | *to write* — new_with_jump wires the jump session as ProxyJump transport | SDUC-053 | **Red / P0** | Fake outer transport that observes the "direct-tcpip" request opened against the inner host. |
 | SDTEST-529 | *to write* — ExecResult::stdout_string / stderr_string handle non-utf8 without panic | SDUC-045 | **Red / P1** | Lossy conversion; assert it doesn't panic on invalid utf-8 bytes. |
+| SDTEST-1413 | `session.rs::protocol_terminators_are_clean_but_unmarked_channel_loss_is_unexpected` | SDUC-044, SDUC-439 | Green | EOF, channel close, and an exit status followed by stream end classify as clean; disappearance without a protocol terminator classifies as unexpected transport loss. |
 
 ---
 
@@ -135,4 +135,6 @@ Existing: **0 tests.**
 
 ## Retired tests
 
-*(none yet)*
+| ID | Previous contract | Status | Reason |
+|---|---|---|---|
+| SDTEST-526 | EOF makes `SshChannel::read` return `None` | Retired 2026-07-24 | The reader now returns explicit `CleanEnd` versus `ConnectionLost`; SDTEST-1413 covers the stronger observable contract. |

@@ -35,7 +35,8 @@
       "png": "packaging/icons/shelldeck-{size}.png",
       "ico": "packaging/icons/shelldeck.ico",
       "iconset": "packaging/icons/iconset/",
-      "icns": "packaging/icons/shelldeck.icns (macOS: iconutil -c icns iconset -o shelldeck.icns)"
+      "icns": "packaging/icons/shelldeck.icns (macOS: iconutil -c icns iconset -o shelldeck.icns)",
+      "tray_template_macos": "packaging/icons/shelldeck-tray-template-macos.png"
     }
   },
   "regenerate": "python3 scripts/export-monolith-brand.py"

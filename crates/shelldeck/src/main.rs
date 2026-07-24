@@ -4,7 +4,7 @@ mod tray;
 use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString, WindowDecorations};
-use shelldeck_core::config::app_config::AppConfig;
+use shelldeck_core::config::app_config::{AppConfig, CompanionConfig};
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::single_instance::{self, Acquire};
 use shelldeck_core::config::ssh_config::parse_ssh_config;
@@ -12,6 +12,7 @@ use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
+    settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
@@ -76,6 +77,7 @@ lucide_assets!(
     "flag",
     "globe",
     "grid-2x2",
+    "house",
     "inbox",
     "info",
     "key",
@@ -114,6 +116,7 @@ lucide_assets!(
     "upload",
     "user",
     "user-check",
+    "user-x",
     "users",
     "x",
     "zap",
@@ -240,6 +243,11 @@ impl AssetSource for Assets {
             "images/onboarding/shortcuts.png" => {
                 include_bytes!("../assets/images/onboarding/shortcuts.png")
             }
+            // Dashboard-specific artwork. It deliberately leaves the right
+            // half quiet so localized copy remains readable over the image.
+            "images/home/user-dashboard-colorful-watermark-v1.webp" => {
+                include_bytes!("../assets/images/home/user-dashboard-colorful-watermark-v1.webp")
+            }
             // Magnifying-glass icon used by search inputs (sidebar filter, …).
             "images/search.svg" => include_bytes!("../assets/images/search.svg"),
             // Vertical three-dot "kebab" menu handle used by list row actions.
@@ -301,6 +309,7 @@ impl AssetSource for Assets {
             SharedString::from("images/onboarding/modes.png"),
             SharedString::from("images/onboarding/surfaces.png"),
             SharedString::from("images/onboarding/shortcuts.png"),
+            SharedString::from("images/home/user-dashboard-colorful-watermark-v1.webp"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
             SharedString::from("images/close.svg"),
@@ -335,46 +344,7 @@ impl AssetSource for Assets {
 /// notification daemons pick it up. On macOS/Windows `notify-rust`
 /// falls back gracefully when the icon can't be resolved.
 fn show_tray_notification(n: shelldeck_ui::TrayNotification) -> anyhow::Result<()> {
-    use shelldeck_ui::TrayNotification;
-    let (summary, body) = match n {
-        TrayNotification::NewTickets { count } => (
-            "ShellDeck — Support".to_string(),
-            match count {
-                1 => "1 nouveau ticket support".to_string(),
-                n => format!("{n} nouveaux tickets support"),
-            },
-        ),
-        TrayNotification::JeanPending { count } => (
-            "ShellDeck — Jean".to_string(),
-            match count {
-                1 => "Un job Jean attend votre validation".to_string(),
-                n => format!("{n} jobs Jean attendent votre validation"),
-            },
-        ),
-        TrayNotification::SshDisconnected { count } => (
-            "ShellDeck — SSH".to_string(),
-            match count {
-                1 => "Une connexion SSH s'est terminée".to_string(),
-                n => format!("{n} connexions SSH se sont terminées"),
-            },
-        ),
-        TrayNotification::FleetJobDone { success } => (
-            "ShellDeck — Fleet".to_string(),
-            if success {
-                "Job Fleet terminé".to_string()
-            } else {
-                "Job Fleet échoué".to_string()
-            },
-        ),
-        TrayNotification::AiTaskDone { success } => (
-            "ShellDeck — Assistant IA".to_string(),
-            if success {
-                "Une tâche IA est terminée".to_string()
-            } else {
-                "Une tâche IA a échoué".to_string()
-            },
-        ),
-    };
+    let (summary, body) = n.localized_text();
     notify_rust::Notification::new()
         .appname("ShellDeck")
         .summary(&summary)
@@ -405,7 +375,8 @@ impl WorkspaceSlot {
 struct CompanionRuntime {
     main_window: gpui::AnyWindowHandle,
     ai_companion: gpui::Entity<AiCompanionController>,
-    tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+    tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
+    companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
     ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
     command_palette_window: Option<gpui::WindowHandle<CommandPaletteWindowView>>,
 }
@@ -434,6 +405,7 @@ struct CompanionRoot {
     runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
+    initial_shortcut_statuses: CompanionShortcutStatuses,
     _ai_companion_sub: gpui::Subscription,
 }
 
@@ -441,7 +413,9 @@ impl CompanionRoot {
     fn new(
         config: AppConfig,
         workspace_slot: WorkspaceSlot,
-        tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+        tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
+        companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
+        initial_shortcut_statuses: CompanionShortcutStatuses,
         main_window: gpui::AnyWindowHandle,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
@@ -458,11 +432,13 @@ impl CompanionRoot {
                 main_window,
                 ai_companion,
                 tray_state_tx,
+                companion_config_tx,
                 ai_dock_window: None,
                 command_palette_window: None,
             },
             workspace: None,
             workspace_slot,
+            initial_shortcut_statuses,
             _ai_companion_sub: ai_companion_sub,
         }
     }
@@ -526,6 +502,18 @@ impl CompanionRoot {
             workspace.update(cx, |ws, cx| ws.cloud_sync_on_startup(cx));
         }
 
+        let companion_config_tx = self.runtime.companion_config_tx.clone();
+        workspace.update(cx, |ws, _cx| {
+            ws.set_companion_config_publisher(Box::new(move |config| {
+                if companion_config_tx.send(config).is_err() {
+                    tracing::debug!("companion config dropped during shutdown");
+                }
+            }));
+        });
+        workspace.update(cx, |ws, cx| {
+            ws.set_companion_shortcut_statuses(self.initial_shortcut_statuses.clone(), cx);
+        });
+
         if let Some(state_tx) = self.runtime.tray_state_tx.clone() {
             workspace.update(cx, |ws, cx| {
                 ws.set_tray_state_publisher(Box::new(move |counters| {
@@ -534,6 +522,7 @@ impl CompanionRoot {
                         open_tunnels: counters.open_tunnels,
                         unread_tickets: counters.unread_tickets,
                         jean_pending: counters.jean_pending,
+                        ai_tasks_running: counters.ai_tasks_running,
                         pinned_connections: counters
                             .pinned_connections
                             .into_iter()
@@ -542,6 +531,7 @@ impl CompanionRoot {
                                 name: connection.name,
                             })
                             .collect(),
+                        labels: tray::TrayLabels::localized(),
                     };
                     if let Err(error) = state_tx.send(state) {
                         tracing::debug!(
@@ -619,6 +609,7 @@ fn dispatch_tray_command(
             }
         }
         TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
+        TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
         TrayCommand::ConnectPinned(id) => {
             if let Err(error) = window.update(cx, |_, window, cx| {
@@ -644,17 +635,26 @@ fn dispatch_tray_command(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AiDockToggleAction {
+enum AiDockRequest {
+    Toggle,
+    Show,
+    ShowTasks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiDockWindowAction {
     Create,
     Show,
     Hide,
 }
 
-fn ai_dock_toggle_action(visible: Option<bool>) -> AiDockToggleAction {
-    match visible {
-        None => AiDockToggleAction::Create,
-        Some(false) => AiDockToggleAction::Show,
-        Some(true) => AiDockToggleAction::Hide,
+fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDockWindowAction {
+    match (visible, request) {
+        (None, _) => AiDockWindowAction::Create,
+        (Some(false), _) | (Some(true), AiDockRequest::Show | AiDockRequest::ShowTasks) => {
+            AiDockWindowAction::Show
+        }
+        (Some(true), AiDockRequest::Toggle) => AiDockWindowAction::Hide,
     }
 }
 
@@ -669,19 +669,171 @@ fn workspace_created_at_boot(main_window_visible: bool) -> bool {
 const AI_DOCK_GLOBAL_HOTKEY_ID: u32 = 1;
 const COMMAND_PALETTE_GLOBAL_HOTKEY_ID: u32 = 2;
 
+#[cfg(test)]
 fn ai_dock_global_shortcut() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "cmd-shift-space"
-    } else {
-        "ctrl-shift-space"
+    CompanionConfig::default_global_shortcut()
+}
+
+#[cfg(test)]
+fn command_palette_global_shortcut() -> &'static str {
+    CompanionConfig::default_global_palette_shortcut()
+}
+
+trait GlobalHotkeyRegistry {
+    fn compositor_name(&self) -> &'static str;
+    fn register(&self, id: u32, keystroke: &gpui::Keystroke) -> Result<()>;
+    fn unregister(&self, id: u32);
+}
+
+impl GlobalHotkeyRegistry for gpui::App {
+    fn compositor_name(&self) -> &'static str {
+        gpui::App::compositor_name(self)
+    }
+
+    fn register(&self, id: u32, keystroke: &gpui::Keystroke) -> Result<()> {
+        gpui::App::register_global_hotkey(self, id, keystroke)
+    }
+
+    fn unregister(&self, id: u32) {
+        gpui::App::unregister_global_hotkey(self, id);
     }
 }
 
-fn command_palette_global_shortcut() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "cmd-alt-space"
-    } else {
-        "ctrl-alt-space"
+#[derive(Debug, PartialEq, Eq)]
+struct RegisteredGlobalShortcut {
+    shortcut: Option<String>,
+    status: ShortcutRegistrationStatus,
+}
+
+impl Default for RegisteredGlobalShortcut {
+    fn default() -> Self {
+        Self {
+            shortcut: None,
+            status: ShortcutRegistrationStatus::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GlobalShortcutRegistrationState {
+    ai_dock: RegisteredGlobalShortcut,
+    command_palette: RegisteredGlobalShortcut,
+}
+
+impl GlobalShortcutRegistrationState {
+    fn sync(&mut self, config: &CompanionConfig, registry: &impl GlobalHotkeyRegistry) {
+        let conflict = config.global_shortcut_enabled
+            && config.global_palette_shortcut_enabled
+            && config.global_shortcut == config.global_palette_shortcut;
+        if conflict {
+            sync_global_shortcut(
+                &mut self.command_palette,
+                false,
+                COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+                &config.global_palette_shortcut,
+                "command palette",
+                registry,
+            );
+            self.command_palette.status = ShortcutRegistrationStatus::Conflict;
+        }
+        sync_global_shortcut(
+            &mut self.ai_dock,
+            config.global_shortcut_enabled,
+            AI_DOCK_GLOBAL_HOTKEY_ID,
+            &config.global_shortcut,
+            "AI Dock",
+            registry,
+        );
+        if !conflict {
+            sync_global_shortcut(
+                &mut self.command_palette,
+                config.global_palette_shortcut_enabled,
+                COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+                &config.global_palette_shortcut,
+                "command palette",
+                registry,
+            );
+        }
+    }
+
+    fn statuses(&self) -> CompanionShortcutStatuses {
+        CompanionShortcutStatuses {
+            ai_dock: self.ai_dock.status.clone(),
+            command_palette: self.command_palette.status.clone(),
+        }
+    }
+
+    fn apply_portal_result(&mut self, event: gpui::GlobalHotkeyRegistrationEvent) {
+        let (id, shortcut, status) = match event {
+            gpui::GlobalHotkeyRegistrationEvent::Registered { id, shortcut } => {
+                (id, shortcut, ShortcutRegistrationStatus::Registered)
+            }
+            gpui::GlobalHotkeyRegistrationEvent::Failed {
+                id,
+                shortcut,
+                error,
+            } => (id, shortcut, ShortcutRegistrationStatus::Error(error)),
+        };
+        let registration = match id {
+            AI_DOCK_GLOBAL_HOTKEY_ID => &mut self.ai_dock,
+            COMMAND_PALETTE_GLOBAL_HOTKEY_ID => &mut self.command_palette,
+            _ => return,
+        };
+        if registration.shortcut.as_deref() == Some(shortcut.as_str()) {
+            registration.status = status;
+        }
+    }
+}
+
+fn sync_global_shortcut(
+    registration: &mut RegisteredGlobalShortcut,
+    enabled: bool,
+    id: u32,
+    shortcut: &str,
+    label: &str,
+    registry: &impl GlobalHotkeyRegistry,
+) {
+    if !enabled {
+        if registration.shortcut.take().is_some() {
+            registry.unregister(id);
+            tracing::info!(shortcut, "{label} global shortcut unregistered");
+        }
+        registration.status = ShortcutRegistrationStatus::Disabled;
+        return;
+    }
+    if registration.shortcut.as_deref() == Some(shortcut) {
+        return;
+    }
+    if registration.shortcut.take().is_some() {
+        registry.unregister(id);
+    }
+
+    let keystroke = match gpui::Keystroke::parse(shortcut) {
+        Ok(keystroke) => keystroke,
+        Err(error) => {
+            tracing::error!("invalid {label} global shortcut: {error}");
+            registration.status = ShortcutRegistrationStatus::Error(error.to_string());
+            return;
+        }
+    };
+    match registry.register(id, &keystroke) {
+        Ok(()) => {
+            registration.shortcut = Some(shortcut.to_string());
+            if registry.compositor_name() == "Wayland" {
+                registration.status = ShortcutRegistrationStatus::PendingPortal;
+                tracing::info!(
+                    shortcut,
+                    "{label} global shortcut requested through Wayland portal"
+                );
+            } else {
+                registration.status = ShortcutRegistrationStatus::Registered;
+                tracing::info!(shortcut, "{label} global shortcut registered");
+            }
+        }
+        Err(error) => {
+            registration.status = ShortcutRegistrationStatus::Error(error.to_string());
+            tracing::warn!(shortcut, "{label} global shortcut unavailable: {error:#}");
+        }
     }
 }
 
@@ -927,6 +1079,33 @@ fn toggle_ai_dock(
     main_window: gpui::AnyWindowHandle,
     cx: &mut gpui::App,
 ) {
+    open_ai_dock(root, main_window, AiDockRequest::Toggle, cx);
+}
+
+/// Show and focus the Assistant Dock without toggling an already visible
+/// window off. This is the idempotent entry point used by deep links.
+fn show_ai_dock(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::Show, cx);
+}
+
+fn show_ai_task_center(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::ShowTasks, cx);
+}
+
+fn open_ai_dock(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    request: AiDockRequest,
+    cx: &mut gpui::App,
+) {
     use gpui::{WindowBounds, WindowDecorations, WindowKind, WindowOptions};
 
     let Some(root) = root.upgrade() else {
@@ -950,8 +1129,8 @@ fn toggle_ai_dock(
     };
     if let Some(handle) = existing {
         let (recreate, clear_handle) = match handle.update(cx, |dock, window, cx| {
-            match ai_dock_toggle_action(Some(window.is_window_visible())) {
-                AiDockToggleAction::Show => {
+            match ai_dock_window_action(Some(window.is_window_visible()), request) {
+                AiDockWindowAction::Show => {
                     if !display
                         .bounds
                         .contains(&window.window_bounds().get_bounds().center())
@@ -959,17 +1138,23 @@ fn toggle_ai_dock(
                         window.remove_window();
                         return (true, true);
                     }
-                    ai_companion.update(cx, |controller, cx| controller.refresh(cx));
+                    ai_companion.update(cx, |controller, cx| {
+                        if request == AiDockRequest::ShowTasks {
+                            controller.prepare_task_center(cx);
+                        } else {
+                            controller.refresh(cx);
+                        }
+                    });
                     window.show_window();
                     window.activate_window();
                     dock.focus_composer(window, cx);
                     (false, false)
                 }
-                AiDockToggleAction::Hide => {
+                AiDockWindowAction::Hide => {
                     window.remove_window();
                     (false, true)
                 }
-                AiDockToggleAction::Create => unreachable!(),
+                AiDockWindowAction::Create => unreachable!(),
             }
         }) {
             Ok(result) => result,
@@ -988,7 +1173,13 @@ fn toggle_ai_dock(
         }
     }
 
-    let assistant = ai_companion.update(cx, |controller, cx| controller.prepare(cx));
+    let assistant = ai_companion.update(cx, |controller, cx| {
+        if request == AiDockRequest::ShowTasks {
+            controller.prepare_task_center(cx)
+        } else {
+            controller.prepare(cx)
+        }
+    });
     let bounds = ai_dock_bounds(display.bounds);
     let options = WindowOptions {
         titlebar: None,
@@ -1135,8 +1326,9 @@ fn toggle_companion_command_palette(
 }
 
 /// Parse + route a `shelldeck://…` payload (a bare focus ping arrives as an
-/// empty string) onto the workspace, then bring the window to the front so
-/// the deep link visibly lands. Runs on the GPUI foreground thread.
+/// empty string). The Assistant target stays entirely inside the lightweight
+/// companion runtime; other targets bring the main window forward and route
+/// through the Workspace. Runs on the GPUI foreground thread.
 fn dispatch_deep_link(
     payload: String,
     root: gpui::WeakEntity<CompanionRoot>,
@@ -1144,6 +1336,10 @@ fn dispatch_deep_link(
     cx: &mut gpui::App,
 ) {
     let link = DeepLink::parse(&payload);
+    if matches!(link, Some(DeepLink::Assistant)) {
+        show_ai_dock(root, window, cx);
+        return;
+    }
     if let Err(error) = window.update(cx, |_, window, cx| {
         window.show_window();
         window.activate_window();
@@ -1283,40 +1479,19 @@ fn main() -> Result<()> {
                 tracing::error!(id, error = %error, "global hotkey dispatch channel closed");
             }
         });
-        if config.companion.global_shortcut_enabled {
-            match gpui::Keystroke::parse(ai_dock_global_shortcut()) {
-                Ok(keystroke) => {
-                    match cx.register_global_hotkey(AI_DOCK_GLOBAL_HOTKEY_ID, &keystroke) {
-                        Ok(()) => tracing::info!(
-                            shortcut = ai_dock_global_shortcut(),
-                            "AI Dock global shortcut registered"
-                        ),
-                        Err(error) => tracing::warn!(
-                            shortcut = ai_dock_global_shortcut(),
-                            "AI Dock global shortcut unavailable: {error:#}"
-                        ),
-                    }
-                }
-                Err(error) => tracing::error!("invalid AI Dock global shortcut: {error}"),
+        let (global_hotkey_registration_tx, global_hotkey_registration_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        cx.on_global_hotkey_registration(move |event| {
+            if global_hotkey_registration_tx.send(event).is_err() {
+                tracing::debug!("global hotkey registration result dropped during shutdown");
             }
-        }
-        if config.companion.global_palette_shortcut_enabled {
-            match gpui::Keystroke::parse(command_palette_global_shortcut()) {
-                Ok(keystroke) => {
-                    match cx.register_global_hotkey(COMMAND_PALETTE_GLOBAL_HOTKEY_ID, &keystroke) {
-                        Ok(()) => tracing::info!(
-                            shortcut = command_palette_global_shortcut(),
-                            "command palette global shortcut registered"
-                        ),
-                        Err(error) => tracing::warn!(
-                            shortcut = command_palette_global_shortcut(),
-                            "command palette global shortcut unavailable: {error:#}"
-                        ),
-                    }
-                }
-                Err(error) => tracing::error!("invalid command palette shortcut: {error}"),
-            }
-        }
+        });
+        let mut initial_global_shortcut_state = GlobalShortcutRegistrationState::default();
+        initial_global_shortcut_state.sync(&config.companion, cx);
+        let initial_shortcut_statuses = initial_global_shortcut_state.statuses();
+        let global_shortcut_state = Rc::new(RefCell::new(initial_global_shortcut_state));
+        let (companion_config_tx, companion_config_rx) =
+            tokio::sync::mpsc::unbounded_channel::<CompanionConfig>();
 
         // Open main window
         let mut window_options = WindowOptions {
@@ -1349,6 +1524,7 @@ fn main() -> Result<()> {
         // updates from the workspace side.
         let tray_handles = match tray::TrayService::new() {
             Ok(mut svc) => {
+                svc.start_state_updates(cx);
                 let cmd_rx = svc.take_receiver();
                 let state_tx = svc.take_state_sender();
                 drop(svc);
@@ -1385,6 +1561,8 @@ fn main() -> Result<()> {
                     config.clone(),
                     workspace_slot.clone(),
                     tray_state_tx,
+                    companion_config_tx,
+                    initial_shortcut_statuses,
                     main_window,
                     cx,
                 )
@@ -1472,6 +1650,65 @@ fn main() -> Result<()> {
                 .detach();
             }
 
+            // Settings persists the companion toggles inside the Workspace,
+            // then publishes the changed slice here so the application-level
+            // runtime can update native registrations immediately.
+            {
+                let mut companion_config_rx = companion_config_rx;
+                let shortcut_workspace_slot = workspace_slot.clone();
+                let global_shortcut_state = global_shortcut_state.clone();
+                cx.spawn(async move |cx| {
+                    while let Some(config) = companion_config_rx.recv().await {
+                        if let Err(error) = cx.update(|cx| {
+                            global_shortcut_state.borrow_mut().sync(&config, cx);
+                            if let Some(workspace) = shortcut_workspace_slot.upgrade() {
+                                let statuses = global_shortcut_state.borrow().statuses();
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.set_companion_shortcut_statuses(statuses, cx);
+                                });
+                            }
+                        }) {
+                            tracing::debug!(
+                                error = %error,
+                                "companion config dropped during shutdown"
+                            );
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+
+            // Wayland portal acceptance/refusal arrives asynchronously after
+            // the compositor permission dialog completes.
+            {
+                let mut global_hotkey_registration_rx = global_hotkey_registration_rx;
+                let shortcut_workspace_slot = workspace_slot.clone();
+                let global_shortcut_state = global_shortcut_state.clone();
+                cx.spawn(async move |cx| {
+                    while let Some(event) = global_hotkey_registration_rx.recv().await {
+                        if let Err(error) = cx.update(|cx| {
+                            global_shortcut_state
+                                .borrow_mut()
+                                .apply_portal_result(event);
+                            if let Some(workspace) = shortcut_workspace_slot.upgrade() {
+                                let statuses = global_shortcut_state.borrow().statuses();
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.set_companion_shortcut_statuses(statuses, cx);
+                                });
+                            }
+                        }) {
+                            tracing::debug!(
+                                error = %error,
+                                "global hotkey registration result dropped during shutdown"
+                            );
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+
             // Intercept window close to honor the `confirm_before_close`
             // and `close_to_tray` settings. `close_to_tray` wins when
             // enabled + tray up: hide the window and return false so
@@ -1502,8 +1739,6 @@ fn main() -> Result<()> {
             // (e.g. nothing focused, focus on wrong element, etc.).
             {
                 use actions::*;
-                use shelldeck_ui::workspace::ActiveView;
-
                 let w = workspace_slot.clone();
                 cx.on_action({
                     let w = w.clone();
@@ -1526,8 +1761,7 @@ fn main() -> Result<()> {
                     move |_: &OpenSettings, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| {
-                                ws.set_active_view(ActiveView::Settings);
-                                cx.notify();
+                                ws.open_settings(cx);
                             });
                         }
                     }
@@ -1703,22 +1937,96 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_toggle_action, command_palette_bounds,
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot, AiDockToggleAction,
-        CompanionCommand, CompanionRuntime, AI_DOCK_GLOBAL_HOTKEY_ID,
-        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
+        CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
+        ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
+    use shelldeck_core::config::app_config::CompanionConfig;
     use shelldeck_core::models::connection::Connection;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Default)]
+    struct FakeGlobalHotkeyRegistry {
+        calls: RefCell<Vec<(&'static str, u32)>>,
+        fail_next_registration: Cell<bool>,
+        wayland: bool,
+    }
+
+    impl GlobalHotkeyRegistry for FakeGlobalHotkeyRegistry {
+        fn compositor_name(&self) -> &'static str {
+            if self.wayland {
+                "Wayland"
+            } else {
+                "Test"
+            }
+        }
+
+        fn register(&self, id: u32, _keystroke: &gpui::Keystroke) -> anyhow::Result<()> {
+            self.calls.borrow_mut().push(("register", id));
+            if self.fail_next_registration.replace(false) {
+                anyhow::bail!("simulated registration failure");
+            }
+            Ok(())
+        }
+
+        fn unregister(&self, id: u32) {
+            self.calls.borrow_mut().push(("unregister", id));
+        }
+    }
 
     // SDTEST-1381
     #[test]
     fn ai_dock_toggle_reuses_the_existing_window() {
-        assert_eq!(ai_dock_toggle_action(None), AiDockToggleAction::Create);
-        assert_eq!(ai_dock_toggle_action(Some(false)), AiDockToggleAction::Show);
-        assert_eq!(ai_dock_toggle_action(Some(true)), AiDockToggleAction::Hide);
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::Toggle),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::Toggle),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::Toggle),
+            AiDockWindowAction::Hide
+        );
+    }
+
+    // SDTEST-1405
+    #[test]
+    fn assistant_deep_link_show_is_idempotent() {
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::Show),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::Show),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::Show),
+            AiDockWindowAction::Show
+        );
+    }
+
+    // SDTEST-1409
+    #[test]
+    fn task_center_request_always_shows_the_existing_dock() {
+        assert_eq!(
+            ai_dock_window_action(None, AiDockRequest::ShowTasks),
+            AiDockWindowAction::Create
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(false), AiDockRequest::ShowTasks),
+            AiDockWindowAction::Show
+        );
+        assert_eq!(
+            ai_dock_window_action(Some(true), AiDockRequest::ShowTasks),
+            AiDockWindowAction::Show
+        );
     }
 
     // SDTEST-1383
@@ -1749,6 +2057,121 @@ mod tests {
             Some(CompanionCommand::ToggleCommandPalette)
         );
         assert_eq!(CompanionRuntime::command_for_hotkey(u32::MAX), None);
+    }
+
+    // SDTEST-1398
+    #[test]
+    fn companion_shortcuts_register_and_unregister_without_restart() {
+        let registry = FakeGlobalHotkeyRegistry::default();
+        let mut state = GlobalShortcutRegistrationState::default();
+        let mut config = CompanionConfig::default();
+
+        state.sync(&config, &registry);
+        state.sync(&config, &registry);
+        assert_eq!(
+            registry.calls.borrow().as_slice(),
+            [
+                ("register", AI_DOCK_GLOBAL_HOTKEY_ID),
+                ("register", COMMAND_PALETTE_GLOBAL_HOTKEY_ID),
+            ]
+        );
+
+        config.global_shortcut_enabled = false;
+        state.sync(&config, &registry);
+        assert_eq!(
+            registry.calls.borrow().last(),
+            Some(&("unregister", AI_DOCK_GLOBAL_HOTKEY_ID))
+        );
+        assert!(state.ai_dock.shortcut.is_none());
+        assert_eq!(state.ai_dock.status, ShortcutRegistrationStatus::Disabled);
+        assert!(state.command_palette.shortcut.is_some());
+
+        registry.fail_next_registration.set(true);
+        config.global_shortcut_enabled = true;
+        state.sync(&config, &registry);
+        assert!(state.ai_dock.shortcut.is_none());
+        assert!(matches!(
+            state.ai_dock.status,
+            ShortcutRegistrationStatus::Error(_)
+        ));
+        state.sync(&config, &registry);
+        assert_eq!(
+            state.ai_dock.shortcut.as_deref(),
+            Some(config.global_shortcut.as_str())
+        );
+        assert_eq!(state.ai_dock.status, ShortcutRegistrationStatus::Registered);
+        assert_eq!(
+            registry
+                .calls
+                .borrow()
+                .iter()
+                .filter(|call| **call == ("register", AI_DOCK_GLOBAL_HOTKEY_ID))
+                .count(),
+            3
+        );
+    }
+
+    // SDTEST-1402
+    #[test]
+    fn custom_shortcuts_replace_native_registration_and_surface_conflicts() {
+        let registry = FakeGlobalHotkeyRegistry::default();
+        let mut state = GlobalShortcutRegistrationState::default();
+        let mut config = CompanionConfig::default();
+        state.sync(&config, &registry);
+
+        config.global_palette_shortcut = "ctrl-alt-p".to_string();
+        state.sync(&config, &registry);
+        assert_eq!(
+            registry.calls.borrow().as_slice(),
+            [
+                ("register", AI_DOCK_GLOBAL_HOTKEY_ID),
+                ("register", COMMAND_PALETTE_GLOBAL_HOTKEY_ID),
+                ("unregister", COMMAND_PALETTE_GLOBAL_HOTKEY_ID),
+                ("register", COMMAND_PALETTE_GLOBAL_HOTKEY_ID),
+            ]
+        );
+        assert_eq!(
+            state.command_palette.shortcut.as_deref(),
+            Some("ctrl-alt-p")
+        );
+
+        config.global_palette_shortcut = config.global_shortcut.clone();
+        state.sync(&config, &registry);
+        assert!(state.command_palette.shortcut.is_none());
+        assert_eq!(
+            state.command_palette.status,
+            ShortcutRegistrationStatus::Conflict
+        );
+    }
+
+    // SDTEST-1403
+    #[test]
+    fn wayland_portal_result_replaces_pending_status() {
+        let registry = FakeGlobalHotkeyRegistry {
+            wayland: true,
+            ..Default::default()
+        };
+        let mut state = GlobalShortcutRegistrationState::default();
+        state.sync(&CompanionConfig::default(), &registry);
+        assert_eq!(
+            state.ai_dock.status,
+            ShortcutRegistrationStatus::PendingPortal
+        );
+
+        state.apply_portal_result(gpui::GlobalHotkeyRegistrationEvent::Registered {
+            id: AI_DOCK_GLOBAL_HOTKEY_ID,
+            shortcut: CompanionConfig::default_global_shortcut().to_string(),
+        });
+        assert_eq!(state.ai_dock.status, ShortcutRegistrationStatus::Registered);
+        state.apply_portal_result(gpui::GlobalHotkeyRegistrationEvent::Failed {
+            id: COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+            shortcut: CompanionConfig::default_global_palette_shortcut().to_string(),
+            error: "permission denied".to_string(),
+        });
+        assert_eq!(
+            state.command_palette.status,
+            ShortcutRegistrationStatus::Error("permission denied".to_string())
+        );
     }
 
     // SDTEST-1394

@@ -127,6 +127,19 @@ def rasterize(cmd: list[str], src: Path, dst: Path, size: int) -> None:
     )
 
 
+def rasterize_monochrome_template(cmd: list[str], src: Path, dst: Path, size: int) -> None:
+    """Rasterize a currentColor SVG as a black AppKit alpha mask."""
+    concrete_svg = dst.with_suffix(".source.svg")
+    concrete_svg.write_text(
+        src.read_text(encoding="utf-8").replace("currentColor", "#000000"),
+        encoding="utf-8",
+    )
+    try:
+        rasterize(cmd, concrete_svg, dst, size)
+    finally:
+        concrete_svg.unlink(missing_ok=True)
+
+
 def main() -> None:
     cmd = convert_cmd()
     themes_dir = BRAND / "svg/themes"
@@ -239,6 +252,16 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    # macOS menu-bar template: 36 px maps exactly to the 18 pt size used by
+    # tray-icon on Retina displays. AppKit derives light/dark/pressed colors
+    # from alpha, so the source stays black on a transparent canvas.
+    rasterize_monochrome_template(
+        cmd,
+        mark_path,
+        PACK / "shelldeck-tray-template-macos.png",
+        36,
+    )
+
     rasterize(cmd, logo_svg, IMAGES / "shelldeck-icon.png", 128)
 
     # Per-theme in-app badge PNGs — one 128px raster per palette so
@@ -270,6 +293,7 @@ def main() -> None:
                 "ico": "packaging/icons/shelldeck.ico",
                 "iconset": "packaging/icons/iconset/",
                 "icns": "packaging/icons/shelldeck.icns (macOS: iconutil -c icns iconset -o shelldeck.icns)",
+                "tray_template_macos": "packaging/icons/shelldeck-tray-template-macos.png",
             },
         },
         "regenerate": "python3 scripts/export-monolith-brand.py",
