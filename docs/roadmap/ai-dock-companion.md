@@ -1,207 +1,69 @@
 # ShellDeck — AI Dock Companion
 
-> Roadmap produit et technique pour rendre l'assistant IA de ShellDeck
-> accessible depuis le système, sans devoir afficher ni initialiser toute
-> l'interface principale.
+> Contrat et plan de finition du Companion desktop.
+>
+> La priorité globale vit dans [`companion.md`](companion.md). Ce document ne
+> répète plus le journal détaillé des phases terminées.
 
-## Statut vérifié au 2026-07-24
+## État vérifié au 2026-07-24
 
-🚧 Phases A et B livrées le 2026-07-21 : Dock single-instance depuis le tray,
-conversation globale séparée, focus composer, fermeture-vers-tray, retour vers
-ShellDeck et démarrage caché récupérable.
+Les phases A à D sont livrées :
 
-La phase D est **livrée** :
+- Dock single-instance depuis le tray et raccourci configurable ;
+- démarrage caché récupérable ;
+- `CompanionRoot` et `AiCompanionController` utilisables sans `Workspace` ;
+- Dock et palette autonomes, multi-écran et masqués à la perte de focus ;
+- backends Windows, macOS, Linux/X11 et portail XDG Wayland ;
+- capture, reset, conflits et états natifs visibles dans Settings ;
+- `shelldeck://assistant` via le hand-off single-instance ;
+- permissions macOS documentées dans
+  [`docs/macos-permissions.md`](../macos-permissions.md).
 
-- les raccourcis personnalisables fonctionnent sur Windows, macOS, Linux/X11
-  et passent par le portail XDG Global Shortcuts sous Wayland ;
-- l'enregistrement/désenregistrement dynamique est câblé : les toggles
-  Settings prennent effet immédiatement ;
-- Settings capture les combinaisons, refuse les doublons/combinaisons sans
-  modificateur, restaure les valeurs par défaut et affiche l'état réel, y
-  compris l'acceptation ou le refus asynchrone du portail Wayland ;
-- les permissions réellement nécessaires au moniteur global macOS sont
-  documentées, avec le menu tray comme fallback sans permission.
+La phase E reste ouverte sur cinq finitions.
 
-La phase C est livrée : avec `start_hidden`, la fenêtre principale possède un
-`CompanionRoot` léger ; `AiCompanionController` sert le Dock sans construire le
-`Workspace`, et le parsing SSH, le store, les vues/pollers et le Cloud Sync sont
-différés jusqu'à la première surface principale qui en a besoin.
+## Contrat d'expérience
 
-La phase E est **partiellement livrée** : le Dock et la palette se masquent
-déjà à la perte de focus, leur placement multi-écran est câblé et le deep link
-Assistant ouvre le Dock sans initialiser `Workspace`. Restent l'icône tray
-macOS template, l'état visuel des tâches IA dans le tray, la géométrie
-persistante et les finitions d'accessibilité/i18n.
+- ShellDeck peut vivre dans le tray sans fenêtre principale visible.
+- Un échec du tray force une fenêtre principale récupérable.
+- Le Dock s'ouvre depuis le tray, le raccourci global ou
+  `shelldeck://assistant`.
+- Une invocation tray/raccourci bascule visibilité ; un deep link affiche de
+  façon idempotente.
+- Une seule fenêtre Dock existe par processus.
+- Ouvrir le Dock ne construit pas `Workspace`.
+- Le composer reçoit le focus ; Escape et la perte de focus masquent le Dock.
+- Une requête continue lorsque le Dock est masqué.
+- Ouvrir ShellDeck initialise ou réactive la surface principale unique.
+- Aucun contenu externe n'est capturé automatiquement.
 
-La palette de commandes possède aussi une fenêtre compagnon autonome, ouverte
-par `Ctrl+Alt+Space` (`Cmd+Alt+Space` sur macOS) sans afficher la fenêtre
-principale avant la sélection d'une commande de navigation.
+Sous Wayland, l'overlay ne garantit pas un niveau `always-on-top` sans
+`layer-shell`. Le tray reste le chemin de récupération portable.
 
-## Vision
-
-ShellDeck doit pouvoir vivre discrètement dans le tray et ouvrir, à la demande,
-un Dock latéral dédié à l'assistant IA. L'utilisateur peut l'afficher depuis le
-menu tray ou avec un raccourci global, poser une question, puis le masquer sans
-ouvrir la fenêtre principale de ShellDeck.
-
-Le Dock est une surface ShellDeck à part entière : il réutilise le backend IA,
-les conversations, les tâches persistantes, les réglages et les garde-fous
-existants. Ce n'est ni un second processus IA ni une copie simplifiée de
-`AiAssistantView`.
-
-## Expérience cible
-
-### Démarrage
-
-- Une option permet de lancer ShellDeck automatiquement à la connexion OS.
-- Une option `Démarrer dans le tray` empêche l'affichage de la fenêtre
-  principale au lancement.
-- Le tray reste disponible même lorsqu'aucune fenêtre ShellDeck n'est visible.
-- Un échec du tray ne doit jamais laisser un processus invisible impossible à
-  rouvrir : dans ce cas, ShellDeck ouvre sa fenêtre principale.
-
-### Ouverture du Dock
-
-Le Dock peut être affiché par :
-
-- l'entrée tray `Ouvrir l'assistant IA` ;
-- un raccourci global configurable ;
-- le bouton IA de la fenêtre principale ;
-- à terme, le deep link `shelldeck://assistant`.
-
-Une seconde invocation masque le Dock. Une seule instance du Dock peut exister
-par processus : il faut réactiver la fenêtre existante, jamais en créer une
-nouvelle à chaque raccourci.
-
-### Fenêtre
-
-- Panneau de 480 px ancré au bord droit et haut comme la surface d'affichage.
-- Aucun titre ni contrôle natif du système.
-- Panneau non déplaçable, non redimensionnable et non minimisable.
-- Surimpression au-dessus des fenêtres normales sans réserver l'espace bureau.
-- Conversation active, historique et composer issus de `AiAssistantView`.
-- Historique replié par défaut pour préserver la largeur du chat.
-- Focus automatique dans le composer à l'ouverture.
-- `Échap` masque le Dock si aucun dialogue interne n'est ouvert.
-- Fermeture de la fenêtre = masquage vers le tray, pas arrêt du processus.
-- Action explicite `Ouvrir ShellDeck` pour afficher l'application complète.
-- Police UI et facteur d'échelle identiques à la fenêtre ShellDeck principale.
-
-Sous Wayland, GPUI ne peut pas garantir un vrai « toujours au-dessus » sans le
-protocole compositor `layer-shell`; le tray reste néanmoins le chemin de
-réouverture portable.
-
-## État existant réutilisable
-
-ShellDeck possède déjà :
-
-- `TrayService`, son menu et le routage `TrayCommand` ;
-- `close_to_tray` et l'autostart multiplateforme ;
-- le garde single-instance et les deep links `shelldeck://` ;
-- `AiAssistantView` et les conversations persistantes locales ;
-- le client provider-neutral `shelldeck_core::ai::AiClient` ;
-- les secrets IA dans le keychain OS ;
-- les tâches IA persistantes et les notifications de fin ;
-- l'action interne `OpenAiAssistant` liée à `Cmd/Ctrl+Shift+K`.
-
-Le raccourci actuel est local à la fenêtre GPUI. Il ne fonctionne pas lorsque
-ShellDeck n'a pas le focus et ne doit pas être présenté comme un raccourci
-global.
-
-## Contrat de sécurité et de confidentialité
-
-Les règles de [`.agents/ai.md`](../../.agents/ai.md) restent applicables au
-Dock :
-
-- aucun appel IA sans action explicite de l'utilisateur ;
-- aucune commande exécutée par l'envoi d'un message ;
-- les réponses restent des brouillons tant qu'une action typée et confirmée ne
-  les applique pas ;
-- aucune clé API dans la configuration, les logs ou l'état de fenêtre ;
-- aucune capture automatique du presse-papiers, de la fenêtre active, de la
-  sélection ou des frappes globales ;
-- le contexte par défaut du Dock est `AiSurface::Global`, borné et sans données
-  provenant silencieusement des terminaux, tickets ou scripts ;
-- une pièce de contexte ne peut être ajoutée que par une action explicite
-  depuis ShellDeck.
-
-Le gestionnaire du raccourci global doit uniquement recevoir la combinaison
-enregistrée. Il ne doit jamais devenir un keylogger généraliste.
-
-## Architecture cible
-
-### Principe
-
-Le tray et le Dock appartiennent au runtime de l'application, pas au
-`Workspace`. Le `Workspace` devient un consommateur optionnel du même état IA.
+## Architecture actuelle
 
 ```text
-Processus ShellDeck
+CompanionRoot
 ├── CompanionRuntime
-│   ├── TrayService
-│   ├── GlobalShortcutService
-│   ├── configuration + keychain
-│   ├── AiCompanionController
-│   └── fenêtre AiDock (optionnelle)
-└── fenêtre principale + Workspace (optionnels et créés à la demande)
+│   ├── tray et raccourcis globaux
+│   ├── handles Dock et palette
+│   └── AiCompanionController
+└── Workspace optionnel
 ```
 
-### `CompanionRuntime`
+`CompanionRuntime` vit au niveau application et ne dépend pas de `Workspace`.
+Il possède le routage du tray, des raccourcis et des fenêtres auxiliaires.
 
-Le runtime applicatif doit connaître les handles des fenêtres ouvertes et
-centraliser les commandes système :
+`AiCompanionController` possède l'assistant global, les conversations et les
+tâches nécessaires au Dock. Une action ciblant un terminal, script ou ticket
+peut demander ensuite la construction de `Workspace`.
 
-- `ShowMainWindow` ;
-- `ToggleAiDock` ;
-- `OpenPalette` ;
-- `ConnectPinned(Uuid)` ;
-- `Quit`.
+Le chargement SSH, le store, les vues, les pollers et le Cloud Sync sont
+différés jusqu'à cette première demande de surface principale.
 
-Il garantit les invariants suivants :
-
-- une seule fenêtre principale ;
-- un seul Dock ;
-- une commande reçue depuis un thread tray ou raccourci est toujours remontée
-  sur le foreground executor GPUI ;
-- quitter appelle le shutdown du `Workspace` s'il existe ;
-- masquer une fenêtre ne détruit pas une requête IA en cours.
-
-### `AiCompanionController`
-
-L'orchestration aujourd'hui attachée au `Workspace` doit être séparée par
-étapes :
-
-- configuration effective du backend et du modèle ;
-- chargement/sauvegarde des conversations et tâches ;
-- traitement de `AiAssistantEvent::Submit` ;
-- mise à jour du résultat et notification de fin ;
-- création du contexte global sûr.
-
-Les workflows profondément contextuels — terminal, Support, scripts, Fleet —
-restent orchestrés par le `Workspace`. Le contrôleur commun ne doit pas recevoir
-leurs permissions ou leurs cibles par défaut.
-
-### Fenêtres GPUI
-
-La fenêtre principale ne doit plus être ouverte inconditionnellement dans
-`main.rs`. Le bootstrap doit pouvoir choisir entre :
-
-- démarrage normal : création immédiate du `Workspace` ;
-- démarrage caché : runtime + tray seulement ;
-- fallback sans tray : création immédiate du `Workspace`.
-
-`show_main_window()` crée le `Workspace` au premier appel puis réactive la même
-fenêtre aux appels suivants. `toggle_ai_dock()` suit le même principe avec une
-vue `AiDockView` légère qui héberge l'assistant partagé.
-
-## Configuration proposée
-
-Une section dédiée évite de mélanger le cycle de vie du compagnon avec les
-catégories de notifications du tray :
+## Configuration
 
 ```toml
 [companion]
-enabled = true
 start_hidden = false
 global_shortcut_enabled = true
 global_palette_shortcut_enabled = true
@@ -212,231 +74,56 @@ hide_dock_on_focus_loss = true
 always_on_top = false
 ```
 
-Tous les champs doivent être `#[serde(default)]` afin que les anciennes
-configurations continuent à être chargées. Le raccourci global est activé par défaut :
-son enregistrement peut entrer en conflit avec une autre application ou
-demander une autorisation spécifique à l'OS.
+Sur macOS, les defaults utilisent `cmd` à la place de `ctrl`. Les anciennes
+configurations sans section `[companion]` restent compatibles.
 
-Le raccourci effectif est `Ctrl+Shift+Space` sur Windows/Linux et
-`Cmd+Shift+Space` sur macOS. L'option existante `general.autostart` reste responsable du lancement à la
-connexion. `companion.start_hidden` décide seulement si la fenêtre principale
-est affichée durant ce lancement.
+## Phase E — finitions
 
-## Menu tray cible
+- [ ] **Accessibilité clavier et i18n FR/EN**
+  - traduire le menu tray encore codé en français ;
+  - vérifier ordre de focus, activation clavier et libellés accessibles.
+- [ ] **État des tâches IA dans le tray**
+  - afficher les tâches en génération/exécution ;
+  - ouvrir le centre de tâches depuis l'indicateur.
+- [ ] **Icône tray template macOS**
+  - ajouter un PNG monochrome transparent dédié ;
+  - utiliser `with_icon_as_template(true)` uniquement sur macOS.
+- [ ] **Géométrie persistante**
+  - restaurer l'écran et des dimensions valides ;
+  - migrer proprement si l'écran sauvegardé n'existe plus.
+- [ ] **Validation comportementale sur les trois OS**
+  - `autostart + start_hidden` ;
+  - raccourcis réels macOS/Windows ;
+  - portail Wayland réel ;
+  - mises à jour live du tray macOS/Windows.
 
-Ordre proposé :
+## Déjà validé
 
-1. `Ouvrir l'assistant IA`
-2. `Ouvrir ShellDeck`
-3. `Palette de commandes`
-4. `Connexions épinglées`
-5. compteurs d'état
-6. `Quitter`
+- SDTEST-1380/1381 : menu tray et fenêtre single-instance ;
+- SDTEST-1382/1383/1391 : config rétrocompatible et démarrage récupérable ;
+- SDTEST-1393/1398/1400..1404 : routage, persistance et résultats des
+  raccourcis ;
+- SDTEST-1397 : conversion et retours du portail Wayland ;
+- SDTEST-1405 : deep link Assistant idempotent ;
+- smoke Linux : Dock seul sans initialisation de `Workspace` ;
+- benchmark Linux debug : démarrage caché environ 28 % plus rapide, RSS
+  pratiquement inchangé.
 
-L'entrée assistant doit être masquée ou désactivée avec une explication si
-aucun backend IA utilisable n'est configuré ou si `AiSurface::Global` est
-désactivée.
+Les preuves exhaustives et les lacunes de harnais GPUI restent dans
+[`docs/testing/`](../testing/).
 
-## Raccourci global multiplateforme
+## Limites connues
 
-Le service choisi doit être isolé derrière une petite interface interne afin
-de pouvoir remplacer son backend sans toucher au Dock :
-
-```rust
-trait GlobalShortcutService {
-    fn register(&mut self, shortcut: &str) -> Result<()>;
-    fn unregister(&mut self);
-}
-```
-
-Contraintes :
-
-- Windows : enregistrer une combinaison système et router l'événement vers
-  GPUI sans bloquer la boucle native.
-- macOS : respecter les règles de la main queue et expliquer toute permission
-  OS réellement nécessaire.
-- Linux X11 : enregistrement global classique lorsque disponible.
-- Linux Wayland : privilégier le portail Global Shortcuts lorsqu'il est
-  supporté ; sinon afficher clairement `Raccourci global indisponible` et
-  conserver le menu tray comme fallback.
-
-Un échec d'enregistrement n'empêche jamais ShellDeck de démarrer. Settings doit
-afficher l'erreur et permettre de choisir une autre combinaison.
-
-## Phasage
-
-### Phase A — Dock depuis le tray
-
-- [x] Ajouter `TrayCommand::ToggleAiDock`.
-- [x] Ajouter l'entrée assistant au menu tray.
-- [x] Créer une fenêtre GPUI compacte et single-instance.
-- [x] Réutiliser `AiAssistantView` et le contexte global existant.
-- [x] Ajouter `Ouvrir ShellDeck` et fermeture-vers-tray.
-- [x] Masquer le Dock avec `Échap` hors dialogue interne.
-- [x] Conserver temporairement le `Workspace` existant en mémoire si l'extraction
-  du contrôleur est trop large pour cette phase.
-
-Cette phase valide l'expérience produit. Elle ne prétend pas encore réduire
-fortement la mémoire ou le temps de démarrage.
-
-### Phase B — Démarrage silencieux
-
-- [x] Ajouter `CompanionConfig` avec des defaults rétrocompatibles.
-- [x] Ne pas afficher la fenêtre principale lorsque `start_hidden` est actif et que
-  le tray est disponible.
-- [x] Différer la création du `Workspace` en démarrage caché derrière un
-  `CompanionRoot` léger. La fenêtre native existe encore cachée ; le
-  `Workspace` est construit à la première commande qui nécessite son état.
-- [x] Ajouter le fallback visible lorsque le tray échoue.
-- [ ] Tester autostart + start hidden sur les trois OS. La CI habituelle teste
-  Linux et la matrice de release compile macOS/Windows, mais aucun test de
-  comportement Companion ne s'exécute encore sur ces deux plateformes.
-
-### Phase C — Runtime réellement léger
-
-- [x] Ne plus construire `Workspace`, ses vues et ses pollers au démarrage
-  caché.
-- [x] Extraire `AiCompanionController` du `Workspace`. Il possède l'assistant
-  global, la configuration partagée et le traitement des complétions. Ouvrir
-  le Dock ou converser ne construit plus le `Workspace`; seules les actions de
-  tâche qui doivent rejoindre un ticket, terminal ou script l'initialisent.
-- [x] Introduire le `CompanionRuntime` applicatif qui possède le bridge d'état
-  tray, le routage des raccourcis globaux, le contrôleur IA et les handles des
-  fenêtres Dock/palette sans dépendre d'un `Workspace`.
-- [x] Charger uniquement config, conversations/tâches et services compagnon au
-  démarrage caché. Le keychain reste consulté à la demande par le backend IA ;
-  aucune lecture SSH/store n'est nécessaire au Dock seul.
-- [x] Construire les vues SSH/terminal/Support/Fleet et leurs pollers uniquement
-  à la première surface qui requiert le `Workspace` (fenêtre principale,
-  palette ou action de tâche ciblée).
-- [x] Repousser le parsing SSH et le chargement du store au premier besoin du
-  `Workspace`. Le Cloud Sync de démarrage part ensuite sur
-  `background_executor`, sans bloquer l'affichage.
-- [x] Mesurer le RSS et le temps de démarrage avant/après. Benchmark indicatif
-  Linux/X11 en build debug, même configuration temporaire et RSS lu 1 s après
-  `ShellDeck window opened` : avant `2e0501c` = 663 ms / 182004 KiB / 32
-  threads ; après `4139880` = 478 ms / 182092 KiB / 32 threads. Le temps
-  baisse de 185 ms (≈ 28 %) ; l'écart RSS de +88 KiB (0,05 %) est du bruit de
-  mesure, donc aucune baisse mémoire n'est revendiquée à ce stade.
-- [x] Vérifier qu'aucun poll réseau propre au `Workspace` ne démarre en mode Dock
-  seul. Smoke Linux effectué le 2026-07-23 : démarrage caché puis
-  Ctrl+Shift+Space ouvre un Dock 480×1048 sans trace
-  `initializing full Workspace`.
-
-### Phase D — Raccourci global
-
-- [x] Implémenter les backends Windows, macOS et Linux/X11.
-- [x] Implémenter le portail Global Shortcuts sous Wayland. Les raccourcis de
-  démarrage sont regroupés dans une session et un seul `BindShortcuts`; les
-  activations reviennent sur calloop avant le callback GPUI. Absence du
-  portail, refus ou ensemble accepté vide restent non fatals.
-- [x] Ajouter l'enregistrement/désenregistrement dynamique. `Workspace`
-  publie uniquement la tranche `CompanionConfig` modifiée vers
-  `CompanionRuntime`, qui conserve l'état réellement enregistré et applique
-  `register`/`unregister` sans redémarrage.
-- [x] Ajouter la capture de combinaison et l'état d'erreur dans Settings :
-  modificateur obligatoire, conflit Dock/palette visible, reset par défaut et
-  résultat natif renvoyé à l'interface.
-- [x] Toggle du Dock, focus composer et restauration de fenêtre.
-- [x] Échec d'enregistrement non fatal avec fallback tray.
-- [x] Afficher le fallback Wayland dans Settings : état en attente pendant le
-  dialogue puis actif ou erreur selon le résultat asynchrone du portail.
-- [x] Documenter les permissions macOS réellement nécessaires dans
-  [`docs/macos-permissions.md`](../macos-permissions.md) : le moniteur global
-  `NSEvent` des raccourcis clavier exige l'approbation Accessibilité/TCC ;
-  Dock, tray et deep links n'exigent aucune permission supplémentaire.
-
-### Phase E — Finitions
-
-- [x] Deep link `shelldeck://assistant` et hand-off single-instance : le lien
-  crée ou focalise le Dock de façon idempotente sans révéler la fenêtre
-  principale ni initialiser `Workspace`.
-- [ ] Icône tray template macOS (`tray-icon` expose
-  `with_icon_as_template`, mais ShellDeck ne l'utilise pas encore).
-- [ ] Restauration portable/persistante de la géométrie du Dock. Le placement
-  sur l'écran contenant le pointeur et la migration multi-écran sont déjà
-  fonctionnels, mais aucune géométrie n'est persistée.
-- [x] Masquage du Dock et de la palette à la perte de focus.
-- [ ] État visuel d'une tâche IA en cours dans le tray. Les notifications de
-  fin existent déjà.
-- [ ] Accessibilité clavier complète et traductions FR/EN. Le Dock est localisé
-  et Escape/focus sont câblés ; le menu tray conserve encore plusieurs
-  libellés français codés en dur.
-
-## Critères d'acceptation V1
-
-- ShellDeck peut être lancé puis rester utilisable avec sa fenêtre principale
-  cachée.
-- Le tray ouvre et masque une unique fenêtre Assistant.
-- Ouvrir le Dock ne rend pas visible la fenêtre principale.
-- Le composer reçoit le focus et une conversation peut être menée normalement.
-- Une requête continue si le Dock est masqué et sa fin peut déclencher la
-  notification IA existante.
-- `Ouvrir ShellDeck` affiche ou réactive une unique fenêtre principale.
-- `Quitter` arrête proprement les sessions et tâches détenues par le processus.
-- Si le tray ne démarre pas, ShellDeck ouvre une fenêtre récupérable.
-- Les anciennes configurations sans `[companion]` continuent à fonctionner.
-- Aucun contenu externe n'est capturé automatiquement pour enrichir le prompt.
-
-## Vérification et documentation de tests
-
-Au début de l'implémentation, allouer les nouveaux IDs conformément à
-[`.agents/testing.md`](../../.agents/testing.md) :
-
-- SDUC pour démarrage caché récupérable ;
-- SDUC pour toggle single-instance du Dock depuis le tray ;
-- SDUC pour continuité d'une tâche lorsque le Dock est masqué ;
-- SDUC pour raccourci global et fallback indisponible ;
-- SDTEST unitaires du routage des commandes et de la réduction d'état des
-  fenêtres ;
-- SDTEST de compatibilité serde de `CompanionConfig` ;
-- entrées de compile-check Linux/macOS/Windows pour tout backend spécifique.
-
-Les vues GPUI ne doivent pas recevoir de tests artificiels. Extraire le routage,
-le parsing du raccourci et la machine d'état des fenêtres en fonctions pures,
-puis tester ces contrats.
-
-### Couverture constatée le 2026-07-23
-
-Les tests ciblés existants passent :
-
-- décision create/show/hide du Dock ;
-- ancrage à droite de l'écran ;
-- parsing des raccourcis Dock et palette ;
-- routage des entrées tray ;
-- fallback visible de `start_hidden` sans tray ;
-- compatibilité serde de `CompanionConfig`.
-
-Les lacunes restantes sont :
-
-- le test de politique de boot prouve que le démarrage caché diffère
-  `Workspace`, mais aucun harnais GPUI ne vérifie encore l'absence effective de
-  chaque poller ;
 - aucun test d'enregistrement global réel sur macOS/Windows ;
-- aucun environnement Wayland avec backend portail n'est disponible sur cette
-  machine X11 pour valider le dialogue et une activation réelle ; la conversion
-  XDG, les IDs et le refus précoce des touches non supportées sont couverts en
-  tests unitaires du fork ;
-- aucun test GPUI de rendu du badge Wayland, mais la transition
-  attente → actif/erreur est couverte sans portail réel ;
-- aucun test GPUI de perte de focus ;
-- aucune couverture des mises à jour live du tray macOS/Windows.
+- aucun smoke du portail sur la machine X11 actuelle ;
+- pas de garantie `layer-shell` sous Wayland ;
+- mutations live du menu tray non câblées sur macOS/Windows ;
+- l'icône couleur actuelle ne convient pas comme masque template macOS.
 
-## Hors périmètre initial
+## Hors scope V1
 
-- Capturer automatiquement le texte sélectionné dans les autres applications.
-- Observer le presse-papiers en arrière-plan.
-- Exécuter une commande directement depuis une réponse du Dock.
-- Afficher plusieurs fenêtres Assistant simultanées.
-- Remplacer le tray par un daemon ou service système privilégié.
-- Garantir un ancrage pixel-perfect sous l'icône tray sur tous les desktop
-  environments Linux.
-
-## Points à décider pendant l'implémentation
-
-- Combinaison globale par défaut après tests de conflits OS.
-- Le Dock et la palette se masquent façon Spotlight à la perte de focus.
-- Conservation d'une fenêtre Dock cachée ou reconstruction de sa vue après une
-  longue inactivité.
-- Niveau de contexte explicite exposé par le Dock : contexte global seulement
-  en V1, puis pièces jointes ShellDeck dans une phase ultérieure.
+- observer la sélection ou le presse-papiers d'autres applications ;
+- plusieurs fenêtres Assistant simultanées ;
+- exécuter directement une commande depuis une réponse libre ;
+- remplacer le tray par un daemon privilégié ;
+- garantir un ancrage sous l'icône tray sur tous les environnements desktop.
