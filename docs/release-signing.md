@@ -16,27 +16,37 @@ chaîne déclarative.
 
 ## Politique
 
-Une version taguée est bloquée si une seule des garanties suivantes manque :
+Une version taguée auto-signe tout ce qui peut l'être sans autorité externe :
 
 - archive auto-update signée par un manifeste Ed25519 vérifié dans le client ;
-- exécutable et installateur Windows signés Authenticode avec horodatage SHA-256 ;
-- bundle et DMG macOS signés avec un certificat Developer ID Application,
-  Hardened Runtime activé, puis soumis à `notarytool` ;
+- exécutable et installateur Windows signés Authenticode avec horodatage SHA-256,
+  avec le PFX public s'il existe ou le PFX auto-signé sinon ;
+- bundle macOS signé avec le certificat Developer ID s'il existe, ou avec une
+  signature ad hoc sinon ;
 - AppImage Linux signée dans ses sections de signature avec GPG ;
 - `SHA256SUMS.txt` accompagné d'une signature détachée
   `SHA256SUMS.txt.asc` et de la clé publique `ShellDeck-signing-key.asc`.
+
+La notarisation macOS n'est exécutée que lorsque les trois identifiants Apple
+sont configurés. Sans compte Apple Developer, la release macOS reste
+installable manuellement mais n'est pas approuvée par Gatekeeper.
 
 Les exécutions manuelles sans tag restent utilisables comme builds de
 diagnostic non signés. Elles ne peuvent ni créer une GitHub Release, ni publier
 un manifeste d'auto-update.
 
-Pour tester la mécanique Authenticode sans certificat public, un build manuel
-peut activer `test_windows_signing`. Il utilise exclusivement
+En l'absence de certificat Authenticode public, les releases Windows utilisent
+le PFX auto-signé configuré dans
 `WINDOWS_TEST_CERTIFICATE_PFX_BASE64` et
-`WINDOWS_TEST_CERTIFICATE_PASSWORD`. Ces secrets ne sont jamais sélectionnés
-sur un tag : une vraie release reste bloquée si le certificat de production
-manque. Le certificat auto-signé valide la chaîne technique mais reste
-volontairement non approuvé sur les PC des utilisateurs.
+`WINDOWS_TEST_CERTIFICATE_PASSWORD`. Un build manuel doit activer
+`test_windows_signing` pour tester cette même mécanique. Dès que les deux
+secrets `WINDOWS_CERTIFICATE_*` sont présents, le workflow leur donne la
+priorité. Une configuration de production partielle bloque la release.
+Le certificat auto-signé utilise l'API Authenticode locale de PowerShell sans
+appeler de service d'horodatage ou de validation externe, mais reste non
+approuvé par défaut sur les PC des utilisateurs. Le runner éphémère ne l'ajoute
+pas non plus aux autorités racines de Windows. Un certificat public conserve
+`signtool`, la validation de chaîne et l'horodatage SHA-256.
 
 ## Secrets et variable GitHub
 
