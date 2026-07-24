@@ -19,7 +19,8 @@ Les phases A à D sont livrées :
 - permissions macOS documentées dans
   [`docs/macos-permissions.md`](../macos-permissions.md).
 
-La phase E reste ouverte sur cinq finitions.
+La phase E est livrée. Les contrôles sur de vraies sessions OS relèvent de la
+recette de release, pas d'une fonctionnalité ouverte.
 
 ## Contrat d'expérience
 
@@ -69,34 +70,29 @@ global_shortcut_enabled = true
 global_palette_shortcut_enabled = true
 global_shortcut = "ctrl-shift-space"
 global_palette_shortcut = "ctrl-alt-space"
-hide_dock_on_escape = true
-hide_dock_on_focus_loss = true
-always_on_top = false
 ```
 
 Sur macOS, les defaults utilisent `cmd` à la place de `ctrl`. Les anciennes
-configurations sans section `[companion]` restent compatibles.
+configurations sans section `[companion]` restent compatibles. Escape, la perte
+de focus et le mode overlay font partie du contrat fixe de la fenêtre et ne
+sont pas des préférences persistées.
 
 ## Phase E — finitions
 
 - [x] **Accessibilité clavier et i18n FR/EN**
-  - tray entièrement traduite, pluriels compris, avec mise à jour live Linux ;
+  - tray entièrement traduite, pluriels compris, avec mise à jour live ;
   - Dock nommé au clavier et palette dotée d'un champ accessible ainsi que de
     la navigation Tab/flèches/Home/End/Page Up/Page Down.
 - [x] **État des tâches IA dans le tray**
-  - compteur live Linux limité aux tâches `Generating`/`Executing` ;
+  - compteur live limité aux tâches `Generating`/`Executing` ;
   - indicateur cliquable ouvrant directement l'onglet Tâches du Dock unique.
 - [x] **Icône tray template macOS**
   - masque Monolith noir + alpha 36 px exporté depuis le SVG canonique ;
   - `with_icon_as_template(true)` activé uniquement dans le backend macOS.
-- [ ] **Géométrie persistante**
-  - restaurer l'écran et des dimensions valides ;
-  - migrer proprement si l'écran sauvegardé n'existe plus.
-- [ ] **Validation comportementale sur les trois OS**
-  - `autostart + start_hidden` ;
-  - raccourcis réels macOS/Windows ;
-  - portail Wayland réel ;
-  - mises à jour live du tray macOS/Windows.
+- [x] **Mises à jour live du tray sur les trois OS**
+  - Linux conserve sa boucle propriétaire GTK ;
+  - macOS et Windows appliquent les snapshots sur l'exécuteur foreground GPUI,
+    qui possède les handles `muda` non-`Send`.
 
 ## Déjà validé
 
@@ -110,6 +106,8 @@ configurations sans section `[companion]` restent compatibles.
 - SDTEST-1407..1409 : comptage des tâches IA et ouverture du centre ;
 - SDTEST-1410 : dimensions, monochromie, transparence et couverture du masque
   tray macOS ;
+- SDTEST-1411 : chaque snapshot dynamique atteint le mutateur propriétaire du
+  menu jusqu'à la fermeture du canal ;
 - smoke Linux : Dock seul sans initialisation de `Workspace` ;
 - benchmark Linux debug : démarrage caché environ 28 % plus rapide, RSS
   pratiquement inchangé.
@@ -122,7 +120,7 @@ Les preuves exhaustives et les lacunes de harnais GPUI restent dans
 - aucun test d'enregistrement global réel sur macOS/Windows ;
 - aucun smoke du portail sur la machine X11 actuelle ;
 - pas de garantie `layer-shell` sous Wayland ;
-- mutations live du menu tray non câblées sur macOS/Windows ;
+- mise à jour native du tray à confirmer visuellement sur macOS/Windows ;
 
 ## Hors scope V1
 

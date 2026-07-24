@@ -1475,8 +1475,8 @@ than pretending that a lost process or request is still running. The system
 tray exposes a localized running count limited to `Generating` and `Executing`;
 confirmation waits and ready drafts do not inflate it. Selecting that indicator
 shows the existing single-instance Dock directly on its Tasks tab without
-revealing the main window. Linux updates the count live; macOS/Windows retain
-the separately tracked native-menu mutation limitation.
+revealing the main window. Every desktop backend updates the count live on the
+thread that owns its native menu.
 
 ### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
 
@@ -1570,8 +1570,9 @@ idempotently: an already visible Dock stays visible instead of being toggled
 off, and the main ShellDeck window remains hidden. Every visible tray label,
 including zero/one/many counter forms and the empty pinned-connections row,
 follows the selected French or English UI locale. A live language change
-republishes the tray snapshot so Linux updates the native menu immediately;
-macOS/Windows retain their documented live-menu limitation. The Dock toolbar
+republishes the tray snapshot so every desktop backend updates the native menu
+immediately. Counters and pinned connections follow the same owner-thread
+snapshot path. The Dock toolbar
 uses keyboard-focusable buttons with visible localized names and tooltips;
 Escape remains an explicit hide action. On macOS, the tray uses a dedicated
 36 px black-and-alpha Monolith mark as an AppKit template image, so the system
@@ -1645,6 +1646,9 @@ silently rendering an empty fixed-size slot in the interface.
 
 ## Change log
 
+- **2026-07-24** — Extended SDUC-429/434 and added SDTEST-1411 for live
+  counter, pinned-connection and locale snapshots on the native tray owner
+  thread across Linux, macOS and Windows.
 - **2026-07-24** — Extended SDUC-434 and added SDTEST-1410 for the dedicated
   Retina macOS tray template generated from the canonical Monolith mark.
 - **2026-07-24** — Extended SDUC-429 and added SDTEST-1407..1409 for the

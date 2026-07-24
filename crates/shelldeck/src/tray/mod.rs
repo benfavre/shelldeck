@@ -12,8 +12,9 @@
 //!   GPUI via a `Sender<TrayCommand>` that the workspace consumes on
 //!   the foreground executor.
 //! - Live counter updates flow the other way: the workspace publishes a
-//!   [`TrayState`] snapshot via a `Sender<TrayState>` and the tray
-//!   thread rewrites its counter menu items with the new values.
+//!   [`TrayState`] snapshot via a `Sender<TrayState>`. Linux applies it on
+//!   the GTK tray thread; macOS and Windows apply it from GPUI's native
+//!   foreground executor, where `muda` menu handles are safe to mutate.
 //! - Phase A: static menu (Show/Palette/Quit). Phase B (this file):
 //!   live counters. Phase C: OS notifications on deltas. Phase D:
 //!   opt-in per notification category.
@@ -41,14 +42,13 @@
 //! - **Linux**: `libayatana-appindicator3` or `libappindicator3`,
 //!   typically pre-installed on GNOME/KDE.
 //! - **macOS**: `NSStatusItem` with a dedicated monochrome template asset,
-//!   allowing AppKit to adapt it to light/dark/pressed menu-bar states. Live
-//!   counter updates are a follow-up (needs a `dispatch_async(main_queue)`
-//!   bridge instead of the GTK timeout).
-//! - **Windows**: `Shell_NotifyIcon`. Live counter updates likewise
-//!   need `PostMessage` glue; not wired yet.
+//!   allowing AppKit to adapt it to light/dark/pressed menu-bar states.
+//! - **Windows**: `Shell_NotifyIcon` with the colored application icon.
+//! - **macOS + Windows**: GPUI's foreground executor is the native main-loop
+//!   bridge used for live menu mutations; no background thread touches the
+//!   non-`Send` `muda` handles.
 
 use anyhow::{Context, Result};
-use std::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use uuid::Uuid;
@@ -105,12 +105,14 @@ pub struct PinnedConnection {
     pub name: String,
 }
 
-/// Public handle over the tray subsystem. Callers drop this once
-/// they've taken the receiver + sender — the tray thread owns the
-/// live `TrayIcon` and `MenuItem`s.
+/// Public handle over the tray subsystem. Callers drop this once they have
+/// started updates and taken the receiver + sender — the platform backend or
+/// detached foreground task then owns the live `TrayIcon` and `MenuItem`s.
 pub struct TrayService {
     rx: Option<UnboundedReceiver<TrayCommand>>,
-    state_tx: Option<Sender<TrayState>>,
+    state_tx: Option<UnboundedSender<TrayState>>,
+    #[cfg(not(target_os = "linux"))]
+    foreground_state: Option<ForegroundTrayState>,
 }
 
 impl TrayService {
@@ -129,19 +131,54 @@ impl TrayService {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
         install_menu_router(cmd_tx);
 
-        let (state_tx, state_rx) = std::sync::mpsc::channel::<TrayState>();
+        let (state_tx, state_rx) = tokio::sync::mpsc::unbounded_channel::<TrayState>();
 
         // Icon bytes are cheap to decode on either thread. We do it
         // here so a bad PNG surfaces as an early hard error rather
         // than as a silent tray-thread failure.
         let icon = load_icon().context("load tray icon")?;
 
+        #[cfg(target_os = "linux")]
         spawn_tray_backend(icon, state_rx)?;
+        #[cfg(not(target_os = "linux"))]
+        let foreground_state = Some(spawn_tray_backend(icon, state_rx)?);
 
         Ok(Self {
             rx: Some(cmd_rx),
             state_tx: Some(state_tx),
+            #[cfg(not(target_os = "linux"))]
+            foreground_state,
         })
+    }
+
+    /// Start applying workspace snapshots to the native menu.
+    ///
+    /// Linux owns its menu on the dedicated GTK thread and starts draining
+    /// during [`Self::new`]. macOS and Windows keep `muda`'s non-`Send`
+    /// handles on GPUI's foreground executor and await snapshots there.
+    pub fn start_state_updates(&mut self, cx: &gpui::App) {
+        #[cfg(target_os = "linux")]
+        let _ = cx;
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let foreground = self
+                .foreground_state
+                .take()
+                .expect("TrayService::start_state_updates called twice");
+            let ForegroundTrayState {
+                state_rx,
+                mut items,
+            } = foreground;
+            cx.spawn(async move |_| {
+                let mut prev_state = TrayState::default();
+                consume_tray_states(state_rx, |next| {
+                    apply_state(&mut items, &mut prev_state, next);
+                })
+                .await;
+            })
+            .detach();
+        }
     }
 
     /// Hand off the command receiver to the caller. Panics if called
@@ -153,11 +190,10 @@ impl TrayService {
             .expect("TrayService::take_receiver called twice")
     }
 
-    /// Hand off the state sender to the caller. The workspace keeps
-    /// this and pushes a fresh [`TrayState`] every time its counters
-    /// change; the tray thread updates its menu labels from within
-    /// the GTK loop.
-    pub fn take_state_sender(&mut self) -> Sender<TrayState> {
+    /// Hand off the state sender to the caller. The workspace keeps this and
+    /// pushes a fresh [`TrayState`] every time its counters change; the menu's
+    /// owner thread applies each snapshot.
+    pub fn take_state_sender(&mut self) -> UnboundedSender<TrayState> {
         self.state_tx
             .take()
             .expect("TrayService::take_state_sender called twice")
@@ -229,6 +265,12 @@ struct MenuItems {
     counters: CounterItems,
     pinned_menu: Submenu,
     pinned_items: Vec<MenuItem>,
+}
+
+#[cfg(not(target_os = "linux"))]
+struct ForegroundTrayState {
+    state_rx: UnboundedReceiver<TrayState>,
+    items: MenuItems,
 }
 
 /// Build the tray menu — click actions on top, live counters in the middle,
@@ -359,6 +401,18 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     *prev = next;
 }
 
+/// Forward every published snapshot to the owner-thread menu mutator until
+/// all senders disappear during shutdown.
+#[cfg(any(not(target_os = "linux"), test))]
+async fn consume_tray_states(
+    mut state_rx: UnboundedReceiver<TrayState>,
+    mut apply: impl FnMut(TrayState),
+) {
+    while let Some(next) = state_rx.recv().await {
+        apply(next);
+    }
+}
+
 // Label formatters use explicit zero/one/many keys because rust-i18n does not
 // infer the app's desired wording for these compact native-menu rows.
 
@@ -400,7 +454,7 @@ fn load_icon() -> Result<tray_icon::Icon> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> Result<()> {
+fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: UnboundedReceiver<TrayState>) -> Result<()> {
     // Oneshot to synchronise "tray is live" with the main thread. If
     // GTK init or tray build fails, the error bubbles up before the
     // app opens its main window. On success the thread parks on
@@ -447,6 +501,7 @@ fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> R
             // `prev_state` for diffing, and `state_rx` for draining
             // publishes from the workspace.
             let mut prev_state = TrayState::default();
+            let mut state_rx = state_rx;
             gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
                 while let Ok(next) = state_rx.try_recv() {
                     apply_state(&mut items, &mut prev_state, next);
@@ -499,6 +554,26 @@ mod tests {
         ));
     }
 
+    // SDTEST-1411
+    #[tokio::test(flavor = "current_thread")]
+    async fn tray_state_pump_forwards_every_snapshot_until_shutdown() {
+        let (state_tx, state_rx) = tokio::sync::mpsc::unbounded_channel();
+        for active_ssh in [1, 2, 0] {
+            state_tx
+                .send(TrayState {
+                    active_ssh,
+                    ..TrayState::default()
+                })
+                .expect("live tray receiver");
+        }
+        drop(state_tx);
+
+        let mut observed = Vec::new();
+        consume_tray_states(state_rx, |state| observed.push(state.active_ssh)).await;
+
+        assert_eq!(observed, vec![1, 2, 0]);
+    }
+
     // SDTEST-1410
     #[test]
     fn macos_template_asset_is_retina_monochrome_with_transparent_background() {
@@ -538,13 +613,16 @@ mod tests {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> Result<()> {
+fn spawn_tray_backend(
+    icon: tray_icon::Icon,
+    state_rx: UnboundedReceiver<TrayState>,
+) -> Result<ForegroundTrayState> {
     // macOS + Windows: no separate event loop needed, the platform
     // run-loop drives the tray directly. The `TrayIcon` must be built
     // on the main thread but doesn't need to be kept as a named
     // binding — we intentionally leak it so it lives for the whole
     // process (dropping the icon removes the tray entry).
-    let (menu, _counters) = build_menu()?;
+    let (menu, items) = build_menu()?;
     let builder = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("ShellDeck")
@@ -554,15 +632,5 @@ fn spawn_tray_backend(icon: tray_icon::Icon, state_rx: Receiver<TrayState>) -> R
     let tray = builder.build().context("build tray icon")?;
     Box::leak(Box::new(tray));
 
-    // TODO(companion/tray-macos-windows): live-counter updates need a
-    // platform bridge equivalent to the GTK `timeout_add_local` used on
-    // Linux (`dispatch_async(main_queue)` on macOS, `PostMessage` +
-    // WndProc on Windows). Until then, drain the receiver on a
-    // background thread and drop the values so the workspace-side
-    // channel doesn't back up.
-    std::thread::Builder::new()
-        .name("shelldeck-tray-state-drain".to_string())
-        .spawn(move || while state_rx.recv().is_ok() {})
-        .context("spawn tray state-drain thread")?;
-    Ok(())
+    Ok(ForegroundTrayState { state_rx, items })
 }

@@ -406,7 +406,7 @@ impl WorkspaceSlot {
 struct CompanionRuntime {
     main_window: gpui::AnyWindowHandle,
     ai_companion: gpui::Entity<AiCompanionController>,
-    tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+    tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
     companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
     ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
     command_palette_window: Option<gpui::WindowHandle<CommandPaletteWindowView>>,
@@ -444,7 +444,7 @@ impl CompanionRoot {
     fn new(
         config: AppConfig,
         workspace_slot: WorkspaceSlot,
-        tray_state_tx: Option<std::sync::mpsc::Sender<tray::TrayState>>,
+        tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
         companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
         initial_shortcut_statuses: CompanionShortcutStatuses,
         main_window: gpui::AnyWindowHandle,
@@ -1555,6 +1555,7 @@ fn main() -> Result<()> {
         // updates from the workspace side.
         let tray_handles = match tray::TrayService::new() {
             Ok(mut svc) => {
+                svc.start_state_updates(cx);
                 let cmd_rx = svc.take_receiver();
                 let state_tx = svc.take_state_sender();
                 drop(svc);

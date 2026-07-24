@@ -12,25 +12,21 @@
 | Bloc | État | Preuve principale |
 |---|---|---|
 | Autostart et démarrage caché récupérable | Livré | `config::autostart`, `CompanionRoot`, SDTEST-1382/1383/1391 |
-| Tray, notifications et fermeture vers le tray | Livré sur Linux ; mutation live limitée sur macOS/Windows | `crates/shelldeck/src/tray`, `TrayNotification` |
+| Tray, notifications et fermeture vers le tray | Livré sur Linux, macOS et Windows | `crates/shelldeck/src/tray`, `TrayNotification` |
 | Deep links et instance unique | Livré, y compris `shelldeck://assistant` | `config::{deep_link,single_instance}`, SDTEST-1320..1323/1405 |
 | Activité récente durable | Livré | `config::activity`, SDTEST-1330..1332 |
 | Connexions épinglées | Livré | `AppConfig.pinned_connections`, sidebar et sous-menu tray |
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
-| AI Dock Companion | Phases A–D et trois finitions livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
+| AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
 
 ## Next
 
-Ordre recommandé pour terminer la V1 :
+Aucun bloc fonctionnel Companion V1 ne reste ouvert.
 
-1. **Géométrie persistante du Dock**
-   - restaurer l'écran et les dimensions valides ;
-   - retomber sur le placement courant si l'écran a disparu ou changé.
-2. **Validation comportementale multiplateforme**
-   - tester `autostart + start_hidden` sur Linux, macOS et Windows ;
-   - tester les raccourcis réels sur macOS/Windows et le portail sur Wayland ;
-   - valider les mises à jour live du tray hors Linux.
+La recette sur de vraies sessions Linux/X11, Wayland, macOS et Windows reste
+une vérification de release, pas une fonctionnalité produit à maintenir dans
+la roadmap.
 
 ## Bloqué
 
@@ -46,7 +42,6 @@ Ordre recommandé pour terminer la V1 :
 ## Later
 
 - rendre les compteurs tray cliquables vers leur surface ;
-- mettre à jour les compteurs et favoris tray en direct sur macOS/Windows ;
 - enrichir la notification SSH avec l'identité de la connexion ;
 - ajouter reconnexion rapide, déconnexion et changement de mode au tray ;
 - ajouter un spotlight facultatif à l'onboarding ;
@@ -73,6 +68,9 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   ouvre directement leur centre dans le Dock sans révéler la fenêtre principale ;
 - macOS reçoit un masque tray Monolith Retina dédié et laisse AppKit gérer ses
   états clair, sombre et pressé ;
+- Linux applique les snapshots tray sur son thread GTK ; macOS et Windows les
+  appliquent sur l'exécuteur foreground GPUI, sans déplacer les handles natifs
+  non-`Send`, de sorte que compteurs, favoris et traductions restent live ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
   Terminal séquentiels bornés.
