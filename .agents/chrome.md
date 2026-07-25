@@ -76,8 +76,34 @@ VS Code layout, implemented in `crates/shelldeck-ui/src/sidebar.rs`:
 
 ```
 [ rail 48px ][ panel 180–400px ][ content ]
-   always        collapses via Cmd/Ctrl+B
+   always        contextual, collapses via Cmd/Ctrl+B
 ```
+
+**The rail lists activities, not destinations.** `SidebarSection::rail_activities()`
+is the authoritative list. A section earns a rail slot when selecting it puts
+something *in the panel*; JeanClaude, Fleet and bext Cloud are places you go,
+reached from the Aller menu and the palette, and Settings is pinned separately
+at the bottom. Adding a rail icon for a section with nothing behind it is the
+mistake this list exists to prevent.
+
+**The panel is contextual — it follows `active_section`.** Connections keeps
+its bespoke renderer (groups, pins, per-row hover actions, site badges);
+everything else feeds `set_panel_items(section, Vec<PanelItem>)` and renders
+through the one generic row. `Workspace::refresh_sidebar_panels` builds those
+rows per render, and `handle_panel_item_selected` routes a click back to the
+existing entry point for that activity.
+
+**Incident (2026-07-25):** the first cut of the rail wired `active_section` to
+the *main view* only. The panel kept rendering the host list under a header
+naming whatever activity was selected, so picking "Scripts" showed a header
+reading SCRIPTS above a list of SSH hosts. A rail whose panel does not follow
+it is not an activity bar — it is a row of buttons with a mislabelled list
+attached. If you add a rail activity, add its panel rows in the same change.
+
+`SidebarSection::has_panel()` marks the activities that have rows. One that
+does not (Server Sync today) hides the panel entirely so its main view gets the
+full width — and `total_width()` must account for that, which is why
+`sidebar_total_width` takes `section_has_panel`.
 
 - **`nav_collapsed` hides the rail** and restores the in-panel navigation list.
   The two never render together — the rail *is* the navigation. The chevron row

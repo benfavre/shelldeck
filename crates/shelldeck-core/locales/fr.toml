@@ -1569,3 +1569,12 @@ menu.help.documentation = "Documentation"
 menu.help.about = "À propos de ShellDeck"
 menu.account.sign_in = "Se connecter…"
 menu.account.sign_out = "Se déconnecter"
+
+# Contextual sidebar panel empty states (one per rail activity).
+sidebar.empty.terminals = "Aucun terminal ouvert"
+sidebar.empty.scripts = "Aucun script enregistré"
+sidebar.empty.port_forwards = "Aucune redirection configurée"
+sidebar.empty.sites = "Aucun site disponible"
+sidebar.empty.recent = "Aucune activité récente"
+sidebar.empty.editor = "Aucun fichier ouvert"
+sidebar.empty.generic = "Rien à afficher"

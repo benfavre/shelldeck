@@ -1704,15 +1704,28 @@ configuration are present. Commands route through the same handler the command
 palette and the keyboard shortcuts use. The row can be hidden from View → Menu
 Bar; the preference persists and the terminal grid resizes to match.
 
-### SDUC-443 — The Dev sidebar is an activity rail plus a collapsible panel
+### SDUC-443 — The Dev sidebar is an activity rail plus a contextual panel
 
-Dev mode shows a fixed-width icon rail listing every navigation section, with
-the active section marked, Settings pinned to the bottom, and connected-host /
-open-tab counts carried as badges. The connection panel beside it collapses
-independently via the sidebar toggle, leaving the rail on screen. Hiding the
-navigation hides the rail and restores the in-panel navigation list, so the two
-never render at once and navigation is always reachable. The terminal grid is
-offset by the rail and panel combined, in every combination of the two.
+Dev mode shows a fixed-width icon rail listing the navigation sections that
+have a contextual panel behind them, with the active one marked, Settings
+pinned to the bottom, and connected-host / open-tab counts carried as badges.
+Destinations without a panel — JeanClaude, Fleet, bext Cloud — are reached from
+the Aller menu and the command palette rather than taking a rail slot.
+
+The panel follows the selected activity: Connections keeps its grouped host
+list with pins and per-row actions, while Terminals lists open tabs, Scripts
+the saved scripts, Port Forwards the configured forwards, Sites the available
+sites, Recent the activity feed, and Editor the open buffers. Each row reports
+whether it is the active one and whether it is live, and selecting it performs
+that activity's own open/focus action. An activity with no rows shows a
+localized empty state; an activity with no panel at all hides the panel so its
+main view takes the full width.
+
+The panel collapses independently of the rail via the sidebar toggle. Hiding
+the navigation hides the rail and restores the in-panel navigation list, so the
+two never render at once and navigation is always reachable. The terminal grid
+is offset by whatever is actually on screen, in every combination of rail,
+panel collapse, and panel-less activity.
 
 ---
 

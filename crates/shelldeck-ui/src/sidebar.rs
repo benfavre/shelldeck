@@ -6,6 +6,7 @@ use adabraka_ui::components::input::{Input, InputSize, InputState};
 
 use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::{Connection, ConnectionStatus};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::command_palette::fuzzy_match;
@@ -134,15 +135,48 @@ pub const RAIL_WIDTH: f32 = 48.0;
 /// `conn_matches_site_filter` above.
 ///
 /// - `nav_collapsed`: the activity rail is hidden.
-/// - `panel_collapsed`: the connection panel is hidden (Cmd/Ctrl+B).
-fn sidebar_total_width(nav_collapsed: bool, panel_collapsed: bool, panel_width: f32) -> f32 {
+/// - `panel_collapsed`: the panel is hidden (Cmd/Ctrl+B).
+/// - `section_has_panel`: the selected activity has contextual rows at all.
+///   An activity without one hides the panel even when it is not collapsed,
+///   so the terminal must be offset by the rail alone.
+fn sidebar_total_width(
+    nav_collapsed: bool,
+    panel_collapsed: bool,
+    section_has_panel: bool,
+    panel_width: f32,
+) -> f32 {
     let rail = if nav_collapsed { 0.0 } else { RAIL_WIDTH };
-    let panel = if panel_collapsed { 0.0 } else { panel_width };
+    let panel = if panel_collapsed || !section_has_panel {
+        0.0
+    } else {
+        panel_width
+    };
     rail + panel
 }
 
+/// One row in the contextual panel below a rail activity.
+///
+/// Every non-Connections activity feeds the panel through this shape rather
+/// than growing its own renderer: the panel is a *list of things you can jump
+/// to*, and that is the same widget whatever the activity. Connections keeps
+/// its bespoke renderer (groups, pins, per-row hover actions, site badges).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelItem {
+    pub id: Uuid,
+    pub label: String,
+    /// Secondary line — host, path, port pair, timestamp. Optional.
+    pub detail: Option<String>,
+    /// Lucide slug from the bundled subset (`.agents/icons.md`).
+    pub icon: &'static str,
+    /// Currently selected / open — renders like the active rail item.
+    pub is_active: bool,
+    /// Live: connected session, running forward, unsaved buffer. Renders a
+    /// success-tinted dot.
+    pub is_live: bool,
+}
+
 /// Navigation sections in the sidebar
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
     Connections,
     Terminals,
@@ -159,6 +193,58 @@ pub enum SidebarSection {
 }
 
 impl SidebarSection {
+    /// The activities that earn a slot in the rail, in order.
+    ///
+    /// Deliberately *not* every section: an activity bar lists places with a
+    /// contextual panel behind them. JeanClaude, Fleet and bext Cloud are
+    /// destinations, not activities — they are reached from the Aller menu and
+    /// the command palette. `Settings` is excluded here because the rail pins
+    /// it separately at the bottom.
+    pub fn rail_activities() -> &'static [SidebarSection] {
+        &[
+            SidebarSection::Connections,
+            SidebarSection::Terminals,
+            SidebarSection::Scripts,
+            SidebarSection::PortForwards,
+            SidebarSection::ServerSync,
+            SidebarSection::Sites,
+            SidebarSection::Recent,
+            SidebarSection::FileEditor,
+        ]
+    }
+
+    /// Whether this activity backs its rail icon with a contextual panel.
+    ///
+    /// `false` means selecting it switches the main view and collapses the
+    /// panel, so the view gets the full width instead of sitting next to a
+    /// list that has nothing to say.
+    pub fn has_panel(&self) -> bool {
+        matches!(
+            self,
+            SidebarSection::Connections
+                | SidebarSection::Terminals
+                | SidebarSection::Scripts
+                | SidebarSection::PortForwards
+                | SidebarSection::Sites
+                | SidebarSection::Recent
+                | SidebarSection::FileEditor
+        )
+    }
+
+    /// Localized empty-state line for an activity whose panel has no rows yet.
+    pub fn empty_hint(&self) -> String {
+        match self {
+            SidebarSection::Terminals => t!("sidebar.empty.terminals"),
+            SidebarSection::Scripts => t!("sidebar.empty.scripts"),
+            SidebarSection::PortForwards => t!("sidebar.empty.port_forwards"),
+            SidebarSection::Sites => t!("sidebar.empty.sites"),
+            SidebarSection::Recent => t!("sidebar.empty.recent"),
+            SidebarSection::FileEditor => t!("sidebar.empty.editor"),
+            _ => t!("sidebar.empty.generic"),
+        }
+        .to_string()
+    }
+
     /// Lucide slug for the Dev sidebar nav row (see `icons/lucide/` inventory).
     pub fn lucide_icon(&self) -> &'static str {
         match self {
@@ -219,6 +305,14 @@ pub enum SidebarEvent {
     /// to `AppConfig.general.sidebar_nav_collapsed` so the layout sticks
     /// across sessions.
     NavCollapsedChanged(bool),
+    /// A row in a contextual panel was clicked. The workspace decides what
+    /// "select" means per activity (focus a terminal tab, open a script, jump
+    /// to a forward, …) — the sidebar only reports which row in which
+    /// activity.
+    PanelItemSelected {
+        section: SidebarSection,
+        id: Uuid,
+    },
 }
 
 pub struct SidebarView {
@@ -249,6 +343,10 @@ pub struct SidebarView {
     jean_available: bool,
     /// Whether the Jean fleet nav entry should be shown (Dev + signed in).
     fleet_available: bool,
+    /// Contextual panel rows per activity, pushed by the workspace. Keyed by
+    /// section so the panel can render whichever activity is selected without
+    /// the workspace having to re-push on every switch.
+    panel_items: HashMap<SidebarSection, Vec<PanelItem>>,
     focus_handle: FocusHandle,
 }
 
@@ -269,8 +367,22 @@ impl SidebarView {
             site_filter: None,
             jean_available: false,
             fleet_available: false,
+            panel_items: HashMap::new(),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Replace the contextual panel rows for one activity.
+    pub fn set_panel_items(&mut self, section: SidebarSection, items: Vec<PanelItem>) {
+        self.panel_items.insert(section, items);
+    }
+
+    /// Rows currently held for an activity.
+    pub fn panel_items(&self, section: SidebarSection) -> &[PanelItem] {
+        self.panel_items
+            .get(&section)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Seed the persisted "top nav collapsed" state from the app config.
@@ -300,7 +412,12 @@ impl SidebarView {
     /// terminal grid must be offset by. Kept as one function so the rail and
     /// panel can never disagree about the total.
     pub fn total_width(&self) -> f32 {
-        sidebar_total_width(self.nav_collapsed, self.collapsed, self.width)
+        sidebar_total_width(
+            self.nav_collapsed,
+            self.collapsed,
+            self.active_section.has_panel(),
+            self.width,
+        )
     }
 
     /// Width of the rail alone (0 when hidden). Used by the resize drag to
@@ -547,30 +664,17 @@ impl SidebarView {
             .flex()
             .flex_col()
             .items_center()
-            .gap(gpui::px(4.0))
-            .child(self.render_rail_item(
-                SidebarSection::Connections,
-                Some(connected_count),
-                cx,
-            ))
-            .child(self.render_rail_item(
-                SidebarSection::Terminals,
-                Some(self.terminal_tab_count),
-                cx,
-            ))
-            .child(self.render_rail_item(SidebarSection::Scripts, None, cx))
-            .child(self.render_rail_item(SidebarSection::PortForwards, None, cx))
-            .child(self.render_rail_item(SidebarSection::ServerSync, None, cx))
-            .child(self.render_rail_item(SidebarSection::Sites, None, cx))
-            .child(self.render_rail_item(SidebarSection::Recent, None, cx))
-            .child(self.render_rail_item(SidebarSection::FileEditor, None, cx));
-        if self.jean_available {
-            top = top.child(self.render_rail_item(SidebarSection::JeanConsole, None, cx));
+            .gap(gpui::px(4.0));
+        for &section in SidebarSection::rail_activities() {
+            // Badges come from the activity's own data, so a section with
+            // nothing to count simply has none.
+            let count = match section {
+                SidebarSection::Connections => Some(connected_count),
+                SidebarSection::Terminals => Some(self.terminal_tab_count),
+                _ => None,
+            };
+            top = top.child(self.render_rail_item(section, count, cx));
         }
-        if self.fleet_available {
-            top = top.child(self.render_rail_item(SidebarSection::Fleet, None, cx));
-        }
-        top = top.child(self.render_rail_item(SidebarSection::BextCloud, None, cx));
 
         div()
             .flex()
@@ -596,6 +700,122 @@ impl SidebarView {
                     .child(top),
             )
             .child(self.render_rail_item(SidebarSection::Settings, None, cx))
+    }
+
+    /// One row of a contextual panel. Deliberately shaped like a connection
+    /// row (same paddings, same icon-then-label-then-status order) so the
+    /// panel does not visually re-invent itself per activity —
+    /// `.agents/ui-components.md` § Harmonization.
+    fn render_panel_item(
+        &self,
+        section: SidebarSection,
+        item: &PanelItem,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = item.id;
+        let icon_color = if item.is_active {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::text_muted()
+        };
+
+        let mut row = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "panel-{section:?}-{id}"
+            ))))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .px(px(10.0))
+            .py(px(5.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .on_click(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
+                cx.emit(SidebarEvent::PanelItemSelected { section, id });
+                cx.notify();
+            }))
+            .child(lucide_icon(item.icon, 14.0, icon_color));
+
+        if item.is_active {
+            row = row
+                .bg(ShellDeckColors::primary().opacity(0.15))
+                .text_color(ShellDeckColors::primary());
+        } else {
+            row = row
+                .text_color(ShellDeckColors::text_primary())
+                .hover(|el| el.bg(ShellDeckColors::hover_bg()));
+        }
+
+        // Label + optional detail share one shrinking column; only this column
+        // shrinks, so long paths never push the status dot off the row
+        // (`.agents/overflow.md`).
+        let mut text_col = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(item.label.clone()),
+            );
+        if let Some(detail) = &item.detail {
+            text_col = text_col.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(detail.clone()),
+            );
+        }
+        row = row.child(text_col);
+
+        if item.is_live {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::success()),
+            );
+        }
+        row
+    }
+
+    /// The contextual panel body for the selected activity: the bespoke
+    /// connection list for Connections, a generic `PanelItem` list otherwise.
+    fn render_panel_body(&self, cx: &mut Context<Self>) -> Div {
+        let section = self.active_section;
+        let items = self.panel_items(section);
+
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .px(px(4.0))
+            .py(px(4.0));
+
+        if items.is_empty() {
+            return list.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(12.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(section.empty_hint()),
+            );
+        }
+        for item in items {
+            list = list.child(self.render_panel_item(section, item, cx));
+        }
+        list
     }
 
     fn render_section_header(label: &str) -> impl IntoElement {
@@ -911,7 +1131,12 @@ impl Render for SidebarView {
         // now hides the rail, so "masquer la navigation" still means the same
         // thing to anyone who had it turned on.
         let rail_visible = !self.nav_collapsed;
-        let panel_visible = !self.collapsed;
+        // An activity with no contextual list (Server Sync, and the
+        // destinations reachable only from the menu) hides the panel entirely
+        // so its main view gets the full width, rather than parking an empty
+        // column next to it.
+        let panel_visible = !self.collapsed && self.active_section.has_panel();
+        let on_connections = self.active_section == SidebarSection::Connections;
 
         if !panel_visible {
             let mut rail_only = div()
@@ -1184,23 +1409,35 @@ impl Render for SidebarView {
         if !rail_visible {
             root = root.child(nav);
         }
-        let panel = root
-            .child(separator)
-            .child(
-                // Explicit flex-grow + min_h(0) around the scrollable so the
-                // scroll container computes its viewport height correctly and
-                // stops clipping the last row above the "+ Add Connection"
-                // footer.
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_grow()
-                    .min_h(px(0.0))
-                    .overflow_hidden()
-                    .child(scrollable_vertical(host_list)),
-            )
-            .child(add_button)
-            .child(resize_handle);
+        // The panel body follows the selected activity. Connections keeps its
+        // bespoke list (groups, pins, per-row actions, site badges); every
+        // other activity renders its `PanelItem` rows. Without this the panel
+        // showed the host list under whatever header was selected — a list
+        // that flatly contradicted its own title.
+        let body = if on_connections {
+            scrollable_vertical(host_list).into_any_element()
+        } else {
+            scrollable_vertical(self.render_panel_body(cx)).into_any_element()
+        };
+
+        let mut panel = root.child(separator).child(
+            // Explicit flex-grow + min_h(0) around the scrollable so the
+            // scroll container computes its viewport height correctly and
+            // stops clipping the last row above the "+ Add Connection"
+            // footer.
+            div()
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .child(body),
+        );
+        // "+ Ajouter une connexion" belongs to the Connections activity only.
+        if on_connections {
+            panel = panel.child(add_button);
+        }
+        let panel = panel.child(resize_handle);
 
         let mut shell = div().flex().flex_shrink_0().h_full().id("sidebar-shell");
         if rail_visible {
@@ -1224,15 +1461,18 @@ mod tests {
     #[test]
     fn total_width_sums_rail_and_panel_independently() {
         // Both visible — the default Dev layout.
-        assert_eq!(sidebar_total_width(false, false, 260.0), RAIL_WIDTH + 260.0);
+        assert_eq!(
+            sidebar_total_width(false, false, true, 260.0),
+            RAIL_WIDTH + 260.0
+        );
         // Panel collapsed (Cmd+B): the rail stays, which is the whole point
         // of the VS Code layout — a plain 0.0 here would put the terminal
         // underneath the rail.
-        assert_eq!(sidebar_total_width(false, true, 260.0), RAIL_WIDTH);
+        assert_eq!(sidebar_total_width(false, true, true, 260.0), RAIL_WIDTH);
         // Rail hidden ("masquer la navigation"), panel still open.
-        assert_eq!(sidebar_total_width(true, false, 260.0), 260.0);
+        assert_eq!(sidebar_total_width(true, false, true, 260.0), 260.0);
         // Everything hidden.
-        assert_eq!(sidebar_total_width(true, true, 260.0), 0.0);
+        assert_eq!(sidebar_total_width(true, true, true, 260.0), 0.0);
     }
 
     // SDTEST-1211 — a collapsed panel must not leak its width back in, at
@@ -1240,8 +1480,47 @@ mod tests {
     #[test]
     fn collapsed_panel_width_is_ignored_at_any_size() {
         for width in [180.0, 260.0, 400.0] {
-            assert_eq!(sidebar_total_width(false, true, width), RAIL_WIDTH);
-            assert_eq!(sidebar_total_width(true, true, width), 0.0);
+            assert_eq!(sidebar_total_width(false, true, true, width), RAIL_WIDTH);
+            assert_eq!(sidebar_total_width(true, true, true, width), 0.0);
+        }
+    }
+
+    // SDTEST-1213 — an activity with no contextual list hides the panel even
+    // when the panel is not collapsed. If the width still counted the panel,
+    // the terminal would be offset past a column that is not on screen and
+    // every grid would be sized short by the panel width.
+    #[test]
+    fn activity_without_a_panel_contributes_no_panel_width() {
+        assert_eq!(sidebar_total_width(false, false, false, 260.0), RAIL_WIDTH);
+        assert_eq!(sidebar_total_width(true, false, false, 260.0), 0.0);
+        // Still zero when also collapsed — the two reasons must not add up.
+        assert_eq!(sidebar_total_width(false, true, false, 260.0), RAIL_WIDTH);
+    }
+
+    // SDTEST-1214 — the rail lists activities that have a panel behind them,
+    // plus Server Sync as a deliberate main-view-only entry. The three
+    // destinations reached from the Aller menu must never take a rail slot,
+    // and Settings is pinned separately rather than living in the list.
+    #[test]
+    fn rail_lists_activities_not_destinations() {
+        let rail = super::SidebarSection::rail_activities();
+        for excluded in [
+            super::SidebarSection::JeanConsole,
+            super::SidebarSection::Fleet,
+            super::SidebarSection::BextCloud,
+            super::SidebarSection::Settings,
+        ] {
+            assert!(
+                !rail.contains(&excluded),
+                "{excluded:?} is a destination, not a rail activity"
+            );
+        }
+        // Every rail entry either has a panel or is the known exception.
+        for section in rail {
+            assert!(
+                section.has_panel() || *section == super::SidebarSection::ServerSync,
+                "{section:?} sits in the rail with neither a panel nor an exemption"
+            );
         }
     }
 
