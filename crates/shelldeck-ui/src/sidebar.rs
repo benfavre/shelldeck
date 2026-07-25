@@ -1183,21 +1183,23 @@ impl Render for SidebarView {
         // there, so the header names the section the panel is showing (VS Code
         // style). With the rail hidden it falls back to the full brand lockup,
         // because that is then the only place it appears.
-        let mut logo = div()
+        //
+        // The rail toggle lives here, right-aligned, because it is *sidebar*
+        // chrome. It previously sat as a full-width bordered strip immediately
+        // above the hosts list, which read as that list's own collapse control
+        // — and once the panel became contextual it appeared above every
+        // activity, offering to "hide the navigation" from the middle of a
+        // list of scripts.
+        let mut header_left = div()
             .flex()
-            .flex_shrink_0()
+            .flex_1()
+            .min_w(px(0.0))
             .items_center()
             .gap(px(10.0))
-            .w_full()
-            .overflow_hidden()
-            .px(px(14.0))
-            .py(px(14.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border());
+            .overflow_hidden();
         if rail_visible {
-            logo = logo.child(
+            header_left = header_left.child(
                 div()
-                    .flex_1()
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -1207,10 +1209,60 @@ impl Render for SidebarView {
                     .child(self.active_section.label().to_uppercase()),
             );
         } else {
-            logo = logo
-                .child(crate::brand::brand_badge(30.0))
-                .child(crate::brand::brand_wordmark(17.0));
+            header_left = header_left
+                .child(crate::brand::brand_badge(24.0))
+                .child(crate::brand::brand_wordmark(15.0));
         }
+
+        let toggle_hint: SharedString = if rail_visible {
+            t!("sidebar.hide_nav").to_string().into()
+        } else {
+            t!("sidebar.show_nav").to_string().into()
+        };
+        let rail_toggle = div()
+            .id("sidebar-rail-toggle")
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(22.0))
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
+            .tooltip(move |_, cx| {
+                cx.new(|_| SidebarTooltip {
+                    label: toggle_hint.clone(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.nav_collapsed = !this.nav_collapsed;
+                cx.emit(SidebarEvent::NavCollapsedChanged(this.nav_collapsed));
+                cx.notify();
+            }))
+            .child(lucide_icon(
+                if rail_visible {
+                    "chevron-left"
+                } else {
+                    "chevron-right"
+                },
+                12.0,
+                ShellDeckColors::text_muted(),
+            ));
+
+        let logo = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.0))
+            .w_full()
+            .overflow_hidden()
+            .px(px(12.0))
+            .py(px(10.0))
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
+            .child(header_left)
+            .child(rail_toggle);
 
         // Navigation tabs (pinned at top)
         let mut nav = div()
@@ -1245,12 +1297,14 @@ impl Render for SidebarView {
         nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, None, cx));
         nav = nav.child(self.render_nav_item(SidebarSection::Settings, None, cx));
 
-        // Scrollable host list (fills remaining space, wrapped in scrollable_vertical below)
+        // Scrollable host list (fills remaining space, wrapped in scrollable_vertical below).
+        // No "HÔTES" header: the panel header already names the active
+        // activity, and stacking CONNEXIONS above HÔTES labelled the same list
+        // twice.
         let mut host_list = div()
             .flex()
             .flex_col()
             .id("sidebar-host-list")
-            .child(Self::render_section_header(t!("sidebar.hosts").as_ref()))
             .child(self.render_search_bar(cx));
 
         let pinned: Vec<&Connection> = self
@@ -1339,54 +1393,6 @@ impl Render for SidebarView {
                 }),
             );
 
-        // Collapsible top-nav separator: a click-to-toggle chevron sitting
-        // between the nav section and the hosts list. Persisted via
-        // `SidebarEvent::NavCollapsedChanged`.
-        let nav_collapsed = self.nav_collapsed;
-        let separator = div()
-            .id("sidebar-nav-toggle")
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .px(px(12.0))
-            .py(px(4.0))
-            .cursor_pointer()
-            .border_t_1()
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.nav_collapsed = !this.nav_collapsed;
-                cx.emit(SidebarEvent::NavCollapsedChanged(this.nav_collapsed));
-                cx.notify();
-            }))
-            .child(
-                svg()
-                    .path("icons/lucide/chevron-down.svg")
-                    .size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                        if nav_collapsed {
-                            std::f32::consts::PI
-                        } else {
-                            0.0
-                        },
-                    ))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(10.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(if nav_collapsed {
-                        t!("sidebar.show_nav").to_string()
-                    } else {
-                        t!("sidebar.hide_nav").to_string()
-                    }),
-            );
-
         let mut root = div()
             .relative()
             .flex()
@@ -1420,7 +1426,7 @@ impl Render for SidebarView {
             scrollable_vertical(self.render_panel_body(cx)).into_any_element()
         };
 
-        let mut panel = root.child(separator).child(
+        let mut panel = root.child(
             // Explicit flex-grow + min_h(0) around the scrollable so the
             // scroll container computes its viewport height correctly and
             // stops clipping the last row above the "+ Add Connection"

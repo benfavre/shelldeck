@@ -106,9 +106,22 @@ full width — and `total_width()` must account for that, which is why
 `sidebar_total_width` takes `section_has_panel`.
 
 - **`nav_collapsed` hides the rail** and restores the in-panel navigation list.
-  The two never render together — the rail *is* the navigation. The chevron row
-  in the panel toggles it, and the labels (`sidebar.show_nav` /
-  `sidebar.hide_nav`) still read correctly.
+  The two never render together — the rail *is* the navigation. Toggled from a
+  chevron in the **panel header** and from **Affichage → Barre d'activités**
+  (`Workspace::toggle_activity_bar`).
+
+  **Sidebar chrome controls belong in the panel header, not in the list.** The
+  rail toggle first shipped as a full-width bordered strip sitting directly
+  above the hosts list. Bordered top and bottom and glued to the `HÔTES`
+  header, it read as that section's own collapse control rather than as
+  sidebar chrome — and once the panel became contextual it appeared above every
+  activity, offering to "hide the navigation" from the middle of a list of
+  scripts. A control that acts on the whole sidebar goes in the header (or the
+  View menu); a control that acts on a list goes in that list.
+
+  The panel header names the active activity, so list-level headers must not
+  repeat it: `HÔTES` under `CONNEXIONS` labelled the same list twice, and the
+  `sidebar.hosts` key was retired with it.
 - **`collapsed` hides the panel**, leaving the rail. This is what
   `ToggleSidebar` / `Workspace::toggle_sidebar` drives.
 - **`SidebarView::total_width()` is the number the terminal needs** — rail plus

@@ -1727,6 +1727,12 @@ two never render at once and navigation is always reachable. The terminal grid
 is offset by whatever is actually on screen, in every combination of rail,
 panel collapse, and panel-less activity.
 
+Controls that act on the whole sidebar live in the panel header and in the View
+menu, not inside the list: the rail toggle is a chevron in the header plus an
+Activity Bar entry whose tick tracks the rail independently of the panel. The
+header names the active activity, so the list below it does not repeat that
+name as its own section header.
+
 ---
 
 ## Change log

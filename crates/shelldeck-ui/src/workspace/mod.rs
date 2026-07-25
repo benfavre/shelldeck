@@ -5622,6 +5622,7 @@ impl Workspace {
                 .as_ref()
                 .is_some_and(|a| a.is_superadmin),
             sidebar_visible: self.sidebar_visible,
+            activity_bar_visible: !self.app_config.general.sidebar_nav_collapsed,
             menu_bar_visible: self.app_config.general.menu_bar_visible,
             has_jean: self.has_jean(),
             has_fleet: self.app_config.jean_runtime.enabled || self.fleet_snapshot.is_some(),
@@ -5732,6 +5733,7 @@ impl Workspace {
             }
 
             Cmd::ToggleSidebar => self.toggle_sidebar(cx),
+            Cmd::ToggleActivityBar => self.toggle_activity_bar(cx),
             Cmd::ToggleMenuBar => self.toggle_menu_bar(cx),
             Cmd::UiZoomIn => self
                 .settings
@@ -5770,6 +5772,25 @@ impl Workspace {
             }
             Cmd::About => self.open_settings(cx),
         }
+        cx.notify();
+    }
+
+    /// Show / hide the Dev sidebar's activity rail. Mirrors the chevron in the
+    /// panel header, and is the labelled way back once the rail is hidden.
+    pub fn toggle_activity_bar(&mut self, cx: &mut Context<Self>) {
+        let collapsed = !self.app_config.general.sidebar_nav_collapsed;
+        self.app_config.general.sidebar_nav_collapsed = collapsed;
+        self.settings.update(cx, |settings, cx| {
+            settings.set_sidebar_nav_collapsed(collapsed, cx);
+        });
+        // Hiding the rail changes the sidebar total, so re-offset the grid.
+        let total = self.sidebar.update(cx, |sidebar, _| {
+            sidebar.set_nav_collapsed(collapsed);
+            sidebar.total_width()
+        });
+        self.terminal.update(cx, |terminal, _| {
+            terminal.set_sidebar_width(total);
+        });
         cx.notify();
     }
 
