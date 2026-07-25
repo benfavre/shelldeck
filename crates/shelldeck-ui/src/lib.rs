@@ -19,6 +19,7 @@ pub mod icons;
 pub mod issue_attachments;
 pub mod jean_view;
 pub mod login_form;
+pub mod menu_bar;
 pub mod onboarding_view;
 pub mod port_forward_form;
 pub mod port_forward_view;

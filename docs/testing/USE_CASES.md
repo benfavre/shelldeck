@@ -1681,7 +1681,46 @@ shortcuts the signed-in role can actually reach.
 
 ---
 
+## 28. Application chrome
+
+### SDUC-441 — Every Workspace-drawn surface scales with the App Font Size
+
+The App Font Size setting drives the window rem size, and the surfaces the
+Workspace renders itself — User mode's home, the pre-login welcome screen, the
+titlebar chrome, and the theme / account / site / mode dropdowns — grow and
+shrink with it exactly as the child views (sidebar, Support, Settings,
+Dashboard) already did. Genuine device-pixel call sites stay absolute: the
+window client inset, the rem size itself, box-shadow geometry, window-edge
+resize hit-testing, and the sidebar width the terminal grid is offset by.
+
+### SDUC-442 — An application menu row is available in every mode
+
+A File / Edit / View / Go / Terminal / Help row sits under the titlebar in
+User, Support and Dev, and on the pre-login welcome screen. Its contents follow
+the account: logged out it offers only sign-in, quit, interface zoom and about;
+User mode omits every SSH, terminal and staff-console command; the staff
+consoles (JeanClaude, Fleet) appear only when both the capability and the
+configuration are present. Commands route through the same handler the command
+palette and the keyboard shortcuts use. The row can be hidden from View → Menu
+Bar; the preference persists and the terminal grid resizes to match.
+
+### SDUC-443 — The Dev sidebar is an activity rail plus a collapsible panel
+
+Dev mode shows a fixed-width icon rail listing every navigation section, with
+the active section marked, Settings pinned to the bottom, and connected-host /
+open-tab counts carried as badges. The connection panel beside it collapses
+independently via the sidebar toggle, leaving the rail on screen. Hiding the
+navigation hides the rail and restores the in-panel navigation list, so the two
+never render at once and navigation is always reachable. The terminal grid is
+offset by the rail and panel combined, in every combination of the two.
+
+---
+
 ## Change log
+
+- **2026-07-25** — Added SDUC-441/442/443 and SDTEST-1200..1205 / 1210..1211
+  for application chrome: proportional scaling of Workspace-drawn surfaces, the
+  cross-mode application menu row, and the VS Code style sidebar rail.
 
 - **2026-07-24** — Added SDUC-439 and SDTEST-1412/1413 for session-scoped SSH
   lifecycle reporting: protocol terminators, voluntary tab closes and clean

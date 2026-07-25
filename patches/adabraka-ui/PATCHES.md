@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **69**
+Total markers in code: **75**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -470,6 +470,30 @@ carries no marker of its own — see its entry).
   by the Input.
 - **Upstream status**: not filed yet — generic action propagation fix suitable
   for upstreaming.
+
+### SDPATCH-025 — `MenuBar` never rendered its dropdown
+
+- **Files / symbols**:
+  - `src/navigation/menu.rs` — `MenuBar` (struct fields), `MenuBar::new`,
+    `MenuBar::set_items`, `Render for MenuBar`
+- **Markers**:
+  - `src/navigation/menu.rs:292` — `// ShellDeck patch: SDPATCH-025 — the upstream MenuBar tracked`
+  - `src/navigation/menu.rs:314` — `// ShellDeck patch: SDPATCH-025 — hosts that build their menus from`
+  - `src/navigation/menu.rs:350` — `// ShellDeck patch: SDPATCH-025 — an open menu bar tracks the pointer:`
+  - `src/navigation/menu.rs:366` — `// ShellDeck patch: SDPATCH-025 — a click anywhere outside the bar`
+  - `src/navigation/menu.rs:391` — `// ShellDeck patch: SDPATCH-025 — record where this trigger`
+  - `src/navigation/menu.rs:430` — `// ShellDeck patch: SDPATCH-025 — render the dropdown the upstream`
+- **Why**: `MenuBar` shipped as a trigger row only. Clicking a title flipped
+  `active_menu` and repainted the highlight, but no `Menu` was ever rendered
+  for the selected index, so the component could not function as an
+  application menu bar. The patch anchors a real dropdown to the measured
+  trigger rect (the `deferred` + `anchored` pattern `Select` already uses),
+  closes on selection and on outside click, and adds hover-to-switch between
+  titles while a menu is open. `set_items` lets a host rebuild the menus from
+  live state, and `row_height` / `menu_min_width` make a compact application
+  menu row possible without forking the component.
+- **Upstream status**: not filed yet — this is a missing-feature fix in a
+  component upstream evidently never wired up; good upstream candidate.
 
 ## Preserved files (do not overwrite on sync)
 

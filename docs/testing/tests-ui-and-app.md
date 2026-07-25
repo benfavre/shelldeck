@@ -283,6 +283,20 @@ parallel `cargo test`.
 | SDTEST-1412 | `workspace::ssh::tests::only_unexpected_ssh_transport_loss_notifies_with_exact_identity` | SDUC-439 | Green | The session-end reducer keeps explicit tab closes and clean remote exits silent, while unexpected transport loss emits one notification carrying the exact connection display name. |
 | SDTEST-1414 | *to write* — User/Support home dashboards route to their operational tabs | SDUC-440 | **Red / P1** | GPUI integration: both modes start on Accueil, counters reflect their caches, quick actions select the exact list/composer, a recent request opens its detail, sync acts on the current Manage account, and onboarding omits Dev cards/media/shortcuts for non-Dev roles. |
 
+### Application chrome (menu bar, sidebar rail, scaling)
+
+| ID | Test | Use case | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1200 | `menu_bar::tests::logged_out_bar_exposes_no_session_commands` | SDUC-442 | Green | Logged out the bar offers sign-in and quit only; every session-dependent command and the whole Go menu are absent, matching the no-guest-mode rule in `.agents/roles.md`. |
+| SDTEST-1201 | `menu_bar::tests::user_mode_hides_every_dev_only_command` | SDUC-442 | Green | User mode keeps requests but drops quick-connect, terminals, scripts, editor, sidebar toggle, splits and terminal zoom, and omits the Terminal menu entirely. |
+| SDTEST-1202 | `menu_bar::tests::staff_consoles_follow_availability_flags` | SDUC-442 | Green | JeanClaude and Fleet appear only when configured, so a super-admin without a Jean config gets no dead entry. bext Cloud is capability-gated only. |
+| SDTEST-1203 | `menu_bar::tests::view_toggles_reflect_current_state` | SDUC-442 | Green | The sidebar and menu-bar checkmarks report live state rather than a constant, so the tick never lies about what is on screen. |
+| SDTEST-1204 | `menu_bar::tests::entry_ids_are_unique_across_the_whole_bar` | SDUC-442 | Green | Entry ids become GPUI `ElementId`s; duplicates would make two rows share hover/click state. Checked across all four mode/sign-in combinations with every optional menu enabled. |
+| SDTEST-1205 | `menu_bar::tests::accel_renders_platform_modifiers` | SDUC-442 | Green | Shortcut hints resolve `secondary` to Cmd on macOS and Ctrl elsewhere, from the same vocabulary `actions.rs` binds with. |
+| SDTEST-1210 | `sidebar::tests::total_width_sums_rail_and_panel_independently` | SDUC-443 | Green | All four rail/panel states contribute exactly their own width. A collapsed panel must still reserve the rail, or the terminal grid is sized underneath it. |
+| SDTEST-1211 | `sidebar::tests::collapsed_panel_width_is_ignored_at_any_size` | SDUC-443 | Green | A collapsed panel leaks no width back in at either end of the 180–400px resize clamp. |
+| SDTEST-1212 | *to write* — Workspace surfaces re-layout at non-default App Font Size | SDUC-441 | **Red / P2** | GPUI integration: at 10px and 22px the User home, welcome screen and titlebar dropdowns scale proportionally while the client inset, shadow geometry and window-resize border stay in device pixels. Needs a `TestAppContext` harness we do not have yet. |
+
 ---
 
 ## 9. Cross-platform coverage (referenced from everywhere)

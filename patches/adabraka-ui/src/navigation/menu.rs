@@ -289,35 +289,114 @@ impl MenuBarItem {
 pub struct MenuBar {
     items: Vec<MenuBarItem>,
     active_menu: Option<usize>,
+    // ShellDeck patch: SDPATCH-025 — the upstream MenuBar tracked
+    // `active_menu` but never rendered a dropdown for it, so clicking a
+    // title only highlighted the trigger. These fields carry what the
+    // dropdown needs: the measured trigger rects to anchor against, plus
+    // host-tunable chrome so a compact application menu row does not have
+    // to fork the component just to stop being 40px tall.
+    trigger_bounds: Vec<Option<Bounds<Pixels>>>,
+    row_height: Pixels,
+    menu_min_width: Pixels,
 }
 
 impl MenuBar {
     pub fn new(items: Vec<MenuBarItem>) -> Self {
         Self {
+            trigger_bounds: vec![None; items.len()],
             items,
             active_menu: None,
+            row_height: px(40.0),
+            menu_min_width: px(200.0),
         }
+    }
+
+    // ShellDeck patch: SDPATCH-025 — hosts that build their menus from
+    // live application state (current mode, feature availability) need to
+    // swap the item set between renders. Resets the open menu because the
+    // previously-active index may no longer exist.
+    pub fn set_items(&mut self, items: Vec<MenuBarItem>) {
+        // Resize in place rather than reallocating: the measured trigger
+        // rects are what the dropdown anchors to, and a host that rebuilds
+        // its items every frame would otherwise clear them before every
+        // render and never be able to open a menu at all.
+        self.trigger_bounds.resize(items.len(), None);
+        self.items = items;
+        self.active_menu = None;
+    }
+
+    /// Height of the trigger row. Defaults to 40px.
+    pub fn row_height(mut self, height: Pixels) -> Self {
+        self.row_height = height;
+        self
+    }
+
+    /// Minimum width of the dropdown panel. Defaults to 200px.
+    pub fn menu_min_width(mut self, width: Pixels) -> Self {
+        self.menu_min_width = width;
+        self
+    }
+
+    /// Whether a dropdown is currently open.
+    pub fn is_open(&self) -> bool {
+        self.active_menu.is_some()
+    }
+
+    /// Index of the open dropdown, if any. Paired with [`Self::set_open_index`]
+    /// so a host that rebuilds its items every frame can carry the open menu
+    /// across the rebuild instead of having it snap shut.
+    pub fn open_index(&self) -> Option<usize> {
+        self.active_menu
+    }
+
+    /// Reopen a dropdown by index. Out-of-range indices close the menu rather
+    /// than panicking later during render.
+    pub fn set_open_index(&mut self, index: Option<usize>) {
+        self.active_menu = index.filter(|i| *i < self.items.len());
+    }
+
+    /// Close any open dropdown.
+    pub fn close(&mut self) {
+        self.active_menu = None;
     }
 }
 
 impl Render for MenuBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
+        // ShellDeck patch: SDPATCH-025 — an open menu bar tracks the pointer:
+        // hovering a sibling title switches to it without a second click.
+        // That is standard menu-bar behaviour on every desktop platform and
+        // the upstream component had no notion of it.
+        let menu_open = self.active_menu.is_some();
+        let row_height = self.row_height;
 
-        div()
+        let mut bar = div()
             .flex()
             .items_center()
-            .h(px(40.0))
+            .h(row_height)
             .px(px(8.0))
             .gap(px(2.0))
             .bg(theme.tokens.background)
             .border_b_1()
             .border_color(theme.tokens.border)
+            // ShellDeck patch: SDPATCH-025 — a click anywhere outside the bar
+            // (including inside the deferred dropdown, which is why the item
+            // handlers close explicitly) dismisses the open menu.
+            .on_mouse_down_out(cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
+                if this.active_menu.is_some() {
+                    this.active_menu = None;
+                    cx.notify();
+                }
+            }))
             .children(self.items.iter().enumerate().map(|(idx, item)| {
                 let is_active = self.active_menu == Some(idx);
                 let label = item.label.clone();
+                let entity = cx.entity();
 
                 div()
+                    .id(SharedString::from(format!("menubar-trigger-{}", item.id)))
+                    .relative()
                     .px(px(12.0))
                     .py(px(6.0))
                     .rounded(theme.tokens.radius_sm)
@@ -326,6 +405,23 @@ impl Render for MenuBar {
                     .when(!is_active, |div| {
                         div.hover(|style| style.bg(theme.tokens.muted))
                     })
+                    // ShellDeck patch: SDPATCH-025 — record where this trigger
+                    // actually painted so the dropdown can anchor to its bottom
+                    // edge instead of guessing an offset.
+                    .child(
+                        canvas(
+                            move |bounds, _window, cx| {
+                                entity.update(cx, |this, _| {
+                                    if let Some(slot) = this.trigger_bounds.get_mut(idx) {
+                                        *slot = Some(bounds);
+                                    }
+                                });
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -337,8 +433,65 @@ impl Render for MenuBar {
                             cx.notify();
                         }),
                     )
+                    .when(menu_open && !is_active, |div| {
+                        div.on_mouse_move(cx.listener(move |this, _event, _window, cx| {
+                            if this.active_menu.is_some() && this.active_menu != Some(idx) {
+                                this.active_menu = Some(idx);
+                                cx.notify();
+                            }
+                        }))
+                    })
                     .child(body(label).color(theme.tokens.foreground))
-            }))
+            }));
+
+        // ShellDeck patch: SDPATCH-025 — render the dropdown the upstream
+        // component was missing. `deferred` + `anchored` paints it above
+        // sibling content and escapes any clipping ancestor, matching the
+        // pattern `Select` already uses. Each item's handler is wrapped so
+        // selecting a command also closes the menu.
+        if let Some(active) = self.active_menu {
+            if let (Some(item), Some(Some(anchor))) =
+                (self.items.get(active), self.trigger_bounds.get(active))
+            {
+                let position = point(anchor.origin.x, anchor.origin.y + anchor.size.height);
+                let entity = cx.entity();
+                let items = item
+                    .menu_items
+                    .iter()
+                    .cloned()
+                    .map(|mut menu_item| {
+                        if let Some(handler) = menu_item.on_click.take() {
+                            let entity = entity.clone();
+                            menu_item.on_click =
+                                Some(Rc::new(move |window: &mut Window, cx: &mut App| {
+                                    entity.update(cx, |this, cx| {
+                                        this.active_menu = None;
+                                        cx.notify();
+                                    });
+                                    handler(window, cx);
+                                }));
+                        }
+                        menu_item
+                    })
+                    .collect::<Vec<_>>();
+
+                bar = bar.child(
+                    deferred(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(Edges::all(px(8.0)))
+                            .child(
+                                div()
+                                    .occlude()
+                                    .child(Menu::new(items).min_width(self.menu_min_width)),
+                            ),
+                    )
+                    .with_priority(1),
+                );
+            }
+        }
+
+        bar
     }
 }
 

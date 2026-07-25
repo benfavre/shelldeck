@@ -463,6 +463,16 @@ impl SettingsView {
         self.save_config(cx);
     }
 
+    /// Update the persisted "application menu row visible" state. Called by
+    /// the workspace from Affichage → Barre de menus.
+    pub fn set_menu_bar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.config.general.menu_bar_visible == visible {
+            return;
+        }
+        self.config.general.menu_bar_visible = visible;
+        self.save_config(cx);
+    }
+
     /// Nudge the UI scale (app font size) by `delta`, clamped to [10, 22], and
     /// persist immediately. Emits `ConfigChanged` so the workspace re-applies
     /// the rem size live. Shared by the Appearance settings and the titlebar

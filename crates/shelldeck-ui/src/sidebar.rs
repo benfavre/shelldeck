@@ -117,6 +117,30 @@ fn render_highlighted_text(
     container
 }
 
+/// Width of the VS Code style activity rail, in **real** pixels.
+///
+/// Deliberately absolute, like the panel width right below it: the terminal
+/// grid is sized against the sidebar's total width, so a rail that grew with
+/// the UI scale would need that scale threaded through every consumer. The
+/// icons inside it are pinned to real pixels for the same reason — a rem-sized
+/// glyph would outgrow a fixed 48px rail at 2× and collide with its edges
+/// (`.agents/spacing.md`).
+pub const RAIL_WIDTH: f32 = 48.0;
+
+/// Pure helper: total horizontal space the sidebar occupies.
+///
+/// Extracted from [`SidebarView::total_width`] so the arithmetic the terminal
+/// grid depends on can be tested without a GPUI `Context` — same reasoning as
+/// `conn_matches_site_filter` above.
+///
+/// - `nav_collapsed`: the activity rail is hidden.
+/// - `panel_collapsed`: the connection panel is hidden (Cmd/Ctrl+B).
+fn sidebar_total_width(nav_collapsed: bool, panel_collapsed: bool, panel_width: f32) -> f32 {
+    let rail = if nav_collapsed { 0.0 } else { RAIL_WIDTH };
+    let panel = if panel_collapsed { 0.0 } else { panel_width };
+    rail + panel
+}
+
 /// Navigation sections in the sidebar
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
@@ -269,6 +293,26 @@ impl SidebarView {
         self.width
     }
 
+    /// Total horizontal space the sidebar occupies: the activity rail (unless
+    /// hidden) plus the panel (unless collapsed).
+    ///
+    /// This — not [`Self::width`], which is the panel alone — is what the
+    /// terminal grid must be offset by. Kept as one function so the rail and
+    /// panel can never disagree about the total.
+    pub fn total_width(&self) -> f32 {
+        sidebar_total_width(self.nav_collapsed, self.collapsed, self.width)
+    }
+
+    /// Width of the rail alone (0 when hidden). Used by the resize drag to
+    /// convert a window-space mouse X into a panel width.
+    pub fn rail_offset(&self) -> f32 {
+        if self.nav_collapsed {
+            0.0
+        } else {
+            RAIL_WIDTH
+        }
+    }
+
     pub fn is_resizing(&self) -> bool {
         self.resizing
     }
@@ -395,6 +439,163 @@ impl SidebarView {
                         .child(count.to_string()),
                 )
             })
+    }
+
+    /// One icon button in the activity rail. Shows the section label as a
+    /// hover tooltip, since the rail has no room for text.
+    fn render_rail_item(
+        &self,
+        section: SidebarSection,
+        count: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_active = self.active_section == section;
+        let icon = section.lucide_icon();
+        let label: SharedString = section.label().into();
+        let icon_color = if is_active {
+            ShellDeckColors::primary()
+        } else {
+            ShellDeckColors::text_muted()
+        };
+
+        // Real pixels throughout: see RAIL_WIDTH. The 32px hit target inside a
+        // 48px rail leaves 8px of breathing room on each side.
+        let mut item = div()
+            .id(ElementId::from(SharedString::from(format!(
+                "rail-{section:?}"
+            ))))
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .size(gpui::px(32.0))
+            .rounded(gpui::px(8.0))
+            .cursor_pointer()
+            .tooltip(move |_, cx| {
+                cx.new(|_| SidebarTooltip {
+                    label: label.clone(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                this.active_section = section;
+                cx.emit(SidebarEvent::SectionChanged(section));
+                cx.notify();
+            }))
+            .child(lucide_icon(icon, 18.0, icon_color));
+
+        if is_active {
+            item = item.bg(ShellDeckColors::primary().opacity(0.15));
+            // Active marker on the left edge, VS Code style. Inset vertically
+            // so it reads as a marker rather than a full-height divider.
+            item = item.child(
+                div()
+                    .absolute()
+                    .left(gpui::px(-8.0))
+                    .top(gpui::px(6.0))
+                    .bottom(gpui::px(6.0))
+                    .w(gpui::px(2.0))
+                    .rounded(gpui::px(1.0))
+                    .bg(ShellDeckColors::primary()),
+            );
+        } else {
+            item = item.hover(|el| el.bg(ShellDeckColors::hover_bg()));
+        }
+
+        // Count badge, VS Code style. Carries the connected-host and open-tab
+        // counts the in-panel nav rows used to show, so collapsing to the rail
+        // is not an information loss.
+        if let Some(count) = count.filter(|c| *c > 0) {
+            let label = if count > 99 {
+                "99+".to_string()
+            } else {
+                count.to_string()
+            };
+            item = item.child(
+                div()
+                    .absolute()
+                    .top(gpui::px(-2.0))
+                    .right(gpui::px(-2.0))
+                    .min_w(gpui::px(15.0))
+                    .h(gpui::px(15.0))
+                    .px(gpui::px(3.0))
+                    .rounded(gpui::px(7.5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(ShellDeckColors::primary())
+                    .text_size(gpui::px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::bg_primary())
+                    .child(label),
+            );
+        }
+        item
+    }
+
+    /// The always-on activity rail: every nav section as an icon, with
+    /// Settings pinned to the bottom.
+    fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let connected_count = self
+            .connections
+            .iter()
+            .filter(|c| matches!(c.status, ConnectionStatus::Connected))
+            .count();
+
+        let mut top = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(gpui::px(4.0))
+            .child(self.render_rail_item(
+                SidebarSection::Connections,
+                Some(connected_count),
+                cx,
+            ))
+            .child(self.render_rail_item(
+                SidebarSection::Terminals,
+                Some(self.terminal_tab_count),
+                cx,
+            ))
+            .child(self.render_rail_item(SidebarSection::Scripts, None, cx))
+            .child(self.render_rail_item(SidebarSection::PortForwards, None, cx))
+            .child(self.render_rail_item(SidebarSection::ServerSync, None, cx))
+            .child(self.render_rail_item(SidebarSection::Sites, None, cx))
+            .child(self.render_rail_item(SidebarSection::Recent, None, cx))
+            .child(self.render_rail_item(SidebarSection::FileEditor, None, cx));
+        if self.jean_available {
+            top = top.child(self.render_rail_item(SidebarSection::JeanConsole, None, cx));
+        }
+        if self.fleet_available {
+            top = top.child(self.render_rail_item(SidebarSection::Fleet, None, cx));
+        }
+        top = top.child(self.render_rail_item(SidebarSection::BextCloud, None, cx));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .w(gpui::px(RAIL_WIDTH))
+            .h_full()
+            .py(gpui::px(8.0))
+            .bg(ShellDeckColors::bg_sidebar())
+            .border_r_1()
+            .border_color(ShellDeckColors::border())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(gpui::px(8.0))
+                    .min_h(gpui::px(0.0))
+                    .overflow_hidden()
+                    .child(crate::brand::brand_badge_abs(24.0))
+                    .child(top),
+            )
+            .child(self.render_rail_item(SidebarSection::Settings, None, cx))
     }
 
     fn render_section_header(label: &str) -> impl IntoElement {
@@ -704,8 +905,24 @@ impl EventEmitter<SidebarEvent> for SidebarView {}
 
 impl Render for SidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.collapsed {
-            return div().w(px(0.0)).h_full().id("sidebar-collapsed");
+        // VS Code layout: an always-on activity rail plus a panel that
+        // collapses independently (Cmd/Ctrl+B). `nav_collapsed` — the setting
+        // that used to hide the in-panel nav list, which the rail replaced —
+        // now hides the rail, so "masquer la navigation" still means the same
+        // thing to anyone who had it turned on.
+        let rail_visible = !self.nav_collapsed;
+        let panel_visible = !self.collapsed;
+
+        if !panel_visible {
+            let mut rail_only = div()
+                .flex()
+                .flex_shrink_0()
+                .h_full()
+                .id("sidebar-rail-only");
+            if rail_visible {
+                rail_only = rail_only.child(self.render_rail(cx));
+            }
+            return rail_only;
         }
 
         // Filter connections by search query and the active-site filter.
@@ -737,8 +954,11 @@ impl Render for SidebarView {
             .filter(|c| matches!(c.status, ConnectionStatus::Connected))
             .count();
 
-        // Logo/title (pinned at top)
-        let logo = div()
+        // Panel header. With the rail on screen the brand mark already lives
+        // there, so the header names the section the panel is showing (VS Code
+        // style). With the rail hidden it falls back to the full brand lockup,
+        // because that is then the only place it appears.
+        let mut logo = div()
             .flex()
             .flex_shrink_0()
             .items_center()
@@ -748,9 +968,24 @@ impl Render for SidebarView {
             .px(px(14.0))
             .py(px(14.0))
             .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(crate::brand::brand_badge(30.0))
-            .child(crate::brand::brand_wordmark(17.0));
+            .border_color(ShellDeckColors::border());
+        if rail_visible {
+            logo = logo.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(self.active_section.label().to_uppercase()),
+            );
+        } else {
+            logo = logo
+                .child(crate::brand::brand_badge(30.0))
+                .child(crate::brand::brand_wordmark(17.0));
+        }
 
         // Navigation tabs (pinned at top)
         let mut nav = div()
@@ -943,10 +1178,14 @@ impl Render for SidebarView {
             .id("sidebar")
             .track_focus(&self.focus_handle)
             .child(logo);
-        if !nav_collapsed {
+        // The rail *is* the navigation. Only fall back to the in-panel nav
+        // list when the user has hidden the rail, so the two never duplicate
+        // each other.
+        if !rail_visible {
             root = root.child(nav);
         }
-        root.child(separator)
+        let panel = root
+            .child(separator)
             .child(
                 // Explicit flex-grow + min_h(0) around the scrollable so the
                 // scroll container computes its viewport height correctly and
@@ -961,14 +1200,50 @@ impl Render for SidebarView {
                     .child(scrollable_vertical(host_list)),
             )
             .child(add_button)
-            .child(resize_handle)
+            .child(resize_handle);
+
+        let mut shell = div().flex().flex_shrink_0().h_full().id("sidebar-shell");
+        if rail_visible {
+            shell = shell.child(self.render_rail(cx));
+        }
+        shell.child(panel)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{conn_matches_site_filter, fuzzy_match_indices};
+    use super::{conn_matches_site_filter, fuzzy_match_indices, sidebar_total_width, RAIL_WIDTH};
     use uuid::Uuid;
+
+    // ── sidebar_total_width ────────────────────────────────────────────
+
+    // SDTEST-1210 — the terminal grid is sized against this number. Each of
+    // the four rail/panel states must contribute exactly its own width; an
+    // error here silently mis-sizes every terminal (wrong cols, wrong
+    // wrapping) rather than showing up as a visible layout break.
+    #[test]
+    fn total_width_sums_rail_and_panel_independently() {
+        // Both visible — the default Dev layout.
+        assert_eq!(sidebar_total_width(false, false, 260.0), RAIL_WIDTH + 260.0);
+        // Panel collapsed (Cmd+B): the rail stays, which is the whole point
+        // of the VS Code layout — a plain 0.0 here would put the terminal
+        // underneath the rail.
+        assert_eq!(sidebar_total_width(false, true, 260.0), RAIL_WIDTH);
+        // Rail hidden ("masquer la navigation"), panel still open.
+        assert_eq!(sidebar_total_width(true, false, 260.0), 260.0);
+        // Everything hidden.
+        assert_eq!(sidebar_total_width(true, true, 260.0), 0.0);
+    }
+
+    // SDTEST-1211 — a collapsed panel must not leak its width back in, at
+    // either end of the resize clamp.
+    #[test]
+    fn collapsed_panel_width_is_ignored_at_any_size() {
+        for width in [180.0, 260.0, 400.0] {
+            assert_eq!(sidebar_total_width(false, true, width), RAIL_WIDTH);
+            assert_eq!(sidebar_total_width(true, true, width), 0.0);
+        }
+    }
 
     // ── fuzzy_match_indices ────────────────────────────────────────────
 

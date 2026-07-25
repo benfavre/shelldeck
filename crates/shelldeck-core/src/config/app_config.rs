@@ -177,6 +177,12 @@ impl UiLanguage {
     }
 }
 
+/// `#[serde(default)]` for `bool` fields that must default to `true` when the
+/// key is absent from an older `shelldeck.toml`.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
@@ -189,6 +195,12 @@ pub struct GeneralConfig {
     /// user picks sticks across sessions.
     #[serde(default)]
     pub sidebar_nav_collapsed: bool,
+    /// Whether the application menu row (Fichier / Édition / …) is shown
+    /// under the titlebar. Visible by default; hidden from Affichage → Barre
+    /// de menus. The terminal grid's usable height depends on this, so the
+    /// workspace pushes changes down to `TerminalView::set_menu_bar_visible`.
+    #[serde(default = "default_true")]
+    pub menu_bar_visible: bool,
     pub auto_attach_tmux: bool,
     pub auto_update: bool,
     /// Interface language. `system` follows the OS locale (French default).
@@ -373,6 +385,7 @@ impl Default for GeneralConfig {
             confirm_before_close: true,
             sidebar_width: 260.0,
             sidebar_nav_collapsed: false,
+            menu_bar_visible: true,
             auto_attach_tmux: false,
             auto_update: true,
             ui_language: UiLanguage::default(),

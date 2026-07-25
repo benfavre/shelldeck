@@ -1059,6 +1059,9 @@ pub struct TerminalView {
     grid_y_offset: f32,
     /// Sidebar width in pixels (updated dynamically from workspace).
     sidebar_width: f32,
+    /// Whether the workspace is currently showing the application menu row
+    /// above the content area (updated dynamically from the workspace).
+    menu_bar_visible: bool,
     /// Whether a split divider is being dragged.
     split_dragging: bool,
     /// The divider currently being dragged: (tree path to its split, is_horizontal).
@@ -1195,6 +1198,7 @@ impl TerminalView {
             grid_x_offset: 260.0 + SIDEBAR_HANDLE_WIDTH,
             grid_y_offset: GRID_TOP_OFFSET,
             sidebar_width: 260.0,
+            menu_bar_visible: true,
             split_dragging: false,
             active_divider: None,
             scrollbar_dragging: false,
@@ -1244,6 +1248,12 @@ impl TerminalView {
     /// Update the sidebar width used for coordinate mapping.
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = width;
+    }
+
+    /// Whether the application menu row is on screen. Shrinks the height the
+    /// grid is sized against — see [`Self::menu_bar_height`].
+    pub fn set_menu_bar_visible(&mut self, visible: bool) {
+        self.menu_bar_visible = visible;
     }
 
     /// Apply a terminal color theme to the renderer.
@@ -1991,6 +2001,21 @@ impl TerminalView {
         (fs * 0.6, fs * 1.4)
     }
 
+    /// Vertical space the application menu row takes above the workspace
+    /// content, in absolute pixels at the current UI scale. Zero when the row
+    /// is hidden from Affichage → Barre de menus.
+    ///
+    /// Unlike `TITLEBAR_HEIGHT`, the menu row is styled in rems and therefore
+    /// grows with the App Font Size setting — so it must be scaled here the
+    /// same way the tab bar and toolbar are.
+    fn menu_bar_height(&self, window: &Window) -> f32 {
+        if self.menu_bar_visible {
+            crate::menu_bar::MENU_BAR_HEIGHT * Self::ui_scale(window)
+        } else {
+            0.0
+        }
+    }
+
     /// The full terminal content rectangle (in the grid offset convention:
     /// x = right of the sidebar, y = below the scaled tab bar + toolbar).
     fn content_area(&self, window: &Window) -> PaneRect {
@@ -2001,6 +2026,7 @@ impl TerminalView {
             .max(1.0);
         let h = (viewport.height.to_f64() as f32
             - TITLEBAR_HEIGHT
+            - self.menu_bar_height(window)
             - Self::chrome_top_offset(window)
             - STATUS_BAR_HEIGHT)
             .max(1.0);

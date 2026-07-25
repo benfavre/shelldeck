@@ -18,6 +18,19 @@ pub fn brand_badge(size: f32) -> impl IntoElement {
         .child(img(path).w_full().h_full().object_fit(ObjectFit::Contain))
 }
 
+/// Same mark at an **absolute** pixel size, for fixed-width chrome that must
+/// not grow with the UI scale — currently the sidebar activity rail, whose
+/// width the terminal grid geometry depends on.
+pub fn brand_badge_abs(size: f32) -> impl IntoElement {
+    let slug = ShellDeckColors::palette_slug();
+    let path: SharedString = format!("images/brand/png/themes/monolith-{slug}-128.png").into();
+    div()
+        .flex_shrink_0()
+        .w(gpui::px(size))
+        .h(gpui::px(size))
+        .child(img(path).w_full().h_full().object_fit(ObjectFit::Contain))
+}
+
 /// Monochrome Monolith mark (`shelldeck-mark.svg`) — muted contexts, `currentColor`.
 pub fn brand_mark(width: f32, height: f32) -> impl IntoElement {
     svg()

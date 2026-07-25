@@ -1,6 +1,9 @@
 use crate::i18n::rel_time;
 use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_button::IconButton;
+use adabraka_ui::navigation::menu::{
+    MenuBar as AdabrakaMenuBar, MenuBarItem, MenuItem as AdabrakaMenuItem,
+};
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
@@ -10,6 +13,11 @@ use adabraka_ui::prelude::{
 };
 use gpui::prelude::*;
 use gpui::*;
+// Shadows `gpui::px` from the glob above so every length this module styles
+// with is a rem, and therefore tracks the window rem size the App Font Size
+// setting drives. Real-pixel call sites (window inset, rem size itself, box
+// shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
+use crate::scale::px;
 use shelldeck_core::ai::{
     ai_action_disposition, configured_cli_available, create_client, host_context,
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
@@ -303,6 +311,10 @@ pub struct Workspace {
     /// Keeping this separate from `active_view` preserves the hidden Dev view
     /// (including live terminal tabs) while Settings is open.
     settings_open: bool,
+    /// The application menu row. Present in every mode (and on the welcome
+    /// screen); its contents are rebuilt from `menu_bar_spec` whenever the
+    /// state it reads changes. See `crate::menu_bar`.
+    menu_bar: Entity<AdabrakaMenuBar>,
     sidebar_visible: bool,
     sidebar_width: f32,
     /// Application UI font family ("System Default" means no override).
@@ -695,14 +707,25 @@ impl Workspace {
             let cursor_style = cfg.cursor_style.clone();
             let cursor_blink = cfg.cursor_blink;
             let scrollback = cfg.scrollback_lines;
+            let menu_bar_visible = config.general.menu_bar_visible;
             terminal.update(cx, |t, _| {
+                t.set_menu_bar_visible(menu_bar_visible);
                 t.set_terminal_theme(&theme);
                 t.set_font_size(font_size);
                 t.set_font_family(font_family);
                 t.set_cursor_style(&cursor_style);
                 t.set_cursor_blink(cursor_blink);
                 t.set_scrollback_lines(scrollback);
-                t.set_sidebar_width(initial_sidebar_width);
+                // Panel + activity rail: the rail is on unless the persisted
+                // "navigation collapsed" preference hides it.
+                t.set_sidebar_width(
+                    initial_sidebar_width
+                        + if config.general.sidebar_nav_collapsed {
+                            0.0
+                        } else {
+                            crate::sidebar::RAIL_WIDTH
+                        },
+                );
             });
         }
 
@@ -720,6 +743,13 @@ impl Workspace {
         });
         let status_bar = cx.new(|_| StatusBar::new());
         let toasts = cx.new(|_| ToastContainer::new());
+        // Built empty: the real items need `&mut Context<Workspace>` for their
+        // click handlers, so `rebuild_menu_bar` fills it in on first render.
+        let menu_bar = cx.new(|_| {
+            AdabrakaMenuBar::new(Vec::new())
+                .row_height(gpui::px(crate::menu_bar::MENU_BAR_HEIGHT))
+                .menu_min_width(gpui::px(240.0))
+        });
         let support = cx.new(SupportView::new);
         let jean_view = cx.new(JeanView::new);
         let fleet_view = cx.new(FleetView::new);
@@ -953,6 +983,7 @@ impl Workspace {
             variable_prompt: None,
             active_view: ActiveView::Dashboard,
             settings_open: false,
+            menu_bar,
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,
             ui_font_family,
@@ -1430,8 +1461,10 @@ impl Workspace {
             }
             SidebarEvent::WidthChanged(width) => {
                 self.sidebar_width = *width;
+                // The terminal is offset by rail + panel, not the panel alone.
+                let total = self.sidebar.read(cx).total_width();
                 self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(*width);
+                    terminal.set_sidebar_width(total);
                 });
                 cx.notify();
             }
@@ -1447,6 +1480,12 @@ impl Workspace {
                 self.app_config.general.sidebar_nav_collapsed = collapsed;
                 self.settings.update(cx, |settings, cx| {
                     settings.set_sidebar_nav_collapsed(collapsed, cx);
+                });
+                // Showing / hiding the rail changes the sidebar's total width,
+                // so the terminal grid has to be re-offset.
+                let total = self.sidebar.read(cx).total_width();
+                self.terminal.update(cx, |terminal, _cx| {
+                    terminal.set_sidebar_width(total);
                 });
                 cx.notify();
             }
@@ -1765,10 +1804,11 @@ impl Workspace {
                     terminal.set_terminal_theme(&terminal_theme);
                     cx.notify();
                 });
-                // Apply sidebar width
+                // Apply sidebar width (panel + activity rail).
                 self.sidebar_width = self.app_config.general.sidebar_width;
+                let total = self.sidebar.read(cx).total_width();
                 self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(self.app_config.general.sidebar_width);
+                    terminal.set_sidebar_width(total);
                 });
                 // Apply application UI font (cascades to all child views on re-render)
                 self.ui_font_family = self.app_config.general.ui_font_family.clone();
@@ -5366,6 +5406,191 @@ impl Workspace {
         }
     }
 
+    // --- Application menu bar ---
+
+    /// Rebuild the menu row from current state and hand it to the adabraka
+    /// `MenuBar`. Called every render: the spec is a cheap pure function and
+    /// the alternative — invalidating on each of the a dozen inputs it reads
+    /// (mode, sign-in, sidebar, Jean/Fleet availability, AI config) — is a
+    /// standing source of stale-menu bugs.
+    fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
+        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuEntry};
+
+        let ctx = MenuBarContext {
+            signed_in: self.signed_in(),
+            mode: self.effective_mode(),
+            dev_capable: self
+                .app_config
+                .account
+                .as_ref()
+                .is_some_and(|a| a.is_superadmin),
+            sidebar_visible: self.sidebar_visible,
+            menu_bar_visible: self.app_config.general.menu_bar_visible,
+            has_jean: self.has_jean(),
+            has_fleet: self.app_config.jean_runtime.enabled || self.fleet_snapshot.is_some(),
+            ai_configured: self.ai_available_for_current_surface(cx),
+        };
+
+        let items = menu_bar_spec(ctx)
+            .into_iter()
+            .map(|menu| {
+                let entries = menu
+                    .entries
+                    .into_iter()
+                    .map(|entry| match entry {
+                        MenuEntry::Separator => AdabrakaMenuItem::separator(),
+                        MenuEntry::Command {
+                            id,
+                            label,
+                            command,
+                            shortcut,
+                            icon,
+                            checked,
+                        } => {
+                            let mut item = match checked {
+                                // A toggle renders adabraka's check column; a
+                                // plain command leaves it blank but still
+                                // reserves the width, so labels stay aligned.
+                                Some(value) => AdabrakaMenuItem::checkbox(id, label, value),
+                                None => AdabrakaMenuItem::new(id, label),
+                            };
+                            if let Some(slug) = icon {
+                                item = item.with_icon(IconSource::from(slug));
+                            }
+                            if let Some(keys) = shortcut {
+                                item = item.with_shortcut(keys);
+                            }
+                            let handle = cx.entity().downgrade();
+                            item.on_click(move |window, cx| {
+                                if let Some(ws) = handle.upgrade() {
+                                    ws.update(cx, |ws, cx| {
+                                        ws.execute_menu_command(command, window, cx);
+                                    });
+                                }
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                MenuBarItem::new(menu.id, menu.label).with_items(entries)
+            })
+            .collect::<Vec<_>>();
+
+        self.menu_bar.update(cx, |bar, _| {
+            // Preserve the open menu across the rebuild: `set_items` closes
+            // it, and this runs on every render — including the render the
+            // click that *opened* a menu triggered.
+            let open = bar.open_index();
+            bar.set_items(items);
+            bar.set_open_index(open);
+        });
+    }
+
+    /// Run one menu command. Anything with an existing `actions!` entry goes
+    /// through `execute_palette_action` so the menu bar, the palette and the
+    /// keybindings stay one code path.
+    fn execute_menu_command(
+        &mut self,
+        command: crate::menu_bar::MenuCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::menu_bar::MenuCommand as Cmd;
+        use crate::terminal_view::{
+            ClearTerminal, CopySelection, PasteClipboard, SplitHorizontal, SplitVertical,
+            ToggleSearch, ZoomIn, ZoomOut, ZoomReset,
+        };
+
+        match command {
+            Cmd::QuickConnect => self.execute_palette_action(&OpenQuickConnect, cx),
+            Cmd::NewTerminal => self.execute_palette_action(&NewTerminal, cx),
+            Cmd::NewScript => self.execute_palette_action(&NewScript, cx),
+            Cmd::NewRequest => self.execute_palette_action(&NewRequest, cx),
+            Cmd::SyncNow => self.execute_palette_action(&CloudSyncNow, cx),
+            Cmd::OpenSettings => self.open_settings(cx),
+            Cmd::Quit => {
+                if self.confirm_window_close(cx) {
+                    self.shutdown(cx);
+                    cx.quit();
+                }
+            }
+
+            // Terminal-owned actions are dispatched into the focus path
+            // rather than handled here: only the focused pane knows what the
+            // selection or the search state is.
+            Cmd::Copy => window.dispatch_action(Box::new(CopySelection), cx),
+            Cmd::Paste => window.dispatch_action(Box::new(PasteClipboard), cx),
+            Cmd::Find => window.dispatch_action(Box::new(ToggleSearch), cx),
+            Cmd::ClearTerminal => window.dispatch_action(Box::new(ClearTerminal), cx),
+            Cmd::SplitHorizontal => window.dispatch_action(Box::new(SplitHorizontal), cx),
+            Cmd::SplitVertical => window.dispatch_action(Box::new(SplitVertical), cx),
+            Cmd::TerminalZoomIn => window.dispatch_action(Box::new(ZoomIn), cx),
+            Cmd::TerminalZoomOut => window.dispatch_action(Box::new(ZoomOut), cx),
+            Cmd::TerminalZoomReset => window.dispatch_action(Box::new(ZoomReset), cx),
+
+            Cmd::CommandPalette => {
+                self.command_palette.update(cx, |palette, cx| {
+                    palette.toggle(window, cx);
+                    cx.notify();
+                });
+            }
+
+            Cmd::ToggleSidebar => self.toggle_sidebar(cx),
+            Cmd::ToggleMenuBar => self.toggle_menu_bar(cx),
+            Cmd::UiZoomIn => self
+                .settings
+                .update(cx, |settings, cx| settings.adjust_ui_font_size(1.0, cx)),
+            Cmd::UiZoomOut => self
+                .settings
+                .update(cx, |settings, cx| settings.adjust_ui_font_size(-1.0, cx)),
+            Cmd::UiZoomReset => {
+                let delta = crate::scale::BASELINE_FONT_SIZE - self.ui_font_size;
+                self.settings
+                    .update(cx, |settings, cx| settings.adjust_ui_font_size(delta, cx));
+            }
+
+            Cmd::GoDashboard => self.switch_to_section(SidebarSection::Connections),
+            Cmd::GoTerminal => self.switch_to_section(SidebarSection::Terminals),
+            Cmd::GoScripts => self.switch_to_section(SidebarSection::Scripts),
+            Cmd::GoPortForwards => self.switch_to_section(SidebarSection::PortForwards),
+            Cmd::GoServerSync => self.execute_palette_action(&OpenServerSync, cx),
+            Cmd::GoSites => self.execute_palette_action(&OpenSites, cx),
+            Cmd::GoRecent => self.execute_palette_action(&OpenRecent, cx),
+            Cmd::GoFileEditor => self.execute_palette_action(&OpenFileEditorView, cx),
+            Cmd::GoJean => self.execute_palette_action(&OpenJeanConsole, cx),
+            Cmd::GoFleet => self.execute_palette_action(&OpenFleet, cx),
+            Cmd::GoBextCloud => self.execute_palette_action(&OpenBextCloud, cx),
+            Cmd::GoSupportRequests => self.execute_palette_action(&OpenSupportRequests, cx),
+
+            Cmd::CloseTab => self.execute_palette_action(&CloseTab, cx),
+            Cmd::NextTab => self.next_tab(cx),
+            Cmd::PrevTab => self.prev_tab(cx),
+
+            Cmd::SignIn => self.show_login_form(cx),
+            Cmd::SignOut => self.logout_account(cx),
+            Cmd::OpenAiAssistant => self.open_ai_assistant(cx),
+            Cmd::Documentation => {
+                let _ = cloud_account::open_in_browser("https://shelldeck.1clic.pro");
+            }
+            Cmd::About => self.open_settings(cx),
+        }
+        cx.notify();
+    }
+
+    /// Show / hide the application menu row. The terminal grid's usable height
+    /// depends on it, so the change is pushed down to the terminal view before
+    /// it is persisted.
+    pub fn toggle_menu_bar(&mut self, cx: &mut Context<Self>) {
+        let visible = !self.app_config.general.menu_bar_visible;
+        self.app_config.general.menu_bar_visible = visible;
+        self.terminal.update(cx, |terminal, _| {
+            terminal.set_menu_bar_visible(visible);
+        });
+        self.settings.update(cx, |settings, cx| {
+            settings.set_menu_bar_visible(visible, cx);
+        });
+        cx.notify();
+    }
+
     // --- App modes (User / Support / Dev) ---
 
     /// Whether the user is signed in to Inklura Manage.
@@ -8826,14 +9051,13 @@ impl Workspace {
             return;
         }
         self.sidebar_visible = !self.sidebar_visible;
-        self.sidebar.update(cx, |sidebar, _cx| {
+        // Toggles the *panel*; the activity rail stays put, so the effective
+        // width comes from the sidebar itself rather than being recomputed
+        // here (it alone knows whether the rail is showing).
+        let effective_width = self.sidebar.update(cx, |sidebar, _cx| {
             sidebar.toggle_collapsed();
+            sidebar.total_width()
         });
-        let effective_width = if self.sidebar_visible {
-            self.sidebar_width
-        } else {
-            0.0
-        };
         self.terminal.update(cx, |terminal, _cx| {
             terminal.set_sidebar_width(effective_width);
         });
@@ -9669,9 +9893,10 @@ impl Workspace {
             .shadow(
                 vec![BoxShadow {
                     color: hsla(0.0, 0.0, 0.0, 0.45),
-                    offset: point(px(0.0), px(4.0)),
-                    blur_radius: px(20.0),
-                    spread_radius: px(0.0),
+                    // BoxShadow fields are typed `Pixels` — real pixels, not rems.
+                    offset: point(gpui::px(0.0), gpui::px(4.0)),
+                    blur_radius: gpui::px(20.0),
+                    spread_radius: gpui::px(0.0),
                     inset: false,
                 }]
                 .into(),
@@ -9779,9 +10004,10 @@ impl Workspace {
     fn render_account_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let shadow = vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.45),
-            offset: point(px(0.0), px(4.0)),
-            blur_radius: px(20.0),
-            spread_radius: px(0.0),
+            // BoxShadow fields are typed `Pixels` — real pixels, not rems.
+            offset: point(gpui::px(0.0), gpui::px(4.0)),
+            blur_radius: gpui::px(20.0),
+            spread_radius: gpui::px(0.0),
             inset: false,
         }];
 
@@ -10116,9 +10342,10 @@ impl Workspace {
 
         let shadow = vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.45),
-            offset: point(px(0.0), px(4.0)),
-            blur_radius: px(20.0),
-            spread_radius: px(0.0),
+            // BoxShadow fields are typed `Pixels` — real pixels, not rems.
+            offset: point(gpui::px(0.0), gpui::px(4.0)),
+            blur_radius: gpui::px(20.0),
+            spread_radius: gpui::px(0.0),
             inset: false,
         }];
 
@@ -10282,9 +10509,10 @@ impl Workspace {
 
         let shadow = vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.35),
-            offset: point(px(0.0), px(4.0)),
-            blur_radius: px(16.0),
-            spread_radius: px(0.0),
+            // BoxShadow fields are typed `Pixels` — real pixels, not rems.
+            offset: point(gpui::px(0.0), gpui::px(4.0)),
+            blur_radius: gpui::px(16.0),
+            spread_radius: gpui::px(0.0),
             inset: false,
         }];
 
@@ -10813,8 +11041,8 @@ impl Workspace {
                 label,
             )
             .size(adabraka_ui::components::button::ButtonSize::Sm)
-            .h(gpui::px(26.0))
-            .px(gpui::px(10.0))
+            .h(px(26.0))
+            .px(px(10.0))
             .variant(if active {
                 ButtonVariant::Default
             } else {
@@ -13486,7 +13714,8 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active = _window.is_window_active();
-        _window.set_client_inset(px(5.0));
+        // Window chrome geometry is in real device-independent pixels.
+        _window.set_client_inset(gpui::px(5.0));
 
         // Drive proportional UI scaling from the App Font Size setting. Every
         // view that styles via `crate::scale::px` (i.e. rems) tracks this rem
@@ -13495,8 +13724,15 @@ impl Render for Workspace {
         {
             use crate::scale::{rem_size_for_scale, scale_for_font_size};
             let scale = scale_for_font_size(self.ui_font_size);
-            _window.set_rem_size(px(rem_size_for_scale(scale)));
+            // The rem size itself is necessarily absolute — it is the unit
+            // every `crate::scale::px` above resolves against.
+            _window.set_rem_size(gpui::px(rem_size_for_scale(scale)));
         }
+
+        // The menu row reads a dozen pieces of state (mode, sign-in, sidebar,
+        // Jean/Fleet availability, AI); rebuilding it here keeps it honest
+        // without a subscription per input.
+        self.rebuild_menu_bar(_cx);
 
         // Check if script editor wants to open the template browser
         if self.scripts.read(_cx).template_browser_open && self.template_browser.is_none() {
@@ -13541,9 +13777,11 @@ impl Render for Workspace {
                     main_area = main_area.child(self.render_user_home(_cx));
                 }
                 AppMode::Dev => {
-                    if self.sidebar_visible {
-                        main_area = main_area.child(self.sidebar.clone());
-                    }
+                    // Always rendered: the activity rail stays on screen even
+                    // when the panel is collapsed (VS Code layout). The
+                    // sidebar itself decides what to draw from its own
+                    // collapsed / nav-collapsed state.
+                    main_area = main_area.child(self.sidebar.clone());
 
                     let mut content = div().flex_grow().w_full().min_h(px(0.0)).overflow_hidden();
                     if !output_resizing && !sidebar_resizing {
@@ -13758,14 +13996,18 @@ impl Render for Workspace {
                     move |event: &MouseMoveEvent, _window: &mut Window, cx: &mut App| {
                         if let Some(ws) = h_move.upgrade() {
                             ws.update(cx, |ws, cx| {
-                                let new_width = event.position.x.to_f64() as f32;
+                                // The pointer is in window space; the panel
+                                // starts to the right of the activity rail.
+                                let rail = ws.sidebar.read(cx).rail_offset();
+                                let new_width = event.position.x.to_f64() as f32 - rail;
                                 let clamped = new_width.clamp(180.0, 400.0);
                                 ws.sidebar_width = clamped;
-                                ws.sidebar.update(cx, |sidebar, _| {
+                                let total = ws.sidebar.update(cx, |sidebar, _| {
                                     sidebar.set_width(clamped);
+                                    sidebar.total_width()
                                 });
                                 ws.terminal.update(cx, |terminal, _| {
-                                    terminal.set_sidebar_width(clamped);
+                                    terminal.set_sidebar_width(total);
                                 });
                                 cx.notify();
                             });
@@ -13812,11 +14054,9 @@ impl Render for Workspace {
                                 if is_sync_panel_drag {
                                     let window_width = window.viewport_size().width.to_f64() as f32;
                                     let mouse_x = event.position.x.to_f64() as f32;
-                                    let sidebar_w = if ws.sidebar_visible {
-                                        ws.sidebar_width
-                                    } else {
-                                        0.0
-                                    };
+                                    // Rail + panel: the content area starts to
+                                    // the right of both.
+                                    let sidebar_w = ws.sidebar.read(cx).total_width();
                                     let content_w = window_width - sidebar_w;
                                     if content_w > 0.0 {
                                         let ratio =
@@ -13885,14 +14125,15 @@ impl Render for Workspace {
 
         // Edge resize handling (when not maximized and not already resizing)
         if !is_maximized && !sidebar_resizing && !output_resizing {
-            let border = px(5.0);
+            // Window-edge resize hit-testing works in real screen pixels.
+            let border = gpui::px(5.0);
             root = root
                 .child(
                     canvas(
                         |_bounds, window, _cx| {
                             window.insert_hitbox(
                                 Bounds::new(
-                                    point(px(0.0), px(0.0)),
+                                    point(gpui::px(0.0), gpui::px(0.0)),
                                     window.window_bounds().get_bounds().size,
                                 ),
                                 HitboxBehavior::Normal,
@@ -13931,7 +14172,7 @@ impl Render for Workspace {
                 })
                 .on_mouse_down(MouseButton::Left, move |e, window, _cx| {
                     let size = window.window_bounds().get_bounds().size;
-                    if let Some(edge) = resize_edge(e.position, px(5.0), size) {
+                    if let Some(edge) = resize_edge(e.position, gpui::px(5.0), size) {
                         window.start_window_resize(edge);
                     }
                 });
@@ -13965,10 +14206,14 @@ impl Render for Workspace {
             _cx,
         );
 
-        root = root
-            .child(titlebar)
-            .child(main_area)
-            .child(self.status_bar.clone());
+        // The application menu row sits between the titlebar and the content
+        // in every mode, including the pre-login welcome screen (where
+        // `menu_bar_spec` reduces it to sign-in / quit / zoom / about).
+        root = root.child(titlebar);
+        if self.app_config.general.menu_bar_visible {
+            root = root.child(self.menu_bar.clone());
+        }
+        root = root.child(main_area).child(self.status_bar.clone());
 
         // Titlebar theme-switcher dropdown overlay
         if self.theme_menu_open {

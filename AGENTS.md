@@ -183,6 +183,7 @@ prose — they can still open the referenced files manually or via their own
 rules loader.
 
 @.agents/cross-platform.md
+@.agents/chrome.md
 @.agents/ui-components.md
 @.agents/theming.md
 @.agents/icons.md
