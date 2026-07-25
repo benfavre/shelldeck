@@ -63,6 +63,18 @@ fn display_shortcut(shortcut: &str) -> String {
     parts.join("+")
 }
 
+/// Registration errors reach the UI as raw platform strings, so a French
+/// session ends up reading a D-Bus sentence in English. Only one of them is
+/// both frequent and environmental — a Wayland session whose portal stack
+/// predates `org.freedesktop.portal.GlobalShortcuts` (no portal frontend
+/// implements it, so no grab can ever succeed) — so that one gets a
+/// translated explanation and everything else still passes through verbatim
+/// rather than being flattened into a useless generic message.
+pub fn shortcut_error_is_portal_missing(error: &str) -> bool {
+    error.contains("GlobalShortcuts")
+        && (error.contains("not found") || error.contains("ServiceUnknown"))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ShortcutCaptureValidation {
     Accepted(String),
@@ -635,7 +647,14 @@ impl SettingsView {
                     BadgeVariant::Destructive,
                 ),
                 ShortcutRegistrationStatus::Error(error) => {
-                    (error.clone(), BadgeVariant::Destructive)
+                    if shortcut_error_is_portal_missing(error) {
+                        (
+                            t!("settings.companion.shortcut.status.portal_missing").to_string(),
+                            BadgeVariant::Destructive,
+                        )
+                    } else {
+                        (error.clone(), BadgeVariant::Destructive)
+                    }
                 }
             }
         };
@@ -2737,8 +2756,37 @@ fn ai_policy_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{display_shortcut, validate_shortcut_capture, ShortcutCaptureValidation};
+    use super::{
+        display_shortcut, shortcut_error_is_portal_missing, validate_shortcut_capture,
+        ShortcutCaptureValidation,
+    };
     use gpui::Keystroke;
+
+    // SDTEST-1419 — the portal-missing classifier decides whether a user reads
+    // an explanation or a D-Bus sentence. It has to catch both shapes ashpd
+    // produces (resolved name, raw `ServiceUnknown`) without swallowing the
+    // grab errors that name a specific key or a specific conflict.
+    #[test]
+    fn portal_missing_matches_ashpd_shapes_only() {
+        assert!(shortcut_error_is_portal_missing(
+            "A portal frontend implementing `org.freedesktop.portal.GlobalShortcuts` was not found"
+        ));
+        assert!(shortcut_error_is_portal_missing(
+            "org.freedesktop.DBus.Error.ServiceUnknown: \
+             org.freedesktop.portal.GlobalShortcuts is not provided"
+        ));
+
+        for unrelated in [
+            "Could not resolve keycode for key: nosuchkey",
+            "BadAccess: another client already grabbed this combination",
+            "Wayland Global Shortcuts portal did not accept this shortcut",
+        ] {
+            assert!(
+                !shortcut_error_is_portal_missing(unrelated),
+                "{unrelated} must reach the user verbatim"
+            );
+        }
+    }
 
     // SDTEST-1401
     #[test]

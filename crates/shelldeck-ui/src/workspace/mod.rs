@@ -9563,7 +9563,13 @@ fn shortcut_failure_toasts(
             ShortcutRegistrationStatus::Conflict => {
                 t!("shortcut.failure.conflict").to_string()
             }
-            ShortcutRegistrationStatus::Error(error) => error.clone(),
+            ShortcutRegistrationStatus::Error(error) => {
+                if crate::settings::shortcut_error_is_portal_missing(error) {
+                    t!("shortcut.failure.portal_missing").to_string()
+                } else {
+                    error.clone()
+                }
+            }
             _ => return,
         };
         toasts.push((
@@ -14623,6 +14629,7 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::{shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind};
+    use crate::t;
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
 
     fn statuses(
@@ -14635,7 +14642,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1220 — only a genuinely failed registration counts. `Applying`
+    // SDTEST-1415 — only a genuinely failed registration counts. `Applying`
     // and `PendingPortal` are in-flight: the Wayland GlobalShortcuts portal
     // answers asynchronously, so treating either as a failure would toast on
     // every single launch before the compositor has replied. `Disabled` is the
@@ -14662,7 +14669,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1221 — the companion config channel republishes statuses on every
+    // SDTEST-1416 — the companion config channel republishes statuses on every
     // settings save, so an unchanged failure must stay silent. Only the
     // transition *into* a failure is announced, or a user with a permanently
     // conflicting shortcut gets a toast every time they touch Settings.
@@ -14690,7 +14697,7 @@ mod tests {
         assert!(shortcut_failure_toasts(&failed, &ok).is_empty());
     }
 
-    // SDTEST-1222 — the two shortcuts are independent; one failing must not
+    // SDTEST-1417 — the two shortcuts are independent; one failing must not
     // mask or duplicate the other, and both failing at once reports both.
     #[test]
     fn each_shortcut_reports_independently() {
@@ -14717,5 +14724,42 @@ mod tests {
         let toasts = shortcut_failure_toasts(&ok, &palette_only);
         assert_eq!(toasts.len(), 1);
         assert_eq!(toasts[0].0, ShortcutToastKind::CommandPalette);
+    }
+
+    // SDTEST-1418 — a Wayland session without the Global Shortcuts portal is
+    // the one failure that is environmental rather than a bad key choice, and
+    // ashpd reports it as an English D-Bus sentence. It must reach the user as
+    // the translated explanation; every other platform error still arrives
+    // verbatim, since we cannot guess what those mean.
+    #[test]
+    fn portal_absence_is_explained_but_other_errors_pass_through() {
+        let ok = statuses(
+            ShortcutRegistrationStatus::Registered,
+            ShortcutRegistrationStatus::Registered,
+        );
+        let portal_missing = statuses(
+            ShortcutRegistrationStatus::Error(
+                "A portal frontend implementing `org.freedesktop.portal.GlobalShortcuts` \
+                 was not found"
+                    .into(),
+            ),
+            ShortcutRegistrationStatus::Registered,
+        );
+
+        let toasts = shortcut_failure_toasts(&ok, &portal_missing);
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0]
+            .1
+            .contains(&t!("shortcut.failure.portal_missing").to_string()));
+        assert!(!toasts[0].1.contains("portal frontend"));
+
+        let other = statuses(
+            ShortcutRegistrationStatus::Error(
+                "Could not resolve keycode for key: nosuchkey".into(),
+            ),
+            ShortcutRegistrationStatus::Registered,
+        );
+        let toasts = shortcut_failure_toasts(&ok, &other);
+        assert!(toasts[0].1.contains("Could not resolve keycode"));
     }
 }

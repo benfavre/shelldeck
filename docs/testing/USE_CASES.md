@@ -1730,9 +1730,33 @@ panel-less activities.
 The panel header names the active activity, so the list below it does not
 repeat that name as its own section header.
 
+### SDUC-444 — A global shortcut that cannot register says why
+
+A global shortcut whose registration is refused reports it instead of looking
+like a shortcut that merely "rarely works": once as a toast on the transition
+into failure, and durably as a status badge next to the combination in
+Settings. Repeat publications of the same failure stay silent, and the two
+shortcuts report independently.
+
+The reason reaches the user in their own language when it is one ShellDeck can
+explain. A Wayland session whose portal stack does not implement
+`org.freedesktop.portal.GlobalShortcuts` cannot grant a global grab to any
+application at all, so that case is named as the environmental limitation it
+is rather than forwarded as the ashpd/D-Bus sentence. Platform errors ShellDeck
+cannot interpret still reach the user verbatim.
+
+The status the Workspace shows is the current one, not the one that existed
+when the process started. A portal answers asynchronously and a tray-mode
+launch (`start_hidden`) has no Workspace to receive that answer, so the first
+window to open is seeded from the live registration state.
+
 ---
 
 ## Change log
+
+- **2026-07-25** — Added SDUC-444 and SDTEST-1415..1420 for global-shortcut
+  failure reporting, and renumbered the v0.6.4 shortcut-toast tests off
+  SDTEST-1220/1221/1222, which were already held by the updater rows.
 
 - **2026-07-25** — Added SDUC-441/442/443 and SDTEST-1200..1205 / 1210..1211
   for application chrome: proportional scaling of Workspace-drawn surfaces, the

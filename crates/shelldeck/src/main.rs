@@ -405,7 +405,12 @@ struct CompanionRoot {
     runtime: CompanionRuntime,
     workspace: Option<gpui::Entity<Workspace>>,
     workspace_slot: WorkspaceSlot,
-    initial_shortcut_statuses: CompanionShortcutStatuses,
+    /// Shared with the registration runtime rather than snapshotted at boot.
+    /// A Wayland portal answers asynchronously, and in tray mode (`start_hidden`)
+    /// no Workspace exists yet to receive that answer — the result lands here
+    /// and would be lost if the Workspace were later seeded from a snapshot
+    /// taken before the portal replied.
+    shortcut_state: Rc<RefCell<GlobalShortcutRegistrationState>>,
     _ai_companion_sub: gpui::Subscription,
 }
 
@@ -415,7 +420,7 @@ impl CompanionRoot {
         workspace_slot: WorkspaceSlot,
         tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
         companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
-        initial_shortcut_statuses: CompanionShortcutStatuses,
+        shortcut_state: Rc<RefCell<GlobalShortcutRegistrationState>>,
         main_window: gpui::AnyWindowHandle,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
@@ -438,7 +443,7 @@ impl CompanionRoot {
             },
             workspace: None,
             workspace_slot,
-            initial_shortcut_statuses,
+            shortcut_state,
             _ai_companion_sub: ai_companion_sub,
         }
     }
@@ -510,8 +515,9 @@ impl CompanionRoot {
                 }
             }));
         });
+        let shortcut_statuses = self.shortcut_state.borrow().statuses();
         workspace.update(cx, |ws, cx| {
-            ws.set_companion_shortcut_statuses(self.initial_shortcut_statuses.clone(), cx);
+            ws.set_companion_shortcut_statuses(shortcut_statuses, cx);
         });
 
         if let Some(state_tx) = self.runtime.tray_state_tx.clone() {
@@ -1488,7 +1494,6 @@ fn main() -> Result<()> {
         });
         let mut initial_global_shortcut_state = GlobalShortcutRegistrationState::default();
         initial_global_shortcut_state.sync(&config.companion, cx);
-        let initial_shortcut_statuses = initial_global_shortcut_state.statuses();
         let global_shortcut_state = Rc::new(RefCell::new(initial_global_shortcut_state));
         let (companion_config_tx, companion_config_rx) =
             tokio::sync::mpsc::unbounded_channel::<CompanionConfig>();
@@ -1562,7 +1567,7 @@ fn main() -> Result<()> {
                     workspace_slot.clone(),
                     tray_state_tx,
                     companion_config_tx,
-                    initial_shortcut_statuses,
+                    global_shortcut_state.clone(),
                     main_window,
                     cx,
                 )

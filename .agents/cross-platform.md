@@ -34,3 +34,31 @@ blocks *every* user from getting an update.
   `cloudflare/update-worker/`.
 - **Platform keys** in the update manifest use `macos-*`, never `darwin-*` —
   manifest, workflow, `shelldeck-update` client, and worker must all agree.
+
+## Global shortcuts on Wayland — an environment limit, not an app bug
+
+Wayland gives a client **no** way to grab a key it is not focused for. The only
+route is the `org.freedesktop.portal.GlobalShortcuts` portal, which needs
+xdg-desktop-portal **≥ 1.16** *and* a backend that implements it (GNOME's
+arrived in **GNOME 48**). On a session without both, `ashpd` returns *"A portal
+frontend implementing `org.freedesktop.portal.GlobalShortcuts` was not found"*
+and no ShellDeck change can make the shortcut fire.
+
+Verified on this dev box (2026-07-25, Ubuntu 22.04 / GNOME 42 Wayland,
+xdg-desktop-portal 1.14.4, `xdg-desktop-portal-gtk` only): the interface is
+absent from the session bus entirely.
+
+**How to apply:**
+
+- **Check the environment before reading code.** One command settles it:
+  `gdbus introspect --session --dest org.freedesktop.portal.Desktop
+  --object-path /org/freedesktop/portal/desktop | grep GlobalShortcuts`.
+  No output = no global shortcuts on that session, full stop.
+- **Do not "fix" it by falling back to X11.** Registration *succeeds* under
+  XWayland (`XGrabKey` returns fine — verified), but a Wayland compositor only
+  routes keys to XWayland while an X client is focused, so the grab never fires
+  for the case that matters. A successful registration is not a working
+  shortcut.
+- **Report it as environmental.** `shortcut_error_is_portal_missing` in
+  `settings.rs` maps this one error to a translated explanation; everything
+  else reaches the user verbatim.
