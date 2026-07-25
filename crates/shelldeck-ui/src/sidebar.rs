@@ -134,18 +134,14 @@ pub const RAIL_WIDTH: f32 = 48.0;
 /// grid depends on can be tested without a GPUI `Context` — same reasoning as
 /// `conn_matches_site_filter` above.
 ///
-/// - `nav_collapsed`: the activity rail is hidden.
 /// - `panel_collapsed`: the panel is hidden (Cmd/Ctrl+B).
 /// - `section_has_panel`: the selected activity has contextual rows at all.
 ///   An activity without one hides the panel even when it is not collapsed,
 ///   so the terminal must be offset by the rail alone.
-fn sidebar_total_width(
-    nav_collapsed: bool,
-    panel_collapsed: bool,
-    section_has_panel: bool,
-    panel_width: f32,
-) -> f32 {
-    let rail = if nav_collapsed { 0.0 } else { RAIL_WIDTH };
+fn sidebar_total_width(panel_collapsed: bool, section_has_panel: bool, panel_width: f32) -> f32 {
+    // The rail is unconditional — there is no state in which the Dev sidebar
+    // has no navigation surface.
+    let rail = RAIL_WIDTH;
     let panel = if panel_collapsed || !section_has_panel {
         0.0
     } else {
@@ -301,10 +297,6 @@ pub enum SidebarEvent {
     SectionChanged(SidebarSection),
     QuickConnect,
     WidthChanged(f32),
-    /// User toggled the top-nav collapse chevron — workspace persists this
-    /// to `AppConfig.general.sidebar_nav_collapsed` so the layout sticks
-    /// across sessions.
-    NavCollapsedChanged(bool),
     /// A row in a contextual panel was clicked. The workspace decides what
     /// "select" means per activity (focus a terminal tab, open a script, jump
     /// to a forward, …) — the sidebar only reports which row in which
@@ -321,10 +313,6 @@ pub struct SidebarView {
     selected_connection: Option<Uuid>,
     active_section: SidebarSection,
     collapsed: bool,
-    /// Whether the top navigation section is collapsed. When true, only the
-    /// hosts section (search + list) remains visible. Persisted by the
-    /// workspace via `AppConfig.general.sidebar_nav_collapsed`.
-    nav_collapsed: bool,
     width: f32,
     /// Whether the user is currently dragging the resize handle.
     resizing: bool,
@@ -358,7 +346,6 @@ impl SidebarView {
             selected_connection: None,
             active_section: SidebarSection::Connections,
             collapsed: false,
-            nav_collapsed: false,
             width: 260.0,
             resizing: false,
             terminal_tab_count: 0,
@@ -385,12 +372,6 @@ impl SidebarView {
             .unwrap_or(&[])
     }
 
-    /// Seed the persisted "top nav collapsed" state from the app config.
-    /// Called by the workspace on init.
-    pub fn set_nav_collapsed(&mut self, collapsed: bool) {
-        self.nav_collapsed = collapsed;
-    }
-
     /// Show/hide the JeanClaude console nav entry (Dev mode + config present).
     pub fn set_jean_available(&mut self, available: bool) {
         self.jean_available = available;
@@ -413,7 +394,6 @@ impl SidebarView {
     /// panel can never disagree about the total.
     pub fn total_width(&self) -> f32 {
         sidebar_total_width(
-            self.nav_collapsed,
             self.collapsed,
             self.active_section.has_panel(),
             self.width,
@@ -423,11 +403,7 @@ impl SidebarView {
     /// Width of the rail alone (0 when hidden). Used by the resize drag to
     /// convert a window-space mouse X into a panel width.
     pub fn rail_offset(&self) -> f32 {
-        if self.nav_collapsed {
-            0.0
-        } else {
-            RAIL_WIDTH
-        }
+        RAIL_WIDTH
     }
 
     pub fn is_resizing(&self) -> bool {
@@ -484,78 +460,6 @@ impl SidebarView {
 
     pub fn is_collapsed(&self) -> bool {
         self.collapsed
-    }
-
-    fn render_nav_item(
-        &self,
-        section: SidebarSection,
-        count: Option<usize>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let label = section.label();
-        let is_active = self.active_section == section;
-        let icon = section.lucide_icon();
-        let icon_color = if is_active {
-            ShellDeckColors::primary()
-        } else {
-            ShellDeckColors::text_muted()
-        };
-
-        div()
-            .id(ElementId::from(SharedString::from(format!(
-                "nav-{section:?}"
-            ))))
-            .flex()
-            .items_center()
-            .justify_between()
-            .w_full()
-            .overflow_hidden()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                this.active_section = section;
-                cx.emit(SidebarEvent::SectionChanged(section));
-                cx.notify();
-            }))
-            .when(is_active, |el| {
-                el.bg(ShellDeckColors::primary().opacity(0.15))
-                    .text_color(ShellDeckColors::primary())
-            })
-            .when(!is_active, |el| {
-                el.text_color(ShellDeckColors::text_muted())
-                    .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(lucide_icon(icon, 14.0, icon_color))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(label.to_string()),
-                    ),
-            )
-            .when_some(count, |el, count| {
-                el.child(
-                    div()
-                        .text_size(px(11.0))
-                        .px(px(6.0))
-                        .py(px(1.0))
-                        .rounded(px(10.0))
-                        .bg(ShellDeckColors::badge_bg())
-                        .flex_shrink_0()
-                        .child(count.to_string()),
-                )
-            })
     }
 
     /// One icon button in the activity rail. Shows the section label as a
@@ -1126,11 +1030,8 @@ impl EventEmitter<SidebarEvent> for SidebarView {}
 impl Render for SidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // VS Code layout: an always-on activity rail plus a panel that
-        // collapses independently (Cmd/Ctrl+B). `nav_collapsed` — the setting
-        // that used to hide the in-panel nav list, which the rail replaced —
-        // now hides the rail, so "masquer la navigation" still means the same
-        // thing to anyone who had it turned on.
-        let rail_visible = !self.nav_collapsed;
+        // collapses independently (Cmd/Ctrl+B). There is exactly one
+        // navigation surface — the rail — and no way to swap it for another.
         // An activity with no contextual list (Server Sync, and the
         // destinations reachable only from the menu) hides the panel entirely
         // so its main view gets the full width, rather than parking an empty
@@ -1139,15 +1040,12 @@ impl Render for SidebarView {
         let on_connections = self.active_section == SidebarSection::Connections;
 
         if !panel_visible {
-            let mut rail_only = div()
+            return div()
                 .flex()
                 .flex_shrink_0()
                 .h_full()
-                .id("sidebar-rail-only");
-            if rail_visible {
-                rail_only = rail_only.child(self.render_rail(cx));
-            }
-            return rail_only;
+                .id("sidebar-rail-only")
+                .child(self.render_rail(cx));
         }
 
         // Filter connections by search query and the active-site filter.
@@ -1173,12 +1071,6 @@ impl Render for SidebarView {
             }
         }
 
-        let connected_count = self
-            .connections
-            .iter()
-            .filter(|c| matches!(c.status, ConnectionStatus::Connected))
-            .count();
-
         // Panel header. With the rail on screen the brand mark already lives
         // there, so the header names the section the panel is showing (VS Code
         // style). With the rail hidden it falls back to the full brand lockup,
@@ -1190,15 +1082,14 @@ impl Render for SidebarView {
         // — and once the panel became contextual it appeared above every
         // activity, offering to "hide the navigation" from the middle of a
         // list of scripts.
-        let mut header_left = div()
+        let header_left = div()
             .flex()
             .flex_1()
             .min_w(px(0.0))
             .items_center()
             .gap(px(10.0))
-            .overflow_hidden();
-        if rail_visible {
-            header_left = header_left.child(
+            .overflow_hidden()
+            .child(
                 div()
                     .min_w(px(0.0))
                     .overflow_hidden()
@@ -1208,47 +1099,6 @@ impl Render for SidebarView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(self.active_section.label().to_uppercase()),
             );
-        } else {
-            header_left = header_left
-                .child(crate::brand::brand_badge(24.0))
-                .child(crate::brand::brand_wordmark(15.0));
-        }
-
-        let toggle_hint: SharedString = if rail_visible {
-            t!("sidebar.hide_nav").to_string().into()
-        } else {
-            t!("sidebar.show_nav").to_string().into()
-        };
-        let rail_toggle = div()
-            .id("sidebar-rail-toggle")
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(22.0))
-            .rounded(px(5.0))
-            .cursor_pointer()
-            .hover(|el| el.bg(ShellDeckColors::hover_bg()))
-            .tooltip(move |_, cx| {
-                cx.new(|_| SidebarTooltip {
-                    label: toggle_hint.clone(),
-                })
-                .into()
-            })
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.nav_collapsed = !this.nav_collapsed;
-                cx.emit(SidebarEvent::NavCollapsedChanged(this.nav_collapsed));
-                cx.notify();
-            }))
-            .child(lucide_icon(
-                if rail_visible {
-                    "chevron-left"
-                } else {
-                    "chevron-right"
-                },
-                12.0,
-                ShellDeckColors::text_muted(),
-            ));
 
         let logo = div()
             .flex()
@@ -1261,41 +1111,7 @@ impl Render for SidebarView {
             .py(px(10.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            .child(header_left)
-            .child(rail_toggle);
-
-        // Navigation tabs (pinned at top)
-        let mut nav = div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(2.0))
-            .px(px(4.0))
-            .py(px(8.0))
-            .child(self.render_nav_item(SidebarSection::Connections, Some(connected_count), cx))
-            .child(self.render_nav_item(
-                SidebarSection::Terminals,
-                if self.terminal_tab_count > 0 {
-                    Some(self.terminal_tab_count)
-                } else {
-                    None
-                },
-                cx,
-            ))
-            .child(self.render_nav_item(SidebarSection::Scripts, None, cx))
-            .child(self.render_nav_item(SidebarSection::PortForwards, None, cx))
-            .child(self.render_nav_item(SidebarSection::ServerSync, None, cx))
-            .child(self.render_nav_item(SidebarSection::Sites, None, cx))
-            .child(self.render_nav_item(SidebarSection::Recent, None, cx))
-            .child(self.render_nav_item(SidebarSection::FileEditor, None, cx));
-        if self.jean_available {
-            nav = nav.child(self.render_nav_item(SidebarSection::JeanConsole, None, cx));
-        }
-        if self.fleet_available {
-            nav = nav.child(self.render_nav_item(SidebarSection::Fleet, None, cx));
-        }
-        nav = nav.child(self.render_nav_item(SidebarSection::BextCloud, None, cx));
-        nav = nav.child(self.render_nav_item(SidebarSection::Settings, None, cx));
+            .child(header_left);
 
         // Scrollable host list (fills remaining space, wrapped in scrollable_vertical below).
         // No "HÔTES" header: the panel header already names the active
@@ -1393,7 +1209,7 @@ impl Render for SidebarView {
                 }),
             );
 
-        let mut root = div()
+        let root = div()
             .relative()
             .flex()
             .flex_col()
@@ -1409,12 +1225,6 @@ impl Render for SidebarView {
             .id("sidebar")
             .track_focus(&self.focus_handle)
             .child(logo);
-        // The rail *is* the navigation. Only fall back to the in-panel nav
-        // list when the user has hidden the rail, so the two never duplicate
-        // each other.
-        if !rail_visible {
-            root = root.child(nav);
-        }
         // The panel body follows the selected activity. Connections keeps its
         // bespoke list (groups, pins, per-row actions, site badges); every
         // other activity renders its `PanelItem` rows. Without this the panel
@@ -1445,11 +1255,13 @@ impl Render for SidebarView {
         }
         let panel = panel.child(resize_handle);
 
-        let mut shell = div().flex().flex_shrink_0().h_full().id("sidebar-shell");
-        if rail_visible {
-            shell = shell.child(self.render_rail(cx));
-        }
-        shell.child(panel)
+        div()
+            .flex()
+            .flex_shrink_0()
+            .h_full()
+            .id("sidebar-shell")
+            .child(self.render_rail(cx))
+            .child(panel)
     }
 }
 
@@ -1460,25 +1272,17 @@ mod tests {
 
     // ── sidebar_total_width ────────────────────────────────────────────
 
-    // SDTEST-1210 — the terminal grid is sized against this number. Each of
-    // the four rail/panel states must contribute exactly its own width; an
-    // error here silently mis-sizes every terminal (wrong cols, wrong
-    // wrapping) rather than showing up as a visible layout break.
+    // SDTEST-1210 — the terminal grid is sized against this number. An error
+    // here silently mis-sizes every terminal (wrong cols, wrong wrapping)
+    // rather than showing up as a visible layout break.
     #[test]
-    fn total_width_sums_rail_and_panel_independently() {
-        // Both visible — the default Dev layout.
-        assert_eq!(
-            sidebar_total_width(false, false, true, 260.0),
-            RAIL_WIDTH + 260.0
-        );
-        // Panel collapsed (Cmd+B): the rail stays, which is the whole point
-        // of the VS Code layout — a plain 0.0 here would put the terminal
-        // underneath the rail.
-        assert_eq!(sidebar_total_width(false, true, true, 260.0), RAIL_WIDTH);
-        // Rail hidden ("masquer la navigation"), panel still open.
-        assert_eq!(sidebar_total_width(true, false, true, 260.0), 260.0);
-        // Everything hidden.
-        assert_eq!(sidebar_total_width(true, true, true, 260.0), 0.0);
+    fn total_width_is_rail_plus_panel() {
+        // Default Dev layout.
+        assert_eq!(sidebar_total_width(false, true, 260.0), RAIL_WIDTH + 260.0);
+        // Panel collapsed (Cmd+B): the rail stays, which is the whole point of
+        // the VS Code layout — a plain 0.0 would put the terminal underneath
+        // the rail.
+        assert_eq!(sidebar_total_width(true, true, 260.0), RAIL_WIDTH);
     }
 
     // SDTEST-1211 — a collapsed panel must not leak its width back in, at
@@ -1486,8 +1290,7 @@ mod tests {
     #[test]
     fn collapsed_panel_width_is_ignored_at_any_size() {
         for width in [180.0, 260.0, 400.0] {
-            assert_eq!(sidebar_total_width(false, true, true, width), RAIL_WIDTH);
-            assert_eq!(sidebar_total_width(true, true, true, width), 0.0);
+            assert_eq!(sidebar_total_width(true, true, width), RAIL_WIDTH);
         }
     }
 
@@ -1497,10 +1300,26 @@ mod tests {
     // every grid would be sized short by the panel width.
     #[test]
     fn activity_without_a_panel_contributes_no_panel_width() {
-        assert_eq!(sidebar_total_width(false, false, false, 260.0), RAIL_WIDTH);
-        assert_eq!(sidebar_total_width(true, false, false, 260.0), 0.0);
-        // Still zero when also collapsed — the two reasons must not add up.
-        assert_eq!(sidebar_total_width(false, true, false, 260.0), RAIL_WIDTH);
+        assert_eq!(sidebar_total_width(false, false, 260.0), RAIL_WIDTH);
+        // Still just the rail when also collapsed — the two reasons to hide
+        // the panel must not compound into a negative or a double subtraction.
+        assert_eq!(sidebar_total_width(true, false, 260.0), RAIL_WIDTH);
+    }
+
+    // SDTEST-1216 — the rail is unconditional: there is no state in which the
+    // Dev sidebar renders without a navigation surface. The hide/show-nav
+    // toggle was retired in v0.6.3 because hiding the rail swapped in a second
+    // navigation UI that had already drifted out of sync with it.
+    #[test]
+    fn total_width_always_reserves_the_rail() {
+        for panel_collapsed in [true, false] {
+            for has_panel in [true, false] {
+                assert!(
+                    sidebar_total_width(panel_collapsed, has_panel, 260.0) >= RAIL_WIDTH,
+                    "rail must always be reserved (collapsed={panel_collapsed}, has_panel={has_panel})"
+                );
+            }
+        }
     }
 
     // SDTEST-1214 — the rail lists activities that have a panel behind them,

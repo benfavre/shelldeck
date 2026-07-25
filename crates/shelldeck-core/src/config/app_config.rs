@@ -190,9 +190,11 @@ pub struct GeneralConfig {
     pub show_notifications: bool,
     pub confirm_before_close: bool,
     pub sidebar_width: f32,
-    /// Whether the sidebar's top navigation section (Connections / Terminals
-    /// / Scripts / … / Settings) is collapsed. Persisted so the layout the
-    /// user picks sticks across sessions.
+    /// Retired in v0.6.3. Used to hide the sidebar's in-panel navigation
+    /// list, which the always-on activity rail replaced; there is no longer a
+    /// state in which the Dev sidebar has no navigation surface. Kept as a
+    /// parsed-and-ignored field so a `shelldeck.toml` written by an older
+    /// build still loads.
     #[serde(default)]
     pub sidebar_nav_collapsed: bool,
     /// Whether the application menu row (Fichier / Édition / …) is shown

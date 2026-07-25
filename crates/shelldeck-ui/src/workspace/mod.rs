@@ -618,7 +618,6 @@ impl Workspace {
             .active_site_id
             .as_deref()
             .and_then(|s| Uuid::parse_str(s).ok());
-        let initial_nav_collapsed = config.general.sidebar_nav_collapsed;
         let initial_pinned_connections = config.pinned_connections.clone();
         let initial_dashboard_pins = initial_pinned_connections.clone();
         let sidebar = cx.new(|cx| {
@@ -626,7 +625,6 @@ impl Workspace {
             s.set_connections(connections.clone());
             s.set_pinned_connections(initial_pinned_connections);
             s.set_site_filter(initial_site_filter);
-            s.set_nav_collapsed(initial_nav_collapsed);
             s
         });
 
@@ -718,14 +716,7 @@ impl Workspace {
                 t.set_scrollback_lines(scrollback);
                 // Panel + activity rail: the rail is on unless the persisted
                 // "navigation collapsed" preference hides it.
-                t.set_sidebar_width(
-                    initial_sidebar_width
-                        + if config.general.sidebar_nav_collapsed {
-                            0.0
-                        } else {
-                            crate::sidebar::RAIL_WIDTH
-                        },
-                );
+                t.set_sidebar_width(initial_sidebar_width + crate::sidebar::RAIL_WIDTH);
             });
         }
 
@@ -1477,20 +1468,6 @@ impl Workspace {
             }
             SidebarEvent::PanelItemSelected { section, id } => {
                 self.handle_panel_item_selected(*section, *id, cx);
-            }
-            SidebarEvent::NavCollapsedChanged(collapsed) => {
-                let collapsed = *collapsed;
-                self.app_config.general.sidebar_nav_collapsed = collapsed;
-                self.settings.update(cx, |settings, cx| {
-                    settings.set_sidebar_nav_collapsed(collapsed, cx);
-                });
-                // Showing / hiding the rail changes the sidebar's total width,
-                // so the terminal grid has to be re-offset.
-                let total = self.sidebar.read(cx).total_width();
-                self.terminal.update(cx, |terminal, _cx| {
-                    terminal.set_sidebar_width(total);
-                });
-                cx.notify();
             }
         }
     }
@@ -5622,7 +5599,6 @@ impl Workspace {
                 .as_ref()
                 .is_some_and(|a| a.is_superadmin),
             sidebar_visible: self.sidebar_visible,
-            activity_bar_visible: !self.app_config.general.sidebar_nav_collapsed,
             menu_bar_visible: self.app_config.general.menu_bar_visible,
             has_jean: self.has_jean(),
             has_fleet: self.app_config.jean_runtime.enabled || self.fleet_snapshot.is_some(),
@@ -5733,7 +5709,6 @@ impl Workspace {
             }
 
             Cmd::ToggleSidebar => self.toggle_sidebar(cx),
-            Cmd::ToggleActivityBar => self.toggle_activity_bar(cx),
             Cmd::ToggleMenuBar => self.toggle_menu_bar(cx),
             Cmd::UiZoomIn => self
                 .settings
@@ -5772,25 +5747,6 @@ impl Workspace {
             }
             Cmd::About => self.open_settings(cx),
         }
-        cx.notify();
-    }
-
-    /// Show / hide the Dev sidebar's activity rail. Mirrors the chevron in the
-    /// panel header, and is the labelled way back once the rail is hidden.
-    pub fn toggle_activity_bar(&mut self, cx: &mut Context<Self>) {
-        let collapsed = !self.app_config.general.sidebar_nav_collapsed;
-        self.app_config.general.sidebar_nav_collapsed = collapsed;
-        self.settings.update(cx, |settings, cx| {
-            settings.set_sidebar_nav_collapsed(collapsed, cx);
-        });
-        // Hiding the rail changes the sidebar total, so re-offset the grid.
-        let total = self.sidebar.update(cx, |sidebar, _| {
-            sidebar.set_nav_collapsed(collapsed);
-            sidebar.total_width()
-        });
-        self.terminal.update(cx, |terminal, _| {
-            terminal.set_sidebar_width(total);
-        });
         cx.notify();
     }
 

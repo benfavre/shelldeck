@@ -46,7 +46,6 @@ pub enum MenuCommand {
     CommandPalette,
     // — Affichage —
     ToggleSidebar,
-    ToggleActivityBar,
     ToggleMenuBar,
     UiZoomIn,
     UiZoomOut,
@@ -151,9 +150,6 @@ pub struct MenuBarContext {
     /// menus even while the user is temporarily in User mode.
     pub dev_capable: bool,
     pub sidebar_visible: bool,
-    /// Whether the Dev sidebar's activity rail is on screen. Mirrors
-    /// `general.sidebar_nav_collapsed` inverted.
-    pub activity_bar_visible: bool,
     pub menu_bar_visible: bool,
     pub has_jean: bool,
     pub has_fleet: bool,
@@ -322,16 +318,6 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             )
             .shortcut("secondary-b")
             .checked(ctx.sidebar_visible),
-        );
-        // The rail's own affordance is a chevron in the panel header; this is
-        // the discoverable, labelled way to get it back once hidden.
-        view.push(
-            MenuEntry::command(
-                "view-activity-bar",
-                t!("menu.view.activity_bar").to_string(),
-                MenuCommand::ToggleActivityBar,
-            )
-            .checked(ctx.activity_bar_visible),
         );
     }
     view.push(
@@ -630,7 +616,6 @@ mod tests {
             mode,
             dev_capable: mode == AppMode::Dev,
             sidebar_visible: true,
-            activity_bar_visible: true,
             menu_bar_visible: true,
             has_jean: false,
             has_fleet: false,
@@ -754,23 +739,6 @@ mod tests {
 
         assert_eq!(checked_of(MenuCommand::ToggleSidebar), Some(Some(false)));
         assert_eq!(checked_of(MenuCommand::ToggleMenuBar), Some(Some(true)));
-
-        // The activity rail's only in-sidebar affordance is a chevron in the
-        // panel header, so this entry is the labelled way back once the rail
-        // is hidden. Its tick must track the rail, independently of the panel.
-        assert_eq!(checked_of(MenuCommand::ToggleActivityBar), Some(Some(true)));
-
-        let mut hidden = c;
-        hidden.activity_bar_visible = false;
-        let menus = menu_bar_spec(hidden);
-        let view = menus.iter().find(|m| m.id == "menu-view").unwrap();
-        let ticked = view.entries.iter().find_map(|e| match e {
-            MenuEntry::Command {
-                command, checked, ..
-            } if *command == MenuCommand::ToggleActivityBar => Some(*checked),
-            _ => None,
-        });
-        assert_eq!(ticked, Some(Some(false)));
     }
 
     // SDTEST-1204 — entry ids are used as GPUI ElementIds; a duplicate makes

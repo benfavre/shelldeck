@@ -1721,17 +1721,14 @@ that activity's own open/focus action. An activity with no rows shows a
 localized empty state; an activity with no panel at all hides the panel so its
 main view takes the full width.
 
-The panel collapses independently of the rail via the sidebar toggle. Hiding
-the navigation hides the rail and restores the in-panel navigation list, so the
-two never render at once and navigation is always reachable. The terminal grid
-is offset by whatever is actually on screen, in every combination of rail,
-panel collapse, and panel-less activity.
+The rail is unconditional: no state renders the Dev sidebar without a
+navigation surface, and there is no setting to hide it. The panel collapses
+independently via the sidebar toggle, leaving the rail. The terminal grid is
+offset by whatever is actually on screen, for both panel collapse and
+panel-less activities.
 
-Controls that act on the whole sidebar live in the panel header and in the View
-menu, not inside the list: the rail toggle is a chevron in the header plus an
-Activity Bar entry whose tick tracks the rail independently of the panel. The
-header names the active activity, so the list below it does not repeat that
-name as its own section header.
+The panel header names the active activity, so the list below it does not
+repeat that name as its own section header.
 
 ---
 

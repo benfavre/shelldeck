@@ -453,16 +453,6 @@ impl SettingsView {
         self.shortcut_capture = None;
     }
 
-    /// Update the persisted "sidebar top-nav collapsed" state. Called by the
-    /// workspace when the user clicks the sidebar's collapse chevron.
-    pub fn set_sidebar_nav_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
-        if self.config.general.sidebar_nav_collapsed == collapsed {
-            return;
-        }
-        self.config.general.sidebar_nav_collapsed = collapsed;
-        self.save_config(cx);
-    }
-
     /// Update the persisted "application menu row visible" state. Called by
     /// the workspace from Affichage → Barre de menus.
     pub fn set_menu_bar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {

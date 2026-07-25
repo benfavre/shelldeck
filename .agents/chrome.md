@@ -105,23 +105,34 @@ does not (Server Sync today) hides the panel entirely so its main view gets the
 full width — and `total_width()` must account for that, which is why
 `sidebar_total_width` takes `section_has_panel`.
 
-- **`nav_collapsed` hides the rail** and restores the in-panel navigation list.
-  The two never render together — the rail *is* the navigation. Toggled from a
-  chevron in the **panel header** and from **Affichage → Barre d'activités**
-  (`Workspace::toggle_activity_bar`).
+- **The rail is unconditional.** There is no state in which the Dev sidebar
+  renders without a navigation surface, and no setting to hide it.
+
+  **Retired in v0.6.3: the hide/show-navigation toggle.** It predated the rail,
+  when it collapsed a 12-row nav list inside the panel. Once the rail became
+  the navigation, "hiding" it swapped in that old list instead — two different
+  navigation UIs behind one toggle, which had already drifted: the fallback
+  still listed JeanClaude, Fleet, bext Cloud and Settings after the rail
+  dropped them. It also bought only 48px, where collapsing the panel frees 5×
+  more. `general.sidebar_nav_collapsed` survives as a parsed-and-ignored field
+  so older `shelldeck.toml` files still load.
+
+  The lesson generalizes: **a toggle that swaps one UI for a different UI is a
+  fork, not a preference.** If two surfaces do the same job, the app should
+  have one of them — see `.agents/ui-components.md` § Harmonization.
 
   **Sidebar chrome controls belong in the panel header, not in the list.** The
-  rail toggle first shipped as a full-width bordered strip sitting directly
-  above the hosts list. Bordered top and bottom and glued to the `HÔTES`
-  header, it read as that section's own collapse control rather than as
-  sidebar chrome — and once the panel became contextual it appeared above every
-  activity, offering to "hide the navigation" from the middle of a list of
-  scripts. A control that acts on the whole sidebar goes in the header (or the
-  View menu); a control that acts on a list goes in that list.
+  rail toggle also shipped, briefly, as a full-width bordered strip above the
+  hosts list. Bordered top and bottom and glued to the `HÔTES` header, it read
+  as that section's collapse control rather than as sidebar chrome — and once
+  the panel became contextual it appeared above every activity. A control that
+  acts on the whole sidebar goes in the header or the View menu; a control that
+  acts on a list goes in that list.
 
   The panel header names the active activity, so list-level headers must not
   repeat it: `HÔTES` under `CONNEXIONS` labelled the same list twice, and the
   `sidebar.hosts` key was retired with it.
+
 - **`collapsed` hides the panel**, leaving the rail. This is what
   `ToggleSidebar` / `Workspace::toggle_sidebar` drives.
 - **`SidebarView::total_width()` is the number the terminal needs** — rail plus
