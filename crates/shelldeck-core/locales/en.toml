@@ -1575,3 +1575,9 @@ sidebar.empty.sites = "No sites available"
 sidebar.empty.recent = "No recent activity"
 sidebar.empty.editor = "No open files"
 sidebar.empty.generic = "Nothing to show"
+
+# Global shortcut registration failures (surfaced as a toast, not only in Settings).
+shortcut.name.ai_dock = "AI Assistant"
+shortcut.name.command_palette = "Command Palette"
+shortcut.failure.conflict = "this shortcut is already used by another ShellDeck shortcut"
+shortcut.failure.toast = "Global shortcut “%{shortcut}” unavailable: %{reason}. It will only work while ShellDeck is focused."

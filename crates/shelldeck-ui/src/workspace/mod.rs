@@ -75,7 +75,9 @@ use crate::recent_view::{RecentEvent, RecentView};
 use crate::script_editor::{ScriptEditorView, ScriptEvent};
 use crate::script_form::ScriptForm;
 use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
-use crate::settings::{CompanionShortcutStatuses, SettingsEvent, SettingsView};
+use crate::settings::{
+    CompanionShortcutStatuses, SettingsEvent, SettingsView, ShortcutRegistrationStatus,
+};
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
@@ -315,6 +317,10 @@ pub struct Workspace {
     /// screen); its contents are rebuilt from `menu_bar_spec` whenever the
     /// state it reads changes. See `crate::menu_bar`.
     menu_bar: Entity<AdabrakaMenuBar>,
+    /// Last published global-shortcut registration statuses. Kept here so a
+    /// transition into a failed state can be announced once, rather than the
+    /// failure living only in the Settings pane.
+    companion_shortcut_statuses: CompanionShortcutStatuses,
     sidebar_visible: bool,
     sidebar_width: f32,
     /// Application UI font family ("System Default" means no override).
@@ -975,6 +981,7 @@ impl Workspace {
             active_view: ActiveView::Dashboard,
             settings_open: false,
             menu_bar,
+            companion_shortcut_statuses: CompanionShortcutStatuses::default(),
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,
             ui_font_family,
@@ -1115,6 +1122,17 @@ impl Workspace {
         statuses: CompanionShortcutStatuses,
         cx: &mut Context<Self>,
     ) {
+        // A refused grab used to be indistinguishable from a working one: the
+        // status landed in the Settings pane and nowhere else, so a global
+        // shortcut that silently never registered just looked like a shortcut
+        // that "rarely works". Announce the transition into a failed state
+        // once, where the user actually is.
+        for (kind, message) in shortcut_failure_toasts(&self.companion_shortcut_statuses, &statuses)
+        {
+            let _ = kind;
+            self.show_toast(message, ToastLevel::Warning, cx);
+        }
+        self.companion_shortcut_statuses = statuses.clone();
         self.settings.update(cx, |settings, cx| {
             settings.set_companion_shortcut_statuses(statuses, cx);
         });
@@ -9504,6 +9522,75 @@ fn parse_brand_hex(hex: &Option<String>) -> Option<Hsla> {
     )))
 }
 
+/// Which companion shortcut a failure toast is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutToastKind {
+    AiDock,
+    CommandPalette,
+}
+
+/// Whether a registration status means the shortcut will **not** fire while
+/// ShellDeck is unfocused.
+///
+/// `Applying` and `PendingPortal` are in-flight, not failures — the Wayland
+/// portal answers asynchronously, and toasting mid-flight would fire on every
+/// launch. `Disabled` is the user's own choice.
+fn shortcut_status_is_failure(status: &ShortcutRegistrationStatus) -> bool {
+    matches!(
+        status,
+        ShortcutRegistrationStatus::Conflict | ShortcutRegistrationStatus::Error(_)
+    )
+}
+
+/// Failure toasts to show for a status transition.
+///
+/// Only *entering* a failed state produces a toast, so a status republished
+/// unchanged (the companion config channel re-syncs on every settings save)
+/// does not re-toast. Pure so the transition logic is testable without GPUI.
+fn shortcut_failure_toasts(
+    previous: &CompanionShortcutStatuses,
+    next: &CompanionShortcutStatuses,
+) -> Vec<(ShortcutToastKind, String)> {
+    let mut toasts = Vec::new();
+    let mut check = |kind: ShortcutToastKind,
+                     before: &ShortcutRegistrationStatus,
+                     after: &ShortcutRegistrationStatus,
+                     label: &str| {
+        if !shortcut_status_is_failure(after) || before == after {
+            return;
+        }
+        let reason = match after {
+            ShortcutRegistrationStatus::Conflict => {
+                t!("shortcut.failure.conflict").to_string()
+            }
+            ShortcutRegistrationStatus::Error(error) => error.clone(),
+            _ => return,
+        };
+        toasts.push((
+            kind,
+            t!(
+                "shortcut.failure.toast",
+                shortcut = label.to_string(),
+                reason = reason
+            )
+            .to_string(),
+        ));
+    };
+    check(
+        ShortcutToastKind::AiDock,
+        &previous.ai_dock,
+        &next.ai_dock,
+        &t!("shortcut.name.ai_dock"),
+    );
+    check(
+        ShortcutToastKind::CommandPalette,
+        &previous.command_palette,
+        &next.command_palette,
+        &t!("shortcut.name.command_palette"),
+    );
+    toasts
+}
+
 /// Deterministic stand-in id for a Manage site whose `site_id` is not a UUID.
 ///
 /// Sidebar rows need a stable id for their `ElementId` and for selection
@@ -14530,5 +14617,105 @@ impl Render for Workspace {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind};
+    use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
+
+    fn statuses(
+        ai_dock: ShortcutRegistrationStatus,
+        command_palette: ShortcutRegistrationStatus,
+    ) -> CompanionShortcutStatuses {
+        CompanionShortcutStatuses {
+            ai_dock,
+            command_palette,
+        }
+    }
+
+    // SDTEST-1220 — only a genuinely failed registration counts. `Applying`
+    // and `PendingPortal` are in-flight: the Wayland GlobalShortcuts portal
+    // answers asynchronously, so treating either as a failure would toast on
+    // every single launch before the compositor has replied. `Disabled` is the
+    // user's own choice and never a failure.
+    #[test]
+    fn only_conflict_and_error_count_as_failures() {
+        assert!(shortcut_status_is_failure(
+            &ShortcutRegistrationStatus::Conflict
+        ));
+        assert!(shortcut_status_is_failure(&ShortcutRegistrationStatus::Error(
+            "BadAccess".into()
+        )));
+
+        for in_flight in [
+            ShortcutRegistrationStatus::Disabled,
+            ShortcutRegistrationStatus::Applying,
+            ShortcutRegistrationStatus::Registered,
+            ShortcutRegistrationStatus::PendingPortal,
+        ] {
+            assert!(
+                !shortcut_status_is_failure(&in_flight),
+                "{in_flight:?} must not toast"
+            );
+        }
+    }
+
+    // SDTEST-1221 — the companion config channel republishes statuses on every
+    // settings save, so an unchanged failure must stay silent. Only the
+    // transition *into* a failure is announced, or a user with a permanently
+    // conflicting shortcut gets a toast every time they touch Settings.
+    #[test]
+    fn only_the_transition_into_failure_toasts() {
+        let ok = statuses(
+            ShortcutRegistrationStatus::Registered,
+            ShortcutRegistrationStatus::Registered,
+        );
+        let failed = statuses(
+            ShortcutRegistrationStatus::Error("BadAccess".into()),
+            ShortcutRegistrationStatus::Registered,
+        );
+
+        // Entering the failure announces it once.
+        let toasts = shortcut_failure_toasts(&ok, &failed);
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].0, ShortcutToastKind::AiDock);
+        // The platform's own reason must reach the user, not be swallowed.
+        assert!(toasts[0].1.contains("BadAccess"));
+
+        // Republishing the same failure is silent.
+        assert!(shortcut_failure_toasts(&failed, &failed).is_empty());
+        // Recovering is silent too — nothing to warn about.
+        assert!(shortcut_failure_toasts(&failed, &ok).is_empty());
+    }
+
+    // SDTEST-1222 — the two shortcuts are independent; one failing must not
+    // mask or duplicate the other, and both failing at once reports both.
+    #[test]
+    fn each_shortcut_reports_independently() {
+        let ok = statuses(
+            ShortcutRegistrationStatus::Registered,
+            ShortcutRegistrationStatus::Registered,
+        );
+        let both = statuses(
+            ShortcutRegistrationStatus::Error("BadAccess".into()),
+            ShortcutRegistrationStatus::Conflict,
+        );
+
+        let toasts = shortcut_failure_toasts(&ok, &both);
+        assert_eq!(toasts.len(), 2);
+        let kinds: Vec<_> = toasts.iter().map(|(kind, _)| *kind).collect();
+        assert!(kinds.contains(&ShortcutToastKind::AiDock));
+        assert!(kinds.contains(&ShortcutToastKind::CommandPalette));
+
+        // Palette-only failure does not mention the dock.
+        let palette_only = statuses(
+            ShortcutRegistrationStatus::Registered,
+            ShortcutRegistrationStatus::Conflict,
+        );
+        let toasts = shortcut_failure_toasts(&ok, &palette_only);
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].0, ShortcutToastKind::CommandPalette);
     }
 }
