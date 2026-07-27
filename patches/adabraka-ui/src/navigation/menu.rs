@@ -215,6 +215,10 @@ fn render_menu_item(item: MenuItem) -> impl IntoElement {
                         handler(window, cx);
                     })
                 })
+                // ShellDeck patch: SDPATCH-026 — use one leading gutter for
+                // either a checkmark or an icon. The upstream layout always
+                // inserted an empty check gutter before a separate icon,
+                // wasting 28px at the left of every ordinary menu command.
                 .child(
                     div()
                         .w(px(16.0))
@@ -228,15 +232,15 @@ fn render_menu_item(item: MenuItem) -> impl IntoElement {
                                     .size(px(12.0))
                                     .color(theme.tokens.foreground),
                             )
+                        })
+                        .when_some(item.icon.filter(|_| !is_checked), |div, icon| {
+                            div.child(Icon::new(icon).size(px(16.0)).color(if item.disabled {
+                                theme.tokens.muted_foreground
+                            } else {
+                                theme.tokens.foreground
+                            }))
                         }),
                 )
-                .when_some(item.icon, |div, icon| {
-                    div.child(Icon::new(icon).size(px(16.0)).color(if item.disabled {
-                        theme.tokens.muted_foreground
-                    } else {
-                        theme.tokens.foreground
-                    }))
-                })
                 .child(
                     div()
                         .flex_1()
@@ -394,17 +398,18 @@ impl Render for MenuBar {
                 let label = item.label.clone();
                 let entity = cx.entity();
 
+                // ShellDeck patch: SDPATCH-026 — keep a full-row anchor and
+                // hit target, but paint the rounded hover fill in a child
+                // inset by 2px vertically. Padding a ~20px label by 6px had
+                // made the trigger ~32px tall inside a 28px ShellDeck row, so
+                // its rounded background escaped above and below the bar.
                 div()
                     .id(SharedString::from(format!("menubar-trigger-{}", item.id)))
                     .relative()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(theme.tokens.radius_sm)
+                    .h(row_height)
+                    .flex()
+                    .items_center()
                     .cursor(CursorStyle::PointingHand)
-                    .when(is_active, |div| div.bg(theme.tokens.accent))
-                    .when(!is_active, |div| {
-                        div.hover(|style| style.bg(theme.tokens.muted))
-                    })
                     // ShellDeck patch: SDPATCH-025 — record where this trigger
                     // actually painted so the dropdown can anchor to its bottom
                     // edge instead of guessing an offset.
@@ -441,7 +446,19 @@ impl Render for MenuBar {
                             }
                         }))
                     })
-                    .child(body(label).color(theme.tokens.foreground))
+                    .child(
+                        div()
+                            .h(row_height - px(4.0))
+                            .flex()
+                            .items_center()
+                            .px(px(12.0))
+                            .rounded(theme.tokens.radius_sm)
+                            .when(is_active, |div| div.bg(theme.tokens.accent))
+                            .when(!is_active, |div| {
+                                div.hover(|style| style.bg(theme.tokens.muted))
+                            })
+                            .child(body(label).color(theme.tokens.foreground)),
+                    )
             }));
 
         // ShellDeck patch: SDPATCH-025 — render the dropdown the upstream

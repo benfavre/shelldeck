@@ -495,6 +495,23 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — this is a missing-feature fix in a
   component upstream evidently never wired up; good upstream candidate.
 
+### SDPATCH-026 — Menu chrome stays inside its row and uses one leading gutter
+
+- **Files / symbols**:
+  - `src/navigation/menu.rs` — `render_menu_item`, `Render for MenuBar`
+- **Markers**:
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-026 — use one leading gutter for`
+  - `src/navigation/menu.rs` — `// ShellDeck patch: SDPATCH-026 — keep a full-row anchor and`
+- **Why**: the compact ShellDeck menu row is 28px high, but the trigger added
+  12px of vertical padding around an approximately 20px label. Its rounded
+  hover fill therefore escaped the row at both edges. The trigger now keeps a
+  full-height anchor while painting its fill in a vertically inset child.
+  Dropdown rows also reuse one 16px leading slot for either their checkmark or
+  their icon; rendering an empty check slot before a second icon slot created
+  28px of unexplained whitespace in every ordinary command.
+- **Upstream status**: not filed yet — generic menu geometry fix suitable for
+  upstreaming.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
