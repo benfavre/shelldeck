@@ -11631,7 +11631,7 @@ impl Workspace {
                     // The dark artwork itself stays safely inset below.
                     .bg(ShellDeckColors::bg_primary())
                     .child(
-                        img("images/home/user-dashboard-colorful-watermark-v1.webp")
+                        img("images/home/user-dashboard-colorful-watermark-v2.webp")
                             .absolute()
                             .inset_0()
                             .size_full()
