@@ -7,7 +7,10 @@
 
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
-use crate::issue_attachments::{capture_region, draft_from_clipboard_image, AttachmentDraft};
+use crate::issue_attachments::{
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+};
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -299,6 +302,8 @@ pub struct SupportView {
     /// Full editor state backing ticket replies and request comments.
     composer_state: Entity<EditorState>,
     attachment_url_state: Entity<InputState>,
+    /// Reveals the optional URL importer only when explicitly requested.
+    attachment_url_open: bool,
     attachment_drafts: Vec<AttachmentDraft>,
     attachment_panel_open: bool,
     attachment_busy: bool,
@@ -360,6 +365,8 @@ pub struct SupportView {
     issue_popover_menu: Option<(String, Point<Pixels>)>,
     /// Request id pending a confirmed soft-delete (drives the confirm modal).
     confirm_issue_delete: Option<String>,
+    /// Native full-screen preview for images attached to the open request.
+    attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     issues_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     /// Scroll handle for the messages pane. `set_detail` calls
@@ -401,6 +408,7 @@ impl SupportView {
                 state
             }),
             attachment_url_state: cx.new(InputState::new),
+            attachment_url_open: false,
             attachment_drafts: Vec::new(),
             attachment_panel_open: false,
             attachment_busy: false,
@@ -436,6 +444,7 @@ impl SupportView {
             issue_priority_menu_open: false,
             issue_popover_menu: None,
             confirm_issue_delete: None,
+            attachment_lightbox: None,
             issues_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             messages_scroll: ScrollHandle::new(),
@@ -755,6 +764,7 @@ impl SupportView {
         self.attachment_busy = false;
         self.attachment_drafts.clear();
         self.attachment_panel_open = false;
+        self.attachment_url_open = false;
         self.selected_id = None;
         self.detail = None;
         self.issue_selected = None;
@@ -777,6 +787,7 @@ impl SupportView {
             self.attachment_busy = false;
             self.attachment_drafts.clear();
             self.attachment_panel_open = false;
+            self.attachment_url_open = false;
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
@@ -925,6 +936,7 @@ impl SupportView {
         self.attachment_busy = false;
         self.attachment_drafts.clear();
         self.attachment_panel_open = false;
+        self.attachment_url_open = false;
         self.attachment_url_state
             .update(cx, |state, cx| state.reset(cx));
     }
@@ -1097,6 +1109,7 @@ impl SupportView {
             Ok(draft) => {
                 self.attachment_url_state
                     .update(cx, |state, cx| state.reset(cx));
+                self.attachment_url_open = false;
                 self.add_attachment_draft(draft, cx);
             }
             Err(error) => self.error = Some(error),
@@ -3096,50 +3109,21 @@ impl SupportView {
     }
 
     fn render_attachment_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut previews = div().flex().flex_wrap().gap(px(6.0));
-        for (index, draft) in self.attachment_drafts.iter().enumerate() {
-            previews = previews.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "support-attachment-draft-{index}"
-                    ))))
-                    .relative()
-                    .w(px(64.0))
-                    .h(px(64.0))
-                    .rounded(px(7.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .child(
-                        img(draft.image.clone())
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    )
-                    .child(
-                        div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "support-attachment-remove-{index}"
-                            ))))
-                            .absolute()
-                            .top(px(3.0))
-                            .right(px(3.0))
-                            .size(px(19.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(ShellDeckColors::backdrop())
-                            .cursor_pointer()
-                            .child(lucide_icon("x", 11.0, white()))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                if index < this.attachment_drafts.len() {
-                                    this.attachment_drafts.remove(index);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
-        }
+        let entity = cx.entity().downgrade();
+        let previews = render_attachment_draft_gallery(
+            &self.attachment_drafts,
+            "support-attachment-draft",
+            move |index, cx| {
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        if index < this.attachment_drafts.len() {
+                            this.attachment_drafts.remove(index);
+                        }
+                        cx.notify();
+                    });
+                }
+            },
+        );
 
         let url_input = Input::new(&self.attachment_url_state)
             .size(InputSize::Sm)
@@ -3153,10 +3137,9 @@ impl SupportView {
             .id("support-attachment-picker")
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .p(px(8.0))
-            .rounded(px(7.0))
-            .border_1()
+            .gap(px(8.0))
+            .pt(px(9.0))
+            .border_t_1()
             .border_color(ShellDeckColors::border())
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let mods = event.keystroke.modifiers;
@@ -3178,11 +3161,47 @@ impl SupportView {
                 let generation = this.attachment_generation;
                 this.import_attachment_paths(paths.paths().to_vec(), generation, cx);
             }))
-            .when(!self.attachment_drafts.is_empty(), |el| el.child(previews))
             .child(
                 div()
                     .flex()
                     .items_center()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.requests.attachments.title").to_string()),
+                            )
+                            .child(
+                                Badge::new(format!(
+                                    "{}/{}",
+                                    self.attachment_drafts.len(),
+                                    ISSUE_ATTACHMENT_MAX_COUNT
+                                ))
+                                .variant(BadgeVariant::Secondary),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("user.requests.attachments.drop_hint").to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
                     .gap(px(5.0))
                     .child(
                         Button::new(
@@ -3225,7 +3244,27 @@ impl SupportView {
                         .on_click(cx.listener(|this, _, _, cx| this.capture_attachment(cx))),
                     ),
             )
-            .child(
+            .when(!self.attachment_drafts.is_empty(), |el| {
+                el.child(previews)
+            })
+            .when(!self.attachment_url_open, |el| {
+                el.child(
+                    Button::new(
+                        "support-attachment-url-toggle",
+                        t!("user.requests.attachments.url_toggle").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Ghost)
+                    .icon(IconSource::from("globe"))
+                    .disabled(self.attachment_busy)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.attachment_url_open = true;
+                        cx.notify();
+                    })),
+                )
+            })
+            .when(self.attachment_url_open, |el| {
+                el.child(
                 div()
                     .flex()
                     .items_center()
@@ -3241,8 +3280,21 @@ impl SupportView {
                         .icon(IconSource::from("globe"))
                         .disabled(self.attachment_busy)
                         .on_click(cx.listener(|this, _, _, cx| this.import_attachment_url(cx))),
+                    )
+                    .child(
+                        IconButton::new("x")
+                            .variant(ButtonVariant::Ghost)
+                            .size(gpui::px(32.0))
+                            .icon_size(gpui::px(13.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.attachment_url_open = false;
+                                this.attachment_url_state
+                                    .update(cx, |state, cx| state.reset(cx));
+                                cx.notify();
+                            })),
                     ),
-            )
+                )
+            })
     }
 
     fn render_attachment_toggle(
@@ -4101,39 +4153,38 @@ impl SupportView {
         attachments: &[IssueAttachment],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = div().flex().flex_wrap().gap(px(6.0)).pt(px(4.0));
-        for attachment in attachments {
-            let url = if attachment.viewer_url.is_empty() {
-                attachment.url.clone()
-            } else {
-                attachment.viewer_url.clone()
-            };
-            row = row.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "support-attachment-{}",
-                        attachment.id
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .max_w(px(220.0))
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::primary())
-                    .cursor_pointer()
-                    .child(lucide_icon("globe", 12.0, ShellDeckColors::primary()))
-                    .child(div().truncate().child(attachment.filename.clone()))
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, _| {
-                        let _ = shelldeck_core::config::cloud_account::open_in_browser(&url);
-                    })),
-            );
-        }
-        row.into_any_element()
+        let entity = cx.entity().downgrade();
+        let lightbox_attachments = attachments.to_vec();
+        render_stored_attachment_gallery(
+            attachments,
+            "support-attachment",
+            move |index, cx| {
+                let Some(entity) = entity.upgrade() else {
+                    return;
+                };
+                let close_entity = entity.downgrade();
+                let attachments = lightbox_attachments.clone();
+                let lightbox = cx.new(|cx| {
+                    AttachmentLightbox::new(
+                        attachments,
+                        index,
+                        move |cx| {
+                            if let Some(entity) = close_entity.upgrade() {
+                                entity.update(cx, |this, cx| {
+                                    this.attachment_lightbox = None;
+                                    cx.notify();
+                                });
+                            }
+                        },
+                        cx,
+                    )
+                });
+                entity.update(cx, |this, cx| {
+                    this.attachment_lightbox = Some(lightbox);
+                    cx.notify();
+                });
+            },
+        )
     }
 
     fn close_issue_popover_menu(&mut self, cx: &mut Context<Self>) {
@@ -5515,6 +5566,10 @@ impl Render for SupportView {
             if let Some(id) = self.confirm_issue_delete.clone() {
                 root = root.child(self.render_delete_issue_modal(id, cx));
             }
+        }
+
+        if let Some(lightbox) = &self.attachment_lightbox {
+            root = root.child(lightbox.clone());
         }
 
         if let Some(err) = &self.error {

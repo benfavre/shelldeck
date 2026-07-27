@@ -65,7 +65,10 @@ use crate::connection_form::{ConnectionForm, ConnectionFormEvent};
 use crate::dashboard::{DashboardEvent, DashboardView};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
-use crate::issue_attachments::{capture_region, draft_from_clipboard_image, AttachmentDraft};
+use crate::issue_attachments::{
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+};
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
@@ -439,6 +442,8 @@ pub struct Workspace {
     /// Request id pending a confirmed soft-delete from the User-mode detail
     /// sheet (drives a confirm modal — owner-or-staff may delete).
     confirm_issue_delete: Option<String>,
+    /// Native full-screen preview for images attached to the open request.
+    issue_attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     _issues_poll: Option<gpui::Task<()>>,
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
@@ -454,6 +459,8 @@ pub struct Workspace {
     issue_new_site_id: Option<String>,
     issue_comment_state: Entity<InputState>,
     issue_attachment_url_state: Entity<InputState>,
+    /// Reveals the optional URL importer only when explicitly requested.
+    issue_attachment_url_open: bool,
     issue_new_attachments: Vec<AttachmentDraft>,
     issue_comment_attachments: Vec<AttachmentDraft>,
     issue_attachment_busy: bool,
@@ -1052,6 +1059,7 @@ impl Workspace {
             issue_detail: None,
             issue_selected: None,
             confirm_issue_delete: None,
+            issue_attachment_lightbox: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
@@ -1062,6 +1070,7 @@ impl Workspace {
             issue_new_site_id: None,
             issue_comment_state: cx.new(InputState::new),
             issue_attachment_url_state: cx.new(InputState::new),
+            issue_attachment_url_open: false,
             issue_new_attachments: Vec::new(),
             issue_comment_attachments: Vec::new(),
             issue_attachment_busy: false,
@@ -7384,6 +7393,7 @@ impl Workspace {
                     Ok(draft) => {
                         ws.add_attachment_draft(target, draft, cx);
                         Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                        ws.issue_attachment_url_open = false;
                     }
                     Err(error) => ws.show_toast(
                         t!(
@@ -7458,6 +7468,7 @@ impl Workspace {
                 Self::reset_input(&ws.issue_body_state.clone(), cx);
                 Self::reset_input(&ws.issue_ai_prompt_state.clone(), cx);
                 Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                ws.issue_attachment_url_open = false;
                 ws.issue_new_attachments.clear();
                 ws.issue_new_source = "user";
                 ws.issue_new_site_id = None;
@@ -7487,6 +7498,7 @@ impl Workspace {
                 ws.user_issue_detail_dismissing = false;
                 Self::reset_input(&ws.issue_comment_state.clone(), cx);
                 Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                ws.issue_attachment_url_open = false;
                 ws.issue_comment_attachments.clear();
                 cx.notify();
             });
@@ -7628,6 +7640,7 @@ impl Workspace {
             self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
             self.issue_comment_attachments.clear();
             Self::reset_input(&self.issue_attachment_url_state.clone(), cx);
+            self.issue_attachment_url_open = false;
         }
         self.issue_selected = Some(id.clone());
         self.add_activity_entry(
@@ -13154,58 +13167,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let drafts = self.attachment_drafts(target).clone();
-        let mut previews = div().flex().flex_wrap().gap(px(8.0));
-        for (index, draft) in drafts.iter().enumerate() {
-            let filename = draft.filename.clone();
-            previews = previews.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "issue-attachment-{target:?}-{index}"
-                    ))))
-                    .relative()
-                    .w(px(76.0))
-                    .h(px(76.0))
-                    .rounded(px(7.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .tooltip(move |_window, cx| {
-                        cx.new(|_| WorkspaceTooltip {
-                            label: filename.clone().into(),
-                        })
-                        .into()
-                    })
-                    .child(
-                        img(draft.image.clone())
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    )
-                    .child(
-                        div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "issue-attachment-remove-{target:?}-{index}"
-                            ))))
-                            .absolute()
-                            .top(px(4.0))
-                            .right(px(4.0))
-                            .size(px(20.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(ShellDeckColors::backdrop())
-                            .cursor_pointer()
-                            .child(lucide_icon("x", 12.0, white()))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                let drafts = this.attachment_drafts_mut(target);
-                                if index < drafts.len() {
-                                    drafts.remove(index);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
-        }
+        let entity = cx.entity().downgrade();
+        let previews =
+            render_attachment_draft_gallery(&drafts, "issue-attachment-draft", move |index, cx| {
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        let drafts = this.attachment_drafts_mut(target);
+                        if index < drafts.len() {
+                            drafts.remove(index);
+                        }
+                        cx.notify();
+                    });
+                }
+            });
 
         let url_input = Input::new(&self.issue_attachment_url_state)
             .size(InputSize::Sm)
@@ -13224,11 +13198,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .p(px(10.0))
-            .rounded(px(8.0))
-            .border_1()
+            .pt(px(9.0))
+            .border_t_1()
             .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_primary().opacity(0.55))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                 let mods = event.keystroke.modifiers;
                 if event.keystroke.key.eq_ignore_ascii_case("v")
@@ -13254,25 +13226,42 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .gap(px(10.0))
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("user.requests.attachments.title").to_string()),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(t!("user.requests.attachments.title").to_string()),
+                            )
+                            .child(
+                                Badge::new(format!(
+                                    "{}/{}",
+                                    drafts.len(),
+                                    issues::ISSUE_ATTACHMENT_MAX_COUNT
+                                ))
+                                .variant(BadgeVariant::Secondary),
+                            ),
                     )
                     .child(
                         div()
+                            .min_w(px(0.0))
+                            .truncate()
                             .text_size(px(10.0))
                             .text_color(ShellDeckColors::text_muted())
                             .child(t!("user.requests.attachments.drop_hint").to_string()),
                     ),
             )
-            .when(!drafts.is_empty(), |el| el.child(previews))
             .child(
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .gap(px(6.0))
                     .child(
                         Button::new(
@@ -13315,14 +13304,32 @@ impl Workspace {
                         )
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Outline)
-                        .icon(IconSource::from("plus"))
+                        .icon(IconSource::from("scan"))
                         .disabled(self.issue_attachment_busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.capture_issue_attachment(target, cx);
                         })),
                     ),
             )
-            .child(
+            .when(!drafts.is_empty(), |el| el.child(previews))
+            .when(!self.issue_attachment_url_open, |el| {
+                el.child(
+                    Button::new(
+                        SharedString::from(format!("issue-url-toggle-{target:?}")),
+                        t!("user.requests.attachments.url_toggle").to_string(),
+                    )
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Ghost)
+                    .icon(IconSource::from("globe"))
+                    .disabled(self.issue_attachment_busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.issue_attachment_url_open = true;
+                        cx.notify();
+                    })),
+                )
+            })
+            .when(self.issue_attachment_url_open, |el| {
+                el.child(
                 div()
                     .flex()
                     .items_center()
@@ -13340,8 +13347,20 @@ impl Workspace {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.import_issue_attachment_url(target, cx);
                         })),
+                    )
+                    .child(
+                        IconButton::new("x")
+                            .variant(ButtonVariant::Ghost)
+                            .size(gpui::px(32.0))
+                            .icon_size(gpui::px(13.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.issue_attachment_url_open = false;
+                                Self::reset_input(&this.issue_attachment_url_state.clone(), cx);
+                                cx.notify();
+                            })),
                     ),
-            )
+                )
+            })
     }
 
     fn render_stored_attachments(
@@ -13349,39 +13368,34 @@ impl Workspace {
         attachments: &[issues::IssueAttachment],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = div().flex().flex_wrap().gap(px(6.0));
-        for attachment in attachments {
-            let url = if attachment.viewer_url.is_empty() {
-                attachment.url.clone()
-            } else {
-                attachment.viewer_url.clone()
+        let entity = cx.entity().downgrade();
+        let lightbox_attachments = attachments.to_vec();
+        render_stored_attachment_gallery(attachments, "stored-attachment", move |index, cx| {
+            let Some(entity) = entity.upgrade() else {
+                return;
             };
-            row = row.child(
-                div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "stored-attachment-{}",
-                        attachment.id
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .max_w(px(210.0))
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::primary())
-                    .cursor_pointer()
-                    .child(lucide_icon("globe", 12.0, ShellDeckColors::primary()))
-                    .child(div().truncate().child(attachment.filename.clone()))
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, _| {
-                        let _ = cloud_account::open_in_browser(&url);
-                    })),
-            );
-        }
-        row.into_any_element()
+            let close_entity = entity.downgrade();
+            let attachments = lightbox_attachments.clone();
+            let lightbox = cx.new(|cx| {
+                AttachmentLightbox::new(
+                    attachments,
+                    index,
+                    move |cx| {
+                        if let Some(entity) = close_entity.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                this.issue_attachment_lightbox = None;
+                                cx.notify();
+                            });
+                        }
+                    },
+                    cx,
+                )
+            });
+            entity.update(cx, |this, cx| {
+                this.issue_attachment_lightbox = Some(lightbox);
+                cx.notify();
+            });
+        })
     }
 
     fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -14600,6 +14614,10 @@ impl Render for Workspace {
         // since UiDialog provides its own backdrop + occlude).
         if let Some(id) = self.confirm_issue_delete.clone() {
             root = root.child(self.render_delete_issue_modal(id, _cx));
+        }
+
+        if let Some(lightbox) = &self.issue_attachment_lightbox {
+            root = root.child(lightbox.clone());
         }
 
         if let Some(plan) = self.ai_action_confirmation.clone() {
