@@ -4,7 +4,32 @@
   <img src="crates/shelldeck/assets/images/shelldeck-icon.png" alt="ShellDeck Monolith logo" width="120" height="120" />
 </p>
 
-A GPU-accelerated native desktop terminal and SSH companion app built with Rust. ShellDeck provides a unified control plane for managing terminal sessions, SSH connections, remote script execution, and port forwarding from a polished sidebar/dashboard UI.
+A GPU-accelerated native desktop SSH, terminal, and operations companion built
+with Rust. ShellDeck brings infrastructure work, Inklura Manage sites, support
+requests, and automation into one role-aware control plane.
+
+## Preview
+
+<p align="center">
+  <img src="docs/screenshots/03-support-request-detail.png" alt="ShellDeck support request detail view" width="100%" />
+</p>
+
+<table>
+  <tr>
+    <td align="center"><strong>Support overview</strong></td>
+    <td align="center"><strong>App and terminal themes</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/02-support-home.png" alt="ShellDeck support dashboard" /></td>
+    <td><img src="docs/screenshots/04-appearance-themes.png" alt="ShellDeck appearance and terminal theme settings" /></td>
+  </tr>
+</table>
+
+<details>
+  <summary>Dark theme preview</summary>
+  <br />
+  <img src="docs/screenshots/05-support-request-dark.png" alt="ShellDeck support request detail view in the dark theme" width="100%" />
+</details>
 
 ## Features
 
@@ -19,8 +44,11 @@ A GPU-accelerated native desktop terminal and SSH companion app built with Rust.
 - **Session Persistence** -- Restore workspace layout and sessions across restarts
 - **Search** -- In-terminal text search with match highlighting
 - **URL Detection** -- Clickable URLs detected in terminal output
-- **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and `Ctrl+P`
+- **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and command palette
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
+- **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
+- **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and fleet dispatch
+- **Contextual AI** -- Native AI Dock plus JeanClaude and Fleet integrations for assisted operations
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI
@@ -44,17 +72,22 @@ ShellDeck auto-updates itself once installed. To build from source instead, see 
 ## Requirements
 
 - **Rust nightly**, pinned in `rust-toolchain.toml` (do not change to floating `nightly` — it breaks the macOS build; see `CLAUDE.md`)
-- **Linux**: `libssl-dev`, `pkg-config`, `libxkbcommon-dev`, `libwayland-dev`
-- **macOS**: Xcode Command Line Tools, OpenSSL (`brew install openssl`)
+- **Linux**: OpenSSL, Wayland/X11, Vulkan, D-Bus, GTK 3, and AppIndicator development packages (see the command below)
+- **macOS**: Xcode Command Line Tools, OpenSSL, and pkg-config (`brew install openssl pkg-config`)
+- **Windows**: Visual Studio Build Tools with the Desktop development with C++ workload
 
-Les raccourcis Companion utilisés depuis une autre application nécessitent
-l'approbation macOS décrite dans
+Companion shortcuts invoked from another application require the macOS
+permissions described in
 [`docs/macos-permissions.md`](docs/macos-permissions.md).
 
 ### Install system dependencies (Ubuntu/Debian)
 
 ```bash
-sudo apt install libssl-dev pkg-config libxkbcommon-dev libwayland-dev
+sudo apt install \
+  libssl-dev pkg-config libxkbcommon-dev libwayland-dev libvulkan-dev \
+  libfontconfig1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+  libxkbcommon-x11-dev libdbus-1-dev libgtk-3-dev libxdo-dev \
+  libayatana-appindicator3-dev
 ```
 
 ## Build & Run
@@ -89,7 +122,8 @@ shelldeck/
 │   ├── shelldeck-core/       # Models, config, SSH config parser, keychain
 │   ├── shelldeck-ssh/        # SSH client, sessions, tunnels, remote exec
 │   ├── shelldeck-terminal/   # PTY, VTE parser, terminal grid
-│   └── shelldeck-ui/         # GPUI views, sidebar, dashboard, forms
+│   ├── shelldeck-ui/         # GPUI views, sidebar, dashboard, forms
+│   └── shelldeck-update/     # Signed update checks and installation
 ├── patches/
 │   └── adabraka-gpui/        # Patched GPUI fork
 ├── Cargo.toml                # Workspace manifest
@@ -98,11 +132,13 @@ shelldeck/
 
 ## Configuration
 
-ShellDeck stores its configuration in `~/.local/share/ShellDeck/`:
+ShellDeck stores its state in the platform configuration directory returned by
+the operating system. On Linux this is `$XDG_CONFIG_HOME/shelldeck/`, or
+`~/.config/shelldeck/` when `XDG_CONFIG_HOME` is not set.
 
 | File | Purpose |
 |------|---------|
-| `shelldeck.toml` | App settings (theme, font, keybindings) |
+| `config.toml` | App settings, account, integrations, theme, and keybindings |
 | `connections.json` | Saved connections, scripts, port forwards |
 | `workspace.json` | Window layout and session state |
 
@@ -133,7 +169,8 @@ The command palette (`Ctrl+Shift+P`) also has a **Switch Active Site** entry and
 
 ### Manual configuration
 
-You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to `~/.local/share/ShellDeck/shelldeck.toml`:
+You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to
+`config.toml` in ShellDeck's platform configuration directory:
 
 ```toml
 [cloud_sync]
@@ -146,19 +183,26 @@ sync_on_startup = true     # pull profiles automatically at launch
 - **Get a token** at [manage.inklura.fr/manage/shelldeck](https://manage.inklura.fr/manage/shelldeck).
 - With `sync_on_startup = true`, ShellDeck syncs at launch (bounded by a 4s connect / 10s total timeout, so a portal outage never blocks startup).
 - Trigger a sync anytime via the command palette (**Cloud Sync Now**) or the **Sync now** button under Settings → General → Cloud Sync.
-- The token is stored in `shelldeck.toml`; the Settings screen only ever shows a masked hint of it.
+- The token is stored in `config.toml`; the Settings screen only ever shows a masked hint of it.
 
 ## App modes (User / Support / Dev)
 
-Signed in as an Inklura Manage **super-admin**, a three-segment **mode switcher** appears in the titlebar (left of the site chip):
+The surfaces available in the titlebar mode switcher depend on the signed-in
+Inklura Manage account:
 
-- **Dev** (default) — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites. This is exactly the classic app.
+- **User** — available to every authenticated account. It provides dedicated **Accueil**, **Mes sites**, **Mes demandes**, and **Mes informations** tabs with one-click Manage links and account-scoped data.
 - **Support** — a native two-pane helpdesk console for support.inklura.fr: view filters (Tous / Non attribués / Les miens / Ouverts / En attente / SLA / Résolus) with live counts, the ticket list, and a conversation pane with a reply/note composer and an action bar (status, priority, assign, resolve). The list refreshes every ~30s while open.
-- **User** — a manage-centric home: an account header plus a **Mes sites** list where each site has an **Activer** button and one-click deep links into its Manage areas (Dashboard, CMS, Helpdesk, E-commerce, Réglages, Console ShellDeck).
+- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, JeanClaude, Fleet, and bext Cloud.
 
-Switching modes never closes running terminal sessions — Dev surfaces are hidden, not destroyed. The selected mode is remembered across restarts. The command palette (`Ctrl+Shift+P`) has **Mode : Utilisateur / Support / Dev** entries too.
+Regular and customer-admin accounts are restricted to User mode. Accounts with
+the dedicated `inklura_support` role can switch between User and Support.
+Super-admins can access all three modes. The switcher and command palette only
+show modes the account can reach.
 
-Non-super-admin accounts are locked to **User** mode (no dev surfaces, no switcher). When you're **not** signed in, ShellDeck runs as the classic full app (Dev), since it's a general-purpose terminal on its own.
+Switching modes never closes running terminal sessions — Dev surfaces are
+hidden, not destroyed. The selected mode is remembered across restarts. When
+no account is signed in, ShellDeck displays its mandatory welcome and login
+screen; Dev mode is never used as a logged-out fallback.
 
 ## JeanClaude
 
@@ -166,7 +210,7 @@ Non-super-admin accounts are locked to **User** mode (no dev surfaces, no switch
 
 It appears only when a JeanClaude config is available (which de facto scopes it to super-admins and local overrides), sourced with this precedence:
 
-1. A local `[jeanclaude]` section in `shelldeck.toml` (wins — e.g. to point at an SSH tunnel on `127.0.0.1`):
+1. A local `[jeanclaude]` section in `config.toml` (wins — e.g. to point at an SSH tunnel on `127.0.0.1`):
    ```toml
    [jeanclaude]
    url = "http://127.0.0.1:3100"
@@ -177,13 +221,13 @@ It appears only when a JeanClaude config is available (which de facto scopes it 
 
 Where it shows up:
 
-- **Dev mode** — a **JeanClaude** entry in the sidebar opens the full console: bot status (connected / paused / concurrency) with a "Dire dans #jean" input, **Aperçu** (pending confirmations with Confirmer/Rejeter + active tickets with heartbeat age and Annuler), **Historique** (status filter + detail with the per-ticket action log + Forcer/Annuler), **Cibles** (domain→server CRUD), and **Mémoire** (rules/notes CRUD). It polls every ~10s while open. The command palette has **JeanClaude : ouvrir la console** and **pause / reprendre**.
+- **Dev mode** — the **JeanClaude** console is available from the Go menu and command palette: bot status (connected / paused / concurrency) with a "Dire dans #jean" input, **Aperçu** (pending confirmations with Confirmer/Rejeter + active tickets with heartbeat age and Annuler), **Historique** (status filter + detail with the per-ticket action log + Forcer/Annuler), **Cibles** (domain→server CRUD), and **Mémoire** (rules/notes CRUD). It polls every ~10s while open. The command palette also provides **pause / reprendre**.
 - **Support mode** — a compact JeanClaude strip (pending confirmations + active count) and an **Envoyer à Jean** action per ticket that files it through Jean's normal Slack intake.
 - **User mode** — a **Demander à JeanClaude** card to send a request (a confirmer must still approve in `#jean`), with a read-only recent-activity list.
 
 ### Fleet runtime
 
-Beyond controlling one dashboard, ShellDeck can be a **runtime for the Jean fleet** — the tenant/site-aware set of Jean instances managed from `manage.inklura.fr`. Signed in (Dev mode), a **Fleet** sidebar entry shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
+Beyond controlling one dashboard, ShellDeck can be a **runtime for the Jean fleet** — the tenant/site-aware set of Jean instances managed from `manage.inklura.fr`. In Dev mode, the **Fleet** view shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
 
 When enabled, ShellDeck registers itself, heartbeats, and claims pending jobs for its instance, executing each by driving **headless Claude Code** (`claude -p`, subscription auth) in the configured working directory.
 
@@ -207,33 +251,43 @@ Toggle it from the Fleet view or the command palette (**Fleet : activer / désac
 
 ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched to the Jean fleet.
 
-- **User mode** — a **Mes demandes** section (below your sites): file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. It's the durable, tracked path — the quick "Demander à JeanClaude" card stays for one-off Slack-style asks.
+- **User mode** — a dedicated **Mes demandes** tab: file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. It's the durable, tracked path — the quick "Demander à JeanClaude" card stays for one-off Slack-style asks.
 - **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, **Dispatcher** to a tenant Jean instance, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
 
 Staff-only actions are gated server-side; the action bar only appears for staff tokens. Palette: **Nouvelle demande**, **Demandes (support)**.
 
 ## bext Cloud
 
-A **bext Cloud** view (Dev mode, sidebar) integrates the hosted control plane at [cloud.bext.dev](https://cloud.bext.dev) and lets you manage a single bext instance directly. It has two tabs:
+A **bext Cloud** view in Dev mode integrates the hosted control plane at [cloud.bext.dev](https://cloud.bext.dev) and lets you manage a single bext instance directly. Open it from the Go menu or command palette. It has two tabs:
 
-- **Cloud** — **Se connecter** signs in through your browser (the cloud CLI OIDC flow via auth.1clic.pro; the token is stored in `[bext_cloud]` of `shelldeck.toml`). Once connected: your identity (with a super-admin badge), a **dashboard** stat strip, and a **Sites** panel — the one-click WordPress sites with status and primary domain (open-in-browser), a **Nouveau site WordPress** form, and per-site **Mettre en ligne / Config / Détruire** (destroy asks to confirm). Super-admins also see the **bext instances** the cloud knows about with health/status. The list polls every ~15s while open.
+- **Cloud** — **Se connecter** signs in through your browser (the cloud CLI OIDC flow via auth.1clic.pro; the token is stored in `[bext_cloud]` of `config.toml`). Once connected: your identity (with a super-admin badge), a **dashboard** stat strip, and a **Sites** panel — the one-click WordPress sites with status and primary domain (open-in-browser), a **Nouveau site WordPress** form, and per-site **Mettre en ligne / Config / Détruire** (destroy asks to confirm). Super-admins also see the **bext instances** the cloud knows about with health/status. The list polls every ~15s while open.
 - **Instance** — manage the sites on one bext box directly through its loopback site SDK (`/__bext/sdk/site/*`): set a target base URL + app-id, list/create sites, and go-live/destroy them.
 
-Each SSH connection has a **bext** hover action that opens the Instance tab for that box. (v1 targets the local loopback `http://127.0.0.1` — managing a remote box over an SSH tunnel is the next step.) Palette: **bext Cloud : se connecter / nouveau site / ouvrir**.
+Each SSH connection has a **bext** hover action that opens the Instance tab for that box. (v1 targets the local loopback `http://127.0.0.1` — managing a remote box over an SSH tunnel is the next step.) Palette: **bext Cloud : se connecter / ouvrir**.
 
 ## Keyboard Shortcuts
 
+Use `Ctrl` on Linux/Windows and `Cmd` on macOS unless noted otherwise.
+
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+Shift+P` | Command palette |
-| `Ctrl+Shift+T` | New tab |
-| `Ctrl+Shift+W` | Close tab |
-| `Ctrl+Shift+F` | Search in terminal |
-| `Ctrl+Shift+C` | Copy selection |
-| `Ctrl+Shift+V` | Paste |
-| `Ctrl+Shift+Z` | Toggle zoom |
-| `Ctrl+Tab` | Next tab |
-| `Ctrl+Shift+Tab` | Previous tab |
+| `Ctrl/Cmd+Shift+P` | Command palette |
+| `Ctrl/Cmd+K` | Quick connect |
+| `Ctrl/Cmd+Shift+K` | Contextual AI assistant |
+| `Ctrl/Cmd+T` | New terminal |
+| `Ctrl/Cmd+W` | Close tab |
+| `Ctrl/Cmd+B` | Toggle the sidebar panel |
+| `Ctrl/Cmd+,` | Settings |
+| `Ctrl/Cmd+E` | File editor |
+| `Ctrl/Cmd+F` | Search in terminal |
+| `Ctrl/Cmd+L` | Clear terminal |
+| `Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0` | Zoom in, out, or reset |
+| `Ctrl+Tab`, `Ctrl+Shift+Tab` | Next or previous tab |
+| `Ctrl+Shift+C/V` (Linux/Windows), `Cmd+C/V` (macOS) | Copy or paste |
+| `Ctrl+Shift+D` (Linux/Windows), `Cmd+D` (macOS) | Split horizontally |
+| `Ctrl+Shift+Alt+D` (Linux/Windows), `Cmd+Shift+D` (macOS) | Split vertically |
+| `Alt+[` | Move focus between split panes |
+| `Ctrl/Cmd+Q` | Quit |
 
 ## Contributing
 
