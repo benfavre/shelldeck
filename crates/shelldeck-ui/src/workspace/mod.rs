@@ -1,15 +1,16 @@
 use crate::i18n::rel_time;
 use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_button::IconButton;
+use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::navigation::menu::{
     MenuBar as AdabrakaMenuBar, MenuBarItem, MenuItem as AdabrakaMenuItem,
 };
-use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
-    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
-    Button, ButtonSize, ButtonVariant, Select, SelectOption, Spinner, SpinnerSize, SpinnerVariant,
+    AnimatedCollapsible, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Select,
+    SelectOption, Spinner, SpinnerSize, SpinnerVariant, install_theme, scrollable_vertical,
+    use_theme,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -19,11 +20,11 @@ use gpui::*;
 // shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
 use crate::scale::px;
 use shelldeck_core::ai::{
-    ai_action_disposition, configured_cli_available, create_client, host_context,
+    AiActionDisposition, AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec,
+    AiActionRisk, AiConfig, AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus,
+    AiTaskStore, ai_action_disposition, configured_cli_available, create_client, host_context,
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
-    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
-    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiConfig,
-    AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    parse_issue_triage_proposal, test_connection, validate_diagnostic_command,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -56,6 +57,7 @@ use crate::ai_companion::AiCompanionEvent;
 use crate::ai_workflow::{
     AiNamingKind, AiWorkflowEvent, AiWorkflowInit, AiWorkflowTarget, AiWorkflowView,
 };
+use crate::attachment_annotator::AttachmentAnnotator;
 use crate::bext_cloud_view::{BextCloudView, BextViewEvent};
 use crate::command_palette::{
     ApplyAppTheme, ApplyTerminalTheme, CommandPalette, CommandPaletteEvent, OpenManageArea,
@@ -66,8 +68,8 @@ use crate::dashboard::{DashboardEvent, DashboardView};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
-    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
+    render_attachment_draft_gallery, render_stored_attachment_gallery,
 };
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
@@ -85,7 +87,8 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::support_view::{
-    issue_status_badge, priority_badge, render_issue_delete_dialog, SupportView, SupportViewEvent,
+    SupportView, SupportViewEvent, issue_status_badge, priority_badge,
+    render_attachment_delete_dialog, render_issue_delete_dialog,
 };
 use crate::t;
 use crate::template_browser::TemplateBrowser;
@@ -442,8 +445,12 @@ pub struct Workspace {
     /// Request id pending a confirmed soft-delete from the User-mode detail
     /// sheet (drives a confirm modal — owner-or-staff may delete).
     confirm_issue_delete: Option<String>,
+    /// Posted request image awaiting permanent deletion confirmation.
+    confirm_attachment_delete: Option<(String, String)>,
     /// Native full-screen preview for images attached to the open request.
     issue_attachment_lightbox: Option<Entity<AttachmentLightbox>>,
+    /// Annotation editor opened after an interactive area capture.
+    issue_capture_annotator: Option<Entity<AttachmentAnnotator>>,
     _issues_poll: Option<gpui::Task<()>>,
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
@@ -1059,7 +1066,9 @@ impl Workspace {
             issue_detail: None,
             issue_selected: None,
             confirm_issue_delete: None,
+            confirm_attachment_delete: None,
             issue_attachment_lightbox: None,
+            issue_capture_annotator: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
@@ -4874,11 +4883,10 @@ impl Workspace {
         let mut sorted_sites = sites.to_vec();
         sorted_sites.sort_by_key(|site| Self::issue_site_option_label(site).to_lowercase());
 
-        let mut options =
-            vec![
-                SelectOption::new(String::new(), t!("user.requests.site_none").to_string())
-                    .with_icon("icons/lucide/globe.svg"),
-            ];
+        let mut options = vec![
+            SelectOption::new(String::new(), t!("user.requests.site_none").to_string())
+                .with_icon("icons/lucide/globe.svg"),
+        ];
         options.extend(sorted_sites.into_iter().map(|site| {
             let mut option =
                 SelectOption::new(site.site_id.clone(), Self::issue_site_option_label(&site))
@@ -5540,10 +5548,7 @@ impl Workspace {
             .map(|(index, tab)| PanelItem {
                 id: tab.id,
                 label: tab.filename.clone(),
-                detail: tab
-                    .path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
+                detail: tab.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 icon: "pencil",
                 is_active: index == active_editor_tab,
                 is_live: false,
@@ -5615,7 +5620,7 @@ impl Workspace {
     /// (mode, sign-in, sidebar, Jean/Fleet availability, AI config) — is a
     /// standing source of stale-menu bugs.
     fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
-        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuEntry};
+        use crate::menu_bar::{MenuBarContext, MenuEntry, menu_bar_spec};
 
         let ctx = MenuBarContext {
             signed_in: self.signed_in(),
@@ -5935,6 +5940,7 @@ impl Workspace {
         self.user_new_request_sheet_dismissing = false;
         self.user_issue_detail_dismissing = false;
         self.confirm_issue_delete = None;
+        self.confirm_attachment_delete = None;
         self.support.update(cx, |v, cx| {
             v.clear_selection();
             cx.notify();
@@ -5966,22 +5972,24 @@ impl Workspace {
             && self.app_config.cloud_sync.is_configured();
         if want {
             if self._support_poll_task.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(30))
-                        .await;
-                    let keep_going = this
-                        .update(cx, |ws, cx| {
-                            if !ws.settings_open && ws.effective_mode() == AppMode::Support {
-                                ws.refresh_support(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep_going {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(30))
+                            .await;
+                        let keep_going = this
+                            .update(cx, |ws, cx| {
+                                if !ws.settings_open && ws.effective_mode() == AppMode::Support {
+                                    ws.refresh_support(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep_going {
+                            break;
+                        }
                     }
                 });
                 self._support_poll_task = Some(task);
@@ -6201,6 +6209,12 @@ impl Workspace {
                 self.issue_staff_action(cx, move |b, t| issues::github_refresh(&b, &t, &id))
             }
             SupportViewEvent::IssueDelete(id) => self.delete_issue_now(id, cx),
+            SupportViewEvent::IssueAttachmentDelete { id, attachment_id } => {
+                self.delete_issue_attachment_now(id, attachment_id, cx)
+            }
+            SupportViewEvent::SupportAttachmentDelete { id, attachment_id } => {
+                self.delete_support_attachment_now(id, attachment_id, cx)
+            }
             SupportViewEvent::IssuesFilterChanged { filter } => {
                 self.issues_filter = filter;
                 self.refresh_issues(cx);
@@ -6295,22 +6309,24 @@ impl Workspace {
             // Refresh immediately when a surface becomes visible.
             self.refresh_jean_state(cx);
             if self._jean_poll_task.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(10))
-                        .await;
-                    let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.jean_surface_visible() {
-                                ws.refresh_jean_state(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(10))
+                            .await;
+                        let keep = this
+                            .update(cx, |ws, cx| {
+                                if ws.jean_surface_visible() {
+                                    ws.refresh_jean_state(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
                 });
                 self._jean_poll_task = Some(task);
@@ -6718,22 +6734,24 @@ impl Workspace {
         if self.fleet_visible() {
             self.refresh_fleet_view(cx);
             if self._fleet_view_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(10))
-                        .await;
-                    let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.fleet_visible() {
-                                ws.refresh_fleet_view(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(10))
+                            .await;
+                        let keep = this
+                            .update(cx, |ws, cx| {
+                                if ws.fleet_visible() {
+                                    ws.refresh_fleet_view(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
                 });
                 self._fleet_view_poll = Some(task);
@@ -7430,7 +7448,7 @@ impl Workspace {
                     return;
                 }
                 match result {
-                    Ok(draft) => ws.add_attachment_draft(target, draft, cx),
+                    Ok(draft) => ws.open_issue_capture_annotator(target, draft, cx),
                     Err(error) => ws.show_toast(
                         t!("toast.issue.attachment_failed", error = error).to_string(),
                         ToastLevel::Warning,
@@ -7441,6 +7459,41 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    fn open_issue_capture_annotator(
+        &mut self,
+        target: IssueAttachmentTarget,
+        draft: AttachmentDraft,
+        cx: &mut Context<Self>,
+    ) {
+        let parent = cx.entity().downgrade();
+        let cancel_parent = parent.clone();
+        let apply_parent = parent;
+        let annotator = cx.new(|cx| {
+            AttachmentAnnotator::new(
+                draft,
+                move |cx| {
+                    if let Some(parent) = cancel_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.issue_capture_annotator = None;
+                            cx.notify();
+                        });
+                    }
+                },
+                move |draft, cx| {
+                    if let Some(parent) = apply_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.issue_capture_annotator = None;
+                            this.add_attachment_draft(target, draft, cx);
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+        self.issue_capture_annotator = Some(annotator);
+        cx.notify();
     }
 
     /// Close the "Nouvelle demande" sheet. Plays the exit animation first
@@ -7456,6 +7509,7 @@ impl Workspace {
         self.issue_ai_expanded = false;
         self.issue_ai_loading = false;
         self.issue_ai_error = None;
+        self.issue_capture_annotator = None;
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -7487,6 +7541,7 @@ impl Workspace {
         }
         self.user_issue_detail_dismissing = true;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
+        self.issue_capture_annotator = None;
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -7607,22 +7662,24 @@ impl Workspace {
         if self.issues_relevant() {
             self.refresh_issues(cx);
             if self._issues_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(15))
-                        .await;
-                    let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.issues_relevant() {
-                                ws.refresh_issues(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(15))
+                            .await;
+                        let keep = this
+                            .update(cx, |ws, cx| {
+                                if ws.issues_relevant() {
+                                    ws.refresh_issues(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
                 });
                 self._issues_poll = Some(task);
@@ -8230,6 +8287,61 @@ impl Workspace {
         .detach();
     }
 
+    fn delete_issue_attachment_now(
+        &mut self,
+        id: String,
+        attachment_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((base, token)) = self.fleet_base_token() else {
+            return;
+        };
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    issues::delete_issue_attachment(&base, &token, &id, &attachment_id)
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| match result {
+                Ok(issue) => {
+                    ws.upsert_issue_in_list(issue.clone());
+                    if ws.issue_selected.as_deref() == Some(issue.id.as_str()) {
+                        ws.issue_detail = Some(issue);
+                    }
+                    ws.push_issues_to_support(cx);
+                    ws.show_toast(
+                        t!("toast.issue.attachment_deleted").to_string(),
+                        ToastLevel::Success,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(error) => ws.show_toast(
+                    t!(
+                        "toast.issue.attachment_delete_failed",
+                        error = cloud_account::user_message(&error)
+                    )
+                    .to_string(),
+                    ToastLevel::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    fn delete_support_attachment_now(
+        &mut self,
+        id: String,
+        attachment_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.support_action(cx, move |base, token| {
+            manage_support::support_delete_attachment(&base, &token, &id, &attachment_id)
+        });
+    }
+
     /// Whether the given issue was filed by the currently signed-in user
     /// (matching `requested_by` against the account name or email — the
     /// server stores `actor = user_name || user_email` so we accept either).
@@ -8283,6 +8395,35 @@ impl Workspace {
                 confirm_entity.update(cx, |this, cx| {
                     this.confirm_issue_delete = None;
                     this.delete_issue_now(id, cx);
+                    cx.notify();
+                });
+            },
+        )
+    }
+
+    fn render_delete_attachment_modal(
+        &self,
+        issue_id: String,
+        attachment_id: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let close_entity = entity.clone();
+        let confirm_entity = entity;
+        render_attachment_delete_dialog(
+            "ws-attachment-delete",
+            move |cx| {
+                close_entity.update(cx, |this, cx| {
+                    this.confirm_attachment_delete = None;
+                    cx.notify();
+                });
+            },
+            move |cx| {
+                let issue_id = issue_id.clone();
+                let attachment_id = attachment_id.clone();
+                confirm_entity.update(cx, |this, cx| {
+                    this.confirm_attachment_delete = None;
+                    this.delete_issue_attachment_now(issue_id, attachment_id, cx);
                     cx.notify();
                 });
             },
@@ -8486,22 +8627,24 @@ impl Workspace {
         if self.bext_visible() {
             self.refresh_bext_cloud(cx);
             if self._bext_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(15))
-                        .await;
-                    let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.bext_visible() {
-                                ws.refresh_bext_cloud(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(15))
+                            .await;
+                        let keep = this
+                            .update(cx, |ws, cx| {
+                                if ws.bext_visible() {
+                                    ws.refresh_bext_cloud(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
                 });
                 self._bext_poll = Some(task);
@@ -8940,8 +9083,8 @@ impl Workspace {
     /// the next launch (when `auto_connect_on_startup` is enabled). Saved
     /// unconditionally and best-effort: failures are logged, never fatal.
     fn save_workspace_state(&self, cx: &Context<Self>) {
-        use shelldeck_core::config::workspace_state::{TabState, TabType};
         use shelldeck_core::config::WorkspaceState;
+        use shelldeck_core::config::workspace_state::{TabState, TabType};
 
         let terminal = self.terminal.read(cx);
         let sessions = terminal.session_states();
@@ -9355,8 +9498,8 @@ impl Workspace {
     /// connection still exists. No-op (and no behavior change) when the flag is
     /// off or there is nothing to restore. Failures are logged, never fatal.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
-        use shelldeck_core::config::workspace_state::TabType;
         use shelldeck_core::config::WorkspaceState;
+        use shelldeck_core::config::workspace_state::TabType;
 
         if !self.app_config.general.auto_connect_on_startup {
             return;
@@ -9457,34 +9600,36 @@ impl Workspace {
             return;
         }
         let weak_bar = self.status_bar.downgrade();
-        self._git_poll_task = Some(cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(15))
-                .await;
+        self._git_poll_task = Some(cx.spawn(async move |_this, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(15))
+                    .await;
 
-            let main_window_visible = main_window
-                .update(cx, |_, window, _| window.is_window_visible())
-                .unwrap_or(false);
-            if !main_window_visible {
-                continue;
-            }
-
-            let git_display = cx
-                .background_executor()
-                .spawn(async {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    shelldeck_core::git::get_git_status(&cwd).and_then(|s| s.display())
-                })
-                .await;
-
-            let result = weak_bar.update(cx, |bar, cx| {
-                if bar.git_status != git_display {
-                    bar.git_status = git_display;
-                    cx.notify();
+                let main_window_visible = main_window
+                    .update(cx, |_, window, _| window.is_window_visible())
+                    .unwrap_or(false);
+                if !main_window_visible {
+                    continue;
                 }
-            });
-            if result.is_err() {
-                break;
+
+                let git_display = cx
+                    .background_executor()
+                    .spawn(async {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        shelldeck_core::git::get_git_status(&cwd).and_then(|s| s.display())
+                    })
+                    .await;
+
+                let result = weak_bar.update(cx, |bar, cx| {
+                    if bar.git_status != git_display {
+                        bar.git_status = git_display;
+                        cx.notify();
+                    }
+                });
+                if result.is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -9573,9 +9718,7 @@ fn shortcut_failure_toasts(
             return;
         }
         let reason = match after {
-            ShortcutRegistrationStatus::Conflict => {
-                t!("shortcut.failure.conflict").to_string()
-            }
+            ShortcutRegistrationStatus::Conflict => t!("shortcut.failure.conflict").to_string(),
             ShortcutRegistrationStatus::Error(error) => {
                 if crate::settings::shortcut_error_is_portal_missing(error) {
                     t!("shortcut.failure.portal_missing").to_string()
@@ -13330,35 +13473,37 @@ impl Workspace {
             })
             .when(self.issue_attachment_url_open, |el| {
                 el.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(div().flex_1().min_w(px(0.0)).child(url_input))
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("issue-url-{target:?}")),
-                            t!("user.requests.attachments.add_url").to_string(),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(div().flex_1().min_w(px(0.0)).child(url_input))
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("issue-url-{target:?}")),
+                                t!("user.requests.attachments.add_url").to_string(),
+                            )
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Outline)
+                            .icon(IconSource::from("globe"))
+                            .disabled(self.issue_attachment_busy)
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.import_issue_attachment_url(target, cx);
+                                },
+                            )),
                         )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .icon(IconSource::from("globe"))
-                        .disabled(self.issue_attachment_busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.import_issue_attachment_url(target, cx);
-                        })),
-                    )
-                    .child(
-                        IconButton::new("x")
-                            .variant(ButtonVariant::Ghost)
-                            .size(gpui::px(32.0))
-                            .icon_size(gpui::px(13.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.issue_attachment_url_open = false;
-                                Self::reset_input(&this.issue_attachment_url_state.clone(), cx);
-                                cx.notify();
-                            })),
-                    ),
+                        .child(
+                            IconButton::new("x")
+                                .variant(ButtonVariant::Ghost)
+                                .size(gpui::px(32.0))
+                                .icon_size(gpui::px(13.0))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.issue_attachment_url_open = false;
+                                    Self::reset_input(&this.issue_attachment_url_state.clone(), cx);
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
     }
@@ -13370,32 +13515,55 @@ impl Workspace {
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
         let lightbox_attachments = attachments.to_vec();
-        render_stored_attachment_gallery(attachments, "stored-attachment", move |index, cx| {
-            let Some(entity) = entity.upgrade() else {
-                return;
-            };
-            let close_entity = entity.downgrade();
-            let attachments = lightbox_attachments.clone();
-            let lightbox = cx.new(|cx| {
-                AttachmentLightbox::new(
-                    attachments,
-                    index,
-                    move |cx| {
-                        if let Some(entity) = close_entity.upgrade() {
-                            entity.update(cx, |this, cx| {
-                                this.issue_attachment_lightbox = None;
-                                cx.notify();
-                            });
-                        }
-                    },
-                    cx,
-                )
-            });
-            entity.update(cx, |this, cx| {
-                this.issue_attachment_lightbox = Some(lightbox);
-                cx.notify();
-            });
-        })
+        let delete_entity = entity.clone();
+        let delete_attachments = attachments.to_vec();
+        let issue_id = self
+            .issue_detail
+            .as_ref()
+            .map(|issue| issue.id.clone())
+            .unwrap_or_default();
+        render_stored_attachment_gallery(
+            attachments,
+            "stored-attachment",
+            move |index, cx| {
+                let Some(entity) = entity.upgrade() else {
+                    return;
+                };
+                let close_entity = entity.downgrade();
+                let attachments = lightbox_attachments.clone();
+                let lightbox = cx.new(|cx| {
+                    AttachmentLightbox::new(
+                        attachments,
+                        index,
+                        move |cx| {
+                            if let Some(entity) = close_entity.upgrade() {
+                                entity.update(cx, |this, cx| {
+                                    this.issue_attachment_lightbox = None;
+                                    cx.notify();
+                                });
+                            }
+                        },
+                        cx,
+                    )
+                });
+                entity.update(cx, |this, cx| {
+                    this.issue_attachment_lightbox = Some(lightbox);
+                    cx.notify();
+                });
+            },
+            Some(Rc::new(move |index, cx| {
+                let Some(attachment) = delete_attachments.get(index) else {
+                    return;
+                };
+                if let Some(entity) = delete_entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.confirm_attachment_delete =
+                            Some((issue_id.clone(), attachment.id.clone()));
+                        cx.notify();
+                    });
+                }
+            })),
+        )
     }
 
     fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -14615,9 +14783,16 @@ impl Render for Workspace {
         if let Some(id) = self.confirm_issue_delete.clone() {
             root = root.child(self.render_delete_issue_modal(id, _cx));
         }
+        if let Some((issue_id, attachment_id)) = self.confirm_attachment_delete.clone() {
+            root = root.child(self.render_delete_attachment_modal(issue_id, attachment_id, _cx));
+        }
 
         if let Some(lightbox) = &self.issue_attachment_lightbox {
             root = root.child(lightbox.clone());
+        }
+
+        if let Some(annotator) = &self.issue_capture_annotator {
+            root = root.child(annotator.clone());
         }
 
         if let Some(plan) = self.ai_action_confirmation.clone() {
@@ -14646,9 +14821,9 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind};
-    use crate::t;
+    use super::{ShortcutToastKind, shortcut_failure_toasts, shortcut_status_is_failure};
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
+    use crate::t;
 
     fn statuses(
         ai_dock: ShortcutRegistrationStatus,
@@ -14670,9 +14845,9 @@ mod tests {
         assert!(shortcut_status_is_failure(
             &ShortcutRegistrationStatus::Conflict
         ));
-        assert!(shortcut_status_is_failure(&ShortcutRegistrationStatus::Error(
-            "BadAccess".into()
-        )));
+        assert!(shortcut_status_is_failure(
+            &ShortcutRegistrationStatus::Error("BadAccess".into())
+        ));
 
         for in_flight in [
             ShortcutRegistrationStatus::Disabled,
@@ -14766,9 +14941,11 @@ mod tests {
 
         let toasts = shortcut_failure_toasts(&ok, &portal_missing);
         assert_eq!(toasts.len(), 1);
-        assert!(toasts[0]
-            .1
-            .contains(&t!("shortcut.failure.portal_missing").to_string()));
+        assert!(
+            toasts[0]
+                .1
+                .contains(&t!("shortcut.failure.portal_missing").to_string())
+        );
         assert!(!toasts[0].1.contains("portal frontend"));
 
         let other = statuses(

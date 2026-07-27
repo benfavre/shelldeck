@@ -7,12 +7,12 @@ use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::{
-    black, div, img, white, AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat,
-    KeyDownEvent, ObjectFit, Render, SharedString, Window,
+    AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat, KeyDownEvent, ObjectFit,
+    Render, SharedString, Window, black, div, img, white,
 };
 use shelldeck_core::config::cloud_account;
 use shelldeck_core::config::issues::{
-    IssueAttachment, IssueAttachmentUpload, ISSUE_ATTACHMENT_MAX_BYTES,
+    ISSUE_ATTACHMENT_MAX_BYTES, IssueAttachment, IssueAttachmentUpload,
 };
 use std::path::Path;
 use std::process::Command;
@@ -214,6 +214,7 @@ pub fn render_stored_attachment_gallery(
     attachments: &[IssueAttachment],
     id_prefix: &'static str,
     on_open: impl Fn(usize, &mut App) + Clone + 'static,
+    on_delete: Option<Rc<dyn Fn(usize, &mut App)>>,
 ) -> AnyElement {
     let mut gallery = div().flex().flex_wrap().gap(px(8.0)).pt(px(4.0));
 
@@ -221,6 +222,7 @@ pub fn render_stored_attachment_gallery(
         let image_url = attachment.url.clone();
         let filename = attachment.filename.clone();
         let open = on_open.clone();
+        let delete = on_delete.clone();
 
         gallery = gallery.child(
             div()
@@ -228,6 +230,7 @@ pub fn render_stored_attachment_gallery(
                     "{id_prefix}-{}",
                     attachment.id
                 ))))
+                .relative()
                 .w(px(148.0))
                 .overflow_hidden()
                 .rounded(px(8.0))
@@ -281,6 +284,31 @@ pub fn render_stored_attachment_gallery(
                             ShellDeckColors::text_muted(),
                         )),
                 )
+                .when_some(delete, |el, delete| {
+                    el.child(
+                        div()
+                            .id(ElementId::from(SharedString::from(format!(
+                                "{id_prefix}-delete-{}",
+                                attachment.id
+                            ))))
+                            .absolute()
+                            .top(px(6.0))
+                            .right(px(6.0))
+                            .size(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(7.0))
+                            .bg(black().opacity(0.72))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::error()))
+                            .child(lucide_icon("trash-2", 13.0, white()))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                delete(index, cx);
+                            }),
+                    )
+                })
                 .on_click(move |_, _, cx| {
                     open(index, cx);
                 }),

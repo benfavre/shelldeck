@@ -5,11 +5,12 @@
 //! The view holds data and captures composer text; all network happens in the
 //! `Workspace` (background executor) driven by [`SupportViewEvent`].
 
+use crate::attachment_annotator::AttachmentAnnotator;
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::issue_attachments::{
-    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
+    render_attachment_draft_gallery, render_stored_attachment_gallery,
 };
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
@@ -30,9 +31,10 @@ use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
+use std::rc::Rc;
 
 use shelldeck_core::config::issues::{
-    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
+    ISSUE_ATTACHMENT_MAX_COUNT, Issue, IssueAttachment, IssueInstance,
 };
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
@@ -188,6 +190,18 @@ enum SupportMenuKind {
     TicketList(String),
 }
 
+#[derive(Clone, Debug)]
+enum AttachmentDeleteTarget {
+    Ticket {
+        target_id: String,
+        attachment_id: String,
+    },
+    Issue {
+        target_id: String,
+        attachment_id: String,
+    },
+}
+
 /// Requests the view raises for the workspace to service (all network).
 #[derive(Debug, Clone)]
 pub enum SupportViewEvent {
@@ -264,6 +278,14 @@ pub enum SupportViewEvent {
     IssueGithubRefresh(String),
     /// Soft-delete a request (staff only — confirmed via a dialog first).
     IssueDelete(String),
+    IssueAttachmentDelete {
+        id: String,
+        attachment_id: String,
+    },
+    SupportAttachmentDelete {
+        id: String,
+        attachment_id: String,
+    },
     /// Any filter changed — simple bar (status chip / search) or advanced
     /// modal apply. Carries the full filter payload so the Workspace stores
     /// one canonical value; empty strings / `None` fields mean "no filter
@@ -365,8 +387,11 @@ pub struct SupportView {
     issue_popover_menu: Option<(String, Point<Pixels>)>,
     /// Request id pending a confirmed soft-delete (drives the confirm modal).
     confirm_issue_delete: Option<String>,
+    confirm_attachment_delete: Option<AttachmentDeleteTarget>,
     /// Native full-screen preview for images attached to the open request.
     attachment_lightbox: Option<Entity<AttachmentLightbox>>,
+    /// Annotation editor opened after an interactive area capture.
+    capture_annotator: Option<Entity<AttachmentAnnotator>>,
     issues_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     /// Scroll handle for the messages pane. `set_detail` calls
@@ -444,7 +469,9 @@ impl SupportView {
             issue_priority_menu_open: false,
             issue_popover_menu: None,
             confirm_issue_delete: None,
+            confirm_attachment_delete: None,
             attachment_lightbox: None,
+            capture_annotator: None,
             issues_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             messages_scroll: ScrollHandle::new(),
@@ -765,6 +792,7 @@ impl SupportView {
         self.attachment_drafts.clear();
         self.attachment_panel_open = false;
         self.attachment_url_open = false;
+        self.capture_annotator = None;
         self.selected_id = None;
         self.detail = None;
         self.issue_selected = None;
@@ -788,6 +816,7 @@ impl SupportView {
             self.attachment_drafts.clear();
             self.attachment_panel_open = false;
             self.attachment_url_open = false;
+            self.capture_annotator = None;
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
@@ -937,6 +966,7 @@ impl SupportView {
         self.attachment_drafts.clear();
         self.attachment_panel_open = false;
         self.attachment_url_open = false;
+        self.capture_annotator = None;
         self.attachment_url_state
             .update(cx, |state, cx| state.reset(cx));
     }
@@ -1068,13 +1098,43 @@ impl SupportView {
                     return;
                 }
                 match result {
-                    Ok(draft) => view.add_attachment_draft(draft, cx),
+                    Ok(draft) => view.open_capture_annotator(draft, cx),
                     Err(error) => view.error = Some(error),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn open_capture_annotator(&mut self, draft: AttachmentDraft, cx: &mut Context<Self>) {
+        let parent = cx.entity().downgrade();
+        let cancel_parent = parent.clone();
+        let apply_parent = parent;
+        let annotator = cx.new(|cx| {
+            AttachmentAnnotator::new(
+                draft,
+                move |cx| {
+                    if let Some(parent) = cancel_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.capture_annotator = None;
+                            cx.notify();
+                        });
+                    }
+                },
+                move |draft, cx| {
+                    if let Some(parent) = apply_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.capture_annotator = None;
+                            this.add_attachment_draft(draft, cx);
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+        self.capture_annotator = Some(annotator);
+        cx.notify();
     }
 
     fn import_attachment_url(&mut self, cx: &mut Context<Self>) {
@@ -3244,9 +3304,7 @@ impl SupportView {
                         .on_click(cx.listener(|this, _, _, cx| this.capture_attachment(cx))),
                     ),
             )
-            .when(!self.attachment_drafts.is_empty(), |el| {
-                el.child(previews)
-            })
+            .when(!self.attachment_drafts.is_empty(), |el| el.child(previews))
             .when(!self.attachment_url_open, |el| {
                 el.child(
                     Button::new(
@@ -3265,34 +3323,34 @@ impl SupportView {
             })
             .when(self.attachment_url_open, |el| {
                 el.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .child(div().flex_1().min_w(px(0.0)).child(url_input))
-                    .child(
-                        Button::new(
-                            "support-attachment-url",
-                            t!("user.requests.attachments.add_url").to_string(),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(div().flex_1().min_w(px(0.0)).child(url_input))
+                        .child(
+                            Button::new(
+                                "support-attachment-url",
+                                t!("user.requests.attachments.add_url").to_string(),
+                            )
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Outline)
+                            .icon(IconSource::from("globe"))
+                            .disabled(self.attachment_busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.import_attachment_url(cx))),
                         )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Outline)
-                        .icon(IconSource::from("globe"))
-                        .disabled(self.attachment_busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.import_attachment_url(cx))),
-                    )
-                    .child(
-                        IconButton::new("x")
-                            .variant(ButtonVariant::Ghost)
-                            .size(gpui::px(32.0))
-                            .icon_size(gpui::px(13.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.attachment_url_open = false;
-                                this.attachment_url_state
-                                    .update(cx, |state, cx| state.reset(cx));
-                                cx.notify();
-                            })),
-                    ),
+                        .child(
+                            IconButton::new("x")
+                                .variant(ButtonVariant::Ghost)
+                                .size(gpui::px(32.0))
+                                .icon_size(gpui::px(13.0))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.attachment_url_open = false;
+                                    this.attachment_url_state
+                                        .update(cx, |state, cx| state.reset(cx));
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
     }
@@ -4155,6 +4213,41 @@ impl SupportView {
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
         let lightbox_attachments = attachments.to_vec();
+        let delete_target = if self.section == SupportSection::Requests {
+            self.issue_detail
+                .as_ref()
+                .map(|issue| (true, issue.id.clone()))
+        } else {
+            self.detail
+                .as_ref()
+                .map(|ticket| (false, ticket.id.clone()))
+        };
+        let delete_entity = entity.clone();
+        let delete_attachments = attachments.to_vec();
+        let on_delete = delete_target.map(|(is_issue, target_id)| {
+            Rc::new(move |index: usize, cx: &mut App| {
+                let Some(attachment) = delete_attachments.get(index) else {
+                    return;
+                };
+                let target = if is_issue {
+                    AttachmentDeleteTarget::Issue {
+                        target_id: target_id.clone(),
+                        attachment_id: attachment.id.clone(),
+                    }
+                } else {
+                    AttachmentDeleteTarget::Ticket {
+                        target_id: target_id.clone(),
+                        attachment_id: attachment.id.clone(),
+                    }
+                };
+                if let Some(entity) = delete_entity.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.confirm_attachment_delete = Some(target);
+                        cx.notify();
+                    });
+                }
+            }) as Rc<dyn Fn(usize, &mut App)>
+        });
         render_stored_attachment_gallery(
             attachments,
             "support-attachment",
@@ -4184,6 +4277,7 @@ impl SupportView {
                     cx.notify();
                 });
             },
+            on_delete,
         )
     }
 
@@ -4970,6 +5064,48 @@ impl SupportView {
         )
     }
 
+    fn render_delete_attachment_modal(
+        &self,
+        target: AttachmentDeleteTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entity = cx.entity();
+        let close_entity = entity.clone();
+        let confirm_entity = entity;
+        render_attachment_delete_dialog(
+            "support-attachment-delete",
+            move |cx| {
+                close_entity.update(cx, |this, cx| {
+                    this.confirm_attachment_delete = None;
+                    cx.notify();
+                });
+            },
+            move |cx| {
+                let target = target.clone();
+                confirm_entity.update(cx, |this, cx| {
+                    this.confirm_attachment_delete = None;
+                    match target {
+                        AttachmentDeleteTarget::Ticket {
+                            target_id,
+                            attachment_id,
+                        } => cx.emit(SupportViewEvent::SupportAttachmentDelete {
+                            id: target_id,
+                            attachment_id,
+                        }),
+                        AttachmentDeleteTarget::Issue {
+                            target_id,
+                            attachment_id,
+                        } => cx.emit(SupportViewEvent::IssueAttachmentDelete {
+                            id: target_id,
+                            attachment_id,
+                        }),
+                    }
+                    cx.notify();
+                });
+            },
+        )
+    }
+
     fn render_issue_popover(
         &self,
         iss: &Issue,
@@ -5567,9 +5703,16 @@ impl Render for SupportView {
                 root = root.child(self.render_delete_issue_modal(id, cx));
             }
         }
+        if let Some(target) = self.confirm_attachment_delete.clone() {
+            root = root.child(self.render_delete_attachment_modal(target, cx));
+        }
 
         if let Some(lightbox) = &self.attachment_lightbox {
             root = root.child(lightbox.clone());
+        }
+
+        if let Some(annotator) = &self.capture_annotator {
+            root = root.child(annotator.clone());
         }
 
         if let Some(err) = &self.error {
@@ -5779,6 +5922,83 @@ pub(crate) fn render_issue_delete_dialog(
                         .variant(ButtonVariant::Destructive)
                         .icon(IconSource::from("trash-2"))
                         .on_click(move |_, _, cx| on_confirm(cx)),
+                ),
+        )
+}
+
+pub(crate) fn render_attachment_delete_dialog(
+    id_prefix: &'static str,
+    on_close: impl Fn(&mut App) + Clone + 'static,
+    on_confirm: impl Fn(&mut App) + Clone + 'static,
+) -> impl IntoElement {
+    let backdrop_close = on_close.clone();
+    let cancel_close = on_close;
+    let cancel_id: SharedString = format!("{id_prefix}-cancel").into();
+    let confirm_id: SharedString = format!("{id_prefix}-confirm").into();
+
+    UiDialog::new()
+        .width(gpui::px(400.0))
+        .on_backdrop_click(move |_, cx| backdrop_close(cx))
+        .header(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(14.0))
+                .child(lucide_icon("trash-2", 16.0, ShellDeckColors::error()))
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("user.requests.attachments.delete.title").to_string()),
+                ),
+        )
+        .content(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(16.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(t!("user.requests.attachments.delete.body").to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("user.requests.attachments.delete.irreversible").to_string()),
+                ),
+        )
+        .footer(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.0))
+                .px(px(16.0))
+                .py(px(12.0))
+                .child(
+                    Button::new(
+                        cancel_id,
+                        t!("user.requests.attachments.delete.cancel").to_string(),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| cancel_close(cx)),
+                )
+                .child(
+                    Button::new(
+                        confirm_id,
+                        t!("user.requests.attachments.delete.confirm").to_string(),
+                    )
+                    .variant(ButtonVariant::Destructive)
+                    .icon(IconSource::from("trash-2"))
+                    .on_click(move |_, _, cx| on_confirm(cx)),
                 ),
         )
 }

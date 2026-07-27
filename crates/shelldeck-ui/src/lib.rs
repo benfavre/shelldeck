@@ -16,6 +16,7 @@ pub mod fleet_view;
 pub mod glyph_cache;
 pub mod i18n;
 pub mod icons;
+pub mod attachment_annotator;
 pub mod issue_attachments;
 pub mod jean_view;
 pub mod login_form;
