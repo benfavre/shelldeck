@@ -1136,8 +1136,10 @@ pub fn runtime_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::{BufRead, BufReader, Read};
     use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     /// Fake executor — records the prompt, returns a canned outcome. The real
@@ -1262,6 +1264,225 @@ mod tests {
     }
 
     const TOKEN: &str = "sd_faketoken";
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("shelldeck-jean-fleet-{name}-{id}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn shell_quote(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+    }
+
+    #[cfg(unix)]
+    fn fake_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\nset -eu\n{}\n", body)).unwrap();
+        let mut perm = fs::metadata(&path).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&path, perm).unwrap();
+        path
+    }
+
+    #[cfg(windows)]
+    fn fake_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_executor_uses_run_ndjson_flags_and_prompt_arg() {
+        let dir = temp_dir("jcode-flags");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let args_file = dir.join("args.txt");
+        let cwd_file = dir.join("cwd.txt");
+        let stdin_file = dir.join("stdin.txt");
+        let bin = fake_executable(
+            &dir,
+            "fake-jcode",
+            &format!(
+                r#"printf '%s\n' "$PWD" > {}
+printf '%s\n' "$@" > {}
+cat > {}
+printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
+"#,
+                shell_quote(&cwd_file),
+                shell_quote(&args_file),
+                shell_quote(&stdin_file)
+            ),
+        );
+
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            provider: Some("openai-api".into()),
+            model: Some("gpt-5.5".into()),
+            tool_profile: Some("minimal".into()),
+            output_format: JcodeOutputFormat::Ndjson,
+            ..Default::default()
+        });
+        let outcome = exec.execute(
+            "fix it",
+            workdir.to_str().unwrap(),
+            "ignored",
+            Duration::from_secs(5),
+        );
+
+        assert!(!outcome.is_error, "{:?}", outcome);
+        assert_eq!(outcome.result, "jcode done");
+        let canonical = workdir.canonicalize().unwrap();
+        let canonical = canonical.to_str().unwrap();
+        assert_eq!(fs::read_to_string(&cwd_file).unwrap().trim(), canonical);
+        assert_eq!(fs::read_to_string(&stdin_file).unwrap(), "");
+        let args: Vec<String> = fs::read_to_string(&args_file)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(args[0], "run");
+        assert!(args.contains(&"--ndjson".to_string()));
+        assert!(args.contains(&"--quiet".to_string()));
+        assert!(args.contains(&"--no-update".to_string()));
+        assert!(args.contains(&"--no-selfdev".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-C" && w[1] == canonical));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--provider" && w[1] == "openai-api"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gpt-5.5"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--tool-profile" && w[1] == "minimal"));
+        assert_eq!(args.last().map(String::as_str), Some("fix it"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_executor_parses_json_output() {
+        let dir = temp_dir("jcode-json");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let bin = fake_executable(
+            &dir,
+            "fake-jcode-json",
+            r#"printf '%s\n' '{"response":"json done","is_error":false}'"#,
+        );
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            output_format: JcodeOutputFormat::Json,
+            ..Default::default()
+        });
+        let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(5));
+        assert_eq!(outcome.result, "json done");
+        assert!(!outcome.is_error);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_executor_rejects_relative_or_missing_workdir_before_spawn() {
+        let dir = temp_dir("jcode-workdir");
+        let touched = dir.join("touched");
+        let bin = fake_executable(
+            &dir,
+            "fake-jcode-workdir",
+            &format!("touch {}", shell_quote(&touched)),
+        );
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            ..Default::default()
+        });
+
+        let relative = exec.execute("fix", "relative/path", "", Duration::from_secs(5));
+        assert!(relative.is_error);
+        assert!(
+            relative.result.contains("non absolu"),
+            "{}",
+            relative.result
+        );
+        assert!(
+            !touched.exists(),
+            "executor must not spawn for invalid workdirs"
+        );
+
+        let missing = dir.join("missing");
+        let missing = exec.execute("fix", missing.to_str().unwrap(), "", Duration::from_secs(5));
+        assert!(missing.is_error);
+        assert!(
+            missing.result.contains("inaccessible"),
+            "{}",
+            missing.result
+        );
+        assert!(
+            !touched.exists(),
+            "executor must not spawn for missing workdirs"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_executor_kills_child_on_timeout() {
+        let dir = temp_dir("jcode-timeout");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let bin = fake_executable(&dir, "fake-jcode-sleep", "sleep 5");
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            ..Default::default()
+        });
+        let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(1));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result.contains("Délai dépassé"),
+            "{}",
+            outcome.result
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_executor_falls_back_to_legacy_claude_only_when_jcode_cannot_start() {
+        let dir = temp_dir("jcode-fallback");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let stdin_file = dir.join("claude-stdin.txt");
+        let claude = fake_executable(
+            &dir,
+            "fake-claude",
+            &format!(
+                r#"cat > {}
+printf '%s\n' '{{"type":"result","result":"claude fallback","is_error":false}}'
+"#,
+                shell_quote(&stdin_file)
+            ),
+        );
+        let exec = ConfiguredJobExecutor::from_config(&JeanRuntimeExecutorConfig {
+            rollout: JeanRuntimeExecutorRollout::Jcode,
+            binary: Some(dir.join("missing-jcode").display().to_string()),
+            fallback_to_claude: true,
+            claude_binary: Some(claude.display().to_string()),
+            ..Default::default()
+        });
+
+        let outcome = exec.execute(
+            "legacy please",
+            workdir.to_str().unwrap(),
+            "",
+            Duration::from_secs(5),
+        );
+        assert!(!outcome.is_error, "{:?}", outcome);
+        assert_eq!(outcome.result, "claude fallback");
+        assert_eq!(fs::read_to_string(stdin_file).unwrap(), "legacy please");
+    }
 
     #[test]
     fn get_fleet_parses() {

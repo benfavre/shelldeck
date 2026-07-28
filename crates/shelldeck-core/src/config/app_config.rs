@@ -707,12 +707,23 @@ global_palette_shortcut_enabled = true
         let loaded = AppConfig::load_from(&path).expect("load");
         assert!(!loaded.jean_runtime.enabled);
         assert!(loaded.jean_runtime.instance_id.is_none());
+        assert_eq!(
+            loaded.jean_runtime.executor.rollout,
+            crate::config::jean_fleet::JeanRuntimeExecutorRollout::Jcode
+        );
+        assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 30 * 60);
+        assert!(loaded.jean_runtime.executor.fallback_to_claude);
 
         // Round-trip a registered runtime.
         let mut cfg = AppConfig::default();
         cfg.jean_runtime.enabled = true;
         cfg.jean_runtime.instance_id = Some("4365eee9".to_string());
         cfg.jean_runtime.workdir = Some("/home/x/infra".to_string());
+        cfg.jean_runtime.executor.provider = Some("openai-api".to_string());
+        cfg.jean_runtime.executor.model = Some("gpt-5.5".to_string());
+        cfg.jean_runtime.executor.tool_profile = Some("minimal".to_string());
+        cfg.jean_runtime.executor.binary = Some("/usr/local/bin/jcode".to_string());
+        cfg.jean_runtime.executor.timeout_seconds = 42;
         cfg.save_to(&path).expect("save");
         let loaded = AppConfig::load_from(&path).expect("load");
         assert!(loaded.jean_runtime.enabled);
@@ -721,6 +732,23 @@ global_palette_shortcut_enabled = true
             loaded.jean_runtime.workdir.as_deref(),
             Some("/home/x/infra")
         );
+        assert_eq!(
+            loaded.jean_runtime.executor.provider.as_deref(),
+            Some("openai-api")
+        );
+        assert_eq!(
+            loaded.jean_runtime.executor.model.as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            loaded.jean_runtime.executor.tool_profile.as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(
+            loaded.jean_runtime.executor.binary.as_deref(),
+            Some("/usr/local/bin/jcode")
+        );
+        assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 42);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
