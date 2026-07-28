@@ -1,6 +1,12 @@
 use super::*;
 
 impl Workspace {
+    /// The fixed command-palette entries (everything except the runtime-dependent
+    /// manage-area entries, which [`refresh_command_palette`] appends).
+    ///
+    /// The palette mirrors the current surface: personal actions are global,
+    /// while Support and Dev actions only exist when that surface is active.
+    /// Mode rows are built from the caller's exact allowed set.
     pub(super) fn base_palette_actions(
         allowed_modes: &'static [AppMode],
         current_mode: AppMode,
