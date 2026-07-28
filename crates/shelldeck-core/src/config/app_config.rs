@@ -713,6 +713,10 @@ global_palette_shortcut_enabled = true
         );
         assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 30 * 60);
         assert!(loaded.jean_runtime.executor.fallback_to_claude);
+        assert_eq!(
+            loaded.jean_runtime.executor.transport,
+            crate::config::jean_fleet::JcodeTransportPreference::Process
+        );
 
         // Round-trip a registered runtime.
         let mut cfg = AppConfig::default();
@@ -723,6 +727,8 @@ global_palette_shortcut_enabled = true
         cfg.jean_runtime.executor.model = Some("gpt-5.5".to_string());
         cfg.jean_runtime.executor.tool_profile = Some("minimal".to_string());
         cfg.jean_runtime.executor.binary = Some("/usr/local/bin/jcode".to_string());
+        cfg.jean_runtime.executor.transport =
+            crate::config::jean_fleet::JcodeTransportPreference::Acp;
         cfg.jean_runtime.executor.timeout_seconds = 42;
         cfg.save_to(&path).expect("save");
         let loaded = AppConfig::load_from(&path).expect("load");
@@ -747,6 +753,10 @@ global_palette_shortcut_enabled = true
         assert_eq!(
             loaded.jean_runtime.executor.binary.as_deref(),
             Some("/usr/local/bin/jcode")
+        );
+        assert_eq!(
+            loaded.jean_runtime.executor.transport,
+            crate::config::jean_fleet::JcodeTransportPreference::Acp
         );
         assert_eq!(loaded.jean_runtime.executor.timeout_seconds, 42);
 

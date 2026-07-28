@@ -95,6 +95,26 @@ impl Default for JcodeOutputFormat {
     }
 }
 
+/// Transport preference for the Jcode executor.
+///
+/// `process` is the stable contract and remains the default. `acp`/`auto` are
+/// ACP-ready configuration hooks: they perform a capability probe and strictly
+/// fall back to the existing `jcode run` process transport until Jcode ACP has a
+/// versioned public client contract we can safely execute against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JcodeTransportPreference {
+    Process,
+    Acp,
+    Auto,
+}
+
+impl Default for JcodeTransportPreference {
+    fn default() -> Self {
+        Self::Process
+    }
+}
+
 /// `[jean_runtime.executor]` — local agent command + rollout policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JeanRuntimeExecutorConfig {
@@ -117,6 +137,10 @@ pub struct JeanRuntimeExecutorConfig {
     /// Jcode output mode. Defaults to streaming NDJSON.
     #[serde(default)]
     pub output_format: JcodeOutputFormat,
+    /// Preferred Jcode transport. Defaults to the stable `jcode run` process
+    /// path. `acp`/`auto` are feature-gated probe-only fallbacks today.
+    #[serde(default)]
+    pub transport: JcodeTransportPreference,
     /// Per-job hard timeout. On expiry the child process is killed. Defaults to 30m.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
@@ -142,6 +166,7 @@ impl Default for JeanRuntimeExecutorConfig {
             model: None,
             tool_profile: None,
             output_format: JcodeOutputFormat::Ndjson,
+            transport: JcodeTransportPreference::Process,
             timeout_seconds: default_timeout_seconds(),
             fallback_to_claude: true,
             claude_binary: None,
@@ -726,6 +751,7 @@ pub struct JcodeExecutor {
     pub model: Option<String>,
     pub tool_profile: Option<String>,
     pub output_format: JcodeOutputFormat,
+    pub transport: JcodeTransportPreference,
 }
 
 impl JcodeExecutor {
@@ -739,22 +765,94 @@ impl JcodeExecutor {
             model: opt_trimmed(&config.model).map(str::to_string),
             tool_profile: opt_trimmed(&config.tool_profile).map(str::to_string),
             output_format: config.output_format,
+            transport: config.transport,
         }
     }
 }
 
 impl JobExecutor for JcodeExecutor {
     fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
-        use std::process::{Command, Stdio};
-
         let workdir = match validate_workdir(workdir) {
             Ok(path) => path,
             Err(e) => return JobOutcome::error(format!("Workdir Jean invalide: {}", e)),
         };
 
+        let process = ProcessJcodeTransport { executor: self };
+        match self.transport {
+            JcodeTransportPreference::Process => process.execute(prompt, &workdir, model, timeout),
+            JcodeTransportPreference::Acp | JcodeTransportPreference::Auto => {
+                let acp = AcpJcodeTransport { executor: self };
+                let probe = acp.probe(Duration::from_secs(2).min(timeout));
+                if probe.available {
+                    let outcome = acp.execute(prompt, &workdir, model, timeout);
+                    if !outcome.is_error || !outcome.fallback_allowed {
+                        return outcome;
+                    }
+                }
+
+                let mut fallback = process.execute(prompt, &workdir, model, timeout);
+                if fallback.is_error {
+                    fallback.result = format!(
+                        "Transport Jcode ACP indisponible, puis fallback process en échec.\nACP: {}\nProcess: {}",
+                        probe.reason, fallback.result
+                    );
+                }
+                fallback
+            }
+        }
+    }
+}
+
+struct ProcessJcodeTransport<'a> {
+    executor: &'a JcodeExecutor,
+}
+
+trait JcodeTransport {
+    fn probe(&self, timeout: Duration) -> JcodeTransportProbe;
+    fn execute(
+        &self,
+        prompt: &str,
+        workdir: &std::path::Path,
+        model: &str,
+        timeout: Duration,
+    ) -> JobOutcome;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JcodeTransportProbe {
+    pub available: bool,
+    pub reason: String,
+}
+
+impl JcodeTransportProbe {
+    fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl JcodeTransport for ProcessJcodeTransport<'_> {
+    fn probe(&self, _timeout: Duration) -> JcodeTransportProbe {
+        JcodeTransportProbe {
+            available: true,
+            reason: "stable jcode run process transport".to_string(),
+        }
+    }
+
+    fn execute(
+        &self,
+        prompt: &str,
+        workdir: &std::path::Path,
+        model: &str,
+        timeout: Duration,
+    ) -> JobOutcome {
+        use std::process::{Command, Stdio};
+
         let mut args: Vec<String> = vec![
             "run".into(),
-            match self.output_format {
+            match self.executor.output_format {
                 JcodeOutputFormat::Ndjson => "--ndjson".into(),
                 JcodeOutputFormat::Json => "--json".into(),
             },
@@ -764,11 +862,12 @@ impl JobExecutor for JcodeExecutor {
             "-C".into(),
             workdir.display().to_string(),
         ];
-        if let Some(provider) = &self.provider {
+        if let Some(provider) = &self.executor.provider {
             args.push("--provider".into());
             args.push(provider.clone());
         }
         let effective_model = self
+            .executor
             .model
             .as_deref()
             .map(str::trim)
@@ -778,32 +877,110 @@ impl JobExecutor for JcodeExecutor {
             args.push("--model".into());
             args.push(effective_model.to_string());
         }
-        if let Some(profile) = &self.tool_profile {
+        if let Some(profile) = &self.executor.tool_profile {
             args.push("--tool-profile".into());
             args.push(profile.clone());
         }
         args.push(prompt.to_string());
 
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = Command::new(&self.executor.bin);
         cmd.args(&args)
             .current_dir(&workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return JobOutcome::fallbackable_error(format!(
-                    "Impossible de lancer Jcode ({}): {}",
-                    self.bin, e
-                ))
+        // Linux can briefly return ETXTBSY while a freshly replaced executable is still being
+        // closed by its writer. Retry only that transient condition; every other launch failure
+        // remains immediately fallbackable and the bounded retries do not affect cancellation.
+        let mut attempts = 0;
+        let child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.raw_os_error() == Some(26) && attempts < 3 => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    return JobOutcome::fallbackable_error(format!(
+                        "Impossible de lancer Jcode ({}): {}",
+                        self.executor.bin, e
+                    ));
+                }
             }
         };
 
         let output = wait_with_timeout(child, timeout);
-        parse_jcode_output(&output, self.output_format, timeout)
+        parse_jcode_output(&output, self.executor.output_format, timeout)
     }
+}
+
+struct AcpJcodeTransport<'a> {
+    executor: &'a JcodeExecutor,
+}
+
+impl JcodeTransport for AcpJcodeTransport<'_> {
+    fn probe(&self, timeout: Duration) -> JcodeTransportProbe {
+        probe_jcode_acp(&self.executor.bin, timeout)
+    }
+
+    fn execute(
+        &self,
+        _prompt: &str,
+        _workdir: &std::path::Path,
+        _model: &str,
+        _timeout: Duration,
+    ) -> JobOutcome {
+        JobOutcome::fallbackable_error(
+            "Transport Jcode ACP désactivé: aucun contrat client ACP versionné et public n'est encore validé pour ShellDeck.",
+        )
+    }
+}
+
+#[cfg(not(feature = "jcode-acp"))]
+fn probe_jcode_acp(_bin: &str, _timeout: Duration) -> JcodeTransportProbe {
+    JcodeTransportProbe::unavailable(
+        "support ACP Jcode non compilé (feature shelldeck-core/jcode-acp absente); fallback process utilisé",
+    )
+}
+
+#[cfg(feature = "jcode-acp")]
+fn probe_jcode_acp(bin: &str, timeout: Duration) -> JcodeTransportProbe {
+    use std::process::{Command, Stdio};
+
+    let mut cmd = Command::new(bin);
+    cmd.arg("acp")
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return JcodeTransportProbe::unavailable(format!(
+                "commande ACP Jcode indisponible ({} acp --help): {}; fallback process utilisé",
+                bin, err
+            ));
+        }
+    };
+    let output = wait_with_timeout(child, timeout.max(Duration::from_secs(1)));
+    if output.killed {
+        return JcodeTransportProbe::unavailable(
+            "probe ACP Jcode expiré; fallback process utilisé".to_string(),
+        );
+    }
+    let help = format!("{}\n{}", output.stdout, output.stderr);
+    if !status_success(output.status)
+        || !help.contains("Agent Client Protocol")
+        || !help.contains("acp")
+    {
+        return JcodeTransportProbe::unavailable(
+            "la CLI Jcode courante n'annonce pas un adaptateur ACP compatible; fallback process utilisé",
+        );
+    }
+    JcodeTransportProbe::unavailable(
+        "adaptateur ACP Jcode détecté, mais exécution désactivée: ShellDeck n'a trouvé qu'un contrat de source CLI non versionné, pas une API client publique stable; fallback process utilisé",
+    )
 }
 
 /// Real executor — mirrors the bot's `claude.ts`: `claude -p --output-format
@@ -874,7 +1051,7 @@ impl JobExecutor for ClaudeExecutor {
                 return JobOutcome::fallbackable_error(format!(
                     "Impossible de lancer Claude Code ({}): {}",
                     self.bin, e
-                ))
+                ));
             }
         };
 
@@ -1355,15 +1532,18 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
         assert!(args.contains(&"--no-update".to_string()));
         assert!(args.contains(&"--no-selfdev".to_string()));
         assert!(args.windows(2).any(|w| w[0] == "-C" && w[1] == canonical));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--provider" && w[1] == "openai-api"));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--model" && w[1] == "gpt-5.5"));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--tool-profile" && w[1] == "minimal"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--provider" && w[1] == "openai-api")
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "gpt-5.5")
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--tool-profile" && w[1] == "minimal")
+        );
         assert_eq!(args.last().map(String::as_str), Some("fix it"));
     }
 
@@ -1386,6 +1566,59 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
         let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(5));
         assert_eq!(outcome.result, "json done");
         assert!(!outcome.is_error);
+    }
+
+    #[test]
+    fn jcode_acp_probe_is_explicitly_disabled_by_contract() {
+        let probe = probe_jcode_acp("missing-jcode-for-probe", Duration::from_secs(1));
+        assert!(!probe.available);
+        assert!(
+            probe.reason.contains("fallback process")
+                || probe.reason.contains("fallback process utilisé"),
+            "{}",
+            probe.reason
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_acp_transport_falls_back_to_process_run() {
+        let dir = temp_dir("jcode-acp-fallback");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let calls_file = dir.join("calls.txt");
+        let bin = fake_executable(
+            &dir,
+            "fake-jcode-acp-fallback",
+            &format!(
+                r#"printf '%s\n' "$@" >> {}
+if [ "${{1:-}}" = "acp" ]; then
+  printf '%s\n' 'Run as an Agent Client Protocol (ACP) adapter backed by the Jcode daemon'
+  exit 0
+fi
+printf '%s\n' '{{"type":"result","result":"process fallback","is_error":false}}'
+"#,
+                shell_quote(&calls_file),
+            ),
+        );
+
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            transport: JcodeTransportPreference::Acp,
+            ..Default::default()
+        });
+        let outcome = exec.execute(
+            "fix via fallback",
+            workdir.to_str().unwrap(),
+            "",
+            Duration::from_secs(5),
+        );
+
+        assert!(!outcome.is_error, "{:?}", outcome);
+        assert_eq!(outcome.result, "process fallback");
+        let calls = fs::read_to_string(calls_file).unwrap();
+        assert!(calls.contains("run\n"), "{calls}");
+        assert!(calls.contains("fix via fallback"), "{calls}");
     }
 
     #[cfg(unix)]
@@ -1444,6 +1677,33 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
         assert!(outcome.is_error);
         assert!(
             outcome.result.contains("Délai dépassé"),
+            "{}",
+            outcome.result
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jcode_acp_fallback_preserves_process_timeout_cancellation() {
+        let dir = temp_dir("jcode-acp-timeout");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let bin = fake_executable(&dir, "fake-jcode-acp-timeout", "sleep 5");
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            transport: JcodeTransportPreference::Acp,
+            ..Default::default()
+        });
+
+        let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(1));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result.contains("Délai dépassé"),
+            "{}",
+            outcome.result
+        );
+        assert!(
+            outcome.result.contains("ACP") || outcome.result.contains("Jcode"),
             "{}",
             outcome.result
         );

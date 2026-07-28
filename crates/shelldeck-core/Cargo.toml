@@ -21,6 +21,13 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 
+[features]
+default = []
+# Compile the ACP transport probe for Jcode. The executor still falls back to
+# the stable `jcode run` process path until ACP has a versioned public client
+# contract we can rely on end-to-end.
+jcode-acp = []
+
 [package.metadata.i18n]
 available-locales = ["fr", "en"]
 default-locale = "fr"
