@@ -189,6 +189,17 @@ impl AssetSource for Assets {
             "images/brand/svg/expressions/dark-wink-logo.svg" => {
                 include_bytes!("../assets/images/brand/svg/expressions/dark-wink-logo.svg")
             }
+            // Full-expression animated Monolith personalities used by the
+            // User, Support, and Dev mode transition loaders.
+            "images/brand/webp/modes/monolith-user.webp" => {
+                include_bytes!("../assets/images/brand/webp/modes/monolith-user.webp")
+            }
+            "images/brand/webp/modes/monolith-support.webp" => {
+                include_bytes!("../assets/images/brand/webp/modes/monolith-support.webp")
+            }
+            "images/brand/webp/modes/monolith-dev.webp" => {
+                include_bytes!("../assets/images/brand/webp/modes/monolith-dev.webp")
+            }
             // Per-theme in-app badge PNGs — `brand_badge()` swaps to match the
             // active palette. Kept as PNG because GPUI `svg()` is monochrome.
             "images/brand/png/themes/monolith-dark-128.png" => {
@@ -293,6 +304,9 @@ impl AssetSource for Assets {
             SharedString::from("images/brand/svg/expressions/dark-default-logo.svg"),
             SharedString::from("images/brand/svg/expressions/dark-neutral-logo.svg"),
             SharedString::from("images/brand/svg/expressions/dark-wink-logo.svg"),
+            SharedString::from("images/brand/webp/modes/monolith-user.webp"),
+            SharedString::from("images/brand/webp/modes/monolith-support.webp"),
+            SharedString::from("images/brand/webp/modes/monolith-dev.webp"),
             SharedString::from("images/brand/png/themes/monolith-dark-128.png"),
             SharedString::from("images/brand/png/themes/monolith-light-128.png"),
             SharedString::from("images/brand/png/themes/monolith-dracula-128.png"),

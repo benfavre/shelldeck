@@ -111,6 +111,7 @@ mod events;
 mod fleet;
 mod forwards;
 mod jean;
+mod mascot;
 mod menu;
 mod modes;
 mod navigation;
@@ -164,6 +165,25 @@ struct PostLoginSplash {
     display_name: String,
     dismissing: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModeTransitionPhase {
+    FadeOut,
+    Loading,
+    FadeIn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModeTransition {
+    target: AppMode,
+    phase: ModeTransitionPhase,
+}
+
+const MODE_TRANSITION_OUT_MS: u64 = 180;
+const MODE_TRANSITION_LOADING_MS: u64 = 2_540;
+const MODE_TRANSITION_IN_MS: u64 = 280;
+const MODE_TRANSITION_TOTAL_MS: u64 =
+    MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS + MODE_TRANSITION_IN_MS;
 
 impl AccountStatus {
     fn dot_color(self) -> Hsla {
@@ -221,16 +241,6 @@ fn post_login_splash_remaining(elapsed: std::time::Duration) -> Option<std::time
     std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)
         .checked_sub(elapsed)
         .filter(|remaining| !remaining.is_zero())
-}
-
-/// The wink is deliberately brief, matching a natural blink instead of
-/// cross-fading constantly between the two Monolith expressions.
-fn post_login_wink_opacity(delta: f32) -> f32 {
-    if (0.72..=0.82).contains(&delta) {
-        1.0
-    } else {
-        0.0
-    }
 }
 
 /// A deterministic loading curve that feels like staged application startup:
@@ -400,6 +410,7 @@ pub struct Workspace {
     connection_form: Option<Entity<ConnectionForm>>,
     login_form: Option<Entity<LoginForm>>,
     post_login_splash: Option<PostLoginSplash>,
+    mode_transition: Option<ModeTransition>,
     onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
@@ -1079,6 +1090,7 @@ impl Workspace {
             connection_form: None,
             login_form: None,
             post_login_splash: None,
+            mode_transition: None,
             onboarding: None,
             port_forward_form: None,
             script_form: None,
@@ -1361,8 +1373,8 @@ fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option
 mod tests {
     use super::{
         POST_LOGIN_SPLASH_MIN_MS, ShortcutToastKind, post_login_simulated_progress,
-        post_login_splash_opacity, post_login_splash_remaining, post_login_wink_opacity,
-        shortcut_failure_toasts, shortcut_status_is_failure,
+        post_login_splash_opacity, post_login_splash_remaining, shortcut_failure_toasts,
+        shortcut_status_is_failure,
     };
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
     use crate::t;
@@ -1389,13 +1401,6 @@ mod tests {
             post_login_splash_remaining(std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS))
                 .is_none()
         );
-    }
-
-    #[test]
-    fn post_login_mascot_only_winks_briefly() {
-        assert_eq!(post_login_wink_opacity(0.2), 0.0);
-        assert_eq!(post_login_wink_opacity(0.75), 1.0);
-        assert_eq!(post_login_wink_opacity(0.9), 0.0);
     }
 
     #[test]

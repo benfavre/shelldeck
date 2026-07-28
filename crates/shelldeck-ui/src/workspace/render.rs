@@ -1,4 +1,90 @@
+use super::mascot::{animated_monolith, MonolithMotion};
 use super::*;
+
+fn mode_transition_overlay_opacity(delta: f32) -> f32 {
+    let delta = delta.clamp(0.0, 1.0);
+    let fade_out_end = MODE_TRANSITION_OUT_MS as f32 / MODE_TRANSITION_TOTAL_MS as f32;
+    let fade_in_start = (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS) as f32
+        / MODE_TRANSITION_TOTAL_MS as f32;
+
+    if delta < fade_out_end {
+        ease_in_out(delta / fade_out_end)
+    } else if delta < fade_in_start {
+        1.0
+    } else {
+        1.0 - ease_in_out((delta - fade_in_start) / (1.0 - fade_in_start))
+    }
+}
+
+impl Workspace {
+    fn render_mode_transition_loader(&self, transition: ModeTransition) -> impl IntoElement {
+        let mode_label = match transition.target {
+            AppMode::User => t!("mode.transition.user").to_string(),
+            AppMode::Support => t!("mode.transition.support").to_string(),
+            AppMode::Dev => t!("mode.transition.dev").to_string(),
+        };
+        let (mascot_motion, subtitle) = match transition.target {
+            AppMode::User => (
+                MonolithMotion::UserCompanion,
+                t!("mode.transition.subtitle.user").to_string(),
+            ),
+            AppMode::Support => (
+                MonolithMotion::SupportScan,
+                t!("mode.transition.subtitle.support").to_string(),
+            ),
+            AppMode::Dev => (
+                MonolithMotion::DevTyping,
+                t!("mode.transition.subtitle.dev").to_string(),
+            ),
+        };
+        div()
+            .id("mode-transition-loader")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(ShellDeckColors::bg_primary())
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(14.0))
+                    .child(animated_monolith(
+                        "mode-transition-mascot",
+                        166.0,
+                        mascot_motion,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(
+                                t!("mode.transition.title", mode = mode_label.as_str()).to_string(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(subtitle),
+                    ),
+            )
+            .with_animation(
+                SharedString::from(format!("mode-loader-{:?}", transition.target)),
+                Animation::new(std::time::Duration::from_millis(MODE_TRANSITION_TOTAL_MS)),
+                move |element, delta| element.opacity(mode_transition_overlay_opacity(delta)),
+            )
+    }
+}
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -636,6 +722,10 @@ impl Render for Workspace {
             ));
         }
 
+        if let Some(transition) = self.mode_transition {
+            root = root.child(self.render_mode_transition_loader(transition));
+        }
+
         // The post-login transition is intentionally last: it covers window
         // chrome, toasts and first-run onboarding until the initial sync has
         // produced a coherent signed-in workspace.
@@ -644,5 +734,24 @@ impl Render for Workspace {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        mode_transition_overlay_opacity, MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS,
+        MODE_TRANSITION_TOTAL_MS,
+    };
+
+    #[test]
+    fn mode_transition_loader_fades_in_holds_then_fades_out() {
+        let hold_delta = (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS / 2) as f32
+            / MODE_TRANSITION_TOTAL_MS as f32;
+
+        assert_eq!(mode_transition_overlay_opacity(0.0), 0.0);
+        assert_eq!(mode_transition_overlay_opacity(hold_delta), 1.0);
+        assert_eq!(mode_transition_overlay_opacity(1.0), 0.0);
+        assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
     }
 }

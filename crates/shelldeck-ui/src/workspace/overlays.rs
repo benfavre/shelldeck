@@ -1,3 +1,4 @@
+use super::mascot::{animated_monolith, MonolithMotion};
 use super::*;
 
 impl Workspace {
@@ -142,45 +143,8 @@ impl Workspace {
     pub(super) fn render_post_login_splash(&self, splash: &PostLoginSplash) -> impl IntoElement {
         use std::time::Duration;
 
-        let mascot = div()
-            .relative()
-            .flex_shrink_0()
-            .w(px(188.0))
-            .h(px(188.0))
-            .child(
-                img("images/brand/svg/expressions/dark-default-logo.svg")
-                    .w_full()
-                    .h_full()
-                    .object_fit(ObjectFit::Contain),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .child(
-                        img("images/brand/svg/expressions/dark-wink-logo.svg")
-                            .w_full()
-                            .h_full()
-                            .object_fit(ObjectFit::Contain),
-                    )
-                    .with_animation(
-                        "post-login-mascot-wink",
-                        Animation::new(Duration::from_millis(4_200)).repeat(),
-                        |el, delta| el.opacity(post_login_wink_opacity(delta)),
-                    ),
-            )
-            .with_animation(
-                "post-login-mascot-float",
-                Animation::new(Duration::from_millis(2_600))
-                    .repeat()
-                    .with_easing(ease_in_out),
-                |el, delta| {
-                    let y = (delta * std::f32::consts::TAU).sin() * 5.0;
-                    el.top(px(y))
-                },
-            );
+        let mascot =
+            animated_monolith("post-login-mascot", 188.0, MonolithMotion::FloatAndBreathe);
 
         let progress_bar = div()
             .relative()

@@ -95,26 +95,105 @@ impl Workspace {
     /// Switch to an allowed app mode. Dev surfaces are hidden, not destroyed —
     /// running terminal sessions keep going.
     pub fn set_mode(&mut self, mode: AppMode, cx: &mut Context<Self>) {
-        if !self.can_access_mode(mode) || self.app_config.cloud_sync.mode == mode {
+        if !self.can_access_mode(mode)
+            || self.app_config.cloud_sync.mode == mode
+            || self.mode_transition.is_some()
+        {
             return;
         }
-        self.app_config.cloud_sync.mode = mode;
+
+        // Close transient chrome immediately, but keep rendering the current
+        // surface until it has faded to zero opacity.
         self.settings_open = false;
-        if let Err(e) = self.app_config.save() {
-            tracing::error!("Failed to save app mode: {}", e);
-        }
         self.theme_menu_open = false;
         self.account_menu_open = false;
         self.site_menu_open = false;
-
-        // Cross-mode selection carry-over: opening a request in Support then
-        // switching to User made the User-mode detail sheet auto-open on top
-        // of the (unrelated) User list, because both surfaces share
-        // `issue_selected`/`issue_detail`.
         self.reset_issue_selection(cx);
-
-        self.activate_current_mode(cx);
+        self.mode_transition = Some(ModeTransition {
+            target: mode,
+            phase: ModeTransitionPhase::FadeOut,
+        });
         cx.notify();
+
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(MODE_TRANSITION_OUT_MS))
+                .await;
+
+            let Ok(continue_transition) = this.update(cx, |workspace, cx| {
+                let expected = ModeTransition {
+                    target: mode,
+                    phase: ModeTransitionPhase::FadeOut,
+                };
+                if workspace.mode_transition != Some(expected) || !workspace.can_access_mode(mode) {
+                    workspace.mode_transition = None;
+                    cx.notify();
+                    return false;
+                }
+
+                workspace.commit_mode_change(mode, cx);
+                workspace.mode_transition = Some(ModeTransition {
+                    target: mode,
+                    phase: ModeTransitionPhase::Loading,
+                });
+                cx.notify();
+                true
+            }) else {
+                return;
+            };
+            if !continue_transition {
+                return;
+            }
+
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(MODE_TRANSITION_LOADING_MS))
+                .await;
+            let Ok(continue_transition) = this.update(cx, |workspace, cx| {
+                let expected = ModeTransition {
+                    target: mode,
+                    phase: ModeTransitionPhase::Loading,
+                };
+                if workspace.mode_transition != Some(expected) {
+                    return false;
+                }
+                workspace.mode_transition = Some(ModeTransition {
+                    target: mode,
+                    phase: ModeTransitionPhase::FadeIn,
+                });
+                cx.notify();
+                true
+            }) else {
+                return;
+            };
+            if !continue_transition {
+                return;
+            }
+
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(MODE_TRANSITION_IN_MS))
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                let expected = ModeTransition {
+                    target: mode,
+                    phase: ModeTransitionPhase::FadeIn,
+                };
+                if workspace.mode_transition == Some(expected) {
+                    workspace.mode_transition = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Commit the persisted mode only at the invisible midpoint between the
+    /// outgoing and incoming surfaces.
+    fn commit_mode_change(&mut self, mode: AppMode, cx: &mut Context<Self>) {
+        self.app_config.cloud_sync.mode = mode;
+        if let Err(e) = self.app_config.save() {
+            tracing::error!("Failed to save app mode: {}", e);
+        }
+        self.activate_current_mode(cx);
     }
 
     /// Open personal Settings without destroying or replacing the current

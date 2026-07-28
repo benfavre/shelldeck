@@ -426,6 +426,7 @@ impl Workspace {
         self.push_account_to_support(cx);
         self.account_status = AccountStatus::Unknown;
         self.post_login_splash = None;
+        self.mode_transition = None;
         self.account_menu_open = false;
         self.settings_open = false;
         self.last_whoami = None;
