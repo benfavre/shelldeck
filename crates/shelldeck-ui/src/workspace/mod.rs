@@ -133,6 +133,14 @@ struct NewIssueDraft {
     attachments: Vec<AttachmentDraft>,
 }
 
+/// Full-window transition shown after Manage accepts a login and while the
+/// first cloud profile sync prepares the signed-in workspace.
+#[derive(Debug, Clone)]
+struct PostLoginSplash {
+    display_name: String,
+    dismissing: bool,
+}
+
 impl AccountStatus {
     fn dot_color(self) -> Hsla {
         match self {
@@ -180,6 +188,64 @@ pub enum UserHomeTab {
 /// handlers use it to keep the sheet mounted while the exit tween plays,
 /// then clear the backing state.
 const SHEET_ANIM_MS: u64 = 300;
+
+/// Keeps very fast logins from flashing the splash for only a frame or two.
+const POST_LOGIN_SPLASH_MIN_MS: u64 = 3_000;
+const POST_LOGIN_SPLASH_FADE_MS: u64 = 380;
+
+fn post_login_splash_remaining(elapsed: std::time::Duration) -> Option<std::time::Duration> {
+    std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())
+}
+
+/// The wink is deliberately brief, matching a natural blink instead of
+/// cross-fading constantly between the two Monolith expressions.
+fn post_login_wink_opacity(delta: f32) -> f32 {
+    if (0.72..=0.82).contains(&delta) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// A deterministic loading curve that feels like staged application startup:
+/// quick discovery, slower profile preparation, then a short finalization.
+/// Keeping it monotonic prevents the percentage from ever moving backwards.
+fn post_login_simulated_progress(delta: f32) -> f32 {
+    let delta = delta.clamp(0.0, 1.0);
+    let stages = [
+        (0.00, 0.00),
+        (0.10, 0.18),
+        (0.28, 0.39),
+        (0.47, 0.56),
+        (0.68, 0.79),
+        (0.86, 0.93),
+        (0.96, 0.98),
+        (1.00, 1.00),
+    ];
+
+    for pair in stages.windows(2) {
+        let (start_t, start_progress) = pair[0];
+        let (end_t, end_progress) = pair[1];
+        if delta <= end_t {
+            let local = ((delta - start_t) / (end_t - start_t)).clamp(0.0, 1.0);
+            // Smooth each stage without removing the deliberate speed changes.
+            let eased = local * local * (3.0 - 2.0 * local);
+            return start_progress + (end_progress - start_progress) * eased;
+        }
+    }
+
+    1.0
+}
+
+fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
+    if dismissing {
+        1.0 - delta.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
 
 /// Everything the runtime tick needs, gathered on the UI thread then moved into
 /// the background executor (all owned + `Send`).
@@ -309,6 +375,7 @@ pub struct Workspace {
     toasts: Entity<ToastContainer>,
     connection_form: Option<Entity<ConnectionForm>>,
     login_form: Option<Entity<LoginForm>>,
+    post_login_splash: Option<PostLoginSplash>,
     onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
@@ -987,6 +1054,7 @@ impl Workspace {
             toasts,
             connection_form: None,
             login_form: None,
+            post_login_splash: None,
             onboarding: None,
             port_forward_form: None,
             script_form: None,
@@ -4747,6 +4815,10 @@ impl Workspace {
         self.login_form = None;
         self._login_form_sub = None;
         self.account_menu_open = false;
+        self.post_login_splash = Some(PostLoginSplash {
+            display_name: account.display_name().to_string(),
+            dismissing: false,
+        });
         cx.notify();
 
         // Load the sites directory for the switcher (background, non-blocking).
@@ -4757,10 +4829,9 @@ impl Workspace {
         // last_seen_at) — the login response only carries the AccountInfo
         // subset, but "Mes informations" needs the richer payload.
         self.check_account_on_startup(cx);
-        self.maybe_show_onboarding(cx);
-
         let cfg = self.app_config.cloud_sync.clone();
         let name = account.display_name();
+        let splash_started_at = std::time::Instant::now();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -4768,6 +4839,9 @@ impl Workspace {
                     shelldeck_core::config::cloud_sync::sync_now(&cfg, shelldeck_core::VERSION)
                 })
                 .await;
+            if let Some(remaining) = post_login_splash_remaining(splash_started_at.elapsed()) {
+                cx.background_executor().timer(remaining).await;
+            }
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(_stats) => {
                     ws.reload_connections_after_sync(cx);
@@ -4794,6 +4868,22 @@ impl Workspace {
                         cx,
                     );
                 }
+            });
+            let _ = this.update(cx, |ws, cx| {
+                if let Some(splash) = &mut ws.post_login_splash {
+                    splash.dismissing = true;
+                }
+                cx.notify();
+            });
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    POST_LOGIN_SPLASH_FADE_MS,
+                ))
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.post_login_splash = None;
+                ws.maybe_show_onboarding(cx);
+                cx.notify();
             });
         })
         .detach();
@@ -4829,6 +4919,7 @@ impl Workspace {
         self.sync_settings_config(cx);
         self.push_account_to_support(cx);
         self.account_status = AccountStatus::Unknown;
+        self.post_login_splash = None;
         self.account_menu_open = false;
         self.settings_open = false;
         self.last_whoami = None;
@@ -9149,6 +9240,7 @@ impl Workspace {
         self._form_sub = None;
         self.login_form = None;
         self._login_form_sub = None;
+        self.post_login_splash = None;
         self.onboarding = None;
         self._onboarding_sub = None;
         self.port_forward_form = None;
@@ -14177,6 +14269,183 @@ impl Workspace {
             )
             .child(activity)
     }
+
+    fn render_post_login_splash(&self, splash: &PostLoginSplash) -> impl IntoElement {
+        use std::time::Duration;
+
+        let mascot = div()
+            .relative()
+            .flex_shrink_0()
+            .w(px(188.0))
+            .h(px(188.0))
+            .child(
+                img("images/brand/svg/expressions/dark-default-logo.svg")
+                    .w_full()
+                    .h_full()
+                    .object_fit(ObjectFit::Contain),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(
+                        img("images/brand/svg/expressions/dark-wink-logo.svg")
+                            .w_full()
+                            .h_full()
+                            .object_fit(ObjectFit::Contain),
+                    )
+                    .with_animation(
+                        "post-login-mascot-wink",
+                        Animation::new(Duration::from_millis(4_200)).repeat(),
+                        |el, delta| el.opacity(post_login_wink_opacity(delta)),
+                    ),
+            )
+            .with_animation(
+                "post-login-mascot-float",
+                Animation::new(Duration::from_millis(2_600))
+                    .repeat()
+                    .with_easing(ease_in_out),
+                |el, delta| {
+                    let y = (delta * std::f32::consts::TAU).sin() * 5.0;
+                    el.top(px(y))
+                },
+            );
+
+        let progress_bar = div()
+            .relative()
+            .w(px(220.0))
+            .h(px(5.0))
+            .overflow_hidden()
+            .rounded_full()
+            .bg(ShellDeckColors::primary().opacity(0.14))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(px(0.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::primary())
+                    .with_animation(
+                        "post-login-progress-bar",
+                        Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)),
+                        |el, delta| el.w(px(220.0 * post_login_simulated_progress(delta))),
+                    ),
+            );
+
+        let progress_percentage = div()
+            .min_w(px(34.0))
+            .text_right()
+            .text_size(px(11.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ShellDeckColors::primary())
+            .with_animation(
+                "post-login-progress-percentage",
+                Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS)),
+                |el, delta| {
+                    let percentage = (post_login_simulated_progress(delta) * 100.0).round() as u8;
+                    el.child(format!("{percentage}%"))
+                },
+            );
+
+        div()
+            .id("post-login-splash")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .bg(ShellDeckColors::bg_primary())
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .absolute()
+                    .w(px(420.0))
+                    .h(px(420.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::primary().opacity(0.07)),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .w_full()
+                    .max_w(px(480.0))
+                    .px(px(28.0))
+                    .child(mascot)
+                    .child(
+                        div()
+                            .mt(px(22.0))
+                            .text_size(px(25.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .text_center()
+                            .child(
+                                t!(
+                                    "account.splash.welcome",
+                                    name = splash.display_name.as_str()
+                                )
+                                .to_string(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .mt(px(8.0))
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_muted())
+                            .text_center()
+                            .child(t!("account.splash.preparing").to_string()),
+                    )
+                    .child(
+                        div()
+                            .mt(px(22.0))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .w(px(220.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(t!("account.splash.syncing").to_string())
+                                    .child(progress_percentage),
+                            )
+                            .child(progress_bar),
+                    ),
+            )
+            .with_animation(
+                SharedString::from(format!(
+                    "post-login-splash-{}",
+                    if splash.dismissing {
+                        "fade-out"
+                    } else {
+                        "visible"
+                    }
+                )),
+                Animation::new(Duration::from_millis(POST_LOGIN_SPLASH_FADE_MS))
+                    .with_easing(ease_in_out),
+                {
+                    let dismissing = splash.dismissing;
+                    move |el, delta| el.opacity(post_login_splash_opacity(dismissing, delta))
+                },
+            )
+    }
 }
 
 impl Render for Workspace {
@@ -14815,13 +15084,24 @@ impl Render for Workspace {
             ));
         }
 
+        // The post-login transition is intentionally last: it covers window
+        // chrome, toasts and first-run onboarding until the initial sync has
+        // produced a coherent signed-in workspace.
+        if let Some(splash) = &self.post_login_splash {
+            root = root.child(self.render_post_login_splash(splash));
+        }
+
         root
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ShortcutToastKind, shortcut_failure_toasts, shortcut_status_is_failure};
+    use super::{
+        POST_LOGIN_SPLASH_MIN_MS, ShortcutToastKind, post_login_splash_remaining,
+        post_login_simulated_progress, post_login_splash_opacity, post_login_wink_opacity,
+        shortcut_failure_toasts, shortcut_status_is_failure,
+    };
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
     use crate::t;
 
@@ -14833,6 +15113,54 @@ mod tests {
             ai_dock,
             command_palette,
         }
+    }
+
+    #[test]
+    fn post_login_splash_has_a_minimum_visible_duration() {
+        let early = post_login_splash_remaining(std::time::Duration::from_millis(200))
+            .expect("a fast sync should keep the splash visible");
+        assert_eq!(
+            early,
+            std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS - 200)
+        );
+        assert!(
+            post_login_splash_remaining(std::time::Duration::from_millis(
+                POST_LOGIN_SPLASH_MIN_MS
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn post_login_mascot_only_winks_briefly() {
+        assert_eq!(post_login_wink_opacity(0.2), 0.0);
+        assert_eq!(post_login_wink_opacity(0.75), 1.0);
+        assert_eq!(post_login_wink_opacity(0.9), 0.0);
+    }
+
+    #[test]
+    fn post_login_simulated_progress_is_staged_and_monotonic() {
+        let checkpoints: Vec<f32> = (0..=100)
+            .map(|step| post_login_simulated_progress(step as f32 / 100.0))
+            .collect();
+        assert_eq!(checkpoints[0], 0.0);
+        assert_eq!(checkpoints[100], 1.0);
+        assert!(
+            checkpoints
+                .windows(2)
+                .all(|pair| pair[1] >= pair[0]),
+            "simulated progress must never move backwards"
+        );
+        assert!(post_login_simulated_progress(0.1) >= 0.17);
+        assert!(post_login_simulated_progress(0.86) < 0.95);
+    }
+
+    #[test]
+    fn post_login_splash_only_fades_when_dismissing() {
+        assert_eq!(post_login_splash_opacity(false, 0.75), 1.0);
+        assert_eq!(post_login_splash_opacity(true, 0.0), 1.0);
+        assert_eq!(post_login_splash_opacity(true, 0.5), 0.5);
+        assert_eq!(post_login_splash_opacity(true, 1.0), 0.0);
     }
 
     // SDTEST-1415 — only a genuinely failed registration counts. `Applying`
