@@ -1047,6 +1047,7 @@ fn parse_claude_stream_json(output: &ProcessOutput, timeout: Duration) -> JobOut
 }
 
 /// Parse the final `result` event out of Claude Code's stream-json stdout.
+#[cfg(test)]
 fn parse_stream_json(stdout: &str, killed: bool) -> JobOutcome {
     let output = ProcessOutput {
         stdout: stdout.to_string(),
