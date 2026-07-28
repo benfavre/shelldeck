@@ -97,6 +97,9 @@ use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::VariablePrompt;
 use shelldeck_update::{AutoUpdateEvent, AutoUpdateStatus, AutoUpdater};
 
+// Architecture guard: this file is the Workspace orchestrator only.
+// Domain logic and rendering belong in the modules below; keep mod.rs under
+// 2,000 lines. See `.agents/workspace-architecture.md`.
 mod account;
 mod activity;
 mod ai;
