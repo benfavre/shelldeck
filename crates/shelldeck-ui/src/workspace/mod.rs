@@ -97,9 +97,9 @@ use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::VariablePrompt;
 use shelldeck_update::{AutoUpdateEvent, AutoUpdateStatus, AutoUpdater};
 
-mod ai;
 mod account;
 mod activity;
+mod ai;
 mod bext;
 mod chrome;
 mod cloud_sync;
@@ -114,13 +114,13 @@ mod navigation;
 mod overlays;
 mod palette;
 mod panels;
-mod requests;
-mod request_views;
 mod render;
+mod request_views;
+mod requests;
 mod scripts;
 mod server_sync;
-mod ssh;
 mod sites;
+mod ssh;
 mod support;
 mod tray;
 mod user_home;
@@ -1193,7 +1193,6 @@ impl Workspace {
             last_tray_counters: None,
         }
     }
-
 }
 
 /// Uniform slot height for the User-home compact site rows. Includes the
@@ -1355,14 +1354,11 @@ fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option
     }
 }
 
-impl Workspace {
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        POST_LOGIN_SPLASH_MIN_MS, ShortcutToastKind, post_login_splash_remaining,
-        post_login_simulated_progress, post_login_splash_opacity, post_login_wink_opacity,
+        POST_LOGIN_SPLASH_MIN_MS, ShortcutToastKind, post_login_simulated_progress,
+        post_login_splash_opacity, post_login_splash_remaining, post_login_wink_opacity,
         shortcut_failure_toasts, shortcut_status_is_failure,
     };
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
@@ -1387,10 +1383,8 @@ mod tests {
             std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS - 200)
         );
         assert!(
-            post_login_splash_remaining(std::time::Duration::from_millis(
-                POST_LOGIN_SPLASH_MIN_MS
-            ))
-            .is_none()
+            post_login_splash_remaining(std::time::Duration::from_millis(POST_LOGIN_SPLASH_MIN_MS))
+                .is_none()
         );
     }
 
@@ -1409,9 +1403,7 @@ mod tests {
         assert_eq!(checkpoints[0], 0.0);
         assert_eq!(checkpoints[100], 1.0);
         assert!(
-            checkpoints
-                .windows(2)
-                .all(|pair| pair[1] >= pair[0]),
+            checkpoints.windows(2).all(|pair| pair[1] >= pair[0]),
             "simulated progress must never move backwards"
         );
         assert!(post_login_simulated_progress(0.1) >= 0.17);
