@@ -1,6 +1,12 @@
 use super::*;
 
 impl Workspace {
+    /// Wire the tray state publisher after tray init. `main.rs` calls
+    /// this once at startup with a closure that translates
+    /// [`TrayCounters`] into the binary-crate's `tray::TrayState` and
+    /// pushes it into the tray thread. `None` means the tray failed to
+    /// come up — every subsequent `publish_tray_state` becomes a
+    /// no-op.
     pub fn set_tray_state_publisher(&mut self, publisher: Box<dyn Fn(TrayCounters) + Send + Sync>) {
         self.tray_state_publisher = Some(publisher);
     }
