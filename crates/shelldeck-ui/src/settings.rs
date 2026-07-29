@@ -205,6 +205,9 @@ pub struct SettingsView {
     shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
     shortcut_capture_focus: FocusHandle,
     companion_shortcut_statuses: CompanionShortcutStatuses,
+    companion_character_preview: &'static str,
+    companion_motion_preview: &'static str,
+    companion_desktop_preview: bool,
 }
 
 impl SettingsView {
@@ -241,6 +244,9 @@ impl SettingsView {
             shortcut_status_before_capture: None,
             shortcut_capture_focus,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
+            companion_character_preview: "clippy",
+            companion_motion_preview: "full",
+            companion_desktop_preview: false,
         }
     }
 
@@ -1901,6 +1907,124 @@ impl SettingsView {
             theme_cards = theme_cards.child(card);
         }
 
+        let mut character_cards = div().flex().gap(px(8.0)).flex_wrap();
+        for (id, label, accent) in [
+            (
+                "none",
+                t!("settings.companion.characters.none").to_string(),
+                ShellDeckColors::text_muted(),
+            ),
+            (
+                "clippy",
+                t!("settings.companion.characters.clippy").to_string(),
+                ShellDeckColors::primary(),
+            ),
+            (
+                "shelly",
+                t!("settings.companion.characters.shelly").to_string(),
+                ShellDeckColors::success(),
+            ),
+            (
+                "spark",
+                t!("settings.companion.characters.spark").to_string(),
+                ShellDeckColors::warning(),
+            ),
+            (
+                "byte",
+                t!("settings.companion.characters.byte").to_string(),
+                ShellDeckColors::error(),
+            ),
+            (
+                "orbit",
+                t!("settings.companion.characters.orbit").to_string(),
+                ShellDeckColors::primary().opacity(0.75),
+            ),
+            (
+                "nox",
+                t!("settings.companion.characters.nox").to_string(),
+                ShellDeckColors::text_primary(),
+            ),
+        ] {
+            let active = self.companion_character_preview == id;
+            character_cards = character_cards.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "companion-character-{id}"
+                    ))))
+                    .w(px(112.0))
+                    .h(px(82.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(if active {
+                        ShellDeckColors::primary()
+                    } else {
+                        ShellDeckColors::border()
+                    })
+                    .cursor_pointer()
+                    .p(px(8.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .w(px(34.0))
+                            .h(px(34.0))
+                            .rounded(px(17.0))
+                            .bg(accent.opacity(if id == "none" { 0.12 } else { 0.22 }))
+                            .border_1()
+                            .border_color(accent.opacity(0.55))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(accent)
+                            .child(if id == "none" {
+                                "—".to_string()
+                            } else {
+                                id.chars().next().unwrap_or('c').to_uppercase().to_string()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(if active {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if active {
+                                ShellDeckColors::primary()
+                            } else {
+                                ShellDeckColors::text_primary()
+                            })
+                            .child(label),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.companion_character_preview = id;
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let mut motion_buttons = div().flex().gap(px(8.0)).flex_wrap();
+        for (id, label) in [("full", "Full"), ("reduced", "Reduced"), ("off", "Off")] {
+            motion_buttons = motion_buttons.child(
+                Button::new(SharedString::from(format!("companion-motion-{id}")), label)
+                    .variant(if self.companion_motion_preview == id {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Outline
+                    })
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.companion_motion_preview = id;
+                        cx.notify();
+                    })),
+            );
+        }
+
         div()
             .flex()
             .flex_col()
@@ -1926,6 +2050,42 @@ impl SettingsView {
                     )
                     .child(app_theme_cards),
             )
+            .child(
+                div()
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(Self::render_about_section(
+                        t!("settings.companion.characters.section").as_ref(),
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("settings.companion.characters.label").to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("settings.companion.characters.description").to_string()),
+                    )
+                    .child(character_cards),
+            )
+            .child(Self::render_setting_row(
+                t!("settings.companion.characters.motion.label").as_ref(),
+                t!("settings.companion.characters.motion.description").as_ref(),
+                motion_buttons,
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.characters.desktop.label").as_ref(),
+                t!("settings.companion.characters.desktop.description").as_ref(),
+                Toggle::new("companion-desktop-character")
+                    .checked(self.companion_desktop_preview)
+                    .disabled(true),
+            ))
             .child(
                 div()
                     .py(px(12.0))
