@@ -11,7 +11,12 @@ use shelldeck_core::ai::{
     ClippyConfig, CompanionCharacterId, CompanionMotionPreference, CompanionScale,
     DesktopCompanionMovement,
 };
-use shelldeck_core::companion::geometry::{Point2, Rect};
+use shelldeck_core::companion::geometry::{
+    LineSegment, Point2, Rect, SurfaceId, Vector2, WalkableSurface, WalkableSurfaceKind,
+};
+use shelldeck_core::companion::physics::{
+    BodyMode, CompanionBody, PhysicsConfig, StepResult, SurfaceContact,
+};
 use shelldeck_core::companion::simulation::{
     AnimationFramePolicy, CharacterSimulation, CharacterSimulationState, DeterministicRng,
 };
@@ -25,6 +30,10 @@ const LANDING_DURATION: Duration = Duration::from_millis(320);
 const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(2_800);
 const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(8);
 const ATTACHMENT_FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
+const DRAG_VELOCITY_SAMPLE_LIMIT: Duration = Duration::from_millis(120);
+const SNAP_VERTICAL_GAP: f32 = 42.0;
+const SNAP_MIN_HORIZONTAL_OVERLAP: f32 = 36.0;
+const MAXIMIZED_TOLERANCE: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompanionRuntimeCommand {
@@ -99,6 +108,8 @@ struct RuntimeSimulation {
     extent: f32,
     pending_ms: u64,
     steps: u64,
+    body: CompanionBody,
+    physics_pending_ms: u64,
 }
 
 impl RuntimeSimulation {
@@ -109,6 +120,8 @@ impl RuntimeSimulation {
         let mut simulation =
             CharacterSimulation::new(display_label(display.id), to_point2(position));
         simulation.config.speed_per_second = profile.base_speed;
+        let mut body = CompanionBody::new(to_point2(position), Point2::new(extent, extent));
+        body.mode = BodyMode::Sleeping;
         Self {
             simulation,
             display,
@@ -118,6 +131,8 @@ impl RuntimeSimulation {
             extent,
             pending_ms: 0,
             steps: 0,
+            body,
+            physics_pending_ms: 0,
         }
     }
 
@@ -126,10 +141,15 @@ impl RuntimeSimulation {
         self.extent = desktop_coordinate_extent(self.logical_extent, display.scale_factor);
         self.simulation.display_id = display_label(display.id);
         self.simulation.position = self.bounds().clamp_point(self.simulation.position);
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(self.extent, self.extent);
     }
 
     fn return_to_corner(&mut self) {
         self.pending_ms = 0;
+        self.physics_pending_ms = 0;
+        self.body.position = self.simulation.position;
+        self.body.mode = BodyMode::Kinematic;
         self.simulation.config.speed_per_second =
             character_personality(self.character).return_speed;
         self.simulation.state = CharacterSimulationState::ReturningToDock;
@@ -141,10 +161,75 @@ impl RuntimeSimulation {
     fn place_from_drag(&mut self, origin: Point<Pixels>, extent: f32) -> Point<Pixels> {
         let origin = clamp_overlay_origin(origin, self.display.work_area, extent);
         self.simulation.position = to_point2(origin);
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(extent, extent);
+        self.body.mode = BodyMode::Kinematic;
         self.simulation.target = None;
         self.simulation.state = CharacterSimulationState::Summoned;
         self.pending_ms = 0;
+        self.physics_pending_ms = 0;
         origin
+    }
+
+    fn release_dynamic(&mut self, velocity: Point2) {
+        self.simulation.target = None;
+        self.simulation.state = CharacterSimulationState::Flying;
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(self.extent, self.extent);
+        self.body
+            .release_from_drag(velocity, PhysicsConfig::default());
+        self.physics_pending_ms = 0;
+    }
+
+    fn snap_body_to_surface(&mut self, surface: &WalkableSurface) {
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(self.extent, self.extent);
+        self.body.snap_to_surface(surface);
+        self.simulation.position = self.body.position;
+        self.simulation.target = None;
+        self.simulation.state = CharacterSimulationState::Perched;
+        self.pending_ms = 0;
+        self.physics_pending_ms = 0;
+    }
+
+    fn step_physics_capped(
+        &mut self,
+        elapsed_ms: u64,
+        platforms: &[WalkableSurface],
+    ) -> StepResult {
+        let step_ms = self.simulation.config.fixed_timestep_ms.max(1);
+        let max_steps = u64::from(self.simulation.config.max_catch_up_steps);
+        let max_budget_ms = step_ms.saturating_mul(max_steps);
+        self.physics_pending_ms = self.physics_pending_ms.saturating_add(elapsed_ms);
+        let budget_ms = self.physics_pending_ms.min(max_budget_ms);
+        let mut result = self
+            .body
+            .step(0.0, PhysicsConfig::default(), platforms, self.bounds());
+        let steps = budget_ms / step_ms;
+        for _ in 0..steps {
+            result = self.body.step(
+                step_ms as f32 / 1000.0,
+                PhysicsConfig::default(),
+                platforms,
+                self.bounds(),
+            );
+            self.steps = self.steps.saturating_add(1);
+        }
+        let consumed_ms = steps.saturating_mul(step_ms);
+        self.physics_pending_ms = if self.physics_pending_ms > max_budget_ms {
+            self.physics_pending_ms % step_ms
+        } else {
+            self.physics_pending_ms.saturating_sub(consumed_ms)
+        };
+        self.simulation.position = self.body.position;
+        if result.landed {
+            self.simulation.state = CharacterSimulationState::Landing;
+        }
+        result
+    }
+
+    fn physics_dynamic(&self) -> bool {
+        self.body.mode == BodyMode::Dynamic
     }
 
     fn react_to_click(&mut self, click_count: usize, extent: f32) -> bool {
@@ -257,6 +342,9 @@ impl RuntimeSimulation {
     }
 
     fn moving(&self, reduced_motion: bool) -> bool {
+        if !reduced_motion && self.physics_dynamic() {
+            return true;
+        }
         self.simulation.request_animation_frames(reduced_motion) == AnimationFramePolicy::Continuous
     }
 
@@ -277,6 +365,8 @@ pub struct DesktopCharacterRuntime {
     attachment_timer_scheduled: bool,
     attachment_generation: u64,
     pending_native_move: bool,
+    physics_windows: Vec<ExternalWindow>,
+    physics_platforms: Vec<WalkableSurface>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -312,6 +402,8 @@ impl DesktopCharacterRuntime {
             attachment_timer_scheduled: false,
             attachment_generation: 0,
             pending_native_move: false,
+            physics_windows: Vec::new(),
+            physics_platforms: Vec::new(),
         }
     }
 
@@ -440,14 +532,93 @@ impl DesktopCharacterRuntime {
         Some(origin)
     }
 
-    fn finish_user_drag(&mut self, runtime_entity: Entity<Self>, cx: &mut App) {
-        if let Some(sim) = &mut self.simulation {
-            sim.simulation.target = None;
-            sim.simulation.state = CharacterSimulationState::Resting;
-            sim.simulation.remember_action("user-drag");
-        }
+    fn finish_user_drag(
+        &mut self,
+        release_velocity: Point2,
+        runtime_entity: Entity<Self>,
+        cx: &mut App,
+    ) -> bool {
+        let windows = cx.visible_external_windows();
+        let displays = desktop_displays(cx);
+        self.diagnostics.geometry_snapshot_count =
+            self.diagnostics.geometry_snapshot_count.saturating_add(1);
+        let dynamic = self.finish_user_drag_snapshot(release_velocity, &windows, &displays);
         self.last_tick = None;
-        self.schedule_roam(runtime_entity, cx);
+        if dynamic {
+            self.request_frame(cx);
+        } else {
+            self.schedule_roam(runtime_entity, cx);
+        }
+        dynamic
+    }
+
+    #[cfg(test)]
+    fn finish_user_drag_snapshot_for_test(
+        &mut self,
+        release_velocity: Point2,
+        windows: &[ExternalWindow],
+        displays: &[DesktopDisplay],
+    ) -> bool {
+        self.finish_user_drag_snapshot(release_velocity, windows, displays)
+    }
+
+    fn finish_user_drag_snapshot(
+        &mut self,
+        release_velocity: Point2,
+        windows: &[ExternalWindow],
+        displays: &[DesktopDisplay],
+    ) -> bool {
+        let full_motion = !self.diagnostics.paused && !reduced_motion_for_config(&self.config);
+        self.clear_physics_snapshot();
+        let Some(sim) = &mut self.simulation else {
+            return false;
+        };
+        sim.simulation.target = None;
+        sim.simulation.remember_action("user-drag");
+        if let Some(display) = displays.iter().copied().find(|display| {
+            display
+                .work_area
+                .contains(&from_point2(sim.simulation.position))
+        }) {
+            sim.update_display(display);
+        }
+        if let Some(candidate) =
+            choose_snap_window(windows, displays, sim.simulation.position, sim.extent)
+        {
+            let surface = window_top_surface(&candidate.window, candidate.generation);
+            let x = sim.simulation.position.x.clamp(
+                f32::from(candidate.window.bounds.origin.x),
+                (f32::from(candidate.window.bounds.right()) - sim.extent)
+                    .max(f32::from(candidate.window.bounds.origin.x)),
+            );
+            sim.simulation.position.x = x.clamp(
+                f32::from(sim.display.work_area.origin.x),
+                (f32::from(sim.display.work_area.right()) - sim.extent)
+                    .max(f32::from(sim.display.work_area.origin.x)),
+            );
+            sim.snap_body_to_surface(&surface);
+            self.attachment = Some(WindowAttachment {
+                id: candidate.window.id,
+                top_edge_offset: sim.simulation.position.x
+                    - f32::from(candidate.window.bounds.origin.x),
+                perched: true,
+            });
+            self.attachment_generation = self.attachment_generation.wrapping_add(1);
+            self.attachment_timer_scheduled = false;
+            return false;
+        }
+        if full_motion {
+            self.physics_windows = windows.to_vec();
+            self.physics_platforms = physics_platforms(&self.physics_windows, displays);
+            sim.release_dynamic(release_velocity);
+            true
+        } else {
+            let origin = from_point2(sim.simulation.position);
+            sim.place_from_drag(origin, sim.extent);
+            sim.simulation.state = CharacterSimulationState::Resting;
+            sim.body.mode = BodyMode::Sleeping;
+            false
+        }
     }
 
     fn react_to_click(
@@ -646,7 +817,7 @@ impl DesktopCharacterRuntime {
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
         let displays = desktop_displays(cx);
         let Some(window) = window else {
-            self.cancel_attachment();
+            self.detach_missing_attachment();
             return AttachmentFollowOutcome::inactive();
         };
         self.follow_attached_bounds(window.bounds, &displays)
@@ -665,7 +836,7 @@ impl DesktopCharacterRuntime {
             .iter()
             .find(|window| external_window_id(window) == attachment.id)
         else {
-            self.cancel_attachment();
+            self.detach_missing_attachment();
             return AttachmentFollowOutcome::inactive();
         };
         self.follow_attached_bounds(window.bounds, displays)
@@ -716,6 +887,24 @@ impl DesktopCharacterRuntime {
         self.attachment_timer_scheduled = false;
         self.attachment_generation = self.attachment_generation.wrapping_add(1);
         self.pending_native_move = false;
+    }
+
+    fn clear_physics_snapshot(&mut self) {
+        self.physics_windows.clear();
+        self.physics_platforms.clear();
+    }
+
+    fn detach_missing_attachment(&mut self) {
+        self.cancel_attachment();
+        self.clear_physics_snapshot();
+        if let Some(sim) = &mut self.simulation {
+            if !self.diagnostics.paused && !reduced_motion_for_config(&self.config) {
+                sim.release_dynamic(Point2::new(0.0, 0.0));
+            } else {
+                sim.simulation.state = CharacterSimulationState::Resting;
+                sim.body.mode = BodyMode::Sleeping;
+            }
+        }
     }
 
     fn mark_attachment_perched(&mut self) {
@@ -858,16 +1047,48 @@ impl DesktopCharacterRuntime {
             let now = Instant::now();
             let elapsed_ms = frame_elapsed_millis(self.last_tick, now);
             self.last_tick = Some(now);
-            let outcome = sim.step_capped(elapsed_ms);
-            self.diagnostics.simulation_steps = sim.steps;
-            moved = outcome.moved || sim.position() != before || self.pending_native_move;
+            if sim.physics_dynamic() {
+                let outcome = sim.step_physics_capped(elapsed_ms, &self.physics_platforms);
+                self.diagnostics.simulation_steps = sim.steps;
+                moved = outcome.moved || sim.position() != before || self.pending_native_move;
+                landed = outcome.landed;
+                if landed {
+                    if let Some(contact) = outcome.contact.as_ref() {
+                        if contact.kind == WalkableSurfaceKind::WindowTop {
+                            if let Some(window_id) =
+                                window_id_for_contact(contact, &self.physics_windows)
+                            {
+                                self.attachment = Some(WindowAttachment {
+                                    id: window_id,
+                                    top_edge_offset: sim.simulation.position.x
+                                        - self
+                                            .physics_windows
+                                            .iter()
+                                            .find(|window| window.id == window_id)
+                                            .map(|window| f32::from(window.bounds.origin.x))
+                                            .unwrap_or(0.0),
+                                    perched: true,
+                                });
+                                self.attachment_generation =
+                                    self.attachment_generation.wrapping_add(1);
+                                self.attachment_timer_scheduled = false;
+                            }
+                        }
+                    }
+                    self.clear_physics_snapshot();
+                }
+            } else {
+                let outcome = sim.step_capped(elapsed_ms);
+                self.diagnostics.simulation_steps = sim.steps;
+                moved = outcome.moved || sim.position() != before || self.pending_native_move;
+                landed = outcome.landed;
+                if landed && self.attachment.is_some() {
+                    self.mark_attachment_perched();
+                }
+            }
             self.pending_native_move = false;
             if moved {
                 self.diagnostics.native_moves += 1;
-            }
-            landed = outcome.landed;
-            if landed && self.attachment.is_some() {
-                self.mark_attachment_perched();
             }
         }
         self.frame_state(moved, landed, reduced_motion)
@@ -945,6 +1166,9 @@ pub struct CharacterOverlayView {
 struct CharacterDrag {
     grab_offset: Point<Pixels>,
     start_origin: Point<Pixels>,
+    last_origin: Point<Pixels>,
+    last_sample_at: Instant,
+    release_velocity: Point2,
     moved: bool,
 }
 
@@ -1053,6 +1277,13 @@ impl CharacterOverlayView {
                 .read(cx)
                 .current_position()
                 .unwrap_or(window.bounds().origin),
+            last_origin: self
+                .runtime
+                .read(cx)
+                .current_position()
+                .unwrap_or(window.bounds().origin),
+            last_sample_at: Instant::now(),
+            release_velocity: Point2::new(0.0, 0.0),
             moved: false,
         });
         self.cancel_idle_flourish();
@@ -1092,6 +1323,13 @@ impl CharacterOverlayView {
             origin,
             desktop_pointer_scale(window.scale_factor()),
         );
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(drag.last_sample_at);
+        if elapsed > Duration::ZERO && elapsed <= DRAG_VELOCITY_SAMPLE_LIMIT {
+            drag.release_velocity = bounded_release_velocity(drag.last_origin, origin, elapsed);
+        }
+        drag.last_origin = origin;
+        drag.last_sample_at = now;
         self.drag = Some(drag);
         if !drag.moved {
             cx.stop_propagation();
@@ -1123,11 +1361,11 @@ impl CharacterOverlayView {
         };
         let runtime_entity = self.runtime.clone();
         let started_motion = if drag.moved {
-            self.runtime.update(cx, |runtime, cx| {
-                runtime.finish_user_drag(runtime_entity.clone(), cx)
+            let dynamic = self.runtime.update(cx, |runtime, cx| {
+                runtime.finish_user_drag(drag.release_velocity, runtime_entity.clone(), cx)
             });
             self.show_landing(window, cx);
-            false
+            dynamic
         } else {
             self.runtime.update(cx, |runtime, cx| {
                 runtime.react_to_click(event.click_count, runtime_entity.clone(), cx)
@@ -1799,6 +2037,17 @@ fn drag_crossed_threshold(
     dx * dx + dy * dy >= drag_threshold_squared(pointer_scale)
 }
 
+fn bounded_release_velocity(from: Point<Pixels>, to: Point<Pixels>, elapsed: Duration) -> Point2 {
+    let seconds = elapsed.as_secs_f32().max(0.001);
+    let config = PhysicsConfig::default();
+    Point2::new(
+        ((f32::from(to.x) - f32::from(from.x)) / seconds)
+            .clamp(-config.max_horizontal_speed, config.max_horizontal_speed),
+        ((f32::from(to.y) - f32::from(from.y)) / seconds)
+            .clamp(-config.terminal_velocity, config.terminal_velocity),
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn desktop_coordinate_bounds(bounds: Bounds<Pixels>, scale_factor: f32) -> Bounds<Pixels> {
     scale_desktop_bounds(bounds, scale_factor)
@@ -1902,6 +2151,115 @@ fn choose_external_window(windows: &[ExternalWindow], position: Point2) -> Optio
         };
         distance(a).total_cmp(&distance(b))
     })
+}
+
+#[derive(Debug, Clone)]
+struct SnapCandidate {
+    window: ExternalWindow,
+    generation: u64,
+}
+
+fn choose_snap_window(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    position: Point2,
+    extent: f32,
+) -> Option<SnapCandidate> {
+    let mascot_left = position.x;
+    let mascot_right = position.x + extent;
+    let mascot_bottom = position.y + extent;
+    windows
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| valid_physics_window(window.bounds, displays))
+        .filter_map(|(index, window)| {
+            let top = f32::from(window.bounds.origin.y);
+            let gap = (mascot_bottom - top).abs();
+            if gap > SNAP_VERTICAL_GAP {
+                return None;
+            }
+            let left = f32::from(window.bounds.origin.x);
+            let right = f32::from(window.bounds.right());
+            let overlap = mascot_right.min(right) - mascot_left.max(left);
+            if overlap < SNAP_MIN_HORIZONTAL_OVERLAP {
+                return None;
+            }
+            let horizontal_distance = if position.x + extent * 0.5 < left {
+                left - (position.x + extent * 0.5)
+            } else if position.x + extent * 0.5 > right {
+                position.x + extent * 0.5 - right
+            } else {
+                0.0
+            };
+            Some((gap, horizontal_distance, index, window))
+        })
+        .min_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        })
+        .map(|(_, _, index, window)| SnapCandidate {
+            window: window.clone(),
+            generation: index as u64,
+        })
+}
+
+fn valid_physics_window(window: Bounds<Pixels>, displays: &[DesktopDisplay]) -> bool {
+    if f32::from(window.size.width) < 80.0 || f32::from(window.size.height) < 40.0 {
+        return false;
+    }
+    let Some(display) = display_for_window(displays, window) else {
+        return false;
+    };
+    !maximized_like(window, display.work_area)
+}
+
+fn maximized_like(window: Bounds<Pixels>, work_area: Bounds<Pixels>) -> bool {
+    (f32::from(window.origin.x) - f32::from(work_area.origin.x)).abs() <= MAXIMIZED_TOLERANCE
+        && (f32::from(window.origin.y) - f32::from(work_area.origin.y)).abs() <= MAXIMIZED_TOLERANCE
+        && (f32::from(window.right()) - f32::from(work_area.right())).abs() <= MAXIMIZED_TOLERANCE
+        && (f32::from(window.bottom()) - f32::from(work_area.bottom())).abs() <= MAXIMIZED_TOLERANCE
+}
+
+fn window_top_surface(window: &ExternalWindow, generation: u64) -> WalkableSurface {
+    WalkableSurface {
+        id: SurfaceId(format!("external:{:?}:top", window.id)),
+        kind: WalkableSurfaceKind::WindowTop,
+        segment: LineSegment {
+            start: Point2::new(
+                f32::from(window.bounds.origin.x),
+                f32::from(window.bounds.origin.y),
+            ),
+            end: Point2::new(
+                f32::from(window.bounds.right()),
+                f32::from(window.bounds.origin.y),
+            ),
+        },
+        normal: Vector2 { x: 0.0, y: -1.0 },
+        source_generation: generation,
+    }
+}
+
+fn physics_platforms(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+) -> Vec<WalkableSurface> {
+    windows
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| valid_physics_window(window.bounds, displays))
+        .map(|(index, window)| window_top_surface(window, index as u64))
+        .collect()
+}
+
+fn window_id_for_contact(
+    contact: &SurfaceContact,
+    windows: &[ExternalWindow],
+) -> Option<ExternalWindowId> {
+    windows
+        .iter()
+        .find(|window| contact.id == window_top_surface(window, 0).id)
+        .map(|window| window.id)
 }
 
 fn external_window_id(window: &ExternalWindow) -> ExternalWindowId {
@@ -2584,5 +2942,178 @@ mod tests {
         assert!(runtime.attachment.is_none());
         assert!(!runtime.attachment_timer_scheduled);
         assert!(runtime.attachment_generation > attached_generation);
+    }
+
+    // SDTEST-1512
+    #[test]
+    fn drag_release_snap_candidate_ranking_prefers_vertical_gap_then_horizontal_distance() {
+        let windows = [
+            external_window(1, bounds(40.0, 302.0, 220.0, 160.0)),
+            external_window(2, bounds(200.0, 300.0, 220.0, 160.0)),
+        ];
+        let chosen = choose_snap_window(&windows, &[display()], Point2::new(210.0, 140.0), 160.0)
+            .expect("snap candidate");
+        assert_eq!(chosen.window.id, ExternalWindowId::from_raw(2));
+
+        let windows = [
+            external_window(1, bounds(40.0, 300.0, 220.0, 160.0)),
+            external_window(2, bounds(200.0, 300.0, 220.0, 160.0)),
+        ];
+        let chosen = choose_snap_window(&windows, &[display()], Point2::new(210.0, 140.0), 160.0)
+            .expect("snap candidate");
+        assert_eq!(chosen.window.id, ExternalWindowId::from_raw(2));
+    }
+
+    // SDTEST-1513
+    #[test]
+    fn drag_release_rejects_maximized_like_snap_windows() {
+        let windows = [external_window(1, bounds(0.0, 0.0, 800.0, 600.0))];
+        assert!(
+            choose_snap_window(&windows, &[display()], Point2::new(200.0, -155.0), 160.0).is_none()
+        );
+        assert!(!valid_physics_window(
+            bounds(0.0, 0.0, 800.0, 600.0),
+            &[display()]
+        ));
+    }
+
+    // SDTEST-1514
+    #[test]
+    fn drag_release_does_not_snap_outside_vertical_or_overlap_thresholds() {
+        let far_y = [external_window(1, bounds(200.0, 360.0, 220.0, 160.0))];
+        assert!(
+            choose_snap_window(&far_y, &[display()], Point2::new(210.0, 140.0), 160.0).is_none()
+        );
+        let far_x = [external_window(1, bounds(500.0, 300.0, 220.0, 160.0))];
+        assert!(
+            choose_snap_window(&far_x, &[display()], Point2::new(210.0, 140.0), 160.0).is_none()
+        );
+    }
+
+    // SDTEST-1515
+    #[test]
+    fn drag_release_velocity_is_bounded_from_logical_desktop_samples() {
+        let velocity = bounded_release_velocity(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::point(px(10_000.0), px(-10_000.0)),
+            Duration::from_millis(10),
+        );
+        let config = PhysicsConfig::default();
+        assert_eq!(velocity.x, config.max_horizontal_speed);
+        assert_eq!(velocity.y, -config.terminal_velocity);
+    }
+
+    // SDTEST-1516
+    #[test]
+    fn dynamic_fall_lands_on_window_and_maps_attachment() {
+        let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 40.0);
+        assert!(runtime.finish_user_drag_snapshot_for_test(
+            Point2::new(0.0, 0.0),
+            &[],
+            &[display()]
+        ));
+        let window = external_window(44, bounds(200.0, 300.0, 260.0, 180.0));
+        let platforms = physics_platforms(std::slice::from_ref(&window), &[display()]);
+        let sim = runtime.simulation.as_mut().unwrap();
+        let mut landed = false;
+        for _ in 0..60 {
+            let result = sim.step_physics_capped(33, &platforms);
+            if result.landed {
+                landed = true;
+                assert_eq!(result.contact.unwrap().kind, WalkableSurfaceKind::WindowTop);
+                break;
+            }
+        }
+        assert!(landed);
+        let contact = runtime
+            .simulation
+            .as_ref()
+            .unwrap()
+            .body
+            .contact()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            window_id_for_contact(&contact, &[window]),
+            Some(ExternalWindowId::from_raw(44))
+        );
+    }
+
+    // SDTEST-1517
+    #[test]
+    fn dynamic_fall_lands_on_display_floor_without_window() {
+        let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 80.0);
+        assert!(runtime.finish_user_drag_snapshot_for_test(
+            Point2::new(0.0, 0.0),
+            &[],
+            &[display()]
+        ));
+        let sim = runtime.simulation.as_mut().unwrap();
+        for _ in 0..90 {
+            if sim.step_physics_capped(33, &[]).landed {
+                break;
+            }
+        }
+        let contact = sim.body.contact().expect("floor contact");
+        assert_eq!(contact.kind, WalkableSurfaceKind::ScreenFloor);
+        assert_eq!(sim.body.mode, BodyMode::Sleeping);
+    }
+
+    // SDTEST-1518
+    #[test]
+    fn missing_attached_window_falls_only_when_full_motion_allowed() {
+        let mut runtime = runtime_with_sim();
+        runtime.attachment = Some(WindowAttachment {
+            id: ExternalWindowId::from_raw(9),
+            top_edge_offset: 10.0,
+            perched: true,
+        });
+        runtime.detach_missing_attachment();
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Dynamic
+        );
+
+        let mut reduced = runtime_with_sim();
+        reduced.config.appearance.motion = CompanionMotionPreference::Reduced;
+        reduced.attachment = Some(WindowAttachment {
+            id: ExternalWindowId::from_raw(9),
+            top_edge_offset: 10.0,
+            perched: true,
+        });
+        reduced.detach_missing_attachment();
+        assert_eq!(
+            reduced.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Sleeping
+        );
+    }
+
+    // SDTEST-1519
+    #[test]
+    fn reduced_motion_release_never_starts_dynamic_frames() {
+        let mut runtime = runtime_with_sim();
+        runtime.config.appearance.motion = CompanionMotionPreference::Reduced;
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 80.0);
+        assert!(!runtime.finish_user_drag_snapshot_for_test(
+            Point2::new(100.0, 100.0),
+            &[],
+            &[display()]
+        ));
+        assert!(!runtime.simulation.as_ref().unwrap().moving(true));
+        assert_ne!(
+            runtime.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Dynamic
+        );
+    }
+
+    // SDTEST-1520
+    #[test]
+    fn subthreshold_drag_jitter_does_not_move_native_overlay() {
+        let start = gpui::point(px(100.0), px(100.0));
+        let jitter = gpui::point(px(103.0), px(102.0));
+        assert!(!drag_crossed_threshold(start, jitter, 1.0));
+        assert!(!should_apply_native_origin(false, true));
     }
 }
