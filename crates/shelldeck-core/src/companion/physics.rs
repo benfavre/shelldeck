@@ -1,6 +1,7 @@
 use super::{Point2, Rect, SurfaceId, WalkableSurface, WalkableSurfaceKind};
 
 const EPSILON: f32 = 0.001;
+const WORK_AREA_FLOOR_ID: &str = "work_area:floor";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyMode {
@@ -127,7 +128,7 @@ impl CompanionBody {
             return self.result(previous_position, false);
         }
 
-        self.validate_contact(platforms);
+        self.validate_contact(platforms, work_area);
         if self.mode == BodyMode::Sleeping && self.contact.is_some() {
             return self.result(previous_position, false);
         }
@@ -189,7 +190,7 @@ impl CompanionBody {
             self.velocity.y = 0.0;
             self.mode = BodyMode::Sleeping;
             self.contact = Some(SurfaceContact {
-                id: SurfaceId("work_area:floor".to_string()),
+                id: SurfaceId(WORK_AREA_FLOOR_ID.to_string()),
                 generation: 0,
                 kind: WalkableSurfaceKind::ScreenFloor,
             });
@@ -207,17 +208,32 @@ impl CompanionBody {
         self.result(previous_position, landed)
     }
 
-    fn validate_contact(&mut self, platforms: &[WalkableSurface]) {
+    fn validate_contact(&mut self, platforms: &[WalkableSurface], work_area: Rect) {
         let Some(contact) = &self.contact else {
             return;
         };
-        if contact.id.0 == "work_area:floor" {
+        if contact.id.0 == WORK_AREA_FLOOR_ID {
+            self.validate_floor_contact(work_area);
             return;
         }
         let valid = platforms.iter().any(|surface| {
             surface.id == contact.id && surface.source_generation == contact.generation
         });
         if !valid {
+            self.clear_contact();
+        }
+    }
+
+    fn validate_floor_contact(&mut self, work_area: Rect) {
+        let floor_y = work_area.bottom();
+        let bottom = self.position.y + self.size.y;
+        if (bottom - floor_y).abs() <= EPSILON {
+            let min_x = work_area.x;
+            let max_x = (work_area.right() - self.size.x).max(min_x);
+            self.position.x = self.position.x.clamp(min_x, max_x);
+            self.position.y = floor_y - self.size.y;
+            self.velocity.y = 0.0;
+        } else {
             self.clear_contact();
         }
     }
@@ -243,8 +259,6 @@ fn nearest_descending_platform(
     desired_bottom: f32,
     platforms: &[WalkableSurface],
 ) -> Option<&WalkableSurface> {
-    let left = previous_x.min(current_x);
-    let right = previous_x.max(current_x) + width;
     platforms
         .iter()
         .filter(|surface| surface.kind == WalkableSurfaceKind::WindowTop)
@@ -253,9 +267,58 @@ fn nearest_descending_platform(
             previous_bottom <= y + EPSILON && desired_bottom >= y - EPSILON
         })
         .filter(|surface| {
-            horizontal_overlap(left, right, surface.segment.start.x, surface.segment.end.x)
+            let y = surface_y(surface);
+            let Some((left, right)) = horizontal_body_interval_at_vertical_toi(
+                previous_x,
+                current_x,
+                width,
+                previous_bottom,
+                desired_bottom,
+                y,
+            ) else {
+                return false;
+            };
+            horizontal_overlap(
+                left,
+                right,
+                surface.segment.start.x.min(surface.segment.end.x),
+                surface.segment.start.x.max(surface.segment.end.x),
+            )
         })
-        .min_by(|a, b| surface_y(a).total_cmp(&surface_y(b)))
+        .min_by(|a, b| compare_landing_surfaces(a, b))
+}
+
+fn horizontal_body_interval_at_vertical_toi(
+    previous_x: f32,
+    current_x: f32,
+    width: f32,
+    previous_bottom: f32,
+    desired_bottom: f32,
+    surface_y: f32,
+) -> Option<(f32, f32)> {
+    let vertical_span = desired_bottom - previous_bottom;
+    let toi = if vertical_span.abs() <= EPSILON {
+        if (surface_y - previous_bottom).abs() <= EPSILON {
+            1.0
+        } else {
+            return None;
+        }
+    } else {
+        ((surface_y - previous_bottom) / vertical_span).clamp(0.0, 1.0)
+    };
+    let left = previous_x + (current_x - previous_x) * toi;
+    Some((left, left + width))
+}
+
+fn compare_landing_surfaces(a: &WalkableSurface, b: &WalkableSurface) -> std::cmp::Ordering {
+    surface_y(a)
+        .total_cmp(&surface_y(b))
+        .then_with(|| a.id.0.cmp(&b.id.0))
+        .then_with(|| a.source_generation.cmp(&b.source_generation))
+        .then_with(|| a.segment.start.x.total_cmp(&b.segment.start.x))
+        .then_with(|| a.segment.end.x.total_cmp(&b.segment.end.x))
+        .then_with(|| a.segment.start.y.total_cmp(&b.segment.start.y))
+        .then_with(|| a.segment.end.y.total_cmp(&b.segment.end.y))
 }
 
 fn horizontal_overlap(left: f32, right: f32, surface_left: f32, surface_right: f32) -> bool {
@@ -466,5 +529,80 @@ mod tests {
 
         assert_eq!(result.position.y, 0.0);
         assert_eq!(result.velocity.y, 0.0);
+    }
+
+    // SDTEST-1547
+    #[test]
+    fn diagonal_sweep_does_not_land_on_platform_only_overlapped_by_union_corridor() {
+        let mut body = CompanionBody::new(Point2::new(0.0, 0.0), Point2::new(10.0, 10.0));
+        body.velocity = Point2::new(50.0, 80.0);
+        let platform = top("diagonal-miss", 100.0, 40.0, 45.0, 1);
+        let open_area = Rect::new(0.0, 0.0, 200.0, 500.0);
+
+        let result = body.step(1.0, config(), &[platform], open_area);
+
+        assert!(!result.landed);
+        assert!(result.contact.is_none());
+        assert_eq!(result.position, Point2::new(50.0, 180.0));
+    }
+
+    // SDTEST-1548
+    #[test]
+    fn equal_height_platform_selection_is_stable_when_input_order_is_reversed() {
+        let a = top("a", 100.0, 20.0, 80.0, 9);
+        let b = top("b", 100.0, 20.0, 80.0, 1);
+        let mut forward = CompanionBody::new(Point2::new(30.0, 0.0), Point2::new(10.0, 10.0));
+        let mut reversed = forward.clone();
+        forward.velocity.y = 1_000.0;
+        reversed.velocity.y = 1_000.0;
+
+        let forward_result = forward.step(0.2, config(), &[a.clone(), b.clone()], area());
+        let reversed_result = reversed.step(0.2, config(), &[b, a], area());
+
+        assert!(forward_result.landed);
+        assert!(reversed_result.landed);
+        assert_eq!(
+            forward_result
+                .contact
+                .as_ref()
+                .map(|contact| contact.id.0.as_str()),
+            Some("a")
+        );
+        assert_eq!(forward_result.contact, reversed_result.contact);
+        assert_eq!(forward_result.position, reversed_result.position);
+    }
+
+    // SDTEST-1549
+    #[test]
+    fn expanded_work_area_floor_wakes_sleeping_body_instead_of_leaving_it_suspended() {
+        let mut body = CompanionBody::new(Point2::new(30.0, 160.0), Point2::new(10.0, 10.0));
+        body.velocity.y = 1_000.0;
+        let landed = body.step(0.05, config(), &[], area());
+        assert!(landed.landed);
+        assert_eq!(landed.position.y, 170.0);
+        assert_eq!(body.mode, BodyMode::Sleeping);
+
+        let expanded_area = Rect::new(0.0, 0.0, 200.0, 240.0);
+        let result = body.step(0.1, config(), &[], expanded_area);
+
+        assert!(!result.landed);
+        assert!(result.position.y > landed.position.y);
+        assert!(result.contact.is_none());
+        assert_eq!(body.mode, BodyMode::Dynamic);
+    }
+
+    // SDTEST-1550
+    #[test]
+    fn zero_vertical_span_collision_check_is_safe_and_uses_current_horizontal_interval() {
+        let hit = top("zero-span-hit", 20.0, 20.0, 40.0, 1);
+        let miss = top("zero-span-miss", 20.0, 0.0, 10.0, 1);
+        let platforms = vec![miss, hit];
+
+        let result = nearest_descending_platform(0.0, 25.0, 10.0, 20.0, 20.0, &platforms);
+
+        assert_eq!(
+            result.map(|surface| surface.id.0.as_str()),
+            Some("zero-span-hit")
+        );
     }
 }
