@@ -42,23 +42,13 @@ fn apply_character_choice(appearance: &mut ClippyAppearanceConfig, id: &str) {
     appearance.desktop.enabled = id != "none";
 }
 
-fn native_wayland_companion_limited(
-    session_type: Option<&str>,
-    has_x11_display: bool,
-    has_wayland_display: bool,
-) -> bool {
-    session_type.is_some_and(|session| session.eq_ignore_ascii_case("wayland"))
-        || (session_type.is_none() && has_wayland_display && !has_x11_display)
+fn compositor_companion_limited(compositor: &str) -> bool {
+    compositor.eq_ignore_ascii_case("wayland")
 }
 
 #[cfg(target_os = "linux")]
 fn desktop_companion_platform_limited() -> bool {
-    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
-    native_wayland_companion_limited(
-        session_type.as_deref(),
-        std::env::var_os("DISPLAY").is_some(),
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-    )
+    compositor_companion_limited(gpui::guess_compositor())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -3117,7 +3107,7 @@ fn ai_policy_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_character_choice, display_shortcut, native_wayland_companion_limited,
+        apply_character_choice, compositor_companion_limited, display_shortcut,
         shortcut_error_is_portal_missing, validate_shortcut_capture, ClippyAppearanceConfig,
         ShortcutCaptureValidation,
     };
@@ -3189,13 +3179,9 @@ mod tests {
     // SDTEST-1570
     #[test]
     fn native_wayland_companion_limitation_is_reported_without_misclassifying_x11() {
-        assert!(native_wayland_companion_limited(
-            Some("wayland"),
-            true,
-            true
-        ));
-        assert!(native_wayland_companion_limited(None, false, true));
-        assert!(!native_wayland_companion_limited(Some("x11"), true, true));
-        assert!(!native_wayland_companion_limited(None, true, false));
+        assert!(compositor_companion_limited("Wayland"));
+        assert!(compositor_companion_limited("wayland"));
+        assert!(!compositor_companion_limited("X11"));
+        assert!(!compositor_companion_limited("unknown"));
     }
 }

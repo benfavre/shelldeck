@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, ease_in_out, img, prelude::*, px, Animation, AnimationExt, AnyWindowHandle, App,
-    AppContext, Bounds, Context, Entity, ExternalWindow, ExternalWindowId, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, Render,
-    SharedString, Size, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind,
-    WindowOptions,
+    AppContext, Bounds, Context, DragMoveEvent, Entity, ExternalWindow, ExternalWindowId,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    Point, Render, SharedString, Size, Window, WindowBounds, WindowDecorations, WindowHandle,
+    WindowKind, WindowOptions,
 };
 use shelldeck_core::ai::{
     ClippyConfig, CompanionCharacterId, CompanionMotionPreference, CompanionScale,
@@ -21,18 +21,18 @@ use shelldeck_core::companion::simulation::{
     AnimationFramePolicy, CharacterSimulation, CharacterSimulationState, DeterministicRng,
 };
 
-const STEP: Duration = Duration::from_millis(33);
 const STATIC_MARGIN: f32 = 24.0;
 const DRAG_THRESHOLD: f32 = 4.0;
 const CLICK_NUDGE: f32 = 112.0;
 const REACTION_DURATION: Duration = Duration::from_millis(650);
 const LANDING_DURATION: Duration = Duration::from_millis(320);
-const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(2_800);
-const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(8);
+const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(1_400);
+const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(14);
 const ATTACHMENT_FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 const DRAG_VELOCITY_SAMPLE_LIMIT: Duration = Duration::from_millis(120);
 const DRAG_WINDOW_LIST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const DRAG_LOCKED_WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const PHYSICS_WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const SNAP_VERTICAL_GAP: f32 = 42.0;
 const SNAP_MIN_HORIZONTAL_OVERLAP: f32 = 36.0;
 const SNAP_PREVIEW_VERTICAL_GAP: f32 = 72.0;
@@ -94,14 +94,25 @@ pub fn runtime_route(config: &ClippyConfig) -> RuntimeRoute {
     }
 }
 
-fn frame_elapsed_millis(last_tick: Option<Instant>, now: Instant) -> u64 {
+fn frame_elapsed(last_tick: Option<Instant>, now: Instant) -> Duration {
     last_tick
-        .map(|last| {
-            now.saturating_duration_since(last)
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64
-        })
-        .unwrap_or(STEP.as_millis() as u64)
+        .map(|last| now.saturating_duration_since(last))
+        .unwrap_or(Duration::ZERO)
+}
+
+fn duration_mod(duration: Duration, divisor: Duration) -> Duration {
+    if divisor.is_zero() {
+        return Duration::ZERO;
+    }
+    let divisor_ns = divisor.as_nanos();
+    let remainder_ns = duration.as_nanos() % divisor_ns;
+    duration_from_nanos_saturating(remainder_ns)
+}
+
+fn duration_from_nanos_saturating(nanos: u128) -> Duration {
+    let secs = (nanos / 1_000_000_000).min(u128::from(u64::MAX)) as u64;
+    let subsec_nanos = (nanos % 1_000_000_000) as u32;
+    Duration::new(secs, subsec_nanos)
 }
 
 #[derive(Debug, Clone)]
@@ -112,10 +123,10 @@ struct RuntimeSimulation {
     rng: DeterministicRng,
     logical_extent: f32,
     extent: f32,
-    pending_ms: u64,
+    pending_time: Duration,
     steps: u64,
     body: CompanionBody,
-    physics_pending_ms: u64,
+    physics_pending_time: Duration,
 }
 
 impl RuntimeSimulation {
@@ -135,10 +146,10 @@ impl RuntimeSimulation {
             rng: DeterministicRng::seeded(character_seed(character)),
             logical_extent,
             extent,
-            pending_ms: 0,
+            pending_time: Duration::ZERO,
             steps: 0,
             body,
-            physics_pending_ms: 0,
+            physics_pending_time: Duration::ZERO,
         }
     }
 
@@ -152,8 +163,8 @@ impl RuntimeSimulation {
     }
 
     fn return_to_corner(&mut self) {
-        self.pending_ms = 0;
-        self.physics_pending_ms = 0;
+        self.pending_time = Duration::ZERO;
+        self.physics_pending_time = Duration::ZERO;
         self.body.position = self.simulation.position;
         self.body.mode = BodyMode::Kinematic;
         self.simulation.config.speed_per_second =
@@ -169,11 +180,13 @@ impl RuntimeSimulation {
         self.simulation.position = to_point2(origin);
         self.body.position = self.simulation.position;
         self.body.size = Point2::new(extent, extent);
+        self.body.velocity = Point2::new(0.0, 0.0);
+        self.body.clear_contact();
         self.body.mode = BodyMode::Kinematic;
         self.simulation.target = None;
         self.simulation.state = CharacterSimulationState::Summoned;
-        self.pending_ms = 0;
-        self.physics_pending_ms = 0;
+        self.pending_time = Duration::ZERO;
+        self.physics_pending_time = Duration::ZERO;
         origin
     }
 
@@ -184,37 +197,41 @@ impl RuntimeSimulation {
         self.body.size = Point2::new(self.extent, self.extent);
         self.body
             .release_from_drag(velocity, PhysicsConfig::default());
-        self.physics_pending_ms = 0;
+        self.physics_pending_time = Duration::ZERO;
     }
 
     fn snap_body_to_surface(&mut self, surface: &WalkableSurface) {
         self.body.position = self.simulation.position;
         self.body.size = Point2::new(self.extent, self.extent);
         self.body.snap_to_surface(surface);
+        self.body.velocity = Point2::new(0.0, 0.0);
         self.simulation.position = self.body.position;
         self.simulation.target = None;
         self.simulation.state = CharacterSimulationState::Perched;
-        self.pending_ms = 0;
-        self.physics_pending_ms = 0;
+        self.pending_time = Duration::ZERO;
+        self.physics_pending_time = Duration::ZERO;
     }
 
     fn step_physics_capped(
         &mut self,
-        elapsed_ms: u64,
+        elapsed: Duration,
         platforms: &[WalkableSurface],
     ) -> StepResult {
         let step_ms = self.simulation.config.fixed_timestep_ms.max(1);
         let max_steps = u64::from(self.simulation.config.max_catch_up_steps);
-        let max_budget_ms = step_ms.saturating_mul(max_steps);
-        self.physics_pending_ms = self.physics_pending_ms.saturating_add(elapsed_ms);
-        let budget_ms = self.physics_pending_ms.min(max_budget_ms);
+        let step = Duration::from_millis(step_ms);
+        let max_budget = Duration::from_millis(step_ms.saturating_mul(max_steps));
+        self.physics_pending_time = self.physics_pending_time.saturating_add(elapsed);
+        let budget = self.physics_pending_time.min(max_budget);
         let mut result = self.body.step(
             0.0,
             PhysicsConfig::default(),
             platforms,
             self.physics_bounds(),
         );
-        let steps = budget_ms / step_ms;
+        let steps = (budget.as_millis() / u128::from(step_ms)).min(u128::from(u64::MAX)) as u64;
+        let mut first_landing = None;
+        let mut moved = result.moved;
         for _ in 0..steps {
             result = self.body.step(
                 step_ms as f32 / 1000.0,
@@ -222,19 +239,31 @@ impl RuntimeSimulation {
                 platforms,
                 self.physics_bounds(),
             );
+            moved |= result.moved;
+            if result.landed && first_landing.is_none() {
+                first_landing = Some(result.clone());
+            }
             self.steps = self.steps.saturating_add(1);
         }
-        let consumed_ms = steps.saturating_mul(step_ms);
-        self.physics_pending_ms = if self.physics_pending_ms > max_budget_ms {
-            self.physics_pending_ms % step_ms
+        let consumed = Duration::from_millis(steps.saturating_mul(step_ms));
+        self.physics_pending_time = if self.physics_pending_time > max_budget {
+            duration_mod(self.physics_pending_time, step)
         } else {
-            self.physics_pending_ms.saturating_sub(consumed_ms)
+            self.physics_pending_time.saturating_sub(consumed)
         };
         self.simulation.position = self.body.position;
-        if result.landed {
+        if let Some(landing) = first_landing {
             self.simulation.state = CharacterSimulationState::Landing;
+            StepResult {
+                position: result.position,
+                velocity: result.velocity,
+                moved,
+                ..landing
+            }
+        } else {
+            result.moved = moved;
+            result
         }
-        result
     }
 
     fn physics_dynamic(&self) -> bool {
@@ -261,12 +290,17 @@ impl RuntimeSimulation {
             profile.click_speed
         };
         self.simulation.set_target(target);
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(self.extent, self.extent);
+        self.body.velocity = Point2::new(0.0, 0.0);
+        self.body.clear_contact();
+        self.body.mode = BodyMode::Kinematic;
         self.simulation.state = if profile.airborne || click_count >= 2 {
             CharacterSimulationState::Flying
         } else {
             CharacterSimulationState::Jumping
         };
-        self.pending_ms = 0;
+        self.pending_time = Duration::ZERO;
         self.simulation.remember_action(if click_count >= 2 {
             "double-click-zoom"
         } else {
@@ -276,9 +310,19 @@ impl RuntimeSimulation {
     }
 
     fn pause(&mut self) {
-        self.pending_ms = 0;
+        self.safe_sleep_rest();
+    }
+
+    fn safe_sleep_rest(&mut self) {
+        self.pending_time = Duration::ZERO;
+        self.physics_pending_time = Duration::ZERO;
         self.simulation.target = None;
         self.simulation.state = CharacterSimulationState::Resting;
+        self.body.position = self.simulation.position;
+        self.body.size = Point2::new(self.extent, self.extent);
+        self.body.velocity = Point2::new(0.0, 0.0);
+        self.body.clear_contact();
+        self.body.mode = BodyMode::Sleeping;
     }
 
     fn playful_target(&mut self) {
@@ -324,20 +368,25 @@ impl RuntimeSimulation {
             .map(|candidate| candidate.with_speed(profile, &mut self.rng))
     }
 
-    fn step_capped(&mut self, elapsed_ms: u64) -> StepOutcome {
+    fn step_capped(&mut self, elapsed: Duration) -> StepOutcome {
         let before = self.simulation.position;
         let had_target = self.simulation.target.is_some();
         let step_ms = self.simulation.config.fixed_timestep_ms.max(1);
         let max_steps = u64::from(self.simulation.config.max_catch_up_steps);
-        let max_budget_ms = step_ms.saturating_mul(max_steps);
-        self.pending_ms = self.pending_ms.saturating_add(elapsed_ms);
-        let budget_ms = self.pending_ms.min(max_budget_ms);
+        let step = Duration::from_millis(step_ms);
+        let max_budget = Duration::from_millis(step_ms.saturating_mul(max_steps));
+        self.pending_time = self.pending_time.saturating_add(elapsed);
+        let budget_ms = self
+            .pending_time
+            .min(max_budget)
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
         let steps = self.simulation.step_capped(budget_ms, self.bounds());
-        let consumed_ms = u64::from(steps).saturating_mul(step_ms);
-        self.pending_ms = if self.pending_ms > max_budget_ms {
-            self.pending_ms % step_ms
+        let consumed = Duration::from_millis(u64::from(steps).saturating_mul(step_ms));
+        self.pending_time = if self.pending_time > max_budget {
+            duration_mod(self.pending_time, step)
         } else {
-            self.pending_ms.saturating_sub(consumed_ms)
+            self.pending_time.saturating_sub(consumed)
         };
         self.steps += u64::from(steps);
         StepOutcome {
@@ -368,6 +417,7 @@ impl RuntimeSimulation {
 
 pub struct DesktopCharacterRuntime {
     config: ClippyConfig,
+    system_reduced_motion: bool,
     overlay: Option<WindowHandle<CharacterOverlayView>>,
     diagnostics: OverlayDiagnostics,
     simulation: Option<RuntimeSimulation>,
@@ -380,6 +430,7 @@ pub struct DesktopCharacterRuntime {
     pending_native_move: bool,
     physics_windows: Vec<ExternalWindow>,
     physics_platforms: Vec<WalkableSurface>,
+    physics_snapshot_at: Option<Instant>,
     drag_windows: Vec<ExternalWindow>,
     drag_displays: Vec<DesktopDisplay>,
     drag_snapshot_at: Option<Instant>,
@@ -420,6 +471,7 @@ impl DesktopCharacterRuntime {
                 native_moves: 0,
             },
             config,
+            system_reduced_motion: false,
             overlay: None,
             simulation: None,
             last_tick: None,
@@ -431,6 +483,7 @@ impl DesktopCharacterRuntime {
             pending_native_move: false,
             physics_windows: Vec::new(),
             physics_platforms: Vec::new(),
+            physics_snapshot_at: None,
             drag_windows: Vec::new(),
             drag_displays: Vec::new(),
             drag_snapshot_at: None,
@@ -449,19 +502,20 @@ impl DesktopCharacterRuntime {
         cx: &mut App,
     ) {
         let was_paused = self.diagnostics.paused;
-        let was_reduced = reduced_motion_for_config(&self.config);
+        let was_reduced = reduced_motion_for_config(&self.config, self.system_reduced_motion);
+        self.system_reduced_motion = cx.prefers_reduced_motion();
         let previous_movement = self.config.appearance.desktop.movement;
         let previous_window_climbing = self.config.appearance.desktop.allow_window_climbing;
         let recreate = self.config.appearance.character_id() != config.appearance.character_id()
             || self.config.appearance.scale != config.appearance.scale;
         self.config = config;
-        self.apply_window_climbing_transition(previous_window_climbing);
-        let reduced_motion = reduced_motion_for_config(&self.config);
+        let climbing_transition_requested_frame =
+            self.apply_window_climbing_transition(previous_window_climbing);
+        let reduced_motion = reduced_motion_for_config(&self.config, self.system_reduced_motion);
         let motion_policy_changed = was_reduced != reduced_motion
             || previous_movement != self.config.appearance.desktop.movement;
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
-        self.cancel_attachment();
         self.clear_drag_snapshot();
         if recreate {
             self.close_overlay(cx);
@@ -480,14 +534,18 @@ impl DesktopCharacterRuntime {
         {
             self.ensure_overlay(runtime_entity.clone(), main_window, cx);
             if !recreate && motion_policy_changed {
-                if let Some(sim) = &mut self.simulation {
-                    if reduced_motion || self.diagnostics.paused {
-                        sim.pause();
-                    } else {
+                if reduced_motion || self.diagnostics.paused {
+                    self.stop_motion_for_rest();
+                } else if self.attachment.is_none() {
+                    if let Some(sim) = &mut self.simulation {
                         sim.playful_target();
                     }
                 }
-                self.last_tick = None;
+                self.last_tick = Some(Instant::now());
+                self.request_frame(cx);
+            }
+            if !recreate && climbing_transition_requested_frame {
+                self.last_tick = Some(Instant::now());
                 self.request_frame(cx);
             }
             self.schedule_roam(runtime_entity, cx);
@@ -508,6 +566,7 @@ impl DesktopCharacterRuntime {
                 self.diagnostics.paused = !self.diagnostics.paused;
                 if self.diagnostics.paused {
                     self.cancel_attachment();
+                    self.clear_physics_snapshot();
                     self.clear_drag_snapshot();
                 }
                 if let Some(sim) = &mut self.simulation {
@@ -521,11 +580,13 @@ impl DesktopCharacterRuntime {
                     self.ensure_overlay(runtime_entity.clone(), main_window, cx);
                     self.request_frame(cx);
                     self.schedule_roam(runtime_entity, cx);
+                } else {
+                    self.request_frame(cx);
                 }
             }
             CompanionRuntimeCommand::ReturnToCorner => {
                 self.diagnostics.paused = false;
-                self.last_tick = None;
+                self.last_tick = Some(Instant::now());
                 self.roam_generation = self.roam_generation.wrapping_add(1);
                 self.roam_timer_scheduled = false;
                 self.cancel_attachment();
@@ -553,7 +614,7 @@ impl DesktopCharacterRuntime {
         self.roam_timer_scheduled = false;
         self.cancel_attachment();
         self.clear_drag_snapshot();
-        self.last_tick = None;
+        self.last_tick = Some(Instant::now());
         if let Some(sim) = &mut self.simulation {
             sim.pause();
             sim.simulation.state = CharacterSimulationState::Summoned;
@@ -695,7 +756,7 @@ impl DesktopCharacterRuntime {
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
         let lifecycle = self.finish_user_drag_snapshot(release_velocity, &windows, &displays);
-        self.last_tick = None;
+        self.last_tick = Some(Instant::now());
         match lifecycle {
             ReleaseLifecycle::RequestPhysicsFrame => self.request_frame(cx),
             ReleaseLifecycle::StartAttachmentFollow => {
@@ -739,7 +800,8 @@ impl DesktopCharacterRuntime {
             .drag_free_position
             .or_else(|| self.simulation.as_ref().map(|sim| sim.simulation.position));
         self.clear_drag_snapshot();
-        let full_motion = !self.diagnostics.paused && !reduced_motion_for_config(&self.config);
+        let full_motion = !self.diagnostics.paused
+            && !reduced_motion_for_config(&self.config, self.system_reduced_motion);
         self.clear_physics_snapshot();
         let Some(sim) = &mut self.simulation else {
             return ReleaseLifecycle::ScheduleRoam;
@@ -753,7 +815,7 @@ impl DesktopCharacterRuntime {
         }) {
             sim.update_display(display);
         }
-        if self.config.appearance.desktop.allow_window_climbing {
+        if full_motion && self.config.appearance.desktop.allow_window_climbing {
             let candidate = match (preview_invalidated, preview_id, free_position) {
                 (true, _, _) => None,
                 (false, Some(id), Some(position)) => choose_snap_window_for_id(
@@ -781,6 +843,7 @@ impl DesktopCharacterRuntime {
                         candidate.min_horizontal_overlap,
                     )
                 }) {
+                    self.pending_native_move |= sim.simulation.position != position;
                     sim.simulation.position = position;
                 }
                 let surface = window_top_surface(&candidate.window, candidate.generation);
@@ -803,6 +866,7 @@ impl DesktopCharacterRuntime {
             } else {
                 Vec::new()
             };
+            self.physics_snapshot_at = None;
             sim.release_dynamic(release_velocity);
             ReleaseLifecycle::RequestPhysicsFrame
         } else {
@@ -826,7 +890,7 @@ impl DesktopCharacterRuntime {
         self.cancel_attachment();
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
-        self.last_tick = None;
+        self.last_tick = Some(Instant::now());
         let started = self.simulation.as_mut().is_some_and(|sim| {
             let extent = sim.extent;
             sim.react_to_click(click_count, extent)
@@ -1061,21 +1125,31 @@ impl DesktopCharacterRuntime {
         let Some(attachment) = self.attachment else {
             return AttachmentFollowOutcome::inactive();
         };
-        let Some(sim) = &mut self.simulation else {
-            self.cancel_attachment();
-            return AttachmentFollowOutcome::inactive();
+        let target = {
+            let Some(sim) = &mut self.simulation else {
+                self.cancel_attachment();
+                return AttachmentFollowOutcome::inactive();
+            };
+            if let Some(display) = display_for_window(displays, window_bounds) {
+                sim.update_display(display);
+                self.diagnostics.display_count = displays.len();
+            }
+            attachment_target(
+                window_bounds,
+                sim.display.work_area,
+                sim.extent,
+                f32::from(window_bounds.origin.x) + attachment.top_edge_offset,
+                desktop_coordinate_distance(SNAP_MIN_HORIZONTAL_OVERLAP, sim.display.scale_factor),
+            )
         };
-        if let Some(display) = display_for_window(displays, window_bounds) {
-            sim.update_display(display);
-            self.diagnostics.display_count = displays.len();
-        }
-        let Some(target) = attachment_target(
-            window_bounds,
-            sim.display.work_area,
-            sim.extent,
-            f32::from(window_bounds.origin.x) + attachment.top_edge_offset,
-            desktop_coordinate_distance(SNAP_MIN_HORIZONTAL_OVERLAP, sim.display.scale_factor),
-        ) else {
+        let Some(target) = target else {
+            return if self.detach_missing_attachment() {
+                AttachmentFollowOutcome::dynamic_restart()
+            } else {
+                AttachmentFollowOutcome::inactive()
+            };
+        };
+        let Some(sim) = &mut self.simulation else {
             self.cancel_attachment();
             return AttachmentFollowOutcome::inactive();
         };
@@ -1105,24 +1179,104 @@ impl DesktopCharacterRuntime {
     fn clear_physics_snapshot(&mut self) {
         self.physics_windows.clear();
         self.physics_platforms.clear();
+        self.physics_snapshot_at = None;
     }
 
-    fn apply_window_climbing_transition(&mut self, previous_window_climbing: bool) {
-        if previous_window_climbing && !self.config.appearance.desktop.allow_window_climbing {
-            self.clear_physics_snapshot();
-        }
+    fn full_motion_enabled(&self) -> bool {
+        !self.diagnostics.paused
+            && !reduced_motion_for_config(&self.config, self.system_reduced_motion)
     }
 
-    fn detach_missing_attachment(&mut self) -> bool {
+    fn stop_motion_for_rest(&mut self) {
         self.cancel_attachment();
         self.clear_physics_snapshot();
         if let Some(sim) = &mut self.simulation {
-            if !self.diagnostics.paused && !reduced_motion_for_config(&self.config) {
+            sim.safe_sleep_rest();
+        }
+        self.last_tick = Some(Instant::now());
+    }
+
+    fn apply_window_climbing_transition(&mut self, previous_window_climbing: bool) -> bool {
+        if previous_window_climbing && !self.config.appearance.desktop.allow_window_climbing {
+            if self.attachment.is_some() {
+                let restart = self.detach_missing_attachment();
+                self.clear_physics_snapshot();
+                return restart;
+            }
+            self.clear_physics_snapshot();
+        }
+        false
+    }
+
+    fn refresh_physics_platforms(&mut self, cx: &App, now: Instant) {
+        if self.physics_windows.is_empty()
+            || !self.config.appearance.desktop.allow_window_climbing
+            || !drag_snapshot_refresh_due(
+                self.physics_snapshot_at,
+                now,
+                PHYSICS_WINDOW_REFRESH_INTERVAL,
+            )
+        {
+            return;
+        }
+        let displays = desktop_displays(cx);
+        let refreshed: Vec<_> = self
+            .physics_windows
+            .iter()
+            .filter_map(|window| cx.external_window(window.id))
+            .collect();
+        self.physics_windows = refreshed;
+        self.physics_platforms = physics_platforms(&self.physics_windows, &displays);
+        self.physics_snapshot_at = Some(now);
+        self.diagnostics.geometry_snapshot_count =
+            self.diagnostics.geometry_snapshot_count.saturating_add(1);
+        self.diagnostics.display_count = displays.len();
+    }
+
+    #[cfg(test)]
+    fn refresh_physics_platforms_for_test(
+        &mut self,
+        current_windows: &[ExternalWindow],
+        displays: &[DesktopDisplay],
+        now: Instant,
+    ) {
+        if self.physics_windows.is_empty()
+            || !self.config.appearance.desktop.allow_window_climbing
+            || !drag_snapshot_refresh_due(
+                self.physics_snapshot_at,
+                now,
+                PHYSICS_WINDOW_REFRESH_INTERVAL,
+            )
+        {
+            return;
+        }
+        self.physics_windows = self
+            .physics_windows
+            .iter()
+            .filter_map(|cached| {
+                current_windows
+                    .iter()
+                    .find(|current| current.id == cached.id)
+                    .cloned()
+            })
+            .collect();
+        self.physics_platforms = physics_platforms(&self.physics_windows, displays);
+        self.physics_snapshot_at = Some(now);
+        self.diagnostics.geometry_snapshot_count =
+            self.diagnostics.geometry_snapshot_count.saturating_add(1);
+        self.diagnostics.display_count = displays.len();
+    }
+
+    fn detach_missing_attachment(&mut self) -> bool {
+        let full_motion = self.full_motion_enabled();
+        self.cancel_attachment();
+        self.clear_physics_snapshot();
+        if let Some(sim) = &mut self.simulation {
+            if full_motion {
                 sim.release_dynamic(Point2::new(0.0, 0.0));
                 return true;
             } else {
-                sim.simulation.state = CharacterSimulationState::Resting;
-                sim.body.mode = BodyMode::Sleeping;
+                sim.safe_sleep_rest();
             }
         }
         false
@@ -1152,11 +1306,7 @@ impl DesktopCharacterRuntime {
         let character = self.config.appearance.character_id();
         self.simulation = Some(RuntimeSimulation::new(display, window_size, character));
         if let Some(sim) = &mut self.simulation {
-            if !matches!(
-                self.config.appearance.motion,
-                CompanionMotionPreference::Off | CompanionMotionPreference::Reduced
-            ) && self.config.appearance.desktop.movement != DesktopCompanionMovement::Still
-            {
+            if !reduced_motion_for_config(&self.config, self.system_reduced_motion) {
                 sim.playful_target();
             }
         }
@@ -1183,7 +1333,7 @@ impl DesktopCharacterRuntime {
             app_id: Some("shelldeck-character".to_string()),
             ..Default::default()
         };
-        let reduced_motion = reduced_motion_for_config(&self.config);
+        let reduced_motion = reduced_motion_for_config(&self.config, self.system_reduced_motion);
         match cx.open_window(options, move |_window, cx| {
             cx.new(|_cx| {
                 CharacterOverlayView::new(main_window, character, reduced_motion, runtime_entity)
@@ -1245,17 +1395,20 @@ impl DesktopCharacterRuntime {
     }
 
     fn on_frame(&mut self, cx: &mut App) -> CharacterFrameState {
-        let reduced_motion = reduced_motion_for_config(&self.config);
+        let reduced_motion = reduced_motion_for_config(&self.config, self.system_reduced_motion);
         if self.diagnostics.paused || reduced_motion {
             self.cancel_attachment();
             if let Some(sim) = &mut self.simulation {
                 sim.pause();
             }
+            self.clear_physics_snapshot();
             return self.frame_state(false, false, true);
         }
         let mut landed = false;
         let mut moved = false;
         let displays = desktop_displays(cx);
+        let now = Instant::now();
+        self.refresh_physics_platforms(cx, now);
         if let Some(sim) = &mut self.simulation {
             let before = sim.position();
             let current_display = displays
@@ -1267,11 +1420,10 @@ impl DesktopCharacterRuntime {
                 sim.update_display(display);
                 self.diagnostics.display_count = displays.len();
             }
-            let now = Instant::now();
-            let elapsed_ms = frame_elapsed_millis(self.last_tick, now);
+            let elapsed = frame_elapsed(self.last_tick, now);
             self.last_tick = Some(now);
             if sim.physics_dynamic() {
-                let outcome = sim.step_physics_capped(elapsed_ms, &self.physics_platforms);
+                let outcome = sim.step_physics_capped(elapsed, &self.physics_platforms);
                 self.diagnostics.simulation_steps = sim.steps;
                 moved = outcome.moved || sim.position() != before || self.pending_native_move;
                 landed = outcome.landed;
@@ -1301,7 +1453,7 @@ impl DesktopCharacterRuntime {
                     self.clear_physics_snapshot();
                 }
             } else {
-                let outcome = sim.step_capped(elapsed_ms);
+                let outcome = sim.step_capped(elapsed);
                 self.diagnostics.simulation_steps = sim.steps;
                 moved = outcome.moved || sim.position() != before || self.pending_native_move;
                 landed = outcome.landed;
@@ -1410,6 +1562,17 @@ struct CharacterDrag {
     last_sample_at: Instant,
     release_velocity: Point2,
     moved: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CharacterDragToken;
+
+struct CharacterDragGhost;
+
+impl Render for CharacterDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(1.0)).bg(gpui::transparent_black())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1566,12 +1729,7 @@ impl CharacterOverlayView {
             desktop_pointer_scale(window.scale_factor()),
         );
         let now = Instant::now();
-        let elapsed = now.saturating_duration_since(drag.last_sample_at);
-        if elapsed > Duration::ZERO && elapsed <= DRAG_VELOCITY_SAMPLE_LIMIT {
-            drag.release_velocity = bounded_release_velocity(drag.last_origin, origin, elapsed);
-        }
-        drag.last_origin = origin;
-        drag.last_sample_at = now;
+        sample_drag_velocity(&mut drag, origin, now);
         self.drag = Some(drag);
         if !drag.moved {
             cx.stop_propagation();
@@ -1586,7 +1744,9 @@ impl CharacterOverlayView {
             } else {
                 CharacterVisualState::Dragging
             });
-            if outcome.moved {
+            if outcome.moved
+                && native_origin_changed(Some(window.bounds().origin), outcome.position)
+            {
                 if let Err(error) = window.set_window_origin(outcome.position) {
                     tracing::warn!(error = %error, "desktop character drag movement failed");
                     self.runtime.update(cx, |runtime, _cx| {
@@ -1599,6 +1759,16 @@ impl CharacterOverlayView {
         cx.stop_propagation();
     }
 
+    fn handle_drag_move(
+        &mut self,
+        event: &DragMoveEvent<CharacterDragToken>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = event.bounds;
+        self.handle_mouse_move(&event.event, window, cx);
+    }
+
     fn handle_mouse_up(
         &mut self,
         event: &MouseUpEvent,
@@ -1606,8 +1776,10 @@ impl CharacterOverlayView {
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.drag.take() else {
+            cx.stop_active_drag(window);
             return;
         };
+        cx.stop_active_drag(window);
         let runtime_entity = self.runtime.clone();
         let started_motion = if drag.moved {
             let release_velocity = release_velocity_at_mouse_up(
@@ -1700,7 +1872,7 @@ impl CharacterOverlayView {
             view.reduced_motion = state.reduced_motion;
             if let Some(position) = state.position {
                 let must_apply_origin =
-                    should_apply_native_origin(state.moved, view.last_origin.is_some());
+                    should_apply_native_origin(state.moved, view.last_origin, position);
                 if must_apply_origin {
                     view.update_facing(position);
                     if let Err(error) = window.set_window_origin(position) {
@@ -1828,7 +2000,21 @@ impl Render for CharacterOverlayView {
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| {
                 view.handle_mouse_move(event, window, cx)
             }))
+            .on_drag(CharacterDragToken, |_token, _offset, _window, cx| {
+                cx.new(|_cx| CharacterDragGhost)
+            })
+            .on_drag_move(cx.listener(
+                |view, event: &DragMoveEvent<CharacterDragToken>, window, cx| {
+                    view.handle_drag_move(event, window, cx)
+                },
+            ))
             .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                    view.handle_mouse_up(event, window, cx)
+                }),
+            )
+            .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseUpEvent, window, cx| {
                     view.handle_mouse_up(event, window, cx)
@@ -2194,8 +2380,23 @@ fn should_schedule_next_frame(
     !reduced_motion && (moving || visual_state_needs_frames(visual_state, reduced_motion))
 }
 
-fn should_apply_native_origin(moved: bool, has_last_origin: bool) -> bool {
-    moved || !has_last_origin
+fn should_apply_native_origin(
+    moved: bool,
+    last_origin: Option<Point<Pixels>>,
+    position: Point<Pixels>,
+) -> bool {
+    last_origin.is_none() || (moved && native_origin_changed(last_origin, position))
+}
+
+fn native_origin_changed(previous: Option<Point<Pixels>>, next: Point<Pixels>) -> bool {
+    previous.is_none_or(|previous| rounded_origin(previous) != rounded_origin(next))
+}
+
+fn rounded_origin(origin: Point<Pixels>) -> (i32, i32) {
+    (
+        f32::from(origin.x).round() as i32,
+        f32::from(origin.y).round() as i32,
+    )
 }
 
 fn should_schedule_roam_after_landing(landed: bool, attached: bool, dragging: bool) -> bool {
@@ -2206,11 +2407,12 @@ fn procedural_pose_phase(elapsed: Duration) -> f32 {
     elapsed.as_secs_f32() * std::f32::consts::TAU
 }
 
-fn reduced_motion_for_config(config: &ClippyConfig) -> bool {
-    matches!(
-        config.appearance.motion,
-        CompanionMotionPreference::Reduced | CompanionMotionPreference::Off
-    ) || config.appearance.desktop.movement == DesktopCompanionMovement::Still
+fn reduced_motion_for_config(config: &ClippyConfig, system_prefers_reduced_motion: bool) -> bool {
+    (match config.appearance.motion {
+        CompanionMotionPreference::System => system_prefers_reduced_motion,
+        CompanionMotionPreference::Full => false,
+        CompanionMotionPreference::Reduced | CompanionMotionPreference::Off => true,
+    }) || config.appearance.desktop.movement == DesktopCompanionMovement::Still
 }
 
 fn detect_capabilities(cx: &App, route: RuntimeRoute) -> OverlayDiagnostics {
@@ -2246,39 +2448,35 @@ fn detect_capabilities(cx: &App, route: RuntimeRoute) -> OverlayDiagnostics {
 
 fn primary_desktop_display(cx: &App) -> Option<DesktopDisplay> {
     let primary_id = cx.primary_display().map(|display| display.id());
-    let metrics = cx.global_display_metrics();
-    let (id, bounds, scale_factor) = primary_id
-        .and_then(|primary_id| metrics.iter().copied().find(|(id, _, _)| *id == primary_id))
-        .or_else(|| metrics.first().copied())?;
-    let bounds = desktop_coordinate_bounds(bounds, scale_factor);
+    let metrics = cx.desktop_display_metrics();
+    let metric = primary_id
+        .and_then(|primary_id| metrics.iter().find(|metric| metric.id == primary_id))
+        .or_else(|| metrics.first())?;
     Some(DesktopDisplay {
-        id: Some(id),
-        bounds,
-        work_area: bounds,
-        scale_factor,
+        id: Some(metric.id),
+        bounds: metric.global_bounds,
+        work_area: metric.global_work_area,
+        scale_factor: metric.scale_factor,
     })
 }
 
 fn desktop_displays(cx: &App) -> Vec<DesktopDisplay> {
-    cx.global_display_metrics()
+    cx.desktop_display_metrics()
         .into_iter()
-        .map(|(id, bounds, scale_factor)| {
-            let bounds = desktop_coordinate_bounds(bounds, scale_factor);
-            DesktopDisplay {
-                id: Some(id),
-                bounds,
-                work_area: bounds,
-                scale_factor,
-            }
+        .map(|metric| DesktopDisplay {
+            id: Some(metric.id),
+            bounds: metric.global_bounds,
+            work_area: metric.global_work_area,
+            scale_factor: metric.scale_factor,
         })
         .collect()
 }
 
 fn logical_display_bounds(cx: &App, id: Option<gpui::DisplayId>) -> Option<Bounds<Pixels>> {
     let id = id?;
-    cx.global_display_bounds()
+    cx.desktop_display_metrics()
         .into_iter()
-        .find_map(|(candidate, bounds)| (candidate == id).then_some(bounds))
+        .find_map(|metric| (metric.id == id).then_some(metric.logical_work_area))
 }
 
 fn safe_corner(bounds: Bounds<Pixels>, extent: f32) -> Point<Pixels> {
@@ -2338,13 +2536,19 @@ fn release_velocity_at_mouse_up(
     }
 }
 
-fn drag_snapshot_refresh_due(last: Option<Instant>, now: Instant, interval: Duration) -> bool {
-    last.is_none_or(|last| now.saturating_duration_since(last) >= interval)
+fn sample_drag_velocity(drag: &mut CharacterDrag, origin: Point<Pixels>, now: Instant) {
+    let elapsed = now.saturating_duration_since(drag.last_sample_at);
+    if elapsed > Duration::ZERO && elapsed <= DRAG_VELOCITY_SAMPLE_LIMIT {
+        drag.release_velocity = bounded_release_velocity(drag.last_origin, origin, elapsed);
+    } else if elapsed > DRAG_VELOCITY_SAMPLE_LIMIT {
+        drag.release_velocity = Point2::new(0.0, 0.0);
+    }
+    drag.last_origin = origin;
+    drag.last_sample_at = now;
 }
 
-#[cfg(target_os = "windows")]
-fn desktop_coordinate_bounds(bounds: Bounds<Pixels>, scale_factor: f32) -> Bounds<Pixels> {
-    scale_desktop_bounds(bounds, scale_factor)
+fn drag_snapshot_refresh_due(last: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= interval)
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -2359,11 +2563,6 @@ fn scale_desktop_bounds(bounds: Bounds<Pixels>, scale_factor: f32) -> Bounds<Pix
             bounds.size.height * scale_factor,
         ),
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn desktop_coordinate_bounds(bounds: Bounds<Pixels>, _scale_factor: f32) -> Bounds<Pixels> {
-    bounds
 }
 
 #[cfg(target_os = "windows")]
@@ -3144,22 +3343,22 @@ mod tests {
     #[test]
     fn frame_elapsed_uses_real_refresh_delta_after_the_first_frame() {
         let first = Instant::now();
-        assert_eq!(frame_elapsed_millis(None, first), STEP.as_millis() as u64);
+        assert_eq!(frame_elapsed(None, first), Duration::ZERO);
         assert_eq!(
-            frame_elapsed_millis(Some(first), first + Duration::from_millis(16)),
-            16
+            frame_elapsed(Some(first), first + Duration::from_micros(16_500)),
+            Duration::from_micros(16_500)
         );
-        assert_eq!(frame_elapsed_millis(Some(first), first), 0);
+        assert_eq!(frame_elapsed(Some(first), first), Duration::ZERO);
 
         let extent = character_window_size(CompanionScale::Medium);
         let mut sim = RuntimeSimulation::new(display(), extent, CompanionCharacterId::Clippy);
         let start = sim.simulation.position;
         sim.simulation
             .set_target(Point2::new(start.x - 100.0, start.y));
-        assert!(!sim.step_capped(16).moved);
-        assert_eq!(sim.pending_ms, 16);
-        assert!(sim.step_capped(17).moved);
-        assert_eq!(sim.pending_ms, 0);
+        assert!(!sim.step_capped(Duration::from_micros(16_500)).moved);
+        assert_eq!(sim.pending_time, Duration::from_micros(16_500));
+        assert!(sim.step_capped(Duration::from_micros(16_500)).moved);
+        assert_eq!(sim.pending_time, Duration::ZERO);
     }
 
     // SDTEST-1491
@@ -3314,10 +3513,28 @@ mod tests {
 
         let mut off = config(true);
         off.appearance.motion = CompanionMotionPreference::Off;
-        assert!(reduced_motion_for_config(&off));
+        assert!(reduced_motion_for_config(&off, false));
         let mut still = config(true);
         still.appearance.desktop.movement = DesktopCompanionMovement::Still;
-        assert!(reduced_motion_for_config(&still));
+        assert!(reduced_motion_for_config(&still, false));
+    }
+
+    // SDTEST-1561
+    #[test]
+    fn system_motion_preference_honors_platform_reduced_motion() {
+        let mut config = config(true);
+        config.appearance.motion = CompanionMotionPreference::System;
+        assert!(!reduced_motion_for_config(&config, false));
+        assert!(reduced_motion_for_config(&config, true));
+
+        config.appearance.motion = CompanionMotionPreference::Full;
+        assert!(!reduced_motion_for_config(&config, true));
+    }
+
+    // SDTEST-1562
+    #[test]
+    fn idle_flourish_duty_cycle_stays_below_the_playful_background_budget() {
+        assert!(IDLE_FLOURISH_DURATION * 5 <= IDLE_FLOURISH_DELAY);
     }
 
     // SDTEST-1498
@@ -3337,9 +3554,19 @@ mod tests {
             1.5,
         ));
 
-        assert!(should_apply_native_origin(false, false));
-        assert!(should_apply_native_origin(true, true));
-        assert!(!should_apply_native_origin(false, true));
+        let origin = gpui::point(px(100.2), px(100.2));
+        assert!(should_apply_native_origin(false, None, origin));
+        assert!(should_apply_native_origin(
+            true,
+            Some(origin),
+            gpui::point(px(101.0), px(100.2))
+        ));
+        assert!(!should_apply_native_origin(false, Some(origin), origin));
+        assert!(!should_apply_native_origin(
+            true,
+            Some(origin),
+            gpui::point(px(100.4), px(100.4))
+        ));
     }
 
     // SDTEST-1499
@@ -3541,7 +3768,7 @@ mod tests {
         let sim = runtime.simulation.as_mut().unwrap();
         let mut landed = false;
         for _ in 0..60 {
-            let result = sim.step_physics_capped(33, &platforms);
+            let result = sim.step_physics_capped(Duration::from_millis(33), &platforms);
             if result.landed {
                 landed = true;
                 assert_eq!(result.contact.unwrap().kind, WalkableSurfaceKind::WindowTop);
@@ -3575,7 +3802,10 @@ mod tests {
         ));
         let sim = runtime.simulation.as_mut().unwrap();
         for _ in 0..90 {
-            if sim.step_physics_capped(33, &[]).landed {
+            if sim
+                .step_physics_capped(Duration::from_millis(33), &[])
+                .landed
+            {
                 break;
             }
         }
@@ -3618,17 +3848,22 @@ mod tests {
     fn reduced_motion_release_never_starts_dynamic_frames() {
         let mut runtime = runtime_with_sim();
         runtime.config.appearance.motion = CompanionMotionPreference::Reduced;
-        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 80.0);
-        assert!(!runtime.finish_user_drag_snapshot_for_test(
-            Point2::new(100.0, 100.0),
-            &[],
-            &[display()]
-        ));
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 140.0);
+        let window = external_window(55, bounds(200.0, 300.0, 260.0, 180.0));
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(100.0, 100.0),
+                &[window],
+                &[display()]
+            ),
+            ReleaseLifecycle::ScheduleRoam
+        );
         assert!(!runtime.simulation.as_ref().unwrap().moving(true));
         assert_ne!(
             runtime.simulation.as_ref().unwrap().body.mode,
             BodyMode::Dynamic
         );
+        assert!(runtime.attachment.is_none());
     }
 
     // SDTEST-1520
@@ -3637,7 +3872,7 @@ mod tests {
         let start = gpui::point(px(100.0), px(100.0));
         let jitter = gpui::point(px(103.0), px(102.0));
         assert!(!drag_crossed_threshold(start, jitter, 1.0));
-        assert!(!should_apply_native_origin(false, true));
+        assert!(!should_apply_native_origin(false, Some(start), start));
     }
 
     // SDTEST-1521
@@ -3706,7 +3941,7 @@ mod tests {
         let sim = runtime.simulation.as_mut().unwrap();
         for _ in 0..90 {
             if sim
-                .step_physics_capped(33, &runtime.physics_platforms)
+                .step_physics_capped(Duration::from_millis(33), &runtime.physics_platforms)
                 .landed
             {
                 break;
@@ -3785,7 +4020,7 @@ mod tests {
         let sim = runtime.simulation.as_mut().unwrap();
         for _ in 0..90 {
             if sim
-                .step_physics_capped(33, &runtime.physics_platforms)
+                .step_physics_capped(Duration::from_millis(33), &runtime.physics_platforms)
                 .landed
             {
                 break;
@@ -3834,7 +4069,10 @@ mod tests {
         let sim = runtime.simulation.as_mut().unwrap();
         assert_eq!(sim.display.work_area, primary.work_area);
         for _ in 0..90 {
-            if sim.step_physics_capped(33, &[]).landed {
+            if sim
+                .step_physics_capped(Duration::from_millis(33), &[])
+                .landed
+            {
                 break;
             }
         }
@@ -3975,7 +4213,10 @@ mod tests {
         let sim = runtime.simulation.as_mut().unwrap();
         assert_eq!(sim.physics_bounds(), raw_rect(display().work_area));
         for _ in 0..90 {
-            if sim.step_physics_capped(33, &[]).landed {
+            if sim
+                .step_physics_capped(Duration::from_millis(33), &[])
+                .landed
+            {
                 break;
             }
         }
@@ -4291,5 +4532,264 @@ mod tests {
             ReleaseLifecycle::RequestPhysicsFrame
         );
         assert!(runtime.attachment.is_none());
+    }
+
+    // SDTEST-1551
+    #[test]
+    fn physics_catchup_reports_first_landing_while_preserving_final_body_state() {
+        let mut sim = RuntimeSimulation::new(
+            display(),
+            character_window_size(CompanionScale::Medium),
+            CompanionCharacterId::Clippy,
+        );
+        sim.simulation.position = Point2::new(220.0, 138.0);
+        sim.release_dynamic(Point2::new(0.0, 0.0));
+        let window = external_window(1551, bounds(200.0, 300.0, 260.0, 180.0));
+        let platforms = physics_platforms(std::slice::from_ref(&window), &[display()]);
+
+        let result = sim.step_physics_capped(Duration::from_millis(99), &platforms);
+
+        assert!(result.landed);
+        assert_eq!(result.contact.unwrap().kind, WalkableSurfaceKind::WindowTop);
+        assert_eq!(result.position, sim.body.position);
+        assert_eq!(result.velocity, sim.body.velocity);
+        assert_eq!(sim.body.mode, BodyMode::Sleeping);
+        assert_eq!(sim.simulation.state, CharacterSimulationState::Landing);
+    }
+
+    // SDTEST-1552
+    #[test]
+    fn duration_timing_preserves_submillisecond_remainder_and_no_first_frame_invention() {
+        let first = Instant::now();
+        assert_eq!(frame_elapsed(None, first), Duration::ZERO);
+
+        let mut sim = RuntimeSimulation::new(
+            display(),
+            character_window_size(CompanionScale::Medium),
+            CompanionCharacterId::Clippy,
+        );
+        let start = sim.simulation.position;
+        sim.simulation
+            .set_target(Point2::new(start.x - 100.0, start.y));
+
+        assert!(!sim.step_capped(Duration::from_micros(32_999)).moved);
+        assert_eq!(sim.pending_time, Duration::from_micros(32_999));
+        assert!(sim.step_capped(Duration::from_micros(1)).moved);
+        assert_eq!(sim.pending_time, Duration::ZERO);
+    }
+
+    // SDTEST-1553
+    #[test]
+    fn targeted_physics_refresh_drops_closed_windows_and_tracks_moved_windows_on_cadence() {
+        let started = Instant::now();
+        let original = external_window(1553, bounds(200.0, 300.0, 260.0, 180.0));
+        let moved = external_window(1553, bounds(200.0, 360.0, 260.0, 180.0));
+        let mut runtime = runtime_with_sim();
+        runtime.physics_windows = vec![original.clone()];
+        runtime.physics_platforms =
+            physics_platforms(std::slice::from_ref(&original), &[display()]);
+        runtime.physics_snapshot_at = Some(started);
+
+        runtime.refresh_physics_platforms_for_test(
+            std::slice::from_ref(&moved),
+            &[display()],
+            started + PHYSICS_WINDOW_REFRESH_INTERVAL - Duration::from_millis(1),
+        );
+        assert_eq!(runtime.physics_windows[0].bounds, original.bounds);
+
+        runtime.refresh_physics_platforms_for_test(
+            std::slice::from_ref(&moved),
+            &[display()],
+            started + PHYSICS_WINDOW_REFRESH_INTERVAL,
+        );
+        assert_eq!(runtime.physics_windows[0].bounds, moved.bounds);
+        assert_eq!(runtime.physics_platforms[0].segment.start.y, 360.0);
+
+        runtime.refresh_physics_platforms_for_test(
+            &[],
+            &[display()],
+            started + PHYSICS_WINDOW_REFRESH_INTERVAL * 2,
+        );
+        assert!(runtime.physics_windows.is_empty());
+        assert!(runtime.physics_platforms.is_empty());
+    }
+
+    // SDTEST-1554
+    #[test]
+    fn unrelated_config_transition_preserves_attachment_but_disabling_climb_detaches_safely() {
+        let mut runtime = runtime_with_sim();
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(1554),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+        assert!(!runtime.apply_window_climbing_transition(true));
+        assert!(runtime.attachment.is_some());
+
+        runtime.config.appearance.desktop.allow_window_climbing = false;
+        assert!(runtime.apply_window_climbing_transition(true));
+        assert!(runtime.attachment.is_none());
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Dynamic
+        );
+
+        let mut reduced = runtime_with_sim();
+        reduced.config.appearance.motion = CompanionMotionPreference::Reduced;
+        assert!(reduced.begin_attachment(
+            ExternalWindowId::from_raw(1555),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+        reduced.config.appearance.desktop.allow_window_climbing = false;
+        assert!(!reduced.apply_window_climbing_transition(true));
+        assert_eq!(
+            reduced.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Sleeping
+        );
+        assert_eq!(
+            reduced.simulation.as_ref().unwrap().body.velocity,
+            Point2::new(0.0, 0.0)
+        );
+    }
+
+    // SDTEST-1555
+    #[test]
+    fn invalid_attachment_geometry_enters_dynamic_fall_or_reduced_motion_rest() {
+        let mut runtime = runtime_with_sim();
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(1556),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+
+        let outcome =
+            runtime.follow_attached_bounds(bounds(200.0, 260.0, 20.0, 20.0), &[display()]);
+
+        assert_eq!(outcome, AttachmentFollowOutcome::dynamic_restart());
+        assert!(runtime.attachment.is_none());
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Dynamic
+        );
+
+        let mut reduced = runtime_with_sim();
+        reduced.config.appearance.motion = CompanionMotionPreference::Reduced;
+        assert!(reduced.begin_attachment(
+            ExternalWindowId::from_raw(1557),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+        let outcome =
+            reduced.follow_attached_bounds(bounds(200.0, 260.0, 20.0, 20.0), &[display()]);
+        assert_eq!(outcome, AttachmentFollowOutcome::inactive());
+        assert_eq!(
+            reduced.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Sleeping
+        );
+        assert_eq!(
+            reduced.simulation.as_ref().unwrap().body.velocity,
+            Point2::new(0.0, 0.0)
+        );
+    }
+
+    // SDTEST-1556
+    #[test]
+    fn release_commit_position_change_marks_pending_native_move() {
+        let window = external_window(1558, bounds(200.0, 300.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        let free_position = Point2::new(230.0, 200.0);
+        runtime.drag_snap = choose_magnetic_snap_window(
+            std::slice::from_ref(&window),
+            &[display()],
+            free_position,
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            None,
+        );
+        runtime.drag_free_position = Some(free_position);
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(40.0, 40.0);
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                std::slice::from_ref(&window),
+                &[display()],
+            ),
+            ReleaseLifecycle::StartAttachmentFollow
+        );
+        assert!(runtime.pending_native_move);
+    }
+
+    // SDTEST-1557
+    #[test]
+    fn stale_late_mouse_move_zeroes_throw_velocity_sample() {
+        let now = Instant::now();
+        let mut drag = CharacterDrag {
+            grab_offset: gpui::point(px(0.0), px(0.0)),
+            start_origin: gpui::point(px(0.0), px(0.0)),
+            last_origin: gpui::point(px(0.0), px(0.0)),
+            last_sample_at: now,
+            release_velocity: Point2::new(500.0, -200.0),
+            moved: true,
+        };
+
+        sample_drag_velocity(
+            &mut drag,
+            gpui::point(px(100.0), px(0.0)),
+            now + DRAG_VELOCITY_SAMPLE_LIMIT + Duration::from_millis(1),
+        );
+
+        assert_eq!(drag.release_velocity, Point2::new(0.0, 0.0));
+    }
+
+    // SDTEST-1558
+    #[test]
+    fn pause_rest_stops_dynamic_body_and_requests_idle_visual_state() {
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.release_dynamic(Point2::new(500.0, 500.0));
+
+        runtime.stop_motion_for_rest();
+
+        let sim = runtime.simulation.as_ref().unwrap();
+        assert_eq!(sim.body.mode, BodyMode::Sleeping);
+        assert_eq!(sim.body.velocity, Point2::new(0.0, 0.0));
+        assert!(sim.body.contact().is_none());
+        assert_eq!(runtime_visual_state(sim), CharacterVisualState::Idle);
+        assert!(!should_schedule_next_frame(
+            false,
+            CharacterVisualState::IdleFlourish,
+            true
+        ));
+    }
+
+    // SDTEST-1559
+    #[test]
+    fn active_drag_lifecycle_types_are_zero_sized_and_outside_release_is_idempotent() {
+        assert_eq!(std::mem::size_of::<CharacterDragToken>(), 0);
+        let mut view_drag = Some(CharacterDrag {
+            grab_offset: gpui::point(px(0.0), px(0.0)),
+            start_origin: gpui::point(px(0.0), px(0.0)),
+            last_origin: gpui::point(px(0.0), px(0.0)),
+            last_sample_at: Instant::now(),
+            release_velocity: Point2::new(0.0, 0.0),
+            moved: true,
+        });
+        assert!(view_drag.take().is_some());
+        assert!(view_drag.take().is_none());
+    }
+
+    // SDTEST-1560
+    #[test]
+    fn rounded_native_origin_gate_skips_subpixel_redundant_moves() {
+        let previous = gpui::point(px(10.2), px(20.2));
+        assert!(!native_origin_changed(
+            Some(previous),
+            gpui::point(px(10.4), px(20.4))
+        ));
+        assert!(native_origin_changed(
+            Some(previous),
+            gpui::point(px(10.6), px(20.2))
+        ));
     }
 }
