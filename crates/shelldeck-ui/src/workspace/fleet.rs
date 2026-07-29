@@ -166,24 +166,22 @@ impl Workspace {
         if self.fleet_visible() {
             self.refresh_fleet_view(cx);
             if self._fleet_view_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(10))
-                            .await;
-                        let keep = this
-                            .update(cx, |ws, cx| {
-                                if ws.fleet_visible() {
-                                    ws.refresh_fleet_view(cx);
-                                    true
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-                        if !keep {
-                            break;
-                        }
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(10))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.fleet_visible() {
+                                ws.refresh_fleet_view(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
                     }
                 });
                 self._fleet_view_poll = Some(task);

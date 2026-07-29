@@ -15,7 +15,7 @@ use crate::editor_buffer::EditorBuffer;
 use crate::icons::{
     ai_provider_badge, lucide_icon, lucide_path, script_category_chip, script_language_chip,
 };
-use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;

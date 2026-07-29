@@ -15,8 +15,8 @@ use crate::attachment_annotator::AttachmentAnnotator;
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::issue_attachments::{
-    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
-    render_attachment_draft_gallery, render_stored_attachment_gallery,
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
 };
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
@@ -40,7 +40,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use shelldeck_core::config::issues::{
-    ISSUE_ATTACHMENT_MAX_COUNT, Issue, IssueAttachment, IssueInstance,
+    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
 };
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,

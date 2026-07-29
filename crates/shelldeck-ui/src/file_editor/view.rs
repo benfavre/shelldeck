@@ -562,27 +562,25 @@ impl FileEditorView {
         }
         self.cursor_blink_on = true;
         let handle = cx.entity().downgrade();
-        self.cursor_blink_task = Some(cx.spawn(async move |_, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(530))
-                    .await;
-                let Ok(alive) = cx.update(|cx| {
-                    if let Some(view) = handle.upgrade() {
-                        view.update(cx, |this, cx| {
-                            this.cursor_blink_on = !this.cursor_blink_on;
-                            cx.notify();
-                        });
-                        true
-                    } else {
-                        false
-                    }
-                }) else {
-                    break;
-                };
-                if !alive {
-                    break;
+        self.cursor_blink_task = Some(cx.spawn(async move |_, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(530))
+                .await;
+            let Ok(alive) = cx.update(|cx| {
+                if let Some(view) = handle.upgrade() {
+                    view.update(cx, |this, cx| {
+                        this.cursor_blink_on = !this.cursor_blink_on;
+                        cx.notify();
+                    });
+                    true
+                } else {
+                    false
                 }
+            }) else {
+                break;
+            };
+            if !alive {
+                break;
             }
         }));
     }
@@ -890,7 +888,11 @@ impl Render for FileEditorView {
                     .hover(|st| st.bg(ShellDeckColors::hover_bg()));
 
                 let icon = if is_dir {
-                    if is_expanded { "⌄ " } else { "› " }
+                    if is_expanded {
+                        "⌄ "
+                    } else {
+                        "› "
+                    }
                 } else {
                     "  "
                 };

@@ -8,8 +8,8 @@ use adabraka_ui::navigation::menu::{
 };
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
-    AnimatedCollapsible, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Select,
-    SelectOption, install_theme, scrollable_vertical, use_theme,
+    install_theme, scrollable_vertical, use_theme, AnimatedCollapsible, Badge, BadgeVariant,
+    Button, ButtonSize, ButtonVariant, Select, SelectOption,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -19,11 +19,11 @@ use gpui::*;
 // shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
 use crate::scale::px;
 use shelldeck_core::ai::{
-    AiActionDisposition, AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec,
-    AiActionRisk, AiConfig, AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus,
-    AiTaskStore, ai_action_disposition, configured_cli_available, create_client, host_context,
+    ai_action_disposition, configured_cli_available, create_client, host_context,
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
-    parse_issue_triage_proposal, test_connection, validate_diagnostic_command,
+    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
+    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiConfig,
+    AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -66,12 +66,12 @@ use crate::dashboard::{DashboardEvent, DashboardView};
 use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
-    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
-    render_attachment_draft_gallery, render_stored_attachment_gallery,
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
 };
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
-use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
@@ -86,8 +86,8 @@ use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
 use crate::support_view::{
-    SupportView, SupportViewEvent, issue_status_badge, priority_badge,
-    render_attachment_delete_dialog, render_issue_delete_dialog,
+    issue_status_badge, priority_badge, render_attachment_delete_dialog,
+    render_issue_delete_dialog, SupportView, SupportViewEvent,
 };
 use crate::t;
 use crate::template_browser::TemplateBrowser;
@@ -1372,9 +1372,9 @@ fn resize_edge(pos: Point<Pixels>, border: Pixels, size: Size<Pixels>) -> Option
 #[cfg(test)]
 mod tests {
     use super::{
-        POST_LOGIN_SPLASH_MIN_MS, ShortcutToastKind, post_login_simulated_progress,
-        post_login_splash_opacity, post_login_splash_remaining, shortcut_failure_toasts,
-        shortcut_status_is_failure,
+        post_login_simulated_progress, post_login_splash_opacity, post_login_splash_remaining,
+        shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind,
+        POST_LOGIN_SPLASH_MIN_MS,
     };
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
     use crate::t;
@@ -1532,11 +1532,13 @@ mod tests {
 
         let toasts = shortcut_failure_toasts(&ok, &portal_missing);
         assert_eq!(toasts.len(), 1);
-        assert!(
-            toasts[0]
-                .1
-                .contains(&t!("shortcut.failure.portal_missing").to_string())
-        );
+        let localized_reasons = [
+            t!("shortcut.failure.portal_missing", locale = "fr").to_string(),
+            t!("shortcut.failure.portal_missing", locale = "en").to_string(),
+        ];
+        assert!(localized_reasons
+            .iter()
+            .any(|reason| toasts[0].1.contains(reason)));
         assert!(!toasts[0].1.contains("portal frontend"));
 
         let other = statuses(

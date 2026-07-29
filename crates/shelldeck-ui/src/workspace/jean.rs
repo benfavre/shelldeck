@@ -43,24 +43,22 @@ impl Workspace {
             // Refresh immediately when a surface becomes visible.
             self.refresh_jean_state(cx);
             if self._jean_poll_task.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(10))
-                            .await;
-                        let keep = this
-                            .update(cx, |ws, cx| {
-                                if ws.jean_surface_visible() {
-                                    ws.refresh_jean_state(cx);
-                                    true
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-                        if !keep {
-                            break;
-                        }
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(10))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.jean_surface_visible() {
+                                ws.refresh_jean_state(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
                     }
                 });
                 self._jean_poll_task = Some(task);

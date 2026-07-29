@@ -7,12 +7,12 @@ use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat, KeyDownEvent, ObjectFit,
-    Render, SharedString, Window, black, div, img, white,
+    black, div, img, white, AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat,
+    KeyDownEvent, ObjectFit, Render, SharedString, Window,
 };
 use shelldeck_core::config::cloud_account;
 use shelldeck_core::config::issues::{
-    ISSUE_ATTACHMENT_MAX_BYTES, IssueAttachment, IssueAttachmentUpload,
+    IssueAttachment, IssueAttachmentUpload, ISSUE_ATTACHMENT_MAX_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -20,6 +20,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::t;
+
+type AttachmentDeleteCallback = Rc<dyn Fn(usize, &mut App)>;
 
 fn lightbox_icon_button(
     id: &'static str,
@@ -214,7 +216,7 @@ pub fn render_stored_attachment_gallery(
     attachments: &[IssueAttachment],
     id_prefix: &'static str,
     on_open: impl Fn(usize, &mut App) + Clone + 'static,
-    on_delete: Option<Rc<dyn Fn(usize, &mut App)>>,
+    on_delete: Option<AttachmentDeleteCallback>,
 ) -> AnyElement {
     let mut gallery = div().flex().flex_wrap().gap(px(8.0)).pt(px(4.0));
 

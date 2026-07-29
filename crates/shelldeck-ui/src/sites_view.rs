@@ -16,7 +16,7 @@ use uuid::Uuid;
 const PAGE_SIZE: usize = 50;
 
 use crate::icons::lucide_icon;
-use crate::monolith::{MonolithMotion, animated_monolith};
+use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::t;
 use crate::theme::ShellDeckColors;
 

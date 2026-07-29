@@ -66,33 +66,23 @@ fn default_timeout_seconds() -> u64 {
 }
 
 /// Explicit rollout switch for the local fleet executor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JeanRuntimeExecutorRollout {
     /// Preferred runtime: `jcode run`.
+    #[default]
     Jcode,
     /// Legacy runtime: `claude -p`.
     Claude,
 }
 
-impl Default for JeanRuntimeExecutorRollout {
-    fn default() -> Self {
-        Self::Jcode
-    }
-}
-
 /// Jcode can emit either a final JSON object or newline-delimited stream events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JcodeOutputFormat {
+    #[default]
     Ndjson,
     Json,
-}
-
-impl Default for JcodeOutputFormat {
-    fn default() -> Self {
-        Self::Ndjson
-    }
 }
 
 /// Transport preference for the Jcode executor.
@@ -101,18 +91,13 @@ impl Default for JcodeOutputFormat {
 /// ACP-ready configuration hooks: they perform a capability probe and strictly
 /// fall back to the existing `jcode run` process transport until Jcode ACP has a
 /// versioned public client contract we can safely execute against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JcodeTransportPreference {
+    #[default]
     Process,
     Acp,
     Auto,
-}
-
-impl Default for JcodeTransportPreference {
-    fn default() -> Self {
-        Self::Process
-    }
 }
 
 /// `[jean_runtime.executor]` — local agent command + rollout policy.
@@ -885,7 +870,7 @@ impl JcodeTransport for ProcessJcodeTransport<'_> {
 
         let mut cmd = Command::new(&self.executor.bin);
         cmd.args(&args)
-            .current_dir(&workdir)
+            .current_dir(workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1532,18 +1517,15 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
         assert!(args.contains(&"--no-update".to_string()));
         assert!(args.contains(&"--no-selfdev".to_string()));
         assert!(args.windows(2).any(|w| w[0] == "-C" && w[1] == canonical));
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--provider" && w[1] == "openai-api")
-        );
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "gpt-5.5")
-        );
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--tool-profile" && w[1] == "minimal")
-        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--provider" && w[1] == "openai-api"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gpt-5.5"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--tool-profile" && w[1] == "minimal"));
         assert_eq!(args.last().map(String::as_str), Some("fix it"));
     }
 

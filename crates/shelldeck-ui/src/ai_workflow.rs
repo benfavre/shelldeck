@@ -2,18 +2,17 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, scrollable_vertical,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    AiAutonomyLevel, AiBackend, AiCapability, AiDiagnosticPlan, AiDiffLine, AiDraft,
-    AiIssueTriageProposal, AiSurface, ai_line_diff, parse_diagnostic_plan,
-    parse_issue_triage_proposal,
+    ai_line_diff, parse_diagnostic_plan, parse_issue_triage_proposal, AiAutonomyLevel, AiBackend,
+    AiCapability, AiDiagnosticPlan, AiDiffLine, AiDraft, AiIssueTriageProposal, AiSurface,
 };
 
 use crate::icons::{ai_provider_badge, lucide_icon};
-use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::support_view::{assignee_display, priority_badge};
 use crate::t;

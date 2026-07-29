@@ -12,8 +12,8 @@ use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
-    AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
+    AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -1970,12 +1970,12 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AI_DOCK_GLOBAL_HOTKEY_ID, AiDockRequest, AiDockWindowAction, Assets,
-        COMMAND_PALETTE_GLOBAL_HOTKEY_ID, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
-        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, ai_dock_bounds,
-        ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot,
+        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
+        Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
+        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
+        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -1993,7 +1993,11 @@ mod tests {
 
     impl GlobalHotkeyRegistry for FakeGlobalHotkeyRegistry {
         fn compositor_name(&self) -> &'static str {
-            if self.wayland { "Wayland" } else { "Test" }
+            if self.wayland {
+                "Wayland"
+            } else {
+                "Test"
+            }
         }
 
         fn register(&self, id: u32, _keystroke: &gpui::Keystroke) -> anyhow::Result<()> {

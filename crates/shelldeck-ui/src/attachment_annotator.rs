@@ -17,6 +17,8 @@ use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 
+type ApplyCallback = Rc<dyn Fn(AttachmentDraft, &mut App)>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AnnotationTool {
     Arrow,
@@ -154,7 +156,7 @@ pub struct AttachmentAnnotator {
     focused: bool,
     error: Option<String>,
     on_cancel: Rc<dyn Fn(&mut App)>,
-    on_apply: Rc<dyn Fn(AttachmentDraft, &mut App)>,
+    on_apply: ApplyCallback,
 }
 
 impl AttachmentAnnotator {
@@ -829,7 +831,7 @@ fn paint_marker(
         number,
         radius * 0.8,
         (radius * 0.13).max(1.5),
-        gpui::white().into(),
+        gpui::white(),
     );
 }
 

@@ -7,24 +7,22 @@ impl Workspace {
             && self.app_config.cloud_sync.is_configured();
         if want {
             if self._support_poll_task.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(30))
-                            .await;
-                        let keep_going = this
-                            .update(cx, |ws, cx| {
-                                if !ws.settings_open && ws.effective_mode() == AppMode::Support {
-                                    ws.refresh_support(cx);
-                                    true
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-                        if !keep_going {
-                            break;
-                        }
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(30))
+                        .await;
+                    let keep_going = this
+                        .update(cx, |ws, cx| {
+                            if !ws.settings_open && ws.effective_mode() == AppMode::Support {
+                                ws.refresh_support(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep_going {
+                        break;
                     }
                 });
                 self._support_poll_task = Some(task);

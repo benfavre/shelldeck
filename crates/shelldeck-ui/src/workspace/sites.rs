@@ -20,10 +20,11 @@ impl Workspace {
         let mut sorted_sites = sites.to_vec();
         sorted_sites.sort_by_key(|site| Self::issue_site_option_label(site).to_lowercase());
 
-        let mut options = vec![
-            SelectOption::new(String::new(), t!("user.requests.site_none").to_string())
-                .with_icon("icons/lucide/globe.svg"),
-        ];
+        let mut options =
+            vec![
+                SelectOption::new(String::new(), t!("user.requests.site_none").to_string())
+                    .with_icon("icons/lucide/globe.svg"),
+            ];
         options.extend(sorted_sites.into_iter().map(|site| {
             let mut option =
                 SelectOption::new(site.site_id.clone(), Self::issue_site_option_label(&site))

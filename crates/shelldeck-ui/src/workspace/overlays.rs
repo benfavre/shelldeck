@@ -1,5 +1,5 @@
 use super::*;
-use crate::monolith::{MonolithMotion, animated_monolith};
+use crate::monolith::{animated_monolith, MonolithMotion};
 
 impl Workspace {
     /// User-mode "Demander à JeanClaude" card: a composer that files a request

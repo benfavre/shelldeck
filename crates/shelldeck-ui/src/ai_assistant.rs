@@ -15,7 +15,7 @@ use shelldeck_core::ai::{
 use uuid::Uuid;
 
 use crate::icons::{ai_provider_badge, lucide_icon};
-use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;

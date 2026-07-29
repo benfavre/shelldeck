@@ -461,8 +461,8 @@ impl FileEditorView {
         };
         let char_width = cache.cell_width.to_f64() as f32;
         let breakpoint_col_w = char_width; // reserved for future breakpoints
-        // Fold column is 1.5 cells so the chevron has ~half-cell padding on
-        // its right and doesn't butt against the gutter/code rail.
+                                           // Fold column is 1.5 cells so the chevron has ~half-cell padding on
+                                           // its right and doesn't butt against the gutter/code rail.
         let fold_col_w = char_width * 1.5;
         // Breathing room between the vertical rail and the first code column
         // — matches the padding the chevron gets on its side (see

@@ -9,7 +9,7 @@
 //! All shapes are parsed defensively (`#[serde(default)]` everywhere, unknown
 //! fields ignored) so channel-specific quirks never break the console.
 
-use crate::config::issues::{IssueAttachment, IssueAttachmentUpload, upload_scoped_attachments};
+use crate::config::issues::{upload_scoped_attachments, IssueAttachment, IssueAttachmentUpload};
 use crate::error::{Result, ShellDeckError};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

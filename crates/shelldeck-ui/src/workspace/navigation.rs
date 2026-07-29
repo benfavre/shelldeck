@@ -66,8 +66,8 @@ impl Workspace {
     /// the next launch (when `auto_connect_on_startup` is enabled). Saved
     /// unconditionally and best-effort: failures are logged, never fatal.
     pub(super) fn save_workspace_state(&self, cx: &Context<Self>) {
-        use shelldeck_core::config::WorkspaceState;
         use shelldeck_core::config::workspace_state::{TabState, TabType};
+        use shelldeck_core::config::WorkspaceState;
 
         let terminal = self.terminal.read(cx);
         let sessions = terminal.session_states();
@@ -482,8 +482,8 @@ impl Workspace {
     /// connection still exists. No-op (and no behavior change) when the flag is
     /// off or there is nothing to restore. Failures are logged, never fatal.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
-        use shelldeck_core::config::WorkspaceState;
         use shelldeck_core::config::workspace_state::TabType;
+        use shelldeck_core::config::WorkspaceState;
 
         if !self.app_config.general.auto_connect_on_startup {
             return;
@@ -584,36 +584,34 @@ impl Workspace {
             return;
         }
         let weak_bar = self.status_bar.downgrade();
-        self._git_poll_task = Some(cx.spawn(async move |_this, cx: &mut AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(15))
-                    .await;
+        self._git_poll_task = Some(cx.spawn(async move |_this, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(15))
+                .await;
 
-                let main_window_visible = main_window
-                    .update(cx, |_, window, _| window.is_window_visible())
-                    .unwrap_or(false);
-                if !main_window_visible {
-                    continue;
+            let main_window_visible = main_window
+                .update(cx, |_, window, _| window.is_window_visible())
+                .unwrap_or(false);
+            if !main_window_visible {
+                continue;
+            }
+
+            let git_display = cx
+                .background_executor()
+                .spawn(async {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    shelldeck_core::git::get_git_status(&cwd).and_then(|s| s.display())
+                })
+                .await;
+
+            let result = weak_bar.update(cx, |bar, cx| {
+                if bar.git_status != git_display {
+                    bar.git_status = git_display;
+                    cx.notify();
                 }
-
-                let git_display = cx
-                    .background_executor()
-                    .spawn(async {
-                        let cwd = std::env::current_dir().unwrap_or_default();
-                        shelldeck_core::git::get_git_status(&cwd).and_then(|s| s.display())
-                    })
-                    .await;
-
-                let result = weak_bar.update(cx, |bar, cx| {
-                    if bar.git_status != git_display {
-                        bar.git_status = git_display;
-                        cx.notify();
-                    }
-                });
-                if result.is_err() {
-                    break;
-                }
+            });
+            if result.is_err() {
+                break;
             }
         }));
     }

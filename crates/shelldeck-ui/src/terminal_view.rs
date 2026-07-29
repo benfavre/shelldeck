@@ -12,14 +12,14 @@ use shelldeck_terminal::grid::{
     UnderlineStyle,
 };
 use shelldeck_terminal::session::{SessionState, TerminalSession};
-use shelldeck_terminal::url::{UrlMatch, detect_urls};
+use shelldeck_terminal::url::{detect_urls, UrlMatch};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::glyph_cache::GlyphCache;
-use crate::monolith::{MonolithMotion, animated_monolith};
+use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -30,7 +30,7 @@ mod palette;
 use block_drawing::paint_block_char;
 use layout::{PaneId, PaneNode, PaneRect, TabLayout};
 pub use layout::{SplitDirection, TerminalPane, TerminalTab};
-use palette::{TerminalPalette, brighten_for_bold, dim_color};
+use palette::{brighten_for_bold, dim_color, TerminalPalette};
 
 const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
 const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
@@ -1003,7 +1003,11 @@ impl TerminalView {
                 + if mods.shift { 1 } else { 0 }
                 + if mods.alt { 2 } else { 0 }
                 + if mods.control { 4 } else { 0 };
-            if val > 1 { Some(val) } else { None }
+            if val > 1 {
+                Some(val)
+            } else {
+                None
+            }
         };
 
         // ---- Function keys F1..F24 ----

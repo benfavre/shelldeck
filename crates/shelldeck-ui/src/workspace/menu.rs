@@ -9,7 +9,7 @@ impl Workspace {
     /// (mode, sign-in, sidebar, Jean/Fleet availability, AI config) — is a
     /// standing source of stale-menu bugs.
     pub(super) fn rebuild_menu_bar(&mut self, cx: &mut Context<Self>) {
-        use crate::menu_bar::{MenuBarContext, MenuEntry, menu_bar_spec};
+        use crate::menu_bar::{menu_bar_spec, MenuBarContext, MenuEntry};
 
         let ctx = MenuBarContext {
             signed_in: self.signed_in(),
