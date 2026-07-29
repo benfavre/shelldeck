@@ -127,7 +127,7 @@ fn collect_visible_external_window_bounds(own_windows: &[HWND]) -> Vec<Bounds<Pi
         .into_iter()
         .filter(|hwnd| !own_windows.iter().any(|own_window| own_window == hwnd))
         .filter(|&hwnd| unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() })
-        .filter(|&hwnd| unsafe { GetWindow(hwnd, GW_OWNER).0 == 0 })
+        .filter(|&hwnd| unsafe { GetWindow(hwnd, GW_OWNER).is_err() })
         .filter(|&hwnd| unsafe { (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0) == 0 })
         .filter(|&hwnd| !is_cloaked_window(hwnd))
         .filter(|&hwnd| !is_fullscreen_window(hwnd))
@@ -157,7 +157,7 @@ fn is_fullscreen_window(hwnd: HWND) -> bool {
         return true;
     };
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    if monitor.0 == 0 {
+    if monitor.is_invalid() {
         return false;
     }
 
@@ -191,7 +191,7 @@ fn window_bounds(hwnd: HWND) -> Option<Bounds<Pixels>> {
 
 fn win32_window_rect(hwnd: HWND) -> Option<RECT> {
     let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect).as_bool().then_some(rect) }
+    unsafe { GetWindowRect(hwnd, &mut rect).is_ok().then_some(rect) }
 }
 
 impl WindowsPlatform {
