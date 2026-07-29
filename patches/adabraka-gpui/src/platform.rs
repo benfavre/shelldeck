@@ -201,6 +201,13 @@ pub(crate) trait Platform: 'static {
     fn unhide_other_apps(&self);
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
+    // ShellDeck patch: expose global display geometry for cross-monitor desktop companions.
+    fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        self.displays()
+            .into_iter()
+            .map(|display| (display.id(), display.bounds()))
+            .collect()
+    }
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
     // ShellDeck patch: platform backends may expose safe read-only external window geometry.

@@ -16,6 +16,17 @@ pub(crate) struct MacDisplay(pub(crate) CGDirectDisplayID);
 unsafe impl Send for MacDisplay {}
 
 impl MacDisplay {
+    // ShellDeck patch: retain CoreGraphics global origins for desktop companion routing.
+    pub(crate) fn global_bounds(&self) -> Bounds<Pixels> {
+        unsafe {
+            let bounds = CGDisplayBounds(self.0);
+            Bounds {
+                origin: crate::point(px(bounds.origin.x as f32), px(bounds.origin.y as f32)),
+                size: size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            }
+        }
+    }
+
     /// Get the screen with the given [`DisplayId`].
     pub fn find_by_id(id: DisplayId) -> Option<Self> {
         Self::all().find(|screen| screen.id() == id)

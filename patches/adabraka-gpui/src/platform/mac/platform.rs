@@ -687,6 +687,13 @@ impl Platform for MacPlatform {
             .collect()
     }
 
+    // ShellDeck patch: return CoreGraphics global display origins instead of local NSScreen coordinates.
+    fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        MacDisplay::all()
+            .map(|display| (display.id(), display.global_bounds()))
+            .collect()
+    }
+
     #[cfg(feature = "screen-capture")]
     fn is_screen_capture_supported(&self) -> bool {
         let min_version = cocoa::foundation::NSOperatingSystemVersion::new(12, 3, 0);

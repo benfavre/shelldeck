@@ -1288,6 +1288,12 @@ impl App {
         self.platform.displays()
     }
 
+    /// Returns each active display's bounds in global logical pixels.
+    // ShellDeck patch: expose global display geometry for cross-monitor desktop companions.
+    pub fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        self.platform.global_display_bounds()
+    }
+
     /// Returns visible external top-level window bounds in global logical pixels.
     // ShellDeck patch: expose read-only external window geometry for desktop companions.
     pub fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
