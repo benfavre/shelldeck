@@ -33,7 +33,8 @@ const ATTACHMENT_FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 const DRAG_VELOCITY_SAMPLE_LIMIT: Duration = Duration::from_millis(120);
 const SNAP_VERTICAL_GAP: f32 = 42.0;
 const SNAP_MIN_HORIZONTAL_OVERLAP: f32 = 36.0;
-const MAXIMIZED_TOLERANCE: f32 = 8.0;
+const MAXIMIZED_EDGE_INSET_TOLERANCE: f32 = 96.0;
+const MAXIMIZED_COVERAGE_RATIO: f32 = 0.92;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompanionRuntimeCommand {
@@ -542,14 +543,16 @@ impl DesktopCharacterRuntime {
         let displays = desktop_displays(cx);
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
-        let dynamic = self.finish_user_drag_snapshot(release_velocity, &windows, &displays);
+        let lifecycle = self.finish_user_drag_snapshot(release_velocity, &windows, &displays);
         self.last_tick = None;
-        if dynamic {
-            self.request_frame(cx);
-        } else {
-            self.schedule_roam(runtime_entity, cx);
+        match lifecycle {
+            ReleaseLifecycle::RequestPhysicsFrame => self.request_frame(cx),
+            ReleaseLifecycle::StartAttachmentFollow => {
+                self.schedule_attachment_follow(runtime_entity.clone(), cx)
+            }
+            ReleaseLifecycle::ScheduleRoam => self.schedule_roam(runtime_entity.clone(), cx),
         }
-        dynamic
+        lifecycle == ReleaseLifecycle::RequestPhysicsFrame
     }
 
     #[cfg(test)]
@@ -560,6 +563,17 @@ impl DesktopCharacterRuntime {
         displays: &[DesktopDisplay],
     ) -> bool {
         self.finish_user_drag_snapshot(release_velocity, windows, displays)
+            == ReleaseLifecycle::RequestPhysicsFrame
+    }
+
+    #[cfg(test)]
+    fn finish_user_drag_lifecycle_for_test(
+        &mut self,
+        release_velocity: Point2,
+        windows: &[ExternalWindow],
+        displays: &[DesktopDisplay],
+    ) -> ReleaseLifecycle {
+        self.finish_user_drag_snapshot(release_velocity, windows, displays)
     }
 
     fn finish_user_drag_snapshot(
@@ -567,11 +581,11 @@ impl DesktopCharacterRuntime {
         release_velocity: Point2,
         windows: &[ExternalWindow],
         displays: &[DesktopDisplay],
-    ) -> bool {
+    ) -> ReleaseLifecycle {
         let full_motion = !self.diagnostics.paused && !reduced_motion_for_config(&self.config);
         self.clear_physics_snapshot();
         let Some(sim) = &mut self.simulation else {
-            return false;
+            return ReleaseLifecycle::ScheduleRoam;
         };
         sim.simulation.target = None;
         sim.simulation.remember_action("user-drag");
@@ -582,42 +596,48 @@ impl DesktopCharacterRuntime {
         }) {
             sim.update_display(display);
         }
-        if let Some(candidate) =
-            choose_snap_window(windows, displays, sim.simulation.position, sim.extent)
-        {
-            let surface = window_top_surface(&candidate.window, candidate.generation);
-            let x = sim.simulation.position.x.clamp(
-                f32::from(candidate.window.bounds.origin.x),
-                (f32::from(candidate.window.bounds.right()) - sim.extent)
-                    .max(f32::from(candidate.window.bounds.origin.x)),
-            );
-            sim.simulation.position.x = x.clamp(
-                f32::from(sim.display.work_area.origin.x),
-                (f32::from(sim.display.work_area.right()) - sim.extent)
-                    .max(f32::from(sim.display.work_area.origin.x)),
-            );
-            sim.snap_body_to_surface(&surface);
-            self.attachment = Some(WindowAttachment {
-                id: candidate.window.id,
-                top_edge_offset: sim.simulation.position.x
-                    - f32::from(candidate.window.bounds.origin.x),
-                perched: true,
-            });
-            self.attachment_generation = self.attachment_generation.wrapping_add(1);
-            self.attachment_timer_scheduled = false;
-            return false;
+        if self.config.appearance.desktop.allow_window_climbing {
+            if let Some(candidate) =
+                choose_snap_window(windows, displays, sim.simulation.position, sim.extent)
+            {
+                let surface = window_top_surface(&candidate.window, candidate.generation);
+                let x = sim.simulation.position.x.clamp(
+                    f32::from(candidate.window.bounds.origin.x),
+                    (f32::from(candidate.window.bounds.right()) - sim.extent)
+                        .max(f32::from(candidate.window.bounds.origin.x)),
+                );
+                sim.simulation.position.x = x.clamp(
+                    f32::from(sim.display.work_area.origin.x),
+                    (f32::from(sim.display.work_area.right()) - sim.extent)
+                        .max(f32::from(sim.display.work_area.origin.x)),
+                );
+                sim.snap_body_to_surface(&surface);
+                self.attachment = Some(WindowAttachment {
+                    id: candidate.window.id,
+                    top_edge_offset: sim.simulation.position.x
+                        - f32::from(candidate.window.bounds.origin.x),
+                    perched: true,
+                });
+                self.attachment_generation = self.attachment_generation.wrapping_add(1);
+                self.attachment_timer_scheduled = false;
+                return ReleaseLifecycle::StartAttachmentFollow;
+            }
         }
         if full_motion {
             self.physics_windows = windows.to_vec();
-            self.physics_platforms = physics_platforms(&self.physics_windows, displays);
+            self.physics_platforms = if self.config.appearance.desktop.allow_window_climbing {
+                physics_platforms(&self.physics_windows, displays)
+            } else {
+                Vec::new()
+            };
             sim.release_dynamic(release_velocity);
-            true
+            ReleaseLifecycle::RequestPhysicsFrame
         } else {
             let origin = from_point2(sim.simulation.position);
             sim.place_from_drag(origin, sim.extent);
             sim.simulation.state = CharacterSimulationState::Resting;
             sim.body.mode = BodyMode::Sleeping;
-            false
+            ReleaseLifecycle::ScheduleRoam
         }
     }
 
@@ -799,6 +819,8 @@ impl DesktopCharacterRuntime {
                     }
                     if outcome.attached {
                         runtime.schedule_attachment_follow(runtime_entity.clone(), cx);
+                    } else if outcome.restart_dynamic_frames {
+                        runtime.request_frame(cx);
                     } else {
                         runtime.schedule_roam(runtime_entity.clone(), cx);
                     }
@@ -817,8 +839,11 @@ impl DesktopCharacterRuntime {
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
         let displays = desktop_displays(cx);
         let Some(window) = window else {
-            self.detach_missing_attachment();
-            return AttachmentFollowOutcome::inactive();
+            return if self.detach_missing_attachment() {
+                AttachmentFollowOutcome::dynamic_restart()
+            } else {
+                AttachmentFollowOutcome::inactive()
+            };
         };
         self.follow_attached_bounds(window.bounds, &displays)
     }
@@ -836,8 +861,11 @@ impl DesktopCharacterRuntime {
             .iter()
             .find(|window| external_window_id(window) == attachment.id)
         else {
-            self.detach_missing_attachment();
-            return AttachmentFollowOutcome::inactive();
+            return if self.detach_missing_attachment() {
+                AttachmentFollowOutcome::dynamic_restart()
+            } else {
+                AttachmentFollowOutcome::inactive()
+            };
         };
         self.follow_attached_bounds(window.bounds, displays)
     }
@@ -879,6 +907,7 @@ impl DesktopCharacterRuntime {
         AttachmentFollowOutcome {
             attached: true,
             moved: sim.simulation.position != before,
+            restart_dynamic_frames: false,
         }
     }
 
@@ -894,17 +923,19 @@ impl DesktopCharacterRuntime {
         self.physics_platforms.clear();
     }
 
-    fn detach_missing_attachment(&mut self) {
+    fn detach_missing_attachment(&mut self) -> bool {
         self.cancel_attachment();
         self.clear_physics_snapshot();
         if let Some(sim) = &mut self.simulation {
             if !self.diagnostics.paused && !reduced_motion_for_config(&self.config) {
                 sim.release_dynamic(Point2::new(0.0, 0.0));
+                return true;
             } else {
                 sim.simulation.state = CharacterSimulationState::Resting;
                 sim.body.mode = BodyMode::Sleeping;
             }
         }
+        false
     }
 
     fn mark_attachment_perched(&mut self) {
@@ -1124,6 +1155,14 @@ struct StepOutcome {
 struct AttachmentFollowOutcome {
     attached: bool,
     moved: bool,
+    restart_dynamic_frames: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseLifecycle {
+    RequestPhysicsFrame,
+    StartAttachmentFollow,
+    ScheduleRoam,
 }
 
 impl AttachmentFollowOutcome {
@@ -1131,6 +1170,15 @@ impl AttachmentFollowOutcome {
         Self {
             attached: false,
             moved: false,
+            restart_dynamic_frames: false,
+        }
+    }
+
+    fn dynamic_restart() -> Self {
+        Self {
+            attached: false,
+            moved: false,
+            restart_dynamic_frames: true,
         }
     }
 }
@@ -1361,8 +1409,13 @@ impl CharacterOverlayView {
         };
         let runtime_entity = self.runtime.clone();
         let started_motion = if drag.moved {
+            let release_velocity = release_velocity_at_mouse_up(
+                drag.release_velocity,
+                drag.last_sample_at,
+                Instant::now(),
+            );
             let dynamic = self.runtime.update(cx, |runtime, cx| {
-                runtime.finish_user_drag(drag.release_velocity, runtime_entity.clone(), cx)
+                runtime.finish_user_drag(release_velocity, runtime_entity.clone(), cx)
             });
             self.show_landing(window, cx);
             dynamic
@@ -1475,6 +1528,14 @@ impl CharacterOverlayView {
                 view.runtime.update(cx, |runtime, cx| {
                     runtime.schedule_attachment_follow(runtime_entity, cx)
                 });
+            } else if should_schedule_roam_after_landing(
+                state.landed,
+                state.attached,
+                view.drag.is_some(),
+            ) {
+                let runtime_entity = view.runtime.clone();
+                view.runtime
+                    .update(cx, |runtime, cx| runtime.schedule_roam(runtime_entity, cx));
             }
             if should_schedule_next_frame(state.moving, view.visual_state, state.reduced_motion) {
                 view.schedule_frame(window, cx);
@@ -1924,6 +1985,10 @@ fn should_apply_native_origin(moved: bool, has_last_origin: bool) -> bool {
     moved || !has_last_origin
 }
 
+fn should_schedule_roam_after_landing(landed: bool, attached: bool, dragging: bool) -> bool {
+    landed && !attached && !dragging
+}
+
 fn procedural_pose_phase(elapsed: Duration) -> f32 {
     elapsed.as_secs_f32() * std::f32::consts::TAU
 }
@@ -2046,6 +2111,18 @@ fn bounded_release_velocity(from: Point<Pixels>, to: Point<Pixels>, elapsed: Dur
         ((f32::from(to.y) - f32::from(from.y)) / seconds)
             .clamp(-config.terminal_velocity, config.terminal_velocity),
     )
+}
+
+fn release_velocity_at_mouse_up(
+    sampled_velocity: Point2,
+    last_sample_at: Instant,
+    mouse_up_at: Instant,
+) -> Point2 {
+    if mouse_up_at.saturating_duration_since(last_sample_at) > DRAG_VELOCITY_SAMPLE_LIMIT {
+        Point2::new(0.0, 0.0)
+    } else {
+        sampled_velocity
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2215,10 +2292,20 @@ fn valid_physics_window(window: Bounds<Pixels>, displays: &[DesktopDisplay]) -> 
 }
 
 fn maximized_like(window: Bounds<Pixels>, work_area: Bounds<Pixels>) -> bool {
-    (f32::from(window.origin.x) - f32::from(work_area.origin.x)).abs() <= MAXIMIZED_TOLERANCE
-        && (f32::from(window.origin.y) - f32::from(work_area.origin.y)).abs() <= MAXIMIZED_TOLERANCE
-        && (f32::from(window.right()) - f32::from(work_area.right())).abs() <= MAXIMIZED_TOLERANCE
-        && (f32::from(window.bottom()) - f32::from(work_area.bottom())).abs() <= MAXIMIZED_TOLERANCE
+    let work_width = f32::from(work_area.size.width).max(1.0);
+    let work_height = f32::from(work_area.size.height).max(1.0);
+    let width_coverage = f32::from(window.size.width) / work_width;
+    let height_coverage = f32::from(window.size.height) / work_height;
+    width_coverage >= MAXIMIZED_COVERAGE_RATIO
+        && height_coverage >= MAXIMIZED_COVERAGE_RATIO
+        && (f32::from(window.origin.x) - f32::from(work_area.origin.x)).abs()
+            <= MAXIMIZED_EDGE_INSET_TOLERANCE
+        && (f32::from(window.origin.y) - f32::from(work_area.origin.y)).abs()
+            <= MAXIMIZED_EDGE_INSET_TOLERANCE
+        && (f32::from(window.right()) - f32::from(work_area.right())).abs()
+            <= MAXIMIZED_EDGE_INSET_TOLERANCE
+        && (f32::from(window.bottom()) - f32::from(work_area.bottom())).abs()
+            <= MAXIMIZED_EDGE_INSET_TOLERANCE
 }
 
 fn window_top_surface(window: &ExternalWindow, generation: u64) -> WalkableSurface {
@@ -2845,7 +2932,8 @@ mod tests {
             outcome,
             AttachmentFollowOutcome {
                 attached: true,
-                moved: true
+                moved: true,
+                restart_dynamic_frames: false,
             }
         );
         let sim = runtime.simulation.as_ref().expect("simulation");
@@ -2889,7 +2977,8 @@ mod tests {
             outcome,
             AttachmentFollowOutcome {
                 attached: true,
-                moved: false
+                moved: false,
+                restart_dynamic_frames: false,
             }
         );
         assert!(!runtime.pending_native_move);
@@ -2910,7 +2999,7 @@ mod tests {
             &[display()],
         );
 
-        assert_eq!(outcome, AttachmentFollowOutcome::inactive());
+        assert_eq!(outcome, AttachmentFollowOutcome::dynamic_restart());
         assert!(runtime.attachment.is_none());
         assert!(!runtime.attachment_timer_scheduled);
     }
@@ -3115,5 +3204,123 @@ mod tests {
         let jitter = gpui::point(px(103.0), px(102.0));
         assert!(!drag_crossed_threshold(start, jitter, 1.0));
         assert!(!should_apply_native_origin(false, true));
+    }
+
+    // SDTEST-1521
+    #[test]
+    fn immediate_snap_release_starts_attachment_follow_lifecycle() {
+        let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 140.0);
+        let window = external_window(55, bounds(200.0, 300.0, 260.0, 180.0));
+
+        let lifecycle = runtime.finish_user_drag_lifecycle_for_test(
+            Point2::new(0.0, 0.0),
+            &[window],
+            &[display()],
+        );
+
+        assert_eq!(lifecycle, ReleaseLifecycle::StartAttachmentFollow);
+        assert!(runtime.attachment.is_some());
+        assert!(!runtime.attachment_timer_scheduled);
+    }
+
+    // SDTEST-1522
+    #[test]
+    fn floor_landing_policy_schedules_roam_only_when_unattached_and_not_dragging() {
+        assert!(should_schedule_roam_after_landing(true, false, false));
+        assert!(!should_schedule_roam_after_landing(true, true, false));
+        assert!(!should_schedule_roam_after_landing(true, false, true));
+        assert!(!should_schedule_roam_after_landing(false, false, false));
+    }
+
+    // SDTEST-1523
+    #[test]
+    fn disappeared_attachment_requests_dynamic_frame_restart_when_falling() {
+        let mut runtime = runtime_with_sim();
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(66),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+
+        let outcome = runtime.follow_attached_snapshot(&[], &[display()]);
+
+        assert_eq!(outcome, AttachmentFollowOutcome::dynamic_restart());
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().body.mode,
+            BodyMode::Dynamic
+        );
+    }
+
+    // SDTEST-1524
+    #[test]
+    fn window_climbing_disabled_prevents_snap_platforms_and_window_attachment() {
+        let mut runtime = runtime_with_sim();
+        runtime.config.appearance.desktop.allow_window_climbing = false;
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 140.0);
+        let window = external_window(77, bounds(200.0, 300.0, 260.0, 180.0));
+
+        let lifecycle = runtime.finish_user_drag_lifecycle_for_test(
+            Point2::new(0.0, 0.0),
+            &[window],
+            &[display()],
+        );
+
+        assert_eq!(lifecycle, ReleaseLifecycle::RequestPhysicsFrame);
+        assert!(runtime.attachment.is_none());
+        assert!(runtime.physics_platforms.is_empty());
+        let sim = runtime.simulation.as_mut().unwrap();
+        for _ in 0..90 {
+            if sim
+                .step_physics_capped(33, &runtime.physics_platforms)
+                .landed
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            sim.body.contact().unwrap().kind,
+            WalkableSurfaceKind::ScreenFloor
+        );
+    }
+
+    // SDTEST-1525
+    #[test]
+    fn maximized_like_rejects_taskbar_inset_but_keeps_ordinary_large_window() {
+        assert!(maximized_like(
+            bounds(24.0, 32.0, 752.0, 552.0),
+            display().work_area
+        ));
+        assert!(!valid_physics_window(
+            bounds(24.0, 32.0, 752.0, 552.0),
+            &[display()]
+        ));
+        assert!(!maximized_like(
+            bounds(120.0, 96.0, 560.0, 420.0),
+            display().work_area
+        ));
+        assert!(valid_physics_window(
+            bounds(120.0, 96.0, 560.0, 420.0),
+            &[display()]
+        ));
+    }
+
+    // SDTEST-1526
+    #[test]
+    fn stale_mouse_up_velocity_is_zeroed() {
+        let now = Instant::now();
+        let sampled = Point2::new(300.0, -200.0);
+        assert_eq!(
+            release_velocity_at_mouse_up(sampled, now, now + DRAG_VELOCITY_SAMPLE_LIMIT),
+            sampled
+        );
+        assert_eq!(
+            release_velocity_at_mouse_up(
+                sampled,
+                now,
+                now + DRAG_VELOCITY_SAMPLE_LIMIT + Duration::from_millis(1),
+            ),
+            Point2::new(0.0, 0.0)
+        );
     }
 }
