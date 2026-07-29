@@ -19,7 +19,7 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
-| Personnage desktop autonome | Physique AABB déterministe et runtime événementiel livrés | SDUC-451, SDTEST-1505..1527 |
+| Personnage desktop autonome | Physique AABB déterministe et runtime événementiel livrés | SDUC-451, SDTEST-1505..1528 |
 
 ## Next
 
@@ -61,8 +61,9 @@ Vérification effectuée le 2026-07-29 contre le code et les inventaires :
 - le personnage desktop possède un solveur AABB déterministe dédié, pas un moteur
   de jeu général : gravité, vélocité terminale, drag horizontal, collision
   descendante one-way avec les tops de fenêtre, fallback au sol d'écran, snap au
-  relâchement sur le bord supérieur externe, suivi par ID stable, chute à la
-  disparition, nettoyage des plateformes si le climbing est désactivé en chute
+  relâchement sur le bord supérieur externe, adoption du display porteur, suivi
+  par ID stable, chute à la disparition, nettoyage des plateformes si le
+  climbing est désactivé en chute
   et suppression des boucles sous mouvement réduit/off/still.
 
 Les détails exhaustifs de comportement restent dans

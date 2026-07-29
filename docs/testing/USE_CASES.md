@@ -1842,28 +1842,32 @@ window tops as one-way floors for falling only from above. Snap candidates exclu
 maximized/taskbar-inset windows and are ranked deterministically by vertical gap
 then horizontal distance with overlap and size thresholds. The attached character
 preserves its horizontal perch offset as the window moves between displays or
-resizes; if no eligible top is reached, the display work-area floor is the safe
-fallback landing surface. Cached platform snapshots feed the runtime instead of
-native enumeration on every animation frame. Closing, minimizing, or otherwise
+resizes; a snap also adopts the supporting window's display so later
+screen-floor recovery uses that monitor instead of an old display or virtual
+layout gap. If no eligible top is reached, the display work-area floor is the
+safe fallback landing surface. Cached platform snapshots feed the runtime
+instead of native enumeration on every animation frame. Closing, minimizing, or otherwise
 losing the target window detaches safely, restarts falling only when full motion
 is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
 landings resume the one-shot roaming schedule only when the character is not
 attached or being dragged. Dragging, clicking, pausing, returning to a corner,
 disabling climbing, or closing the overlay cancels the attachment and its
 generation-guarded refresh timer immediately; disabling climbing during a fall
-clears cached window platforms so the character continues to the screen floor. Subthreshold pointer jitter must
-preserve click delivery and avoid native overlay moves.
+clears cached window platforms so the character continues to the screen floor.
+Subthreshold pointer jitter must preserve click delivery and avoid native overlay
+moves.
 
 ---
 
 ## Change log
 
-- **2026-07-29** — Extended SDUC-451 and added SDTEST-1505..1527 for the
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1505..1528 for the
   standalone deterministic AABB companion physics/runtime: drag-release outer
   top-edge snapping, one-way window-top floors, screen-floor fallback, stable-ID
   attachment/follow after snapping or landing, disappearance-to-fall recovery,
-  reduced/off/still suppression, cached event-driven snapshots, and
-  subthreshold-jitter click preservation, and mid-fall climbing-disable platform clearing.
+  reduced/off/still suppression, cached event-driven snapshots, snap-display
+  adoption before disappearance floor recovery, subthreshold-jitter click
+  preservation, and mid-fall climbing-disable platform clearing.
 - **2026-07-29** — Extended SDUC-451 and added SDTEST-1500..1504 for stable
   external-window identities, top-edge attachment, movement and resize following,
   redundant-move suppression, disappearance recovery, and generation-cancelled

@@ -332,6 +332,7 @@ parallel `cargo test`.
 | SDTEST-1525 | `companion_desktop.rs::maximized_like_rejects_taskbar_inset_but_keeps_ordinary_large_window` | SDUC-451 | Green | Taskbar-inset maximized windows are rejected while ordinary large windows remain eligible. |
 | SDTEST-1526 | `companion_desktop.rs::stale_mouse_up_velocity_is_zeroed` | SDUC-451 | Green | Stale drag velocity samples are zeroed at mouse-up instead of launching the character with old motion. |
 | SDTEST-1527 | `companion_desktop.rs::disabling_window_climbing_mid_fall_clears_cached_window_platforms` | SDUC-451 | Green | Turning off window climbing while already falling clears cached window platforms/windows and lands on the screen floor instead of a stale top. |
+| SDTEST-1528 | `companion_desktop.rs::snapped_window_display_becomes_disappearance_fall_floor_context` | SDUC-451 | Green | Snapping to a window on another display updates the simulation display, so a later disappearance fall lands on that monitor floor instead of an old display or virtual gap. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
