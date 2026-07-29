@@ -69,6 +69,10 @@ pub enum TrayCommand {
     OpenAiTasks,
     /// Open the command palette.
     OpenPalette,
+    /// Pause or resume the optional desktop character runtime.
+    PauseCharacter,
+    /// Ask the desktop character to return to its safe Dock corner.
+    ReturnCharacterToDock,
     /// Connect one of the persisted quick-access hosts.
     ConnectPinned(Uuid),
     /// Quit the app.
@@ -223,6 +227,8 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
         ASSISTANT_ID => Some(TrayCommand::ToggleAiDock),
         AI_TASKS_ID => Some(TrayCommand::OpenAiTasks),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
+        PAUSE_CHARACTER_ID => Some(TrayCommand::PauseCharacter),
+        RETURN_CHARACTER_ID => Some(TrayCommand::ReturnCharacterToDock),
         QUIT_ID => Some(TrayCommand::Quit),
         _ => id
             .strip_prefix(PINNED_ID_PREFIX)
@@ -235,6 +241,8 @@ const SHOW_ID: &str = "shelldeck.tray.show";
 const ASSISTANT_ID: &str = "shelldeck.tray.assistant";
 const AI_TASKS_ID: &str = "shelldeck.tray.ai_tasks";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
+const PAUSE_CHARACTER_ID: &str = "shelldeck.tray.character.pause";
+const RETURN_CHARACTER_ID: &str = "shelldeck.tray.character.return_to_dock";
 const QUIT_ID: &str = "shelldeck.tray.quit";
 const PINNED_ID_PREFIX: &str = "shelldeck.tray.pinned.";
 
@@ -261,6 +269,8 @@ struct MenuItems {
     assistant: MenuItem,
     show: MenuItem,
     palette: MenuItem,
+    pause_character: MenuItem,
+    return_character: MenuItem,
     quit: MenuItem,
     counters: CounterItems,
     pinned_menu: Submenu,
@@ -283,6 +293,9 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     let assistant_item = MenuItem::with_id(ASSISTANT_ID, &labels.assistant, true, None);
     let show_item = MenuItem::with_id(SHOW_ID, &labels.show, true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, &labels.palette, true, None);
+    let pause_character_item = MenuItem::with_id(PAUSE_CHARACTER_ID, "Pause character", true, None);
+    let return_character_item =
+        MenuItem::with_id(RETURN_CHARACTER_ID, "Return character to Dock", true, None);
     let quit_item = MenuItem::with_id(QUIT_ID, &labels.quit, true, None);
     let pinned_menu = Submenu::new(&labels.pinned, true);
     let no_pinned = MenuItem::new(&labels.no_pinned, false, None);
@@ -304,6 +317,10 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         .context("append Assistant item")?;
     menu.append(&show_item).context("append Show item")?;
     menu.append(&palette_item).context("append Palette item")?;
+    menu.append(&pause_character_item)
+        .context("append Pause character item")?;
+    menu.append(&return_character_item)
+        .context("append Return character item")?;
     menu.append(&pinned_menu)
         .context("append pinned connections menu")?;
     menu.append(&PredefinedMenuItem::separator())
@@ -326,6 +343,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
             assistant: assistant_item,
             show: show_item,
             palette: palette_item,
+            pause_character: pause_character_item,
+            return_character: return_character_item,
             quit: quit_item,
             counters,
             pinned_menu,

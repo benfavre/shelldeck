@@ -1,4 +1,5 @@
 mod actions;
+mod companion_desktop;
 mod tray;
 
 use adabraka_ui::prelude::*;
@@ -17,6 +18,8 @@ use shelldeck_ui::{
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
+
+use crate::companion_desktop::{CompanionRuntimeCommand, DesktopCharacterRuntime};
 
 /// Embed Lucide SVGs at `icons/lucide/{name}.svg`. Add new slugs here when
 /// copying icons into `assets/icons/lucide/` (see that folder's README).
@@ -375,6 +378,7 @@ impl WorkspaceSlot {
 struct CompanionRuntime {
     main_window: gpui::AnyWindowHandle,
     ai_companion: gpui::Entity<AiCompanionController>,
+    desktop_character: gpui::Entity<DesktopCharacterRuntime>,
     tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
     companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
     ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
@@ -425,6 +429,8 @@ impl CompanionRoot {
         cx: &mut gpui::Context<Self>,
     ) -> Self {
         let ai_companion = cx.new(|cx| AiCompanionController::new(config.ai.clone(), cx));
+        let desktop_character =
+            cx.new(|_cx| DesktopCharacterRuntime::new(config.companion.clone()));
         let ai_companion_sub = cx.subscribe(
             &ai_companion,
             |this, _controller, event: &AiCompanionEvent, cx| {
@@ -436,6 +442,7 @@ impl CompanionRoot {
             runtime: CompanionRuntime {
                 main_window,
                 ai_companion,
+                desktop_character,
                 tray_state_tx,
                 companion_config_tx,
                 ai_dock_window: None,
@@ -617,6 +624,12 @@ fn dispatch_tray_command(
         TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
         TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
+        TrayCommand::PauseCharacter => {
+            route_desktop_character_command(root, window, CompanionRuntimeCommand::Pause, cx)
+        }
+        TrayCommand::ReturnCharacterToDock => {
+            route_desktop_character_command(root, window, CompanionRuntimeCommand::ReturnToDock, cx)
+        }
         TrayCommand::ConnectPinned(id) => {
             if let Err(error) = window.update(cx, |_, window, cx| {
                 if let Some(root) = root.upgrade() {
@@ -638,6 +651,26 @@ fn dispatch_tray_command(
             cx.quit();
         }
     }
+}
+
+fn route_desktop_character_command(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    command: CompanionRuntimeCommand,
+    cx: &mut gpui::App,
+) {
+    let Some(root) = root.upgrade() else {
+        return;
+    };
+    let desktop_character = root.read(cx).runtime.desktop_character.clone();
+    let runtime_entity = desktop_character.clone();
+    desktop_character.update(cx, |runtime, cx| {
+        runtime.handle_command(runtime_entity.clone(), command, main_window, cx);
+        let diagnostics = runtime.diagnostics();
+        if let Some(reason) = &diagnostics.reason {
+            tracing::info!(?diagnostics.tier, %reason, "desktop character command handled with limitation");
+        }
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1577,6 +1610,25 @@ fn main() -> Result<()> {
                     root.ensure_workspace(window, cx);
                 });
             }
+            root.update(cx, |root, cx| {
+                let desktop_character = root.runtime.desktop_character.clone();
+                let runtime_entity = desktop_character.clone();
+                desktop_character.update(cx, |runtime, cx| {
+                    runtime.apply_config(
+                        runtime_entity.clone(),
+                        config.companion.clone(),
+                        main_window,
+                        cx,
+                    );
+                    if let Some(reason) = &runtime.diagnostics().reason {
+                        tracing::info!(
+                            tier = ?runtime.diagnostics().tier,
+                            %reason,
+                            "desktop character startup capability limitation"
+                        );
+                    }
+                });
+            });
 
             // Route tray menu clicks through the lightweight root. Commands
             // that need application state initialize the Workspace once.
@@ -1662,10 +1714,33 @@ fn main() -> Result<()> {
                 let mut companion_config_rx = companion_config_rx;
                 let shortcut_workspace_slot = workspace_slot.clone();
                 let global_shortcut_state = global_shortcut_state.clone();
+                let root_handle = root.downgrade();
+                let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
                     while let Some(config) = companion_config_rx.recv().await {
+                        let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| {
                             global_shortcut_state.borrow_mut().sync(&config, cx);
+                            if let Some(root) = root_handle.upgrade() {
+                                let desktop_character =
+                                    root.read(cx).runtime.desktop_character.clone();
+                                let runtime_entity = desktop_character.clone();
+                                desktop_character.update(cx, |runtime, cx| {
+                                    runtime.apply_config(
+                                        runtime_entity.clone(),
+                                        config.clone(),
+                                        window_handle,
+                                        cx,
+                                    );
+                                    if let Some(reason) = &runtime.diagnostics().reason {
+                                        tracing::info!(
+                                            tier = ?runtime.diagnostics().tier,
+                                            %reason,
+                                            "desktop character capability limitation"
+                                        );
+                                    }
+                                });
+                            }
                             if let Some(workspace) = shortcut_workspace_slot.upgrade() {
                                 let statuses = global_shortcut_state.borrow().statuses();
                                 workspace.update(cx, |workspace, cx| {
