@@ -2,9 +2,10 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, ease_in_out, img, prelude::*, px, Animation, AnimationExt, AnyWindowHandle, App,
-    AppContext, Bounds, Context, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, Pixels, Point, Render, SharedString, Size, Window, WindowBounds,
-    WindowDecorations, WindowHandle, WindowKind, WindowOptions,
+    AppContext, Bounds, Context, Entity, ExternalWindow, ExternalWindowId, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, Render,
+    SharedString, Size, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind,
+    WindowOptions,
 };
 use shelldeck_core::ai::{
     ClippyConfig, CompanionCharacterId, CompanionMotionPreference, CompanionScale,
@@ -23,6 +24,7 @@ const REACTION_DURATION: Duration = Duration::from_millis(650);
 const LANDING_DURATION: Duration = Duration::from_millis(320);
 const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(2_800);
 const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(8);
+const ATTACHMENT_FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompanionRuntimeCommand {
@@ -228,20 +230,6 @@ impl RuntimeSimulation {
             .map(|candidate| candidate.with_speed(profile, &mut self.rng))
     }
 
-    fn climb_window(&mut self, window: Bounds<Pixels>) -> bool {
-        if !self.simulation.can_start_action() {
-            return false;
-        }
-        let Some(target) = window_top_target(window, self.display.work_area, self.extent) else {
-            return false;
-        };
-        self.simulation.config.speed_per_second = character_personality(self.character).climb_speed;
-        self.simulation.set_target(target);
-        self.simulation.state = CharacterSimulationState::Climbing;
-        self.simulation.remember_action("window-climb");
-        true
-    }
-
     fn step_capped(&mut self, elapsed_ms: u64) -> StepOutcome {
         let before = self.simulation.position;
         let had_target = self.simulation.target.is_some();
@@ -285,6 +273,17 @@ pub struct DesktopCharacterRuntime {
     last_tick: Option<Instant>,
     roam_timer_scheduled: bool,
     roam_generation: u64,
+    attachment: Option<WindowAttachment>,
+    attachment_timer_scheduled: bool,
+    attachment_generation: u64,
+    pending_native_move: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WindowAttachment {
+    id: ExternalWindowId,
+    top_edge_offset: f32,
+    perched: bool,
 }
 
 impl DesktopCharacterRuntime {
@@ -309,6 +308,10 @@ impl DesktopCharacterRuntime {
             last_tick: None,
             roam_timer_scheduled: false,
             roam_generation: 0,
+            attachment: None,
+            attachment_timer_scheduled: false,
+            attachment_generation: 0,
+            pending_native_move: false,
         }
     }
 
@@ -330,6 +333,7 @@ impl DesktopCharacterRuntime {
             || previous_movement != self.config.appearance.desktop.movement;
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
+        self.cancel_attachment();
         if recreate {
             self.close_overlay(cx);
         }
@@ -373,6 +377,9 @@ impl DesktopCharacterRuntime {
         match command {
             CompanionRuntimeCommand::Pause => {
                 self.diagnostics.paused = !self.diagnostics.paused;
+                if self.diagnostics.paused {
+                    self.cancel_attachment();
+                }
                 if let Some(sim) = &mut self.simulation {
                     if self.diagnostics.paused {
                         sim.pause();
@@ -391,6 +398,7 @@ impl DesktopCharacterRuntime {
                 self.last_tick = None;
                 self.roam_generation = self.roam_generation.wrapping_add(1);
                 self.roam_timer_scheduled = false;
+                self.cancel_attachment();
                 self.ensure_overlay(runtime_entity.clone(), main_window, cx);
                 if let Some(sim) = &mut self.simulation {
                     sim.return_to_corner();
@@ -412,6 +420,7 @@ impl DesktopCharacterRuntime {
     fn begin_user_drag(&mut self) {
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
+        self.cancel_attachment();
         self.last_tick = None;
         if let Some(sim) = &mut self.simulation {
             sim.pause();
@@ -450,6 +459,7 @@ impl DesktopCharacterRuntime {
         if self.diagnostics.paused {
             return false;
         }
+        self.cancel_attachment();
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
         self.last_tick = None;
@@ -464,6 +474,7 @@ impl DesktopCharacterRuntime {
     fn roaming_delay(&self) -> Option<Duration> {
         if self.overlay.is_none()
             || self.diagnostics.paused
+            || self.attachment.is_some()
             || matches!(
                 self.config.appearance.motion,
                 CompanionMotionPreference::Reduced | CompanionMotionPreference::Off
@@ -498,6 +509,7 @@ impl DesktopCharacterRuntime {
                     if runtime.roaming_delay().is_none() {
                         return;
                     }
+                    runtime.cancel_attachment();
                     if let Some(sim) = &mut runtime.simulation {
                         sim.simulation.advance_idle_time(delay.as_millis() as u64);
                     }
@@ -548,33 +560,160 @@ impl DesktopCharacterRuntime {
         if !self.config.appearance.desktop.allow_window_climbing {
             return false;
         }
-        let windows = cx.visible_external_window_bounds();
+        let windows = cx.visible_external_windows();
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
-        let Some(sim) = &mut self.simulation else {
+        let Some(sim) = self.simulation.as_ref() else {
             return false;
         };
         let position = sim.simulation.position;
-        let Some(window) = windows.into_iter().min_by(|a, b| {
-            let distance = |bounds: &Bounds<Pixels>| {
-                let center = bounds.center();
-                let dx = f32::from(center.x) - position.x;
-                let dy = f32::from(bounds.origin.y) - position.y;
-                dx * dx + dy * dy
-            };
-            distance(a).total_cmp(&distance(b))
-        }) else {
+        let Some(window) = choose_external_window(&windows, position) else {
             return false;
         };
-
+        let window_id = external_window_id(&window);
+        let window_bounds = window.bounds;
         let displays = desktop_displays(cx);
-        if let Some(display) = displays
-            .into_iter()
-            .find(|display| display.work_area.contains(&window.center()))
-        {
+        self.begin_attachment(window_id, window_bounds, &displays)
+    }
+
+    fn begin_attachment(
+        &mut self,
+        window_id: ExternalWindowId,
+        window_bounds: Bounds<Pixels>,
+        displays: &[DesktopDisplay],
+    ) -> bool {
+        let Some(sim) = &mut self.simulation else {
+            return false;
+        };
+        if let Some(display) = display_for_window(displays, window_bounds) {
             sim.update_display(display);
         }
-        sim.climb_window(window)
+        let Some(target) = window_top_target(window_bounds, sim.display.work_area, sim.extent)
+        else {
+            return false;
+        };
+        sim.simulation.config.speed_per_second = character_personality(sim.character).climb_speed;
+        sim.simulation.set_target(target);
+        sim.simulation.state = CharacterSimulationState::Climbing;
+        sim.simulation.remember_action("window-climb");
+        self.attachment = Some(WindowAttachment {
+            id: window_id,
+            top_edge_offset: target.x - f32::from(window_bounds.origin.x),
+            perched: false,
+        });
+        self.attachment_generation = self.attachment_generation.wrapping_add(1);
+        self.attachment_timer_scheduled = false;
+        true
+    }
+
+    fn schedule_attachment_follow(&mut self, runtime_entity: Entity<Self>, cx: &mut App) {
+        if self.attachment.is_none() || self.attachment_timer_scheduled {
+            return;
+        }
+        self.attachment_timer_scheduled = true;
+        let generation = self.attachment_generation;
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(ATTACHMENT_FOLLOW_INTERVAL)
+                .await;
+            let _ = cx.update(|cx| {
+                runtime_entity.update(cx, |runtime, cx| {
+                    if runtime.attachment_generation != generation {
+                        return;
+                    }
+                    runtime.attachment_timer_scheduled = false;
+                    let outcome = runtime.follow_attached_window(cx);
+                    if outcome.moved {
+                        runtime.request_frame(cx);
+                    }
+                    if outcome.attached {
+                        runtime.schedule_attachment_follow(runtime_entity.clone(), cx);
+                    } else {
+                        runtime.schedule_roam(runtime_entity.clone(), cx);
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn follow_attached_window(&mut self, cx: &App) -> AttachmentFollowOutcome {
+        let windows = cx.visible_external_windows();
+        self.diagnostics.geometry_snapshot_count =
+            self.diagnostics.geometry_snapshot_count.saturating_add(1);
+        let displays = desktop_displays(cx);
+        self.follow_attached_snapshot(&windows, &displays)
+    }
+
+    fn follow_attached_snapshot(
+        &mut self,
+        windows: &[ExternalWindow],
+        displays: &[DesktopDisplay],
+    ) -> AttachmentFollowOutcome {
+        let Some(attachment) = self.attachment else {
+            return AttachmentFollowOutcome::inactive();
+        };
+        let Some(window) = windows
+            .iter()
+            .find(|window| external_window_id(window) == attachment.id)
+        else {
+            self.cancel_attachment();
+            return AttachmentFollowOutcome::inactive();
+        };
+        self.follow_attached_bounds(window.bounds, displays)
+    }
+
+    fn follow_attached_bounds(
+        &mut self,
+        window_bounds: Bounds<Pixels>,
+        displays: &[DesktopDisplay],
+    ) -> AttachmentFollowOutcome {
+        let Some(attachment) = self.attachment else {
+            return AttachmentFollowOutcome::inactive();
+        };
+        let Some(sim) = &mut self.simulation else {
+            self.cancel_attachment();
+            return AttachmentFollowOutcome::inactive();
+        };
+        if let Some(display) = display_for_window(displays, window_bounds) {
+            sim.update_display(display);
+            self.diagnostics.display_count = displays.len();
+        }
+        let Some(target) = attachment_target(
+            window_bounds,
+            sim.display.work_area,
+            sim.extent,
+            f32::from(window_bounds.origin.x) + attachment.top_edge_offset,
+        ) else {
+            self.cancel_attachment();
+            return AttachmentFollowOutcome::inactive();
+        };
+        let before = sim.simulation.position;
+        if attachment.perched {
+            sim.simulation.position = target;
+            sim.simulation.target = None;
+            sim.simulation.state = CharacterSimulationState::Perched;
+            self.pending_native_move |= sim.simulation.position != before;
+        } else {
+            sim.simulation.set_target(target);
+        }
+        AttachmentFollowOutcome {
+            attached: true,
+            moved: sim.simulation.position != before,
+        }
+    }
+
+    fn cancel_attachment(&mut self) {
+        self.attachment = None;
+        self.attachment_timer_scheduled = false;
+        self.attachment_generation = self.attachment_generation.wrapping_add(1);
+        self.pending_native_move = false;
+    }
+
+    fn mark_attachment_perched(&mut self) {
+        if let Some(attachment) = &mut self.attachment {
+            attachment.perched = true;
+        }
     }
 
     fn ensure_overlay(
@@ -666,6 +805,7 @@ impl DesktopCharacterRuntime {
         self.last_tick = None;
         self.roam_timer_scheduled = false;
         self.roam_generation = self.roam_generation.wrapping_add(1);
+        self.cancel_attachment();
         self.diagnostics.overlay_open = false;
     }
 
@@ -676,6 +816,7 @@ impl DesktopCharacterRuntime {
     }
 
     fn record_movement_error(&mut self, error: String) {
+        self.cancel_attachment();
         self.diagnostics.reason = Some(format!("Native movement failed: {error}"));
         self.diagnostics.paused = true;
         if let Some(sim) = &mut self.simulation {
@@ -686,6 +827,7 @@ impl DesktopCharacterRuntime {
     fn on_frame(&mut self, cx: &mut App) -> CharacterFrameState {
         let reduced_motion = reduced_motion_for_config(&self.config);
         if self.diagnostics.paused || reduced_motion {
+            self.cancel_attachment();
             if let Some(sim) = &mut self.simulation {
                 sim.pause();
             }
@@ -710,11 +852,15 @@ impl DesktopCharacterRuntime {
             self.last_tick = Some(now);
             let outcome = sim.step_capped(elapsed_ms);
             self.diagnostics.simulation_steps = sim.steps;
-            moved = outcome.moved || sim.position() != before;
+            moved = outcome.moved || sim.position() != before || self.pending_native_move;
+            self.pending_native_move = false;
             if moved {
                 self.diagnostics.native_moves += 1;
             }
             landed = outcome.landed;
+            if landed && self.attachment.is_some() {
+                self.mark_attachment_perched();
+            }
         }
         self.frame_state(moved, landed, reduced_motion)
     }
@@ -734,6 +880,7 @@ impl DesktopCharacterRuntime {
                 .unwrap_or(CharacterVisualState::Idle),
             landed,
             reduced_motion,
+            attached: self.attachment.is_some(),
         }
     }
 }
@@ -744,6 +891,21 @@ struct StepOutcome {
     landed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AttachmentFollowOutcome {
+    attached: bool,
+    moved: bool,
+}
+
+impl AttachmentFollowOutcome {
+    fn inactive() -> Self {
+        Self {
+            attached: false,
+            moved: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CharacterFrameState {
     position: Option<Point<Pixels>>,
@@ -752,6 +914,7 @@ struct CharacterFrameState {
     runtime_visual_state: CharacterVisualState,
     landed: bool,
     reduced_motion: bool,
+    attached: bool,
 }
 
 pub struct CharacterOverlayView {
@@ -1060,6 +1223,12 @@ impl CharacterOverlayView {
             }
             if state.landed && view.drag.is_none() {
                 view.show_landing(window, cx);
+            }
+            if state.attached {
+                let runtime_entity = view.runtime.clone();
+                view.runtime.update(cx, |runtime, cx| {
+                    runtime.schedule_attachment_follow(runtime_entity, cx)
+                });
             }
             if should_schedule_next_frame(state.moving, view.visual_state, state.reduced_motion) {
                 view.schedule_frame(window, cx);
@@ -1704,6 +1873,33 @@ fn display_for_overlay_origin(
         })
 }
 
+fn display_for_window(
+    displays: &[DesktopDisplay],
+    window: Bounds<Pixels>,
+) -> Option<DesktopDisplay> {
+    displays
+        .iter()
+        .copied()
+        .find(|display| display.work_area.contains(&window.center()))
+        .or_else(|| display_for_overlay_origin(displays, window.origin, 0.0))
+}
+
+fn choose_external_window(windows: &[ExternalWindow], position: Point2) -> Option<ExternalWindow> {
+    windows.iter().cloned().min_by(|a, b| {
+        let distance = |window: &ExternalWindow| {
+            let center = window.bounds.center();
+            let dx = f32::from(center.x) - position.x;
+            let dy = f32::from(window.bounds.origin.y) - position.y;
+            dx * dx + dy * dy
+        };
+        distance(a).total_cmp(&distance(b))
+    })
+}
+
+fn external_window_id(window: &ExternalWindow) -> ExternalWindowId {
+    window.id
+}
+
 fn click_reaction_target(
     position: Point2,
     work_area: Bounds<Pixels>,
@@ -1743,6 +1939,31 @@ fn window_top_target(
     let x = (f32::from(window.center().x) - extent * 0.5).clamp(min_x, max_x);
     let min_y = f32::from(work_area.origin.y);
     let max_y = (f32::from(work_area.bottom()) - extent).max(min_y);
+    let y = (f32::from(window.origin.y) - extent + 18.0).clamp(min_y, max_y);
+    Some(Point2::new(x, y))
+}
+
+fn attachment_target(
+    window: Bounds<Pixels>,
+    work_area: Bounds<Pixels>,
+    extent: f32,
+    preferred_x: f32,
+) -> Option<Point2> {
+    if f32::from(window.size.width) < 80.0 || f32::from(window.size.height) < 40.0 {
+        return None;
+    }
+    let min_x = f32::from(work_area.origin.x);
+    let max_x = (f32::from(work_area.right()) - extent).max(min_x);
+    let min_y = f32::from(work_area.origin.y);
+    let max_y = (f32::from(work_area.bottom()) - extent).max(min_y);
+    let window_min_x = f32::from(window.origin.x);
+    let window_max_x = f32::from(window.right()) - extent;
+    let x = preferred_x
+        .clamp(
+            window_min_x.min(window_max_x),
+            window_min_x.max(window_max_x),
+        )
+        .clamp(min_x, max_x);
     let y = (f32::from(window.origin.y) - extent + 18.0).clamp(min_y, max_y);
     Some(Point2::new(x, y))
 }
@@ -1842,6 +2063,30 @@ mod tests {
                 size: gpui::size(px(800.0), px(600.0)),
             },
             scale_factor: 1.0,
+        }
+    }
+
+    fn runtime_with_sim() -> DesktopCharacterRuntime {
+        let mut runtime = DesktopCharacterRuntime::new(config(true));
+        runtime.simulation = Some(RuntimeSimulation::new(
+            display(),
+            character_window_size(CompanionScale::Medium),
+            CompanionCharacterId::Clippy,
+        ));
+        runtime
+    }
+
+    fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: gpui::point(px(x), px(y)),
+            size: gpui::size(px(width), px(height)),
+        }
+    }
+
+    fn external_window(id: u64, bounds: Bounds<Pixels>) -> ExternalWindow {
+        ExternalWindow {
+            id: ExternalWindowId::from_raw(id),
+            bounds,
         }
     }
 
@@ -2217,5 +2462,119 @@ mod tests {
         let half = procedural_pose_phase(Duration::from_millis(500));
         assert!((quarter - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
         assert!((half - std::f32::consts::PI).abs() < 0.0001);
+    }
+
+    // SDTEST-1500
+    #[test]
+    fn attachment_preserves_top_edge_offset_when_window_moves() {
+        let mut runtime = runtime_with_sim();
+        let initial = bounds(200.0, 260.0, 420.0, 240.0);
+        assert!(runtime.begin_attachment(ExternalWindowId::from_raw(42), initial, &[display()]));
+        runtime.mark_attachment_perched();
+        let moved = bounds(240.0, 300.0, 420.0, 240.0);
+
+        let outcome = runtime.follow_attached_bounds(moved, &[display()]);
+
+        assert_eq!(
+            outcome,
+            AttachmentFollowOutcome {
+                attached: true,
+                moved: true
+            }
+        );
+        let sim = runtime.simulation.as_ref().expect("simulation");
+        let attachment = runtime.attachment.expect("attachment");
+        assert_eq!(attachment.id, ExternalWindowId::from_raw(42));
+        assert_eq!(attachment.top_edge_offset, 130.0);
+        assert_eq!(sim.simulation.position, Point2::new(370.0, 158.0));
+        assert_eq!(sim.simulation.state, CharacterSimulationState::Perched);
+        assert!(runtime.pending_native_move);
+    }
+
+    // SDTEST-1501
+    #[test]
+    fn attachment_clamps_offset_when_window_resizes() {
+        let mut runtime = runtime_with_sim();
+        let initial = bounds(200.0, 260.0, 420.0, 240.0);
+        assert!(runtime.begin_attachment(ExternalWindowId::from_raw(77), initial, &[display()]));
+        runtime.mark_attachment_perched();
+        let resized = bounds(200.0, 260.0, 180.0, 240.0);
+
+        let outcome = runtime.follow_attached_bounds(resized, &[display()]);
+
+        assert!(outcome.attached);
+        let sim = runtime.simulation.as_ref().expect("simulation");
+        assert_eq!(sim.simulation.position, Point2::new(220.0, 118.0));
+    }
+
+    // SDTEST-1502
+    #[test]
+    fn attachment_unchanged_window_does_not_request_native_move() {
+        let mut runtime = runtime_with_sim();
+        let window = bounds(200.0, 260.0, 420.0, 240.0);
+        assert!(runtime.begin_attachment(ExternalWindowId::from_raw(7), window, &[display()]));
+        runtime.mark_attachment_perched();
+        assert!(runtime.follow_attached_bounds(window, &[display()]).moved);
+        runtime.pending_native_move = false;
+
+        let outcome = runtime.follow_attached_bounds(window, &[display()]);
+
+        assert_eq!(
+            outcome,
+            AttachmentFollowOutcome {
+                attached: true,
+                moved: false
+            }
+        );
+        assert!(!runtime.pending_native_move);
+    }
+
+    // SDTEST-1503
+    #[test]
+    fn attachment_missing_window_detaches_safely() {
+        let mut runtime = runtime_with_sim();
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(9),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+
+        let outcome = runtime.follow_attached_snapshot(
+            &[external_window(10, bounds(200.0, 260.0, 420.0, 240.0))],
+            &[display()],
+        );
+
+        assert_eq!(outcome, AttachmentFollowOutcome::inactive());
+        assert!(runtime.attachment.is_none());
+        assert!(!runtime.attachment_timer_scheduled);
+    }
+
+    // SDTEST-1504
+    #[test]
+    fn attachment_cancellation_and_scheduler_policy_bump_generations() {
+        let mut runtime = runtime_with_sim();
+        assert_eq!(ATTACHMENT_FOLLOW_INTERVAL, Duration::from_millis(100));
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(5),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+        let attached_generation = runtime.attachment_generation;
+
+        runtime.begin_user_drag();
+        assert!(runtime.attachment.is_none());
+        assert!(runtime.attachment_generation > attached_generation);
+
+        assert!(runtime.begin_attachment(
+            ExternalWindowId::from_raw(5),
+            bounds(200.0, 260.0, 420.0, 240.0),
+            &[display()]
+        ));
+        runtime.attachment_timer_scheduled = true;
+        let attached_generation = runtime.attachment_generation;
+        runtime.cancel_attachment();
+        assert!(runtime.attachment.is_none());
+        assert!(!runtime.attachment_timer_scheduled);
+        assert!(runtime.attachment_generation > attached_generation);
     }
 }
