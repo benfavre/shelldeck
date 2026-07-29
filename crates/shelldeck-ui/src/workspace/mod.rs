@@ -76,7 +76,7 @@ use crate::script_editor::{ScriptEditorView, ScriptEvent};
 use crate::script_form::ScriptForm;
 use crate::server_sync_view::{ServerSyncEvent, ServerSyncView};
 use crate::settings::{
-    CompanionShortcutStatuses, SettingsEvent, SettingsView, ShortcutRegistrationStatus,
+    CompanionShortcutStatuses, SettingsEvent, SettingsTab, SettingsView, ShortcutRegistrationStatus,
 };
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
@@ -224,6 +224,7 @@ actions!(
         CloseTab,
         ToggleSidebar,
         OpenSettings,
+        OpenCompanionSettings,
         NextTab,
         PrevTab,
         Quit,
@@ -5133,6 +5134,12 @@ impl Workspace {
                 Box::new(OpenSettings),
             ),
             PaletteAction::new(
+                t!("palette.choose_character").to_string(),
+                None,
+                "bot",
+                Box::new(OpenCompanionSettings),
+            ),
+            PaletteAction::new(
                 t!("palette.quit").to_string(),
                 Some("Ctrl+Q"),
                 "x",
@@ -5386,6 +5393,8 @@ impl Workspace {
             self.toggle_sidebar(cx);
         } else if action.as_any().is::<OpenSettings>() {
             self.open_settings(cx);
+        } else if action.as_any().is::<OpenCompanionSettings>() {
+            self.open_companion_settings(cx);
         } else if action.as_any().is::<CloseTab>() {
             self.close_active_tab(cx);
         } else if action.as_any().is::<NextTab>() {
@@ -5734,6 +5743,7 @@ impl Workspace {
             Cmd::NewScript => self.execute_palette_action(&NewScript, cx),
             Cmd::NewRequest => self.execute_palette_action(&NewRequest, cx),
             Cmd::SyncNow => self.execute_palette_action(&CloudSyncNow, cx),
+            Cmd::OpenCompanionSettings => self.open_companion_settings(cx),
             Cmd::OpenSettings => self.open_settings(cx),
             Cmd::Quit => {
                 if self.confirm_window_close(cx) {
@@ -5947,6 +5957,18 @@ impl Workspace {
         self.site_menu_open = false;
         self.activate_current_mode(cx);
         cx.notify();
+    }
+
+    /// Open Settings directly on the character cards. The Appearance tab puts
+    /// companion controls first so this route is immediately actionable.
+    pub fn open_companion_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
+        self.settings.update(cx, |settings, cx| {
+            settings.set_active_tab(SettingsTab::Appearance, cx);
+        });
+        self.open_settings(cx);
     }
 
     /// Wipe every "which issue row is open" bit — Workspace-side selection

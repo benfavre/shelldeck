@@ -647,6 +647,18 @@ fn dispatch_tray_command(
         TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
         TrayCommand::OpenClippy => show_clippy(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
+        TrayCommand::ChooseCharacter => {
+            if let Err(error) = window.update(cx, |_, window, cx| {
+                if let Some(root) = root.upgrade() {
+                    let workspace = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
+                    workspace.update(cx, |workspace, cx| workspace.open_companion_settings(cx));
+                    window.show_window();
+                    window.activate_window();
+                }
+            }) {
+                tracing::warn!(error = %error, "tray could not open character settings");
+            }
+        }
         TrayCommand::PauseCharacter => {
             route_desktop_character_command(root, window, CompanionRuntimeCommand::Pause, cx)
         }

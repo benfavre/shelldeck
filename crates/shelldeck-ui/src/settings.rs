@@ -14,8 +14,8 @@ use gpui::*;
 
 use crate::t;
 use shelldeck_core::ai::{
-    configured_cli_available, AiAutonomyLevel, AiBackend, CompanionMotionPreference,
-    CompanionScale, DesktopCompanionMovement,
+    configured_cli_available, AiAutonomyLevel, AiBackend, ClippyAppearanceConfig,
+    CompanionMotionPreference, CompanionScale, DesktopCompanionMovement,
 };
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
@@ -36,6 +36,11 @@ const MONOSPACE_FONTS: &[&str] = &[
 ];
 
 const EDITOR_TAB_SIZES: &[usize] = &[2, 4, 8];
+
+fn apply_character_choice(appearance: &mut ClippyAppearanceConfig, id: &str) {
+    appearance.character = id.to_string();
+    appearance.desktop.enabled = id != "none";
+}
 
 fn display_shortcut(shortcut: &str) -> String {
     let Ok(keystroke) = Keystroke::parse(shortcut) else {
@@ -512,6 +517,16 @@ impl SettingsView {
         if !enabled && matches!(self.active_tab, SettingsTab::Terminal | SettingsTab::Editor) {
             self.active_tab = SettingsTab::General;
         }
+        cx.notify();
+    }
+
+    /// Navigate directly to a personal Settings tab. Used by command-palette,
+    /// menu-bar, and tray entry points that should land on a specific control.
+    pub fn set_active_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        if self.active_tab == tab {
+            return;
+        }
+        self.active_tab = tab;
         cx.notify();
     }
 
@@ -2020,10 +2035,7 @@ impl SettingsView {
                             .child(label),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.config.clippy.appearance.character = id.to_string();
-                        if id == "none" {
-                            this.config.clippy.appearance.desktop.enabled = false;
-                        }
+                        apply_character_choice(&mut this.config.clippy.appearance, id);
                         this.save_config(cx);
                     })),
             );
@@ -2147,27 +2159,6 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(t!("settings.appearance.app_theme.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("settings.appearance.app_theme.description").to_string()),
-                    )
-                    .child(app_theme_cards),
-            )
-            .child(
-                div()
-                    .py(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
                     .child(Self::render_about_section(
                         t!("settings.companion.characters.section").as_ref(),
                     ))
@@ -2234,6 +2225,27 @@ impl SettingsView {
                     |this, value| this.config.clippy.appearance.desktop.allow_multi_monitor = value,
                 ),
             ))
+            .child(
+                div()
+                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("settings.appearance.app_theme.title").to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("settings.appearance.app_theme.description").to_string()),
+                    )
+                    .child(app_theme_cards),
+            )
             .child(
                 div()
                     .py(px(12.0))
@@ -3066,8 +3078,8 @@ fn ai_policy_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        display_shortcut, shortcut_error_is_portal_missing, validate_shortcut_capture,
-        ShortcutCaptureValidation,
+        apply_character_choice, display_shortcut, shortcut_error_is_portal_missing,
+        validate_shortcut_capture, ClippyAppearanceConfig, ShortcutCaptureValidation,
     };
     use gpui::Keystroke;
 
@@ -3118,5 +3130,19 @@ mod tests {
             ShortcutCaptureValidation::Accepted("ctrl-shift-k".to_string())
         );
         assert_eq!(display_shortcut("ctrl-shift-k"), "Ctrl+Shift+K");
+    }
+
+    // SDTEST-1450
+    #[test]
+    fn choosing_a_visible_character_enables_it_and_none_disables_it() {
+        let mut appearance = ClippyAppearanceConfig::default();
+
+        apply_character_choice(&mut appearance, "nox");
+        assert_eq!(appearance.character, "nox");
+        assert!(appearance.desktop.enabled);
+
+        apply_character_choice(&mut appearance, "none");
+        assert_eq!(appearance.character, "none");
+        assert!(!appearance.desktop.enabled);
     }
 }

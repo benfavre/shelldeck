@@ -71,6 +71,8 @@ pub enum TrayCommand {
     OpenAiTasks,
     /// Open the command palette.
     OpenPalette,
+    /// Open Settings directly on the desktop character cards.
+    ChooseCharacter,
     /// Pause or resume the optional desktop character runtime.
     PauseCharacter,
     /// Ask the desktop character to return to its safe Dock corner.
@@ -230,6 +232,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
         CLIPPY_ID => Some(TrayCommand::OpenClippy),
         AI_TASKS_ID => Some(TrayCommand::OpenAiTasks),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
+        CHOOSE_CHARACTER_ID => Some(TrayCommand::ChooseCharacter),
         PAUSE_CHARACTER_ID => Some(TrayCommand::PauseCharacter),
         RETURN_CHARACTER_ID => Some(TrayCommand::ReturnCharacterToDock),
         QUIT_ID => Some(TrayCommand::Quit),
@@ -245,6 +248,7 @@ const ASSISTANT_ID: &str = "shelldeck.tray.assistant";
 const CLIPPY_ID: &str = "shelldeck.tray.clippy";
 const AI_TASKS_ID: &str = "shelldeck.tray.ai_tasks";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
+const CHOOSE_CHARACTER_ID: &str = "shelldeck.tray.character.choose";
 const PAUSE_CHARACTER_ID: &str = "shelldeck.tray.character.pause";
 const RETURN_CHARACTER_ID: &str = "shelldeck.tray.character.return_to_dock";
 const QUIT_ID: &str = "shelldeck.tray.quit";
@@ -274,6 +278,7 @@ struct MenuItems {
     clippy: MenuItem,
     show: MenuItem,
     palette: MenuItem,
+    choose_character: MenuItem,
     pause_character: MenuItem,
     return_character: MenuItem,
     quit: MenuItem,
@@ -299,6 +304,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     let clippy_item = MenuItem::with_id(CLIPPY_ID, &labels.clippy, true, None);
     let show_item = MenuItem::with_id(SHOW_ID, &labels.show, true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, &labels.palette, true, None);
+    let choose_character_item =
+        MenuItem::with_id(CHOOSE_CHARACTER_ID, &labels.choose_character, true, None);
     let pause_character_item =
         MenuItem::with_id(PAUSE_CHARACTER_ID, &labels.pause_character, true, None);
     let return_character_item =
@@ -325,6 +332,8 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     menu.append(&clippy_item).context("append Clippy item")?;
     menu.append(&show_item).context("append Show item")?;
     menu.append(&palette_item).context("append Palette item")?;
+    menu.append(&choose_character_item)
+        .context("append Choose character item")?;
     menu.append(&pause_character_item)
         .context("append Pause character item")?;
     menu.append(&return_character_item)
@@ -352,6 +361,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
             clippy: clippy_item,
             show: show_item,
             palette: palette_item,
+            choose_character: choose_character_item,
             pause_character: pause_character_item,
             return_character: return_character_item,
             quit: quit_item,
@@ -373,6 +383,9 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
         items.clippy.set_text(&next.labels.clippy);
         items.show.set_text(&next.labels.show);
         items.palette.set_text(&next.labels.palette);
+        items
+            .choose_character
+            .set_text(&next.labels.choose_character);
         items.pause_character.set_text(&next.labels.pause_character);
         items
             .return_character
@@ -584,6 +597,15 @@ mod tests {
         assert!(matches!(
             command_for_menu_id(CLIPPY_ID),
             Some(TrayCommand::OpenClippy)
+        ));
+    }
+
+    // SDTEST-1451
+    #[test]
+    fn choose_character_menu_id_routes_to_targeted_settings() {
+        assert!(matches!(
+            command_for_menu_id(CHOOSE_CHARACTER_ID),
+            Some(TrayCommand::ChooseCharacter)
         ));
     }
 

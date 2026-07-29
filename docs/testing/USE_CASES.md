@@ -1803,10 +1803,23 @@ character without stealing focus or clicks. External-window climbing is used
 only when the platform geometry provider can supply eligible visible window
 edges; invalid, minimized, fullscreen, and desktop surfaces are excluded.
 
+### SDUC-450 — Character selection is discoverable and immediately visible
+
+Authenticated users can open the character cards directly from the File menu,
+command palette, or native tray instead of finding them below unrelated theme
+controls. The targeted route opens Appearance with the six mascot previews at
+the top. Choosing any mascot enables its desktop runtime immediately; choosing
+None disables it. The separate motion, size, roaming, window-climbing, and
+multi-monitor controls remain available directly below the cards.
+
 ---
 
 ## Change log
 
+- **2026-07-29** — Added SDUC-450 and SDTEST-1450/1451 after live launch showed
+  the character picker was technically present but hidden below theme controls
+  and required a second enable toggle. File, palette, and tray routes now land
+  directly on visible cards, and selection applies immediately.
 - **2026-07-29** — Added SDUC-445..449 and SDTEST-1421..1449 for the native
   Clippy clipboard assistant, privacy and stale-selection contracts, selectable
   character persistence, deterministic desktop simulation, multi-display

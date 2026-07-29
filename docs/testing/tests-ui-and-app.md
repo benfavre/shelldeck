@@ -298,6 +298,8 @@ parallel `cargo test`.
 | SDTEST-1447 | `companion_desktop.rs::frame_elapsed_uses_real_refresh_delta_after_the_first_frame` | SDUC-448 | Green | Animation-frame simulation uses real elapsed time after startup, so 60 Hz and 30 Hz displays move the character at the same configured speed. |
 | SDTEST-1448 | `ai_assistant.rs::automatic_clipboard_import_requires_opt_in_and_an_empty_draft` | SDUC-445, SDUC-446 | Green | Shortcut clipboard import is disabled by default and never overwrites an existing Clippy draft. |
 | SDTEST-1449 | `ai_assistant.rs::backend_result_must_satisfy_clippy_proposal_bounds_before_display` | SDUC-445, SDUC-446 | Green | Blank or oversized model output is rejected through the core proposal contract before it can enter the result preview, diff, clipboard, or edit paths. |
+| SDTEST-1450 | `settings::tests::choosing_a_visible_character_enables_it_and_none_disables_it` | SDUC-447, SDUC-450 | Green | Selecting a real mascot cannot leave a hidden selected-but-disabled state; choosing None reliably turns the desktop runtime off. |
+| SDTEST-1451 | `tray::tests::choose_character_menu_id_routes_to_targeted_settings` | SDUC-450 | Green | The stable native tray ID opens the targeted character settings command rather than pausing movement or opening generic Settings. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
