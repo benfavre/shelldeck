@@ -12,14 +12,15 @@
 | Safety contracts | Delivered | `shelldeck-core::ai::clippy` types, strict validation, typed action policy, metadata-only audit copy, stale-selection checks, and a fake desktop provider workflow |
 | Native selection replacement | Contract delivered, adapters pending | Copy remains the universal fallback. Windows UI Automation, macOS Accessibility, and Linux AT-SPI adapters are not enabled yet |
 | Character roster | Delivered | No character plus Clippy, Shelly, Spark, Byte, Orbit, and Nox with embedded transparent PNG assets and persisted appearance settings |
-| Desktop overlay | Delivered where absolute positioning is supported | One transparent, no-focus, mouse-pass-through overlay with native origin movement, pause/return tray controls, and no continuous frames while static |
-| Window geometry and climbing | Delivered by capability | X11, macOS, and Windows expose filtered external top-level rectangles; the runtime chooses bounded window-top targets. Wayland remains Dock-only by design |
-| Multi-display roaming | Delivered | One-shot occasional/playful timers, capped fixed-step simulation, live display cycling, monitor-removal clamping, and movement duty-cycle recovery |
-| Advanced animation and OS lifecycle | Later tier | Authored sprite states, direct character interaction, fullscreen suppression, battery policy, lock/suspend hooks, and performance telemetry UI remain follow-up work |
+| Desktop overlay | Delivered where absolute positioning is supported | One transparent, no-focus, pointer-enabled overlay with native origin movement, active drag/outside-release handling, pause/return tray controls, and no continuous frames while static |
+| Window geometry and climbing | Delivered by capability | X11, macOS, and Windows expose stable-ID filtered external top-level rectangles; magnetic drag preview, release, collision, attachment, and low-rate follow use platform work areas. Windows and macOS expose per-display work areas; X11 currently uses the root EWMH `_NET_WORKAREA`. Native Wayland is unavailable and explained in Appearance |
+| Multi-display roaming | Delivered | One-shot occasional/playful timers, duration-based capped fixed-step simulation, work-area-aware routing where the platform exposes it, live display routing, monitor-removal recovery, and movement duty-cycle control |
+| Animation and OS lifecycle | Partially delivered | PNG-backed procedural walking, flying, reaction, landing, dragging, collision, sampled OS reduced-motion, and Windows no-focus behavior are delivered. Live OS preference observation, per-monitor X11 work areas, per-pixel native hit testing, fullscreen suppression, battery policy, lock/suspend hooks, and performance telemetry UI remain follow-up work |
 | Screenshot context | Deferred Phase 3 | No continuous capture exists. Explicit previewable capture remains intentionally outside the portable baseline |
 
-The code and regression inventory are mapped by SDUC-445..449 and
-SDTEST-1421..1449 in `docs/testing/`.
+The code and regression inventory are mapped by SDUC-445..451 and
+SDTEST-1460..1570 in `docs/testing/`. Native attachment capture/deletion remains
+tracked separately under SDUC-432 and SDTEST-1421..1423.
 
 ## Objective
 
@@ -530,10 +531,11 @@ running AI task maps deterministically to the same semantic state for every char
 
 ## Desktop character runtime
 
-The animated desktop pet is an optional presentation layer separate from the AI Dock.
-It may walk, hover, perch on window edges, climb window sides, and move between
-screens, but it must not inspect application content or affect AI behavior. Users must
-be able to select **Dock only**, **Desktop character**, or **No character**.
+The animated desktop pet is an optional standalone presentation layer separate from
+the AI Dock. It can walk, hover, perch on window edges, climb window sides, react to
+clicks and drags, and move between screens, but it must not inspect application content
+or affect AI behavior. Users select one of the six desktop characters or **No
+character** in Appearance settings.
 
 ### Platform reality and capability tiers
 
@@ -545,7 +547,7 @@ support the same behavior.
 |---|---|---|
 | A | Small transparent always-on-top overlay, native repositioning, external-window geometry, multi-monitor roaming | Windows, macOS, Linux/X11 |
 | B | Transparent overlay and screen-edge movement, but no reliable external-window climbing | compositor-dependent environments |
-| C | Character remains inside the AI Dock or main ShellDeck window | stock Wayland with the current GPUI backend |
+| C | Desktop character is unavailable and Settings explains the native limitation | stock Wayland with the current GPUI backend |
 
 The current GPUI fork explicitly warns that `WindowKind::Overlay` is not truly
 always-on-top on Wayland, and `xdg_toplevel` does not let a normal client choose its
@@ -564,21 +566,20 @@ Use one small transparent `WindowKind::Overlay` window for the active character,
 full-screen transparent window per monitor. A small surface limits swapchain memory,
 damage area, input interception risk, and compositor work.
 
-Suggested properties:
+Delivered properties:
 
-- logical canvas between 192x192 and 320x320 depending on selected scale
+- exact-size logical canvas derived from the selected scale
 - transparent background and no titlebar or decorations
 - non-resizable and absent from taskbar/dock
 - always-on-top where the platform supports it
-- mouse passthrough while roaming
+- pointer-enabled character interaction with drag, click, and double-click handling
 - no focus on creation or movement
 - one overlay window reused across movements and monitor transitions
 
-The existing GPUI fork already provides transparent overlays,
-`Window::request_animation_frame`, display enumeration, scale factors, and runtime
-mouse passthrough. It does **not** currently expose a cross-platform public API for
-moving an existing top-level window. Add a narrowly-scoped GPUI fork patch before the
-desktop runtime:
+The GPUI fork now provides transparent overlays, `Window::request_animation_frame`,
+display and usable-work-area metrics, reduced-motion preference, stable external-window
+snapshots, and cross-platform movement of an existing top-level window through the
+narrowly scoped API below:
 
 ```rust
 impl Window {

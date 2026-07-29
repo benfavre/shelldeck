@@ -3,10 +3,11 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** These three crates have **12 tests** today
-(`shelldeck-ui/src/{i18n,command_palette,sidebar}.rs`) and huge gaps
-elsewhere. The low count is partly intentional (GPUI views are hard
-to unit-test, see `.agents/testing.md`) and partly a real gap.
+**Big picture.** These crates now have broad pure-helper and reducer coverage,
+including command routing, settings, tray behavior, desktop companion physics,
+drag/snap/follow lifecycle, and update helpers. Live GPUI/native integration is
+still the main gap because view and platform-window behavior requires real
+desktop sessions; see `.agents/testing.md`.
 
 The recipe is: **push logic out of `Render` blocks into pure helpers,
 then unit-test the helpers**. The two working models already in the
@@ -349,6 +350,19 @@ parallel `cargo test`.
 | SDTEST-1544 | `companion_desktop.rs::autonomous_climb_respects_single_monitor_routing` | SDUC-451 | Green | Disabling multi-monitor movement restricts autonomous climbing to eligible windows on the character's current display. |
 | SDTEST-1545 | `companion_desktop.rs::autonomous_climb_ranks_vertical_gap_then_horizontal_distance_then_native_id` | SDUC-451 | Green | Autonomous targets are ranked deterministically by vertical gap, horizontal distance, and stable native ID. |
 | SDTEST-1546 | `companion_desktop.rs::moved_preview_geometry_invalidates_the_drag_without_competitor_fallback` | SDUC-451 | Green | A still-visible preview that moves outside hysteresis or becomes ineligible invalidates the locked drag and cannot retarget to a competing window. |
+| SDTEST-1551 | `companion_desktop.rs::physics_catchup_reports_first_landing_while_preserving_final_body_state` | SDUC-448, SDUC-451 | Green | Multi-step catch-up preserves the first landing event while returning the final sleeping body position and velocity, so the frame loop terminates correctly. |
+| SDTEST-1552 | `companion_desktop.rs::duration_timing_preserves_submillisecond_remainder_and_no_first_frame_invention` | SDUC-448, SDUC-451 | Green | Fixed-step timing retains sub-millisecond remainder and contributes zero on an uninitialized first frame instead of inventing 33 ms. |
+| SDTEST-1553 | `companion_desktop.rs::targeted_physics_refresh_drops_closed_windows_and_tracks_moved_windows_on_cadence` | SDUC-448, SDUC-449, SDUC-451 | Green | Dynamic falls refresh only captured stable IDs at a bounded cadence, follow moved tops, and remove closed windows before collision. |
+| SDTEST-1554 | `companion_desktop.rs::unrelated_config_transition_preserves_attachment_but_disabling_climb_detaches_safely` | SDUC-449, SDUC-451 | Green | Unrelated settings keep an attachment; disabling climbing immediately falls under full motion or rests safely under reduced motion. |
+| SDTEST-1555 | `companion_desktop.rs::invalid_attachment_geometry_enters_dynamic_fall_or_reduced_motion_rest` | SDUC-449, SDUC-451 | Green | A resized target that no longer supports the mascot uses the same safe detach lifecycle as a missing native window. |
+| SDTEST-1556 | `companion_desktop.rs::release_commit_position_change_marks_pending_native_move` | SDUC-448, SDUC-451 | Green | Fresh same-ID release revalidation requests the canonical native origin when the target moved inside hysteresis after the last preview sample. |
+| SDTEST-1557 | `companion_desktop.rs::stale_late_mouse_move_zeroes_throw_velocity_sample` | SDUC-451 | Green | A pointer event after the velocity sampling deadline clears the old throw vector rather than making it look fresh. |
+| SDTEST-1558 | `companion_desktop.rs::pause_rest_stops_dynamic_body_and_requests_idle_visual_state` | SDUC-449, SDUC-451 | Green | Pause and motion-policy interruption clear dynamic velocity/contact and return to an event-idle visual state. |
+| SDTEST-1559 | `companion_desktop.rs::active_drag_lifecycle_types_are_zero_sized_and_outside_release_is_idempotent` | SDUC-448, SDUC-451 | Green | GPUI active-drag delivery plus inside/outside mouse-up share one idempotent release lifecycle, preventing a native snap from stranding drag state. |
+| SDTEST-1560 | `companion_desktop.rs::rounded_native_origin_gate_skips_subpixel_redundant_moves` | SDUC-448 | Green | Native placement is issued only when the rounded platform origin changes, suppressing redundant subpixel movement calls. |
+| SDTEST-1561 | `companion_desktop.rs::system_motion_preference_honors_platform_reduced_motion` | SDUC-449, SDUC-451 | Green | System motion follows the OS reduced-motion preference, while explicit Full remains an intentional override. |
+| SDTEST-1562 | `companion_desktop.rs::idle_flourish_duty_cycle_stays_below_the_playful_background_budget` | SDUC-448, SDUC-451 | Green | Idle flourishes remain occasional and below one fifth of their waiting interval, reducing background GPU/CPU activity without removing personality. |
+| SDTEST-1570 | `settings::tests::native_wayland_companion_limitation_is_reported_without_misclassifying_x11` | SDUC-449, SDUC-450 | Green | Appearance uses the same GPUI compositor detection as the runtime, shows a localized native-Wayland limitation, and does not misclassify X11. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
@@ -382,7 +396,7 @@ checklist:
 - SDTEST-1201, SDTEST-1202 (platform key mapping)
 - SDTEST-1242, SDTEST-1243 (installer replace on Unix / Windows)
 - SDTEST-1260, SDTEST-1261 (install-script + manifest parity)
-- SDTEST-1483 (desktop overlay native movement/geometry API)
+- SDTEST-1483 (desktop overlay native movement, work-area, reduced-motion, and no-focus platform APIs)
 
 The release-day rule: **all P0 cross-platform tests must be green on
 the matching CI runner before the tag goes out.** This maps directly

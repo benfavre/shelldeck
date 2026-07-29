@@ -1795,20 +1795,26 @@ without being embedded in the AI Dock, and updates without requiring a restart.
 
 On X11, Windows, and macOS, an enabled desktop character uses one transparent,
 no-focus pointer-enabled overlay and native top-level window movement. A
-fixed-step simulation caps catch-up, clamps positions to available work areas,
+fixed-step simulation caps catch-up, clamps positions to available platform work areas,
+preserves fractional refresh time and landing events across catch-up steps,
 stops animation-frame requests at rest, and wakes from one-shot timers for
 occasional or playful actions rather than polling continuously. When enabled,
-multi-display routing cycles through connected displays and recovers to an
-available work area after monitor changes. Tray actions pause/resume movement
-and return the character to a safe screen corner.
+multi-display routing cycles through connected displays and recovers after
+monitor changes. Windows and macOS use per-display taskbar/dock-aware work areas;
+X11 currently applies the root EWMH `_NET_WORKAREA`. Active GPUI drag
+delivery and inside/outside release handling keep interaction alive even when a
+magnetic preview moves the native overlay away from the pointer. Tray actions
+pause/resume movement and return the character to a safe screen corner.
 
 ### SDUC-449 — Unsupported desktop capabilities degrade honestly and safely
 
 Wayland does not permit reliable arbitrary top-level positioning, so ShellDeck
 does not fake roaming there: it keeps the desktop character disabled and reports
-the platform limitation. Reduced/off motion and Still roaming request no
-continuous frames. Overlay creation or native movement failures pause the
-character without stealing keyboard focus. External-window climbing is used
+the platform limitation in Appearance. System motion honors the OS reduced-
+motion preference; Reduced/Off motion and Still roaming request no continuous
+frames. Overlay creation or native movement failures pause the character
+without stealing keyboard focus, and Windows overlays use non-activating native
+styles and show paths. External-window climbing is used
 only when the platform geometry provider can supply eligible visible window
 edges; invalid, minimized, fullscreen, and desktop surfaces are excluded.
 
@@ -1863,8 +1869,9 @@ clamps and reflects against display side walls and the ceiling, settles tiny
 post-impact horizontal velocities, and prevents fast descending motion from
 tunnelling through one-way window tops. Cached platform snapshots feed the
 runtime instead of native enumeration on every animation frame: full lists
-refresh at a low rate while a locked preview uses targeted stable-ID lookup.
-Closing, minimizing, or otherwise
+refresh at a low rate while a locked preview and dynamic fall use bounded
+targeted stable-ID lookup. Moving or closing a platform during a fall updates or
+removes that collision surface before impact. Closing, minimizing, or otherwise
 losing the target window detaches safely, restarts falling only when full motion
 is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
 landings resume the one-shot roaming schedule only when the character is not
@@ -1873,12 +1880,24 @@ disabling climbing, or closing the overlay cancels the attachment and its
 generation-guarded refresh timer immediately; disabling climbing during a fall
 clears cached window platforms so the character continues to the screen floor.
 Subthreshold pointer jitter must preserve click delivery and avoid native overlay
-moves.
+moves. Pause, reduced-motion transitions, clicks, and new drags clear stale
+dynamic velocity/contact immediately; native movement is gated by rounded
+platform origins. Per-pixel native hit testing remains a platform-hardening
+follow-up, so the transparent overlay is still bounded by its configured mascot
+viewport rather than its exact alpha silhouette.
 
 ---
 
 ## Change log
 
+- **2026-07-29** — Hardened SDUC-448/449/451 and added SDTEST-1547..1562 plus
+  SDTEST-1570 for impact-time diagonal collision, deterministic platform ties,
+  changed work-area floors, preserved catch-up landings, fractional frame time,
+  bounded live fall-platform refresh, safe attachment/config cancellation,
+  active-drag outside release, stale throw suppression, rounded native moves,
+  OS reduced motion, a bounded idle-flourish duty cycle, true platform work
+  areas, Windows no-focus overlays, and a localized native-Wayland capability
+  warning.
 - **2026-07-29** — Extended SDUC-451 and added SDTEST-1529..1546 for live
   magnetic preview, stable-ID hysteresis and release validation, shared
   preview/commit/follow perch geometry, target-display DPI scaling, throttled

@@ -408,6 +408,10 @@ Existing: **0 tests**.
 | SDTEST-1511 | `companion/physics.rs::repeated_steps_are_deterministic_and_stale_contacts_invalidate` | SDUC-451 | Green | Equal fixed-step inputs produce equal results, and source-generation changes invalidate stale surface contacts before falling resumes. |
 | SDTEST-1532 | `companion/physics.rs::side_wall_collision_clamps_and_reflects_horizontal_velocity` | SDUC-451 | Green | The single-body AABB solver cannot leave the display horizontally; wall impacts reflect with bounded restitution and tiny residual velocities settle to zero. |
 | SDTEST-1533 | `companion/physics.rs::ceiling_collision_clamps_and_reflects_upward_velocity_downward` | SDUC-451 | Green | Upward movement clamps at the work-area ceiling and reflects downward without creating a false landing contact. |
+| SDTEST-1547 | `companion/physics.rs::diagonal_sweep_does_not_land_on_platform_only_overlapped_by_union_corridor` | SDUC-451 | Green | Descending diagonal collision evaluates horizontal overlap at vertical time-of-impact, preventing false landings on platforms crossed only by the broad movement corridor. |
+| SDTEST-1548 | `companion/physics.rs::equal_height_platform_selection_is_stable_when_input_order_is_reversed` | SDUC-451 | Green | Equal-height overlapping platforms use a stable identity/generation/geometry tie-break rather than native enumeration order. |
+| SDTEST-1549 | `companion/physics.rs::expanded_work_area_floor_wakes_sleeping_body_instead_of_leaving_it_suspended` | SDUC-448, SDUC-451 | Green | A changed work-area floor invalidates an old sleeping floor contact and resumes falling instead of leaving the mascot suspended. |
+| SDTEST-1550 | `companion/physics.rs::zero_vertical_span_collision_check_is_safe_and_uses_current_horizontal_interval` | SDUC-451 | Green | Zero-span collision checks avoid division errors and use the current horizontal interval deterministically. |
 
 ---
 

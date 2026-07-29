@@ -19,11 +19,15 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
-| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable et physique AABB déterministe livrés | SDUC-451, SDTEST-1505..1546 |
+| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable, work areas par écran sur Windows/macOS et EWMH root sur X11, reduced motion OS et physique AABB déterministe livrés | SDUC-445..451, SDTEST-1460..1570 |
 
 ## Next
 
-Aucun bloc fonctionnel Companion V1 ne reste ouvert.
+Aucun bloc fonctionnel Companion V1 identifié dans cette roadmap ne reste
+ouvert. Les travaux restants sont des durcissements de plateforme : work areas
+X11 réellement par moniteur, observation live du reduced motion OS, hit testing
+natif par pixel, suppression au-dessus du plein écran, politique batterie,
+lock/suspend et télémétrie de performance visible.
 
 La recette sur de vraies sessions Linux/X11, Wayland, macOS et Windows reste
 une vérification de release, pas une fonctionnalité produit à maintenir dans
