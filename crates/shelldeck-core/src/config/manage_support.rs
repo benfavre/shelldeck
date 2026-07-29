@@ -583,6 +583,24 @@ pub fn support_read(base_url: &str, token: &str, id: &str) -> Result<SupportTick
     )
 }
 
+/// Permanently remove a posted image from a Support message and Inklura Share.
+pub fn support_delete_attachment(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    attachment_id: &str,
+) -> Result<SupportTicket> {
+    post_action(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "attachment-delete",
+            "id": id,
+            "attachment_id": attachment_id,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -941,6 +959,18 @@ mod tests {
         assert_eq!(reply["attachment_receipts"][1], "receipt-b");
         assert_eq!(note["action"], "note");
         assert_eq!(note["attachment_receipts"][0], "receipt-a");
+    }
+
+    // SDTEST-1422
+    #[test]
+    fn support_posted_attachment_delete_body_matches_manage_contract() {
+        let m = start_support_write_mock();
+        super::support_delete_attachment(&m.url, WRITE_TOKEN, TICKET_ID, "attachment_42")
+            .expect("attachment delete");
+        let body = recorded(&m, 0);
+        assert_eq!(body["action"], "attachment-delete");
+        assert_eq!(body["id"], TICKET_ID);
+        assert_eq!(body["attachment_id"], "attachment_42");
     }
 
     #[test]

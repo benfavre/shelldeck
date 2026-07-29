@@ -831,13 +831,26 @@ impl RenderOnce for Input {
                             })
                             .children(self.prefix)
                             .child({
-                                let text = div()
+                                let mut text = div()
                                     .id(("input-text-scroll", self.state.entity_id()))
                                     .flex_1()
                                     .min_h(px(0.0))
                                     .child(self.state.clone());
                                 if let Some(handle) = text_scroll_handle.as_ref() {
-                                    text.h_full().track_scroll(handle).overflow_y_scroll()
+                                    // ShellDeck patch: SDPATCH-018 — cap the
+                                    // scroll child itself. `h_full()` inside
+                                    // the max-height HStack resolved against
+                                    // an indefinite parent height, so the
+                                    // child expanded to the complete draft
+                                    // and only the HStack clipped it. GPUI
+                                    // therefore measured no inner overflow
+                                    // and wheel scrolling was a no-op.
+                                    let fs_px: f32 = font_size.into();
+                                    let viewport_h = gpui::px(
+                                        fs_px * 1.4 * self.max_rows.unwrap_or(1) as f32,
+                                    );
+                                    text = text.max_h(viewport_h);
+                                    text.track_scroll(handle).overflow_y_scroll()
                                 } else {
                                     text.overflow_hidden()
                                 }

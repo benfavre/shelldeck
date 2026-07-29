@@ -393,11 +393,7 @@ impl SidebarView {
     /// terminal grid must be offset by. Kept as one function so the rail and
     /// panel can never disagree about the total.
     pub fn total_width(&self) -> f32 {
-        sidebar_total_width(
-            self.collapsed,
-            self.active_section.has_panel(),
-            self.width,
-        )
+        sidebar_total_width(self.collapsed, self.active_section.has_panel(), self.width)
     }
 
     /// Width of the rail alone (0 when hidden). Used by the resize drag to
@@ -564,11 +560,7 @@ impl SidebarView {
             .filter(|c| matches!(c.status, ConnectionStatus::Connected))
             .count();
 
-        let mut top = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(gpui::px(4.0));
+        let mut top = div().flex().flex_col().items_center().gap(gpui::px(4.0));
         for &section in SidebarSection::rail_activities() {
             // Badges come from the activity's own data, so a section with
             // nothing to count simply has none.
@@ -699,12 +691,7 @@ impl SidebarView {
         let section = self.active_section;
         let items = self.panel_items(section);
 
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .px(px(4.0))
-            .py(px(4.0));
+        let mut list = div().flex().flex_col().gap(px(1.0)).px(px(4.0)).py(px(4.0));
 
         if items.is_empty() {
             return list.child(

@@ -15,6 +15,7 @@ use shelldeck_core::ai::{
 use uuid::Uuid;
 
 use crate::icons::{ai_provider_badge, lucide_icon};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -731,12 +732,15 @@ impl AiAssistantView {
                         .bg(ShellDeckColors::bg_surface())
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(
-                            Spinner::new()
-                                .size(SpinnerSize::Xs)
-                                .variant(SpinnerVariant::Primary),
-                        )
-                        .child(t!("ai.assistant.generating").to_string()),
+                        .child(animated_monolith(
+                            "ai-assistant-thinking",
+                            32.0,
+                            MonolithMotion::Thinking,
+                        ))
+                        .child(animated_loading_text(
+                            "ai-assistant-thinking-text",
+                            t!("ai.assistant.generating").to_string(),
+                        )),
                 ),
             );
         }

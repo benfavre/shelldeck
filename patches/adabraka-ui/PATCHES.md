@@ -367,7 +367,10 @@ carries no marker of its own — see its entry).
 - **Why**: multi-line Inputs previously grew to every visual line. Large
   Support or AI drafts could therefore push actions and status bars outside
   the window. `max_rows` caps the visible viewport while the text element
-  retains its natural height inside a vertically scrollable child.
+  retains its natural height inside a vertically scrollable child. The scroll
+  child itself carries the row cap: using `h_full()` beneath a merely
+  `max_h`-capped parent let it expand to the full draft, leaving GPUI with no
+  measured inner overflow and making mouse-wheel scrolling a no-op.
 - **Upstream status**: not filed yet.
 
 ### SDPATCH-019 — Alert text stays inside narrow flex containers
@@ -570,6 +573,9 @@ carries no marker of its own — see its entry).
 - **2026-07-21** — added SDPATCH-020: multi-line Inputs now provide visual-line
   Up/Down and Home/End navigation, cross-line selection painting, and capped
   viewport caret following.
+- **2026-07-24** — fixed SDPATCH-018's capped viewport: the scroll child now
+  owns the row cap instead of resolving `h_full()` against an indefinite
+  parent, restoring mouse-wheel scrolling in long Support and AI drafts.
 - **2026-07-22** — added SDPATCH-022: searchable Select menus accept a localized
   hint, keep their deferred search surface focused using measured popup bounds,
   reuse the real Input caret, virtualize result sets of 50+ options, and render

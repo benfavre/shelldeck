@@ -1,46 +1,567 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ShellDeck — Monolith · animations "assistant"</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShellDeck — Monolith · transitions de mode</title>
   <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; padding: 2rem;
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #0a0a0a; color: #eee;
+    :root {
+      color-scheme: dark;
+      --bg: #090b0d;
+      --surface: #101417;
+      --surface-raised: #151b1e;
+      --line: rgba(255, 255, 255, 0.08);
+      --line-strong: rgba(255, 255, 255, 0.14);
+      --text: #f3f7f6;
+      --muted: #87928f;
+      --teal: #2ec4a8;
+      --teal-soft: #75ead3;
+      --support: #f1b65b;
+      --dev: #a995ff;
     }
-    a.back { color: #2EC4A8; text-decoration: none; font-size: 0.9rem; }
-    a.back:hover { text-decoration: underline; }
-    h1 { font-weight: 600; margin: 0.75rem 0 0.2rem; }
-    p.sub { color: #777; margin: 0 0 0.75rem; max-width: 720px; line-height: 1.5; }
-    p.note { color: #555; margin: 0 0 1.5rem; max-width: 720px; font-size: 0.85rem; line-height: 1.55; }
-    p.note code { color: #2EC4A8; }
 
-    section h2 { font-size: 0.9rem; color: #999; text-transform: uppercase; letter-spacing: 0.08em; margin: 2.25rem 0 0.75rem; font-weight: 500; }
+    * { box-sizing: border-box; }
 
-    .grid {
+    body {
+      min-height: 100vh;
+      margin: 0;
+      overflow-x: hidden;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 14% 0%, rgba(46, 196, 168, 0.09), transparent 28rem),
+        radial-gradient(circle at 92% 16%, rgba(169, 149, 255, 0.07), transparent 30rem),
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0.25;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+      background-size: 40px 40px;
+      mask-image: linear-gradient(to bottom, black, transparent 76%);
+    }
+
+    main {
+      width: min(1480px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 64px 0 80px;
+    }
+
+    header {
+      max-width: 780px;
+      margin-bottom: 34px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 11px;
+      border: 1px solid rgba(46, 196, 168, 0.22);
+      border-radius: 999px;
+      color: var(--teal-soft);
+      background: rgba(46, 196, 168, 0.07);
+      font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 14px var(--teal);
+    }
+
+    h1 {
+      margin: 20px 0 12px;
+      font-size: clamp(34px, 5vw, 64px);
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+    }
+
+    header p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    header strong { color: var(--text); }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .mode-card {
+      --accent: var(--teal);
+      position: relative;
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012));
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+    }
+
+    .mode-card::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      box-shadow: inset 0 1px rgba(255,255,255,0.04);
+    }
+
+    .mode-card.support { --accent: var(--support); }
+    .mode-card.dev { --accent: var(--dev); }
+
+    .stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      aspect-ratio: 1 / 0.92;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 48%),
+        #080b0d;
+      isolation: isolate;
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.22;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.026) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.026) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: radial-gradient(circle, black, transparent 72%);
+    }
+
+    .stage svg {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      display: block;
+      overflow: visible;
+    }
+
+    figcaption {
+      min-height: 174px;
+      padding: 20px 22px 23px;
+      border-top: 1px solid var(--line);
+      background: rgba(13, 17, 19, 0.92);
+    }
+
+    .mode-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .mode-heading strong {
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .chip {
+      flex: none;
+      padding: 5px 8px;
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+      border-radius: 7px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 7%, transparent);
+      font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    figcaption p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .motion-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .motion-list span {
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: #b2bcba;
+      background: rgba(255,255,255,0.045);
+      font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    /* Shared: the production SVG always remains complete. */
+    .monolith {
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .face-default,
+    .face-user-happy,
+    .face-support-focus,
+    .face-support-done,
+    .face-dev-code {
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    @keyframes face-default-user {
+      0%, 24%, 82%, 100% { opacity: 1; transform: scale(1); }
+      32%, 74% { opacity: 0; transform: scale(0.94); }
+    }
+
+    @keyframes face-user-happy {
+      0%, 26%, 78%, 100% { opacity: 0; transform: scale(0.9) translateY(10px); }
+      36%, 68% { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    @keyframes face-default-support {
+      0%, 18%, 88%, 100% { opacity: 1; transform: scale(1); }
+      26%, 82% { opacity: 0; transform: scale(0.96); }
+    }
+
+    @keyframes face-support-focus {
+      0%, 20%, 68%, 100% { opacity: 0; transform: scale(1.08); }
+      28%, 62% { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes face-support-done {
+      0%, 64%, 86%, 100% { opacity: 0; transform: scale(0.88); }
+      70%, 80% { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes face-default-dev {
+      0%, 18%, 84%, 100% { opacity: 1; transform: translateX(0); }
+      24%, 78% { opacity: 0; transform: translateX(-7px); }
+    }
+
+    @keyframes face-dev-code {
+      0%, 20%, 80%, 100% { opacity: 0; transform: scaleX(0.9); }
+      28%, 72% { opacity: 1; transform: scaleX(1); }
+    }
+
+    .user .face-default { animation: face-default-user 2.5s ease-in-out infinite; }
+    .user .face-user-happy { animation: face-user-happy 2.5s ease-in-out infinite; }
+    .support .face-default { animation: face-default-support 2.5s ease-in-out infinite; }
+    .support .face-support-focus { animation: face-support-focus 2.5s ease-in-out infinite; }
+    .support .face-support-done { animation: face-support-done 2.5s ease-in-out infinite; }
+    .dev .face-default { animation: face-default-dev 2.5s steps(1, end) infinite; }
+    .dev .face-dev-code { animation: face-dev-code 2.5s steps(1, end) infinite; }
+
+    /* User — friendly, calm, lightly organic. */
+    @keyframes user-float {
+      0%, 100% { transform: translateY(0) scale(0.91); }
+      50% { transform: translateY(-16px) scale(0.94); }
+    }
+
+    @keyframes user-aura {
+      0%, 100% { transform: scale(0.82); opacity: 0.12; }
+      50% { transform: scale(1.06); opacity: 0.34; }
+    }
+
+    @keyframes user-orbit {
+      to { transform: rotate(360deg); }
+    }
+
+    .user .monolith { animation: user-float 2.5s cubic-bezier(.45,0,.55,1) infinite; }
+    .user .aura {
+      animation: user-aura 2.5s cubic-bezier(.45,0,.55,1) infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .user .orbit {
+      animation: user-orbit 2.5s linear infinite;
+      transform-origin: 512px 512px;
+    }
+
+    /* Support — diagnostic radar, deliberate and reassuring. */
+    @keyframes support-scan {
+      0% { transform: translateY(-280px); opacity: 0; }
+      12%, 88% { opacity: 0.9; }
+      100% { transform: translateY(280px); opacity: 0; }
+    }
+
+    @keyframes support-ring {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes support-pulse {
+      0%, 100% { opacity: 0.24; }
+      50% { opacity: 0.8; }
+    }
+
+    .support .monolith { transform: scale(0.82); }
+    .support .scan-line {
+      animation: support-scan 2.5s cubic-bezier(.4,0,.2,1) infinite;
+      transform-box: fill-box;
+    }
+    .support .radar-ring {
+      animation: support-ring 2.5s linear infinite;
+      transform-origin: 512px 512px;
+    }
+    .support .node { animation: support-pulse 2.5s ease-in-out infinite; }
+    .support .node.b { --phase: -0.833s; }
+    .support .node.c { --phase: -1.666s; }
+
+    /* Dev — terminal cadence, packets and caret. */
+    @keyframes dev-type {
+      0%, 8% { transform: scaleX(0); opacity: 0; }
+      16% { opacity: 1; }
+      72%, 88% { transform: scaleX(1); opacity: 1; }
+      100% { transform: scaleX(1); opacity: 0; }
+    }
+
+    @keyframes dev-caret {
+      0%, 45% { opacity: 1; }
+      46%, 100% { opacity: 0.18; }
+    }
+
+    @keyframes dev-glitch {
+      0%, 92%, 100% { transform: translate(0) scale(0.84); }
+      94% { transform: translate(-4px, 1px) scale(0.84); }
+      96% { transform: translate(4px, -1px) scale(0.84); }
+      98% { transform: translate(-2px, 0) scale(0.84); }
+    }
+
+    @keyframes dev-packet {
+      from { transform: translateX(-52px); opacity: 0; }
+      15%, 80% { opacity: 0.75; }
+      to { transform: translateX(52px); opacity: 0; }
+    }
+
+    .dev .monolith { animation: dev-glitch 2.5s steps(1, end) infinite; }
+    .dev .typed {
+      animation: dev-type 2.5s cubic-bezier(.2,.7,.25,1) infinite;
+      transform-box: fill-box;
+      transform-origin: left;
+    }
+    .dev .caret { animation: dev-caret 0.625s steps(1, end) infinite; }
+    .dev .packet { animation: dev-packet 2.5s linear infinite; }
+    .dev .packet.b { --phase: -0.833s; }
+    .dev .packet.c { --phase: -1.666s; }
+
+    .spec {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(3, 1fr);
+      margin-top: 20px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(16, 20, 23, 0.72);
+    }
+
+    .spec div {
+      padding: 13px 15px;
+      border-right: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .spec div:last-child { border-right: 0; }
+    .spec strong { display: block; margin-bottom: 4px; color: var(--text); }
+
+    .note {
+      max-width: 920px;
+      margin: 22px 0 0;
+      color: #68726f;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    code {
+      color: var(--teal-soft);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    /* Deterministic, transparent frame capture for the WebP export script. */
+    html.export,
+    html.export body {
+      width: 256px;
+      height: 256px;
+      overflow: hidden;
+      background: transparent;
+    }
+
+    html.export body::before,
+    html.export header,
+    html.export figcaption,
+    html.export .spec,
+    html.export .note {
+      display: none;
+    }
+
+    html.export main {
+      width: 256px;
+      margin: 0;
+      padding: 0;
+    }
+
+    html.export .mode-grid { display: block; }
+    html.export .mode-card {
+      display: none;
+      width: 256px;
+      height: 256px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    html.export .mode-card.export-target { display: block; }
+    html.export .mode-card::after,
+    html.export .stage::before { display: none; }
+
+    html.export .stage {
+      width: 256px;
+      height: 256px;
+      aspect-ratio: auto;
+      background: transparent;
+    }
+
+    html.export .stage * {
+      animation-delay: calc(var(--export-time, 0ms) + var(--phase, 0ms)) !important;
+      animation-play-state: paused !important;
+    }
+
+    @media (max-width: 980px) {
+      .mode-grid { grid-template-columns: 1fr; }
+      .stage { aspect-ratio: 1.35 / 1; }
+      figcaption { min-height: 0; }
+      .spec { grid-template-columns: 1fr 1fr; }
+      .spec div:nth-child(2) { border-right: 0; }
+      .spec div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    }
+
+    @media (max-width: 560px) {
+      main { width: min(100% - 24px, 1480px); padding-top: 34px; }
+      .spec { grid-template-columns: 1fr; }
+      .spec div { border-right: 0; border-bottom: 1px solid var(--line); }
+      .spec div:last-child { border-bottom: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+
+    /* Historical motion library retained below the mode prototypes. */
+    .legacy-library {
+      margin-top: 64px;
+      padding-top: 54px;
+      border-top: 1px solid var(--line);
+    }
+    .legacy-library .library-heading { max-width: 780px; margin-bottom: 28px; }
+    .legacy-library .library-heading h2 {
+      margin: 12px 0 10px;
+      color: var(--text);
+      font-size: clamp(28px, 4vw, 44px);
+      letter-spacing: -0.035em;
+      text-transform: none;
+    }
+    .legacy-library .library-heading p { margin: 0; color: var(--muted); line-height: 1.65; }
+    .legacy-library section h2 {
+      margin: 34px 0 12px;
+      color: #929d9a;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+    .legacy-library .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 1.25rem;
+      gap: 18px;
     }
-    .card {
-      background: #141414; border: 1px solid #2a2a2a;
-      border-radius: 14px; overflow: hidden;
-      display: flex; flex-direction: column;
+    .legacy-library .card {
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
     }
-    .preview {
-      width: 100%; aspect-ratio: 1;
-      background: #000;
-      padding: 1.5rem;
-      display: flex; align-items: center; justify-content: center;
+    .legacy-library .preview {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 24px;
+      aspect-ratio: 1;
+      background: #060809;
     }
-    .preview svg { width: 100%; height: 100%; display: block; }
-    figcaption { padding: 0.9rem 1.1rem 1.1rem; }
-    figcaption strong { display: block; font-size: 0.95rem; margin-bottom: 0.3rem; }
-    figcaption span { color: #777; font-size: 0.82rem; line-height: 1.45; }
-    figcaption code { color: #2EC4A8; }
+    .legacy-library .preview svg { display: block; width: 100%; height: 100%; }
+    .legacy-library figcaption { min-height: 0; padding: 15px 17px 18px; }
+    .legacy-library figcaption strong { display: block; margin-bottom: 6px; font-size: 14px; }
+    .legacy-library figcaption span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .legacy-library figcaption code { color: var(--teal-soft); }
+    .legacy-library > .note { margin-top: 34px !important; }
+    html.export .legacy-library { display: none; }
+    html.export.legacy-export .mode-grid { display: none; }
+    html.export.legacy-export .legacy-library {
+      display: block;
+      width: 256px;
+      height: 256px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+    html.export.legacy-export .legacy-library .library-heading,
+    html.export.legacy-export .legacy-library section > h2,
+    html.export.legacy-export .legacy-library > .note {
+      display: none;
+    }
+    html.export.legacy-export .legacy-library section,
+    html.export.legacy-export .legacy-library .grid {
+      display: contents;
+    }
+    html.export.legacy-export .legacy-library .card {
+      display: none;
+      width: 256px;
+      height: 256px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    html.export.legacy-export .legacy-library .card.export-target { display: block; }
+    html.export.legacy-export .legacy-library .preview {
+      width: 256px;
+      height: 256px;
+      padding: 0;
+      background: transparent;
+    }
+    html.export.legacy-export .legacy-library .preview * {
+      animation-delay: calc(var(--export-time, 0ms) + var(--phase, 0ms)) !important;
+      animation-play-state: paused !important;
+    }
 
     /* ─────────────────────────────────────────────────────────
        Card #1 — Breathe (idle vivant)
@@ -70,21 +591,64 @@
     /* ─────────────────────────────────────────────────────────
        Card #3 — Blink lent (paupière qui descend)
        Alternative douce au wink : le "bar" mouth passe de plein
-       à fin, comme si les yeux se fermaient (le >_ devient >‾).
+       à fin, comme si les deux yeux se fermaient ensemble.
     */
     @keyframes sd3-blink { 0%, 90%, 100% { transform: scaleY(1) } 94%, 96% { transform: scaleY(0.25) } }
-    .sd3-bar { animation: sd3-blink 3.2s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+    .sd3-eyes { animation: sd3-blink 3.2s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #4 — Thinking (le curseur scanne)
        Le "cursor bar" glisse gauche-droite sous le >, comme
        un scanner / une réflexion en cours.
     */
-    @keyframes sd4-scan {
-      0%,100% { transform: translateX(0) }
-      50%     { transform: translateX(-100px) }
+    @keyframes sd4-default {
+      0%, 12%, 96%, 100% { opacity: 1; transform: scale(1); }
+      22%, 88% { opacity: 0; transform: scale(0.94); }
     }
-    .sd4-bar { animation: sd4-scan 1.4s ease-in-out infinite; transform-box: fill-box; }
+    @keyframes sd4-left {
+      0%, 12%, 48%, 100% { opacity: 0; transform: rotate(0deg) translate(8px, 8px) scale(0.94); }
+      22%, 40% { opacity: 1; transform: rotate(-3deg) translate(0, 0) scale(1); }
+    }
+    @keyframes sd4-right {
+      0%, 40%, 76%, 100% { opacity: 0; transform: rotate(0deg) translate(-8px, 6px) scale(0.94); }
+      50%, 68% { opacity: 1; transform: rotate(3deg) translate(0, 0) scale(1); }
+    }
+    @keyframes sd4-scrunch {
+      0%, 68%, 96%, 100% { opacity: 0; transform: translateY(6px) scale(0.9); }
+      78%, 88% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes sd4-bubble {
+      0%, 22%, 100% { opacity: 0; transform: translate(0, 18px) scale(0.4); }
+      36%, 66% { opacity: 0.85; transform: translate(0, 0) scale(1); }
+      78% { opacity: 0; transform: translate(10px, -18px) scale(1.15); }
+    }
+    .sd4-default {
+      animation: sd4-default 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-left {
+      animation: sd4-left 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-right {
+      animation: sd4-right 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-scrunch {
+      animation: sd4-scrunch 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-bubble {
+      animation: sd4-bubble 1.5s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-bubble.b { --phase: 0.12s; animation-delay: var(--phase); }
+    .sd4-bubble.c { --phase: 0.24s; animation-delay: var(--phase); }
 
     /* ─────────────────────────────────────────────────────────
        Card #5 — Working / busy (cadre pulse fort + halo)
@@ -100,7 +664,7 @@
       0%,100% { opacity: 0; transform: scale(0.6); }
       50%     { opacity: 0.35; transform: scale(1.05); }
     }
-    .sd5-outer { animation: sd5-glow-outer 1.1s ease-in-out infinite; }
+    .sd5-outer { animation: sd5-glow-outer 1.6s ease-in-out infinite; }
     .sd5-halo  { animation: sd5-halo 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
@@ -125,7 +689,7 @@
     .sd6-smile   { animation: sd6-mouth-smile 3s step-end infinite; }
 
     /* ─────────────────────────────────────────────────────────
-       Card #7 — Alert / stress (>_< qui secoue, cadre passe orange)
+       Card #7 — Alert / stress (face complète, cadre orange)
        Trigger : erreur SSH, timeout, quota IA, ticket urgent…
     */
     @keyframes sd7-shake {
@@ -168,7 +732,7 @@
       90%  { opacity: 0.9; }
       100% { transform: translateY(320px); opacity: 0; }
     }
-    .sd9-line { animation: sd9-sweep 2.4s linear infinite; transform-box: fill-box; }
+    .sd9-line { animation: sd9-sweep 1.2s linear infinite; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #10 — Boot / startup (le logo se compose)
@@ -201,9 +765,9 @@
       0%, 60%, 100% { opacity: 0.25; transform: scale(0.7); }
       30%           { opacity: 1;    transform: scale(1.1); }
     }
-    .sd11-d1 { animation: sd11-pulse 1.4s ease-in-out infinite;         transform-origin: center; transform-box: fill-box; }
-    .sd11-d2 { animation: sd11-pulse 1.4s ease-in-out 0.2s infinite;    transform-origin: center; transform-box: fill-box; }
-    .sd11-d3 { animation: sd11-pulse 1.4s ease-in-out 0.4s infinite;    transform-origin: center; transform-box: fill-box; }
+    .sd11-d1 { animation: sd11-pulse 1.4s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+    .sd11-d2 { --phase: 0.2s; animation: sd11-pulse 1.4s ease-in-out var(--phase) infinite; transform-origin: center; transform-box: fill-box; }
+    .sd11-d3 { --phase: 0.4s; animation: sd11-pulse 1.4s ease-in-out var(--phase) infinite; transform-origin: center; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #12 — Progress ring (arc qui tourne, indéterminé)
@@ -242,15 +806,15 @@
     @keyframes sd14-caret {
       0%, 100% { transform: translateX(0); }
       10%      { transform: translateX(0); }
-      55%      { transform: translateX(155px); }
-      85%      { transform: translateX(155px); }
+      55%      { transform: translateX(255px); }
+      85%      { transform: translateX(255px); }
     }
     @keyframes sd14-blink {
       0%, 49%   { opacity: 1; }
       50%, 100% { opacity: 0.25; }
     }
-    .sd14-typed { animation: sd14-type 2.4s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
-    .sd14-caret { animation: sd14-caret 2.4s ease-in-out infinite, sd14-blink 1s step-end infinite; transform-box: fill-box; }
+    .sd14-typed { animation: sd14-type 1.4s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
+    .sd14-caret { animation: sd14-caret 1.4s ease-in-out infinite, sd14-blink 0.7s step-end infinite; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #15 — Chevron rain (Matrix-style, geeky)
@@ -265,24 +829,234 @@
       92%  { opacity: 0.9; }
       100% { transform: translateY(640px); opacity: 0; }
     }
-    .sd15-r1 { animation: sd15-fall 2.4s linear infinite;      transform-box: fill-box; }
-    .sd15-r2 { animation: sd15-fall 2.0s linear 0.4s infinite; transform-box: fill-box; }
-    .sd15-r3 { animation: sd15-fall 2.8s linear 0.8s infinite; transform-box: fill-box; }
-    .sd15-r4 { animation: sd15-fall 1.9s linear 1.2s infinite; transform-box: fill-box; }
-    .sd15-r5 { animation: sd15-fall 2.5s linear 1.7s infinite; transform-box: fill-box; }
+    .sd15-r1 { animation: sd15-fall 2.8s linear infinite; transform-box: fill-box; }
+    .sd15-r2 { --phase: 0.4s; animation: sd15-fall 2.8s linear var(--phase) infinite; transform-box: fill-box; }
+    .sd15-r3 { --phase: 0.8s; animation: sd15-fall 2.8s linear var(--phase) infinite; transform-box: fill-box; }
+    .sd15-r4 { --phase: 1.2s; animation: sd15-fall 2.8s linear var(--phase) infinite; transform-box: fill-box; }
+    .sd15-r5 { --phase: 1.7s; animation: sd15-fall 2.8s linear var(--phase) infinite; transform-box: fill-box; }
   </style>
 </head>
 <body>
-  <h1>Monolith — animations "assistant"</h1>
-  <p class="sub">Prototypes CSS + SVG sur la piste 04 (le logo retenu). Référence vivante des pistes d'animation "assistant" pour le Monolith, à faire évoluer avant de choisir ce qui sera branché dans l'app.</p>
-  <p class="note">Ce fichier est une <strong>référence visuelle versionnée</strong> — 100&nbsp;% autonome (SVG inline + CSS <code>@keyframes</code>, zéro dépendance externe), ouvrable directement au navigateur (<code>xdg-open docs/design/monolith-animations.html</code>). Les 3 expressions produites par le script Python (<code>default</code>, <code>neutral</code>, <code>wink</code>) sont réutilisées ici, et de nouvelles pistes (smile, shake, mouth-talk, scan-line, boot, dots, ring, bar, typing, chevron rain) sont composées directement en CSS pour l'exploration — aucune n'est encore exportée en asset ni branchée côté app.</p>
+  <!-- Exact production shell + a small expression vocabulary. The signature
+       face remains the beginning/end pose for every sequence. -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <g id="monolith-shell">
+        <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
+        <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+      </g>
 
+      <g id="face-default">
+        <path fill="#e6e6e6" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
+        <path fill="#e6e6e6" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
+        <rect x="417" y="624" width="190" height="40" rx="6" fill="#e6e6e6"/>
+      </g>
+
+      <g id="face-user-happy" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round">
+        <path d="M 270 548 Q 336 454 402 548"/>
+        <path d="M 622 548 Q 688 454 754 548"/>
+        <path d="M 412 632 Q 512 722 612 632"/>
+      </g>
+
+      <g id="face-squint" fill="#e6e6e6">
+        <rect x="262" y="500" width="166" height="22" rx="11"/>
+        <rect x="596" y="500" width="166" height="22" rx="11"/>
+        <rect x="417" y="624" width="190" height="40" rx="6"/>
+      </g>
+
+      <g id="face-thinking">
+        <g fill="none" stroke="#e6e6e6" stroke-width="24">
+          <circle cx="340" cy="500" r="65"/>
+          <circle cx="684" cy="500" r="65"/>
+        </g>
+        <circle cx="316" cy="476" r="20" fill="#e6e6e6"/>
+        <circle cx="660" cy="476" r="20" fill="#e6e6e6"/>
+        <path d="M 425 656 Q 512 620 599 656" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round"/>
+      </g>
+
+      <g id="face-thinking-right">
+        <g fill="none" stroke="#e6e6e6" stroke-width="24">
+          <circle cx="340" cy="500" r="65"/>
+          <circle cx="684" cy="500" r="65"/>
+        </g>
+        <circle cx="365" cy="478" r="20" fill="#e6e6e6"/>
+        <circle cx="709" cy="478" r="20" fill="#e6e6e6"/>
+        <path d="M 425 642 Q 512 684 599 642" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round"/>
+      </g>
+
+      <g id="face-thinking-scrunch" fill="none" stroke="#e6e6e6" stroke-linecap="round">
+        <path d="M 270 532 Q 336 472 402 532" stroke-width="32"/>
+        <circle cx="684" cy="508" r="62" stroke-width="24"/>
+        <circle cx="666" cy="490" r="18" fill="#e6e6e6" stroke="none"/>
+        <path d="M 426 650 Q 468 612 512 650 Q 556 688 598 650" stroke-width="30"/>
+      </g>
+
+      <g id="face-support-focus" fill="none" stroke="#e6e6e6">
+        <circle cx="336" cy="512" r="66" stroke-width="22"/>
+        <circle cx="688" cy="512" r="66" stroke-width="22"/>
+        <circle cx="336" cy="512" r="13" fill="#f1b65b" stroke="none"/>
+        <circle cx="688" cy="512" r="13" fill="#f1b65b" stroke="none"/>
+        <path d="M 336 420 V 456 M 336 568 V 604 M 244 512 H 280 M 392 512 H 428" stroke="#f1b65b" stroke-width="10"/>
+        <path d="M 688 420 V 456 M 688 568 V 604 M 596 512 H 632 M 744 512 H 780" stroke="#f1b65b" stroke-width="10"/>
+        <path d="M 420 650 H 604" stroke="#e6e6e6" stroke-width="40" stroke-linecap="round"/>
+      </g>
+
+      <g id="face-support-done" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M 272 514 L 322 564 L 410 454"/>
+        <path d="M 614 514 L 664 564 L 752 454"/>
+        <path d="M 420 640 Q 512 704 604 640"/>
+      </g>
+
+      <g id="face-dev-code" fill="none" stroke="#e6e6e6" stroke-width="32" stroke-linecap="square" stroke-linejoin="round">
+        <path d="M 398 408 H 354 V 478 L 318 512 L 354 546 V 616 H 398"/>
+        <path d="M 626 408 H 670 V 478 L 706 512 L 670 546 V 616 H 626"/>
+        <path d="M 418 652 H 466 M 488 652 H 536 M 558 652 H 606"/>
+      </g>
+    </defs>
+  </svg>
+
+  <main>
+    <header>
+      <span class="eyebrow">Motion lab · production candidate</span>
+      <h1>Une mascotte.<br>Trois personnalités.</h1>
+      <p>
+        Chaque transition conserve le <strong>Monolith complet <code>&gt;_&lt;</code></strong>.
+        Le mode change son environnement et son comportement, jamais son identité.
+      </p>
+    </header>
+
+    <section class="mode-grid" aria-label="Propositions de mascottes par mode">
+      <figure class="mode-card user">
+        <div class="stage">
+          <svg viewBox="0 0 1024 1024" role="img" aria-label="Monolith compagnon du mode utilisateur">
+            <defs>
+              <radialGradient id="userGlow">
+                <stop offset="0" stop-color="#2ec4a8" stop-opacity=".32"/>
+                <stop offset="1" stop-color="#2ec4a8" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <circle class="aura" cx="512" cy="512" r="390" fill="url(#userGlow)"/>
+            <g class="orbit" fill="#75ead3">
+              <circle cx="512" cy="92" r="8"/>
+              <circle cx="882" cy="512" r="5" opacity=".55"/>
+              <circle cx="194" cy="760" r="7" opacity=".72"/>
+            </g>
+            <g class="monolith">
+              <use href="#monolith-shell"/>
+              <g class="face-default"><use href="#face-default"/></g>
+              <g class="face-user-happy"><use href="#face-user-happy"/></g>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <div class="mode-heading">
+            <strong>Mode Utilisateur</strong>
+            <span class="chip">Compagnon</span>
+          </div>
+          <p>Il reconnaît l’utilisateur : expression historique, visage heureux pendant l’accueil, puis retour naturel à sa pose signature.</p>
+          <div class="motion-list"><span>&gt;_&lt;</span><span>recognize</span><span>happy</span><span>&gt;_&lt;</span></div>
+        </figcaption>
+      </figure>
+
+      <figure class="mode-card support">
+        <div class="stage">
+          <svg viewBox="0 0 1024 1024" role="img" aria-label="Monolith diagnostic du mode support">
+            <defs>
+              <clipPath id="supportClip"><circle cx="512" cy="512" r="325"/></clipPath>
+              <linearGradient id="supportBeam" x1="0" x2="1">
+                <stop stop-color="#2ec4a8" stop-opacity="0"/>
+                <stop offset=".5" stop-color="#75ead3"/>
+                <stop offset="1" stop-color="#2ec4a8" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <g class="radar-ring" fill="none" stroke="#f1b65b">
+              <circle cx="512" cy="512" r="382" stroke-width="2" opacity=".15"/>
+              <circle cx="512" cy="512" r="348" stroke-width="4" stroke-dasharray="82 32 12 32" opacity=".55"/>
+            </g>
+            <circle class="node a" cx="775" cy="286" r="8" fill="#f1b65b"/>
+            <circle class="node b" cx="232" cy="626" r="7" fill="#2ec4a8"/>
+            <circle class="node c" cx="782" cy="724" r="6" fill="#75ead3"/>
+            <g class="monolith">
+              <use href="#monolith-shell"/>
+              <g class="face-default"><use href="#face-default"/></g>
+              <g class="face-support-focus"><use href="#face-support-focus"/></g>
+              <g class="face-support-done"><use href="#face-support-done"/></g>
+            </g>
+            <g clip-path="url(#supportClip)">
+              <rect class="scan-line" x="230" y="508" width="564" height="7" rx="3.5" fill="url(#supportBeam)"/>
+            </g>
+          </svg>
+        </div>
+        <figcaption>
+          <div class="mode-heading">
+            <strong>Mode Support</strong>
+            <span class="chip">Diagnostic</span>
+          </div>
+          <p>La mascotte passe réellement en diagnostic : réticules, balayage, double validation, puis retrouve son expression habituelle.</p>
+          <div class="motion-list"><span>&gt;_&lt;</span><span>focus</span><span>scan</span><span>resolved</span></div>
+        </figcaption>
+      </figure>
+
+      <figure class="mode-card dev">
+        <div class="stage">
+          <svg viewBox="0 0 1024 1024" role="img" aria-label="Monolith terminal du mode développeur">
+            <defs>
+              <linearGradient id="devTrace">
+                <stop stop-color="#a995ff"/>
+                <stop offset="1" stop-color="#2ec4a8"/>
+              </linearGradient>
+            </defs>
+            <g fill="#a995ff">
+              <rect class="packet a" x="114" y="284" width="92" height="5" rx="2.5" opacity=".52"/>
+              <rect class="packet b" x="820" y="398" width="74" height="5" rx="2.5" opacity=".42"/>
+              <rect class="packet c" x="118" y="698" width="116" height="5" rx="2.5" opacity=".35"/>
+            </g>
+            <g class="monolith">
+              <use href="#monolith-shell"/>
+              <g class="face-default"><use href="#face-default"/></g>
+              <g class="face-dev-code"><use href="#face-dev-code"/></g>
+            </g>
+            <rect x="326" y="824" width="372" height="9" rx="4.5" fill="#a995ff" opacity=".12"/>
+            <rect class="typed" x="326" y="824" width="340" height="9" rx="4.5" fill="url(#devTrace)"/>
+            <rect class="caret" x="678" y="812" width="8" height="32" rx="2" fill="#f3f7f6"/>
+          </svg>
+        </div>
+        <figcaption>
+          <div class="mode-heading">
+            <strong>Mode Dev</strong>
+            <span class="chip">Terminal</span>
+          </div>
+          <p>Son visage devient brièvement du code : accolades, blocs typés et curseur. La silhouette du Monolith reste immédiatement reconnaissable.</p>
+          <div class="motion-list"><span>&gt;_&lt;</span><span>{ code }</span><span>typing</span><span>&gt;_&lt;</span></div>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="spec" aria-label="Spécifications communes">
+      <div><strong>Identité vivante</strong><code>&gt;_&lt;</code> reste la pose signature, pas l’unique expression.</div>
+      <div><strong>Durée du loader</strong>3 secondes par transition.</div>
+      <div><strong>Export prévu</strong>WebP animé transparent, 30 FPS.</div>
+      <div><strong>Intégration</strong>Fondu global piloté par GPUI.</div>
+    </section>
+
+    <p class="note">
+      Le cadre et la pose initiale reprennent exactement les tracés de
+      <code>dark-default-logo.svg</code>. Les expressions sont des groupes SVG séparés :
+      elles pourront évoluer avant tout nouvel export WebP.
+    </p>
+
+    <div class="legacy-library">
+      <div class="library-heading">
+        <span class="eyebrow">Motion library · 15 études conservées</span>
+        <h2>Les autres animations sont toujours là.</h2>
+        <p>Vie de fond, états de tâche, progression et feedback ponctuel : le laboratoire historique reste disponible sous les nouvelles personnalités de mode.</p>
+      </div>
   <section>
     <h2>Vie de fond (toujours ON, ne dérange pas)</h2>
     <div class="grid">
 
       <!-- 1 · Breathe -->
-      <figure class="card">
+      <figure class="card" data-export="breathe">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <g class="sd1-group">
@@ -301,35 +1075,31 @@
       </figure>
 
       <!-- 2 · Wink -->
-      <figure class="card">
+      <figure class="card" data-export="blink">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <g class="sd2-open"><rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/></g>
-            <g class="sd2-shut"><rect x="547" y="656" width="173" height="20" rx="4" fill="#e6e6e6"/></g>
+            <use href="#monolith-shell"/>
+            <g class="sd2-open"><use href="#face-default"/></g>
+            <g class="sd2-shut"><use href="#face-squint"/></g>
           </svg>
         </div>
         <figcaption>
           <strong>2 · Wink périodique</strong>
-          <span>Face neutre → clin toutes les 5s (~150ms). Réutilise les 3 expressions déjà exportées par le générateur.</span>
+          <span>La face complète ferme les deux yeux toutes les 5s (~150ms), puis retrouve <code>&gt;_&lt;</code>.</span>
         </figcaption>
       </figure>
 
       <!-- 3 · Blink lent -->
-      <figure class="card">
+      <figure class="card" data-export="slow-blink">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect class="sd3-bar" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <g class="sd3-eyes"><use href="#face-default"/></g>
           </svg>
         </div>
         <figcaption>
           <strong>3 · Blink continu</strong>
-          <span>Alternative douce : la bouche se pince périodiquement au lieu de basculer sur une frame séparée.</span>
+          <span>Alternative douce : les deux yeux et la bouche se pincent ensemble, sans tronquer la mascotte.</span>
         </figcaption>
       </figure>
 
@@ -341,30 +1111,33 @@
     <div class="grid">
 
       <!-- 4 · Thinking -->
-      <figure class="card">
+      <figure class="card" data-export="thinking">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect class="sd4-bar" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <g class="sd4-default"><use href="#face-default"/></g>
+            <g class="sd4-left"><use href="#face-thinking"/></g>
+            <g class="sd4-right"><use href="#face-thinking-right"/></g>
+            <g class="sd4-scrunch"><use href="#face-thinking-scrunch"/></g>
+            <circle class="sd4-bubble a" cx="742" cy="350" r="23" fill="#2ec4a8" opacity="0"/>
+            <circle class="sd4-bubble b" cx="790" cy="286" r="15" fill="#75ead3" opacity="0"/>
+            <circle class="sd4-bubble c" cx="824" cy="232" r="9" fill="#e6e6e6" opacity="0"/>
           </svg>
         </div>
         <figcaption>
-          <strong>4 · Thinking (curseur scanne)</strong>
-          <span>La barre-bouche glisse gauche/droite en boucle. Pour "IA rédige", "Jean réfléchit", "scan de config"…</span>
+          <strong>4 · Thinking (réflexion)</strong>
+          <span>La face <code>&gt;_&lt;</code> se concentre, cherche à gauche puis à droite, grimace une seconde et reprend sa réflexion. Pour "IA rédige", "Jean réfléchit"…</span>
         </figcaption>
       </figure>
 
       <!-- 5 · Working / busy -->
-      <figure class="card">
+      <figure class="card" data-export="busy">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <circle class="sd5-halo" cx="512" cy="512" r="380" fill="#2ec4a8" opacity="0"/>
             <path class="sd5-outer" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
             <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#face-default"/>
           </svg>
         </div>
         <figcaption>
@@ -374,13 +1147,11 @@
       </figure>
 
       <!-- 9 · Scan line -->
-      <figure class="card">
+      <figure class="card" data-export="scan">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <use href="#face-default"/>
             <!-- Sweep line, clipped by the inner dark area -->
             <clipPath id="sd9-clip"><rect x="246" y="189" width="572" height="638" rx="32"/></clipPath>
             <g clip-path="url(#sd9-clip)">
@@ -395,13 +1166,13 @@
       </figure>
 
       <!-- 8 · Speaking -->
-      <figure class="card">
+      <figure class="card" data-export="speaking">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect class="sd8-mouth" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <path fill="#e6e6e6" d="M 261 432 L 382 512 L 261 592 L 304 592 L 426 512 L 304 432 Z"/>
+            <path fill="#e6e6e6" d="M 763 432 L 642 512 L 763 592 L 720 592 L 598 512 L 720 432 Z"/>
+            <rect class="sd8-mouth" x="417" y="624" width="190" height="40" rx="6" fill="#e6e6e6"/>
           </svg>
         </div>
         <figcaption>
@@ -418,13 +1189,11 @@
     <div class="grid">
 
       <!-- 11 · Dots -->
-      <figure class="card">
+      <figure class="card" data-export="dots">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <use href="#face-default"/>
             <circle class="sd11-d1" cx="440" cy="770" r="20" fill="#2ec4a8"/>
             <circle class="sd11-d2" cx="512" cy="770" r="20" fill="#2ec4a8"/>
             <circle class="sd11-d3" cx="584" cy="770" r="20" fill="#2ec4a8"/>
@@ -437,14 +1206,12 @@
       </figure>
 
       <!-- 12 · Progress ring -->
-      <figure class="card">
+      <figure class="card" data-export="progress-ring">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <use href="#monolith-shell"/>
             <g class="sd12-face-shrink">
-              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+              <use href="#face-default"/>
             </g>
             <!-- Track (faint) + rotating partial arc -->
             <circle cx="512" cy="512" r="290" fill="none" stroke="#2ec4a8" stroke-width="12" opacity="0.15"/>
@@ -458,13 +1225,11 @@
       </figure>
 
       <!-- 13 · Progress bar -->
-      <figure class="card">
+      <figure class="card" data-export="progress-bar">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+            <use href="#monolith-shell"/>
+            <use href="#face-default"/>
             <!-- Track + fill in the bottom band -->
             <rect x="280" y="770" width="464" height="18" rx="9" fill="#2ec4a8" opacity="0.18"/>
             <rect class="sd13-bar" x="280" y="770" width="464" height="18" rx="9" fill="#2ec4a8"/>
@@ -477,19 +1242,17 @@
       </figure>
 
       <!-- 14 · Terminal typing -->
-      <figure class="card">
+      <figure class="card" data-export="terminal-typing">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <!-- Chevron only, no static mouth -->
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
+            <use href="#monolith-shell"/>
+            <use href="#face-default"/>
             <!-- Empty typing track -->
-            <rect x="547" y="640" width="164" height="64" rx="6" fill="none" stroke="#2ec4a8" stroke-width="3" opacity="0.3"/>
+            <rect x="372" y="750" width="264" height="28" rx="6" fill="none" stroke="#2ec4a8" stroke-width="3" opacity="0.3"/>
             <!-- Typed fill grows left→right -->
-            <rect class="sd14-typed" x="547" y="640" width="164" height="64" rx="6" fill="#2ec4a8"/>
+            <rect class="sd14-typed" x="372" y="750" width="264" height="28" rx="6" fill="#2ec4a8"/>
             <!-- Blinking caret follows the fill -->
-            <rect class="sd14-caret" x="547" y="626" width="8" height="92" fill="#e6e6e6"/>
+            <rect class="sd14-caret" x="372" y="741" width="8" height="46" fill="#e6e6e6"/>
           </svg>
         </div>
         <figcaption>
@@ -499,7 +1262,7 @@
       </figure>
 
       <!-- 15 · Chevron rain -->
-      <figure class="card">
+      <figure class="card" data-export="chevron-rain">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <defs>
@@ -507,8 +1270,7 @@
                 <path d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
               </clipPath>
             </defs>
-            <path fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
-            <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
+            <use href="#monolith-shell"/>
             <!-- Rain sits BEHIND the face (paint order), clipped by inner frame -->
             <g clip-path="url(#sd15-clip)">
               <path class="sd15-r1" fill="#2ec4a8" d="M 280 200 L 300 214 L 280 228 L 288 228 L 308 214 L 288 200 Z"/>
@@ -519,8 +1281,7 @@
             </g>
             <!-- Face at reduced opacity so rain shows through -->
             <g opacity="0.45">
-              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+              <use href="#face-default"/>
             </g>
           </svg>
         </div>
@@ -538,16 +1299,13 @@
     <div class="grid">
 
       <!-- 6 · Success -->
-      <figure class="card">
+      <figure class="card" data-export="success">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <path class="sd6-frame" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
             <path fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
-            <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-            <!-- neutre -->
-            <rect class="sd6-neutral" x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
-            <!-- sourire (arc bombé vers le bas) -->
-            <path class="sd6-smile" d="M 547 640 Q 633 730 720 640 L 720 668 Q 633 758 547 668 Z" fill="#e6e6e6"/>
+            <g class="sd6-neutral"><use href="#face-default"/></g>
+            <g class="sd6-smile"><use href="#face-user-happy"/></g>
           </svg>
         </div>
         <figcaption>
@@ -557,7 +1315,7 @@
       </figure>
 
       <!-- 7 · Alert -->
-      <figure class="card">
+      <figure class="card" data-export="alert">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <path class="sd7-frame" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
@@ -576,14 +1334,13 @@
       </figure>
 
       <!-- 10 · Boot -->
-      <figure class="card">
+      <figure class="card" data-export="boot">
         <div class="preview">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <path class="sd10-outer" fill="#2ec4a8" d="M 207 125 L 817 125 L 899 195 L 899 829 L 817 899 L 207 899 L 125 829 L 125 195 Z"/>
             <path class="sd10-inner" fill="#1a1a1a" d="M 246 189 L 778 189 L 818 225 L 818 799 L 778 827 L 246 827 L 207 799 L 207 225 Z"/>
             <g class="sd10-face">
-              <path fill="#e6e6e6" d="M 304 416 L 477 544 L 304 672 L 374 672 L 547 544 L 374 416 Z"/>
-              <rect x="547" y="640" width="173" height="64" rx="6" fill="#e6e6e6"/>
+              <use href="#face-default"/>
             </g>
           </svg>
         </div>
@@ -597,7 +1354,31 @@
   </section>
 
   <p class="note" style="margin-top:2.5rem">
-    <strong>Note perf</strong> — toutes ces anims sont du CSS <code>@keyframes</code> pur, rendues par le compositor du navigateur. Une fois branchées côté app (GPUI ne rejoue pas les <code>&lt;style&gt;</code> inline dans un SVG chargé via <code>img()</code>), il faudra probablement passer par un état Rust qui bascule entre plusieurs assets SVG statiques (comme le fait déjà le générateur pour <code>default</code>/<code>neutral</code>/<code>wink</code>), ou animer via <code>with_animation</code> côté GPUI en swap de source. C'est une décision d'implémentation à prendre après avoir choisi ce qu'on veut animer.
+    <strong>Note perf</strong> — ces études restent en CSS <code>@keyframes</code> pour l’itération visuelle. Après validation, le script <code>scripts/export-monolith-webp.mjs</code> capture les séquences retenues en WebP animé transparent afin que GPUI les lise avec une seule horloge de frames.
   </p>
+    </div>
+  </main>
+  <script>
+    const exportParams = new URLSearchParams(location.search);
+    const exportMode = exportParams.get("export");
+    if (exportMode) {
+      document.documentElement.classList.add("export");
+      document.documentElement.style.setProperty(
+        "--export-time",
+        `-${Number(exportParams.get("time") || 0)}ms`,
+      );
+      const legacyTarget = document.querySelector(`[data-export="${exportMode}"]`);
+      if (legacyTarget) {
+        document.documentElement.classList.add("legacy-export");
+        document.querySelectorAll(".legacy-library .card").forEach((card) => {
+          card.classList.toggle("export-target", card === legacyTarget);
+        });
+      } else {
+        document.querySelectorAll(".mode-card").forEach((card) => {
+          card.classList.toggle("export-target", card.classList.contains(exportMode));
+        });
+      }
+    }
+  </script>
 </body>
 </html>

@@ -1522,6 +1522,9 @@ internal-note composers accept up to five PNG, JPEG, or WebP images (9 Mo each,
 leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
+An area capture opens a native annotation editor before it becomes a draft,
+with freehand, arrow, rectangle, text, undo, clear, and color controls; saving
+exports a PNG while cancelling preserves the unedited capture.
 ShellDeck obtains a short-lived, single-use, issue-scoped ticket from Manage,
 uploads the bytes directly to Inklura Share, and sends only opaque receipts
 back to Manage. Manage validates tenant and issue scope before persisting
@@ -1530,6 +1533,10 @@ User and Support surfaces and are mirrored as image links to GitHub/Jean.
 Ticket attachments remain structured in the helpdesk thread and their Share
 viewer links are routed to the originating email, livechat, Manage, or SMS channel.
 Issue uploads never appear in the uploader's personal Share gallery.
+After publication, request owners and internal staff can permanently delete an
+image from the native gallery after a destructive confirmation. Manage removes
+the thread reference and uses a short-lived, single-use scope capability so
+Share deletes only the blob belonging to that exact request or Support ticket.
 
 ### SDUC-433 — Multi-line inputs behave like native textareas
 
@@ -1647,12 +1654,14 @@ main window is hidden in the tray.
 
 ## 27. Embedded icon integrity
 
-### SDUC-438 — Reachable named icons render instead of reserving blank slots
+### SDUC-438 — Reachable icons and Monolith motions render instead of blank slots
 
 Every named Lucide icon selected dynamically by ShellDeck's AI actions and
 shared Alert variants is present in the curated asset directory and registered
-in the binary asset source. Missing icon names must fail a unit test instead of
-silently rendering an empty fixed-size slot in the interface.
+in the binary asset source. Contextual Monolith WebP motions used during AI
+generation and on terminal/site empty states follow the same contract. Missing
+assets or non-WebP study exports must fail a unit test instead of silently
+rendering an empty fixed-size slot in the interface.
 
 ### SDUC-439 — Only unexpected SSH transport loss produces an OS notification
 
@@ -1754,6 +1763,11 @@ window to open is seeded from the live registration state.
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-438 and added SDTEST-1424 for the contextual
+  Monolith motions used by AI generation, terminal startup, and site discovery.
+- **2026-07-27** — Extended SDUC-432 and added SDTEST-1421..1423 for native
+  capture annotation plus confirmed, coordinated deletion of posted request
+  and Support images from both the discussion and Share storage.
 - **2026-07-25** — Added SDUC-444 and SDTEST-1415..1420 for global-shortcut
   failure reporting, and renumbered the v0.6.4 shortcut-toast tests off
   SDTEST-1220/1221/1222, which were already held by the updater rows.
