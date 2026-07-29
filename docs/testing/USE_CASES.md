@@ -910,7 +910,10 @@ Workspace polls issues every 15s while User or Support is visible.
 `render_user_requests` shows the caller's own issues with expand-to-comment
 and create composer. The composer exposes a searchable site picker backed by
 the signed-in account's Manage directory, defaults to the active site when
-available, and offers an explicit no-specific-site choice.
+available, and offers an explicit no-specific-site choice. User-mode polling
+requests `mine=1`, and both the overview counter and recent-request card apply
+the same owner filter defensively. A broader Support cache or an older server
+must never surface another requester's title in the User dashboard.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1796,6 +1799,9 @@ visual code.
 
 ## Change log
 
+- **2026-07-29** — Hardened SDUC-228 and added SDTEST-1433: User-mode request
+  polling now forces owner scope, while the dashboard independently filters
+  counters and recent titles to the signed-in requester.
 - **2026-07-29** — Added SDUC-446 and SDTEST-1429 for typed Assistant shortcut
   behavior: immediate contextual submissions versus editable composer prefill.
 - **2026-07-29** — Added SDUC-445 and SDTEST-1427/1428 for explicit
