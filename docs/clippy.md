@@ -728,20 +728,23 @@ solver rather than a general rigid-body engine:
 Resting -> ChoosingTarget -> Walking -> Climbing -> Perched
                        \-> Jumping/Flying -> Landing
 Any moving state -> Recovering -> ScreenFloor
-Any state -> Summoned -> ReturningToDock
+Any state -> Summoned -> ReturningToCorner
 ```
 
 Behaviors are short authored actions with bounded duration and clear interruption
 points. `CompanionBody` supports Dynamic, Kinematic, and Sleeping modes, gravity,
 terminal velocity, horizontal air drag, bounded drag-release velocity, one-way
 swept descending collision against window tops, display work-area floor fallback,
-and stable contact generations for attachment invalidation:
+side-wall and ceiling collision with bounded restitution, and stable contact
+generations for attachment invalidation:
 
 - walk along the top edge of a stable window
 - climb a left or right edge using a character-specific animation
 - hop between nearby overlapping windows
 - sit or sleep on a window corner
-- snap from drag release to a nearby eligible outer top edge
+- show a live magnetic preview near an eligible unmaximized outer top edge, with
+  stable-ID hysteresis and target-display DPI-scaled thresholds
+- revalidate and commit only the previewed native window ID on drag release
 - fall under gravity to a one-way window-top floor or the screen-floor fallback
 - fly or portal between monitors when no continuous route exists
 - react to a window being moved, minimized, or closed
@@ -773,9 +776,13 @@ The simulation and AABB physics use a fixed timestep and monotonic time. Limit
 catch-up to two steps per rendered frame so a resumed or stalled app does not
 execute a long burst of physics. Interpolate only the visual pose between
 simulation states. Runtime drag release should use cached platform snapshots,
-not native enumeration per RAF; stale mouse-up velocity samples are zeroed before
-release, and snap ranking is deterministic by vertical gap then horizontal
-distance.
+not native enumeration per RAF. Full external-window lists refresh on a slower
+cadence while a locked preview uses targeted stable-ID lookup. Stale mouse-up
+velocity samples are zeroed before release; preview, release, and follow share one
+perch-origin function; and snap ranking is deterministic by vertical gap,
+horizontal distance, and stable native ID. If the preview ID disappears before
+release, start normal fall or rest behavior instead of switching silently to
+another window.
 
 Call `Window::request_animation_frame()` only while the visible character is moving or
 its current sprite is animated. Sleeping, hidden, off, and static reduced-motion states
@@ -814,22 +821,24 @@ Initial budgets:
 If measurements exceed budget, reduce frame count, atlas dimensions, and frame rate
 before introducing a more complex renderer.
 
-### Input, focus, and click-through behavior
+### Input and focus behavior
 
-A playful character must not steal clicks from the user's applications.
+The standalone character is directly pointer-interactive without taking keyboard
+focus. Its transparent native window is sized to the selected mascot scale rather
+than a full-screen overlay.
 
-- Roaming mode uses `mouse_passthrough = true`.
-- The overlay never activates or receives keyboard focus while moving.
-- A global shortcut, tray command, or AI Dock action enters **Interact mode** for a
-  short visible interval and temporarily disables mouse passthrough.
-- Leaving Interact mode restores passthrough even if the action is cancelled or an
-  error occurs.
-- Dragging the character is optional and must move only the character, never the
+- Pressing the character starts drag disambiguation without moving it until the
+  DPI-aware threshold is crossed.
+- Dragging preserves the exact grab offset and moves only the character, never the
   underlying application window.
-- Transparent padding must not become a large click-blocking rectangle.
+- A click and sequential double-click trigger bounded playful reactions.
+- Magnetic preview movement is emitted only when the rounded native origin changes.
+- The overlay never activates or receives keyboard focus while moving.
+- Transparent padding must remain minimal so it does not become a large
+  click-blocking rectangle.
 
-Per-pixel native hit testing can be evaluated later, but it is not required for the
-first roaming release. An explicit Interact mode is more predictable across platforms.
+Future per-pixel native hit testing may shrink the interactive silhouette further,
+but an explicit temporary Interact mode is not part of the delivered runtime.
 
 ### Power, fullscreen, and user controls
 
@@ -856,14 +865,15 @@ Behavior requirements:
 - future lifecycle integration should pause on battery while retaining the static character
 - respect reduced motion globally
 - “still” keeps a static pet at a chosen screen corner with no simulation loop
-- provide immediate **Pause character** and **Return to Dock** tray actions
+- provide immediate **Pause character** and **Return to screen corner** tray actions
 
 ### Failure recovery
 
 The controller must always have a safe fallback:
 
 - geometry provider unavailable: use screen-floor and screen-edge surfaces only
-- topmost overlay unavailable: fall back to Dock-only mode and explain the limitation
+- topmost or arbitrary-position overlay unavailable: keep the desktop companion
+  unavailable and explain the platform limitation without rendering it inside the AI Dock
 - monitor removed: clamp or portal to the primary display
 - target window disappears: invalidate the stable contact; fall with a fresh frame
   restart when full motion is allowed, or sleep/still under reduced motion, never

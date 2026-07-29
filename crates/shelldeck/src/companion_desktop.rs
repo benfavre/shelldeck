@@ -31,8 +31,13 @@ const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(2_800);
 const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(8);
 const ATTACHMENT_FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 const DRAG_VELOCITY_SAMPLE_LIMIT: Duration = Duration::from_millis(120);
+const DRAG_WINDOW_LIST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const DRAG_LOCKED_WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const SNAP_VERTICAL_GAP: f32 = 42.0;
 const SNAP_MIN_HORIZONTAL_OVERLAP: f32 = 36.0;
+const SNAP_PREVIEW_VERTICAL_GAP: f32 = 72.0;
+const SNAP_HYSTERESIS_VERTICAL_GAP: f32 = 110.0;
+const SNAP_HYSTERESIS_MIN_HORIZONTAL_OVERLAP: f32 = 12.0;
 const MAXIMIZED_EDGE_INSET_TOLERANCE: f32 = 96.0;
 const MAXIMIZED_COVERAGE_RATIO: f32 = 0.92;
 
@@ -203,16 +208,19 @@ impl RuntimeSimulation {
         let max_budget_ms = step_ms.saturating_mul(max_steps);
         self.physics_pending_ms = self.physics_pending_ms.saturating_add(elapsed_ms);
         let budget_ms = self.physics_pending_ms.min(max_budget_ms);
-        let mut result = self
-            .body
-            .step(0.0, PhysicsConfig::default(), platforms, self.bounds());
+        let mut result = self.body.step(
+            0.0,
+            PhysicsConfig::default(),
+            platforms,
+            self.physics_bounds(),
+        );
         let steps = budget_ms / step_ms;
         for _ in 0..steps {
             result = self.body.step(
                 step_ms as f32 / 1000.0,
                 PhysicsConfig::default(),
                 platforms,
-                self.bounds(),
+                self.physics_bounds(),
             );
             self.steps = self.steps.saturating_add(1);
         }
@@ -352,6 +360,10 @@ impl RuntimeSimulation {
     fn bounds(&self) -> Rect {
         to_rect(self.display.work_area, self.extent)
     }
+
+    fn physics_bounds(&self) -> Rect {
+        raw_rect(self.display.work_area)
+    }
 }
 
 pub struct DesktopCharacterRuntime {
@@ -368,6 +380,13 @@ pub struct DesktopCharacterRuntime {
     pending_native_move: bool,
     physics_windows: Vec<ExternalWindow>,
     physics_platforms: Vec<WalkableSurface>,
+    drag_windows: Vec<ExternalWindow>,
+    drag_displays: Vec<DesktopDisplay>,
+    drag_snapshot_at: Option<Instant>,
+    drag_locked_snapshot_at: Option<Instant>,
+    drag_free_position: Option<Point2>,
+    drag_snap: Option<SnapCandidate>,
+    drag_invalidated_preview_id: Option<ExternalWindowId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -375,6 +394,13 @@ struct WindowAttachment {
     id: ExternalWindowId,
     top_edge_offset: f32,
     perched: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DragMoveOutcome {
+    position: Point<Pixels>,
+    snapped: bool,
+    moved: bool,
 }
 
 impl DesktopCharacterRuntime {
@@ -405,6 +431,13 @@ impl DesktopCharacterRuntime {
             pending_native_move: false,
             physics_windows: Vec::new(),
             physics_platforms: Vec::new(),
+            drag_windows: Vec::new(),
+            drag_displays: Vec::new(),
+            drag_snapshot_at: None,
+            drag_locked_snapshot_at: None,
+            drag_free_position: None,
+            drag_snap: None,
+            drag_invalidated_preview_id: None,
         }
     }
 
@@ -429,6 +462,7 @@ impl DesktopCharacterRuntime {
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
         self.cancel_attachment();
+        self.clear_drag_snapshot();
         if recreate {
             self.close_overlay(cx);
         }
@@ -474,6 +508,7 @@ impl DesktopCharacterRuntime {
                 self.diagnostics.paused = !self.diagnostics.paused;
                 if self.diagnostics.paused {
                     self.cancel_attachment();
+                    self.clear_drag_snapshot();
                 }
                 if let Some(sim) = &mut self.simulation {
                     if self.diagnostics.paused {
@@ -494,6 +529,7 @@ impl DesktopCharacterRuntime {
                 self.roam_generation = self.roam_generation.wrapping_add(1);
                 self.roam_timer_scheduled = false;
                 self.cancel_attachment();
+                self.clear_drag_snapshot();
                 self.ensure_overlay(runtime_entity.clone(), main_window, cx);
                 if let Some(sim) = &mut self.simulation {
                     sim.return_to_corner();
@@ -516,6 +552,7 @@ impl DesktopCharacterRuntime {
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
         self.cancel_attachment();
+        self.clear_drag_snapshot();
         self.last_tick = None;
         if let Some(sim) = &mut self.simulation {
             sim.pause();
@@ -523,16 +560,128 @@ impl DesktopCharacterRuntime {
         }
     }
 
-    fn drag_to(&mut self, origin: Point<Pixels>, cx: &App) -> Option<Point<Pixels>> {
-        let displays = desktop_displays(cx);
-        let extent = self.simulation.as_ref()?.extent;
-        let display = display_for_overlay_origin(&displays, origin, extent)?;
+    fn refresh_drag_snapshot(&mut self, cx: &App, now: Instant) {
+        if let Some(preview_id) = self.drag_snap.as_ref().map(|candidate| candidate.window.id) {
+            if drag_snapshot_refresh_due(
+                self.drag_locked_snapshot_at,
+                now,
+                DRAG_LOCKED_WINDOW_REFRESH_INTERVAL,
+            ) {
+                if let Some(window) = cx.external_window(preview_id) {
+                    if let Some(existing) = self
+                        .drag_windows
+                        .iter_mut()
+                        .find(|existing| existing.id == preview_id)
+                    {
+                        *existing = window;
+                    } else {
+                        self.drag_windows.push(window);
+                    }
+                    self.invalidate_drag_preview_if_geometry_changed(preview_id);
+                } else {
+                    self.drag_windows.retain(|window| window.id != preview_id);
+                    self.drag_snap = None;
+                    self.drag_invalidated_preview_id = Some(preview_id);
+                }
+                self.drag_locked_snapshot_at = Some(now);
+                self.diagnostics.geometry_snapshot_count =
+                    self.diagnostics.geometry_snapshot_count.saturating_add(1);
+            }
+        }
+        if !drag_snapshot_refresh_due(
+            self.drag_snapshot_at,
+            now,
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ) {
+            return;
+        }
+        self.drag_windows = cx.visible_external_windows();
+        self.drag_displays = desktop_displays(cx);
+        self.drag_snapshot_at = Some(now);
+        self.drag_locked_snapshot_at = Some(now);
+        self.diagnostics.geometry_snapshot_count =
+            self.diagnostics.geometry_snapshot_count.saturating_add(1);
+        self.diagnostics.display_count = self.drag_displays.len();
+    }
+
+    fn invalidate_drag_preview_if_geometry_changed(&mut self, preview_id: ExternalWindowId) {
+        let Some(position) = self.drag_free_position else {
+            return;
+        };
+        let Some(logical_extent) = self.simulation.as_ref().map(|sim| sim.logical_extent) else {
+            return;
+        };
+        if choose_snap_window_for_id(
+            &self.drag_windows,
+            &self.drag_displays,
+            position,
+            logical_extent,
+            preview_id,
+            SNAP_HYSTERESIS_VERTICAL_GAP,
+            SNAP_HYSTERESIS_MIN_HORIZONTAL_OVERLAP,
+        )
+        .is_none()
+        {
+            self.drag_snap = None;
+            self.drag_invalidated_preview_id = Some(preview_id);
+        }
+    }
+
+    fn clear_drag_snapshot(&mut self) {
+        self.drag_windows.clear();
+        self.drag_displays.clear();
+        self.drag_snapshot_at = None;
+        self.drag_locked_snapshot_at = None;
+        self.drag_free_position = None;
+        self.drag_snap = None;
+        self.drag_invalidated_preview_id = None;
+    }
+
+    fn drag_to(&mut self, origin: Point<Pixels>, cx: &App) -> Option<DragMoveOutcome> {
+        self.refresh_drag_snapshot(cx, Instant::now());
+        let logical_extent = self.simulation.as_ref()?.logical_extent;
+        let current_snap_id = self.drag_snap.as_ref().map(|candidate| candidate.window.id);
+        let raw_position = to_point2(origin);
+        self.drag_free_position = Some(raw_position);
+        let candidate = if self.config.appearance.desktop.allow_window_climbing
+            && self.drag_invalidated_preview_id.is_none()
+        {
+            choose_magnetic_snap_window(
+                &self.drag_windows,
+                &self.drag_displays,
+                raw_position,
+                logical_extent,
+                current_snap_id,
+            )
+        } else {
+            None
+        };
+        let display = candidate
+            .as_ref()
+            .map(|candidate| candidate.display)
+            .or_else(|| {
+                let extent = self.simulation.as_ref()?.extent;
+                display_for_overlay_origin(&self.drag_displays, origin, extent)
+            })?;
+        let snapped = candidate.is_some();
         let sim = self.simulation.as_mut()?;
+        let before = sim.simulation.position;
         sim.update_display(display);
-        let origin = sim.place_from_drag(origin, sim.extent);
-        self.diagnostics.display_count = displays.len();
-        self.diagnostics.native_moves = self.diagnostics.native_moves.saturating_add(1);
-        Some(origin)
+        let desired = candidate
+            .as_ref()
+            .and_then(|candidate| magnetic_snap_position(candidate, raw_position))
+            .unwrap_or(raw_position);
+        let position = sim.place_from_drag(from_point2(desired), sim.extent);
+        let moved = sim.simulation.position != before;
+        self.drag_snap = candidate;
+        if moved {
+            self.diagnostics.native_moves = self.diagnostics.native_moves.saturating_add(1);
+        }
+        Some(DragMoveOutcome {
+            position,
+            snapped,
+            moved,
+        })
     }
 
     fn finish_user_drag(
@@ -584,6 +733,12 @@ impl DesktopCharacterRuntime {
         windows: &[ExternalWindow],
         displays: &[DesktopDisplay],
     ) -> ReleaseLifecycle {
+        let preview_id = self.drag_snap.as_ref().map(|candidate| candidate.window.id);
+        let preview_invalidated = self.drag_invalidated_preview_id.is_some();
+        let free_position = self
+            .drag_free_position
+            .or_else(|| self.simulation.as_ref().map(|sim| sim.simulation.position));
+        self.clear_drag_snapshot();
         let full_motion = !self.diagnostics.paused && !reduced_motion_for_config(&self.config);
         self.clear_physics_snapshot();
         let Some(sim) = &mut self.simulation else {
@@ -599,23 +754,36 @@ impl DesktopCharacterRuntime {
             sim.update_display(display);
         }
         if self.config.appearance.desktop.allow_window_climbing {
-            if let Some(candidate) =
-                choose_snap_window(windows, displays, sim.simulation.position, sim.extent)
-            {
-                if let Some(display) = display_for_window(displays, candidate.window.bounds) {
-                    sim.update_display(display);
+            let candidate = match (preview_invalidated, preview_id, free_position) {
+                (true, _, _) => None,
+                (false, Some(id), Some(position)) => choose_snap_window_for_id(
+                    windows,
+                    displays,
+                    position,
+                    sim.logical_extent,
+                    id,
+                    SNAP_HYSTERESIS_VERTICAL_GAP,
+                    SNAP_HYSTERESIS_MIN_HORIZONTAL_OVERLAP,
+                ),
+                (false, None, Some(position)) => {
+                    choose_snap_window(windows, displays, position, sim.logical_extent)
+                }
+                _ => None,
+            };
+            if let Some(candidate) = candidate {
+                sim.update_display(candidate.display);
+                if let Some(position) = free_position.and_then(|position| {
+                    perch_origin(
+                        candidate.window.bounds,
+                        candidate.display.work_area,
+                        candidate.extent,
+                        position.x,
+                        candidate.min_horizontal_overlap,
+                    )
+                }) {
+                    sim.simulation.position = position;
                 }
                 let surface = window_top_surface(&candidate.window, candidate.generation);
-                let x = sim.simulation.position.x.clamp(
-                    f32::from(candidate.window.bounds.origin.x),
-                    (f32::from(candidate.window.bounds.right()) - sim.extent)
-                        .max(f32::from(candidate.window.bounds.origin.x)),
-                );
-                sim.simulation.position.x = x.clamp(
-                    f32::from(sim.display.work_area.origin.x),
-                    (f32::from(sim.display.work_area.right()) - sim.extent)
-                        .max(f32::from(sim.display.work_area.origin.x)),
-                );
                 sim.snap_body_to_surface(&surface);
                 self.attachment = Some(WindowAttachment {
                     id: candidate.window.id,
@@ -763,12 +931,16 @@ impl DesktopCharacterRuntime {
             return false;
         };
         let position = sim.simulation.position;
-        let Some(window) = choose_external_window(&windows, position) else {
+        let displays = desktop_displays(cx);
+        let restricted_display =
+            (!self.config.appearance.desktop.allow_multi_monitor).then_some(sim.display);
+        let Some(window) =
+            choose_external_window(&windows, &displays, position, restricted_display)
+        else {
             return false;
         };
         let window_id = external_window_id(&window);
         let window_bounds = window.bounds;
-        let displays = desktop_displays(cx);
         self.begin_attachment(window_id, window_bounds, &displays)
     }
 
@@ -784,8 +956,14 @@ impl DesktopCharacterRuntime {
         if let Some(display) = display_for_window(displays, window_bounds) {
             sim.update_display(display);
         }
-        let Some(target) = window_top_target(window_bounds, sim.display.work_area, sim.extent)
-        else {
+        let min_overlap =
+            desktop_coordinate_distance(SNAP_MIN_HORIZONTAL_OVERLAP, sim.display.scale_factor);
+        let Some(target) = window_top_target(
+            window_bounds,
+            sim.display.work_area,
+            sim.extent,
+            min_overlap,
+        ) else {
             return false;
         };
         sim.simulation.config.speed_per_second = character_personality(sim.character).climb_speed;
@@ -896,6 +1074,7 @@ impl DesktopCharacterRuntime {
             sim.display.work_area,
             sim.extent,
             f32::from(window_bounds.origin.x) + attachment.top_edge_offset,
+            desktop_coordinate_distance(SNAP_MIN_HORIZONTAL_OVERLAP, sim.display.scale_factor),
         ) else {
             self.cancel_attachment();
             return AttachmentFollowOutcome::inactive();
@@ -1045,6 +1224,7 @@ impl DesktopCharacterRuntime {
         self.roam_timer_scheduled = false;
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.cancel_attachment();
+        self.clear_drag_snapshot();
         self.diagnostics.overlay_open = false;
     }
 
@@ -1056,6 +1236,7 @@ impl DesktopCharacterRuntime {
 
     fn record_movement_error(&mut self, error: String) {
         self.cancel_attachment();
+        self.clear_drag_snapshot();
         self.diagnostics.reason = Some(format!("Native movement failed: {error}"));
         self.diagnostics.paused = true;
         if let Some(sim) = &mut self.simulation {
@@ -1238,6 +1419,7 @@ enum CharacterVisualState {
     Walking,
     Flying,
     Dragging,
+    Snapping,
     Reacting,
     Landing,
 }
@@ -1348,8 +1530,9 @@ impl CharacterOverlayView {
         self.cancel_idle_flourish();
         self.set_visual_state(CharacterVisualState::Dragging);
         self.reaction_generation = self.reaction_generation.wrapping_add(1);
-        self.runtime
-            .update(cx, |runtime, _cx| runtime.begin_user_drag());
+        self.runtime.update(cx, |runtime, _cx| {
+            runtime.begin_user_drag();
+        });
         cx.notify();
         cx.stop_propagation();
     }
@@ -1394,15 +1577,22 @@ impl CharacterOverlayView {
             cx.stop_propagation();
             return;
         }
-        let position = self
+        let outcome = self
             .runtime
             .update(cx, |runtime, cx| runtime.drag_to(origin, cx));
-        if let Some(position) = position {
-            if let Err(error) = window.set_window_origin(position) {
-                tracing::warn!(error = %error, "desktop character drag movement failed");
-                self.runtime.update(cx, |runtime, _cx| {
-                    runtime.record_movement_error(error.to_string())
-                });
+        if let Some(outcome) = outcome {
+            self.set_visual_state(if outcome.snapped {
+                CharacterVisualState::Snapping
+            } else {
+                CharacterVisualState::Dragging
+            });
+            if outcome.moved {
+                if let Err(error) = window.set_window_origin(outcome.position) {
+                    tracing::warn!(error = %error, "desktop character drag movement failed");
+                    self.runtime.update(cx, |runtime, _cx| {
+                        runtime.record_movement_error(error.to_string())
+                    });
+                }
             }
         }
         cx.notify();
@@ -1933,6 +2123,18 @@ fn character_pose(
             sparkle_scale: 0.65,
             ..base
         },
+        CharacterVisualState::Snapping => CharacterPose {
+            float_y: -3.0,
+            scale_x: 1.04,
+            scale_y: 0.96,
+            rotation_deg: 0.0,
+            shadow_scale: 0.86,
+            shadow_opacity: 0.32,
+            sparkle_opacity: 0.55,
+            sparkle_scale: 0.82,
+            sparkle_offset: 0.0,
+            ..base
+        },
         CharacterVisualState::Reacting => CharacterPose {
             float_y: -12.0 - quick.abs() * 10.0,
             scale_x: 1.08 + quick.abs() * 0.05,
@@ -2136,6 +2338,10 @@ fn release_velocity_at_mouse_up(
     }
 }
 
+fn drag_snapshot_refresh_due(last: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= interval)
+}
+
 #[cfg(target_os = "windows")]
 fn desktop_coordinate_bounds(bounds: Bounds<Pixels>, scale_factor: f32) -> Bounds<Pixels> {
     scale_desktop_bounds(bounds, scale_factor)
@@ -2168,6 +2374,32 @@ fn desktop_coordinate_extent(logical_extent: f32, scale_factor: f32) -> f32 {
 #[cfg(not(target_os = "windows"))]
 fn desktop_coordinate_extent(logical_extent: f32, _scale_factor: f32) -> f32 {
     logical_extent
+}
+
+fn scale_coordinate_distance(logical_distance: f32, scale_factor: f32, physical: bool) -> f32 {
+    if physical {
+        logical_distance * scale_factor
+    } else {
+        logical_distance
+    }
+}
+
+fn desktop_coordinate_distance(logical_distance: f32, scale_factor: f32) -> f32 {
+    scale_coordinate_distance(logical_distance, scale_factor, cfg!(target_os = "windows"))
+}
+
+fn snap_coordinate_metrics(
+    logical_extent: f32,
+    logical_vertical_gap: f32,
+    logical_horizontal_overlap: f32,
+    scale_factor: f32,
+    physical: bool,
+) -> (f32, f32, f32) {
+    (
+        scale_coordinate_distance(logical_extent, scale_factor, physical),
+        scale_coordinate_distance(logical_vertical_gap, scale_factor, physical),
+        scale_coordinate_distance(logical_horizontal_overlap, scale_factor, physical),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -2229,21 +2461,52 @@ fn display_for_window(
         .or_else(|| display_for_overlay_origin(displays, window.origin, 0.0))
 }
 
-fn choose_external_window(windows: &[ExternalWindow], position: Point2) -> Option<ExternalWindow> {
-    windows.iter().cloned().min_by(|a, b| {
-        let distance = |window: &ExternalWindow| {
-            let center = window.bounds.center();
-            let dx = f32::from(center.x) - position.x;
-            let dy = f32::from(window.bounds.origin.y) - position.y;
-            dx * dx + dy * dy
-        };
-        distance(a).total_cmp(&distance(b))
-    })
+fn choose_external_window(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    position: Point2,
+    restricted_display: Option<DesktopDisplay>,
+) -> Option<ExternalWindow> {
+    windows
+        .iter()
+        .filter(|window| {
+            valid_physics_window(window.bounds, displays)
+                && restricted_display.is_none_or(|restricted| {
+                    display_for_window(displays, window.bounds)
+                        .is_some_and(|candidate| same_display(candidate, restricted))
+                })
+        })
+        .cloned()
+        .min_by(|a, b| {
+            let rank = |window: &ExternalWindow| {
+                let center = window.bounds.center();
+                (
+                    (f32::from(window.bounds.origin.y) - position.y).abs(),
+                    (f32::from(center.x) - position.x).abs(),
+                    window.id.raw(),
+                )
+            };
+            let a = rank(a);
+            let b = rank(b);
+            a.0.total_cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        })
+}
+
+fn same_display(a: DesktopDisplay, b: DesktopDisplay) -> bool {
+    match (a.id, b.id) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.work_area == b.work_area,
+    }
 }
 
 #[derive(Debug, Clone)]
 struct SnapCandidate {
     window: ExternalWindow,
+    display: DesktopDisplay,
+    extent: f32,
+    min_horizontal_overlap: f32,
     generation: u64,
 }
 
@@ -2251,72 +2514,196 @@ fn choose_snap_window(
     windows: &[ExternalWindow],
     displays: &[DesktopDisplay],
     position: Point2,
-    extent: f32,
+    logical_extent: f32,
 ) -> Option<SnapCandidate> {
-    let mascot_left = position.x;
-    let mascot_right = position.x + extent;
-    let mascot_bottom = position.y + extent;
+    choose_snap_window_with_limits(
+        windows,
+        displays,
+        position,
+        logical_extent,
+        SNAP_VERTICAL_GAP,
+        SNAP_MIN_HORIZONTAL_OVERLAP,
+    )
+}
+
+fn choose_magnetic_snap_window(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    position: Point2,
+    logical_extent: f32,
+    preferred: Option<ExternalWindowId>,
+) -> Option<SnapCandidate> {
+    preferred
+        .and_then(|id| {
+            choose_snap_window_for_id(
+                windows,
+                displays,
+                position,
+                logical_extent,
+                id,
+                SNAP_HYSTERESIS_VERTICAL_GAP,
+                SNAP_HYSTERESIS_MIN_HORIZONTAL_OVERLAP,
+            )
+        })
+        .or_else(|| {
+            choose_snap_window_with_limits(
+                windows,
+                displays,
+                position,
+                logical_extent,
+                SNAP_PREVIEW_VERTICAL_GAP,
+                SNAP_MIN_HORIZONTAL_OVERLAP,
+            )
+        })
+}
+
+fn choose_snap_window_for_id(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    position: Point2,
+    logical_extent: f32,
+    id: ExternalWindowId,
+    max_vertical_gap: f32,
+    min_horizontal_overlap: f32,
+) -> Option<SnapCandidate> {
     windows
         .iter()
-        .enumerate()
-        .filter(|(_, window)| valid_physics_window(window.bounds, displays))
-        .filter_map(|(index, window)| {
-            let top = f32::from(window.bounds.origin.y);
-            let gap = (mascot_bottom - top).abs();
-            if gap > SNAP_VERTICAL_GAP {
-                return None;
-            }
-            let left = f32::from(window.bounds.origin.x);
-            let right = f32::from(window.bounds.right());
-            let overlap = mascot_right.min(right) - mascot_left.max(left);
-            if overlap < SNAP_MIN_HORIZONTAL_OVERLAP {
-                return None;
-            }
-            let horizontal_distance = if position.x + extent * 0.5 < left {
-                left - (position.x + extent * 0.5)
-            } else if position.x + extent * 0.5 > right {
-                position.x + extent * 0.5 - right
-            } else {
-                0.0
-            };
-            Some((gap, horizontal_distance, index, window))
+        .find(|window| window.id == id)
+        .and_then(|window| {
+            snap_candidate(
+                window,
+                displays,
+                position,
+                logical_extent,
+                max_vertical_gap,
+                min_horizontal_overlap,
+            )
+            .map(|(_, _, candidate)| candidate)
+        })
+}
+
+fn choose_snap_window_with_limits(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    position: Point2,
+    logical_extent: f32,
+    max_vertical_gap: f32,
+    min_horizontal_overlap: f32,
+) -> Option<SnapCandidate> {
+    windows
+        .iter()
+        .filter_map(|window| {
+            snap_candidate(
+                window,
+                displays,
+                position,
+                logical_extent,
+                max_vertical_gap,
+                min_horizontal_overlap,
+            )
         })
         .min_by(|a, b| {
             a.0.total_cmp(&b.0)
                 .then(a.1.total_cmp(&b.1))
-                .then(a.2.cmp(&b.2))
+                .then(a.2.generation.cmp(&b.2.generation))
         })
-        .map(|(_, _, index, window)| SnapCandidate {
+        .map(|(_, _, candidate)| candidate)
+}
+
+fn snap_candidate(
+    window: &ExternalWindow,
+    displays: &[DesktopDisplay],
+    position: Point2,
+    logical_extent: f32,
+    max_vertical_gap: f32,
+    min_horizontal_overlap: f32,
+) -> Option<(f32, f32, SnapCandidate)> {
+    let display = display_for_window(displays, window.bounds)?;
+    if !valid_physics_window(window.bounds, displays) {
+        return None;
+    }
+    let (extent, max_vertical_gap, eligibility_overlap) = snap_coordinate_metrics(
+        logical_extent,
+        max_vertical_gap,
+        min_horizontal_overlap,
+        display.scale_factor,
+        cfg!(target_os = "windows"),
+    );
+    let eligibility_overlap = eligibility_overlap
+        .min(extent)
+        .min(f32::from(window.bounds.size.width));
+    let perch_overlap =
+        desktop_coordinate_distance(SNAP_MIN_HORIZONTAL_OVERLAP, display.scale_factor)
+            .min(extent)
+            .min(f32::from(window.bounds.size.width));
+    let mascot_left = position.x;
+    let mascot_right = position.x + extent;
+    let mascot_bottom = position.y + extent;
+    let top = f32::from(window.bounds.origin.y);
+    let gap = (mascot_bottom - top).abs();
+    if gap > max_vertical_gap {
+        return None;
+    }
+    let left = f32::from(window.bounds.origin.x);
+    let right = f32::from(window.bounds.right());
+    let overlap = mascot_right.min(right) - mascot_left.max(left);
+    if overlap < eligibility_overlap {
+        return None;
+    }
+    let mascot_center = position.x + extent * 0.5;
+    let horizontal_distance = if mascot_center < left {
+        left - mascot_center
+    } else if mascot_center > right {
+        mascot_center - right
+    } else {
+        0.0
+    };
+    Some((
+        gap,
+        horizontal_distance,
+        SnapCandidate {
             window: window.clone(),
-            generation: index as u64,
-        })
+            display,
+            extent,
+            min_horizontal_overlap: perch_overlap,
+            generation: window.id.raw(),
+        },
+    ))
+}
+
+fn magnetic_snap_position(candidate: &SnapCandidate, desired: Point2) -> Option<Point2> {
+    perch_origin(
+        candidate.window.bounds,
+        candidate.display.work_area,
+        candidate.extent,
+        desired.x,
+        candidate.min_horizontal_overlap,
+    )
 }
 
 fn valid_physics_window(window: Bounds<Pixels>, displays: &[DesktopDisplay]) -> bool {
-    if f32::from(window.size.width) < 80.0 || f32::from(window.size.height) < 40.0 {
-        return false;
-    }
     let Some(display) = display_for_window(displays, window) else {
         return false;
     };
-    !maximized_like(window, display.work_area)
+    let min_width = desktop_coordinate_distance(80.0, display.scale_factor);
+    let min_height = desktop_coordinate_distance(40.0, display.scale_factor);
+    f32::from(window.size.width) >= min_width
+        && f32::from(window.size.height) >= min_height
+        && !maximized_like(window, display.work_area, display.scale_factor)
 }
 
-fn maximized_like(window: Bounds<Pixels>, work_area: Bounds<Pixels>) -> bool {
+fn maximized_like(window: Bounds<Pixels>, work_area: Bounds<Pixels>, scale_factor: f32) -> bool {
     let work_width = f32::from(work_area.size.width).max(1.0);
     let work_height = f32::from(work_area.size.height).max(1.0);
     let width_coverage = f32::from(window.size.width) / work_width;
     let height_coverage = f32::from(window.size.height) / work_height;
+    let edge_tolerance = desktop_coordinate_distance(MAXIMIZED_EDGE_INSET_TOLERANCE, scale_factor);
     width_coverage >= MAXIMIZED_COVERAGE_RATIO
         && height_coverage >= MAXIMIZED_COVERAGE_RATIO
-        && (f32::from(window.origin.x) - f32::from(work_area.origin.x)).abs()
-            <= MAXIMIZED_EDGE_INSET_TOLERANCE
-        && (f32::from(window.origin.y) - f32::from(work_area.origin.y)).abs()
-            <= MAXIMIZED_EDGE_INSET_TOLERANCE
-        && (f32::from(window.right()) - f32::from(work_area.right())).abs()
-            <= MAXIMIZED_EDGE_INSET_TOLERANCE
-        && (f32::from(window.bottom()) - f32::from(work_area.bottom())).abs()
-            <= MAXIMIZED_EDGE_INSET_TOLERANCE
+        && (f32::from(window.origin.x) - f32::from(work_area.origin.x)).abs() <= edge_tolerance
+        && (f32::from(window.origin.y) - f32::from(work_area.origin.y)).abs() <= edge_tolerance
+        && (f32::from(window.right()) - f32::from(work_area.right())).abs() <= edge_tolerance
+        && (f32::from(window.bottom()) - f32::from(work_area.bottom())).abs() <= edge_tolerance
 }
 
 fn window_top_surface(window: &ExternalWindow, generation: u64) -> WalkableSurface {
@@ -2344,9 +2731,8 @@ fn physics_platforms(
 ) -> Vec<WalkableSurface> {
     windows
         .iter()
-        .enumerate()
-        .filter(|(_, window)| valid_physics_window(window.bounds, displays))
-        .map(|(index, window)| window_top_surface(window, index as u64))
+        .filter(|window| valid_physics_window(window.bounds, displays))
+        .map(|window| window_top_surface(window, window.id.raw()))
         .collect()
 }
 
@@ -2393,18 +2779,19 @@ fn window_top_target(
     window: Bounds<Pixels>,
     work_area: Bounds<Pixels>,
     extent: f32,
+    min_horizontal_overlap: f32,
 ) -> Option<Point2> {
     let usable_width = f32::from(window.size.width).min(f32::from(work_area.size.width));
     if usable_width < 80.0 || f32::from(window.size.height) < 40.0 {
         return None;
     }
-    let min_x = f32::from(work_area.origin.x);
-    let max_x = (f32::from(work_area.right()) - extent).max(min_x);
-    let x = (f32::from(window.center().x) - extent * 0.5).clamp(min_x, max_x);
-    let min_y = f32::from(work_area.origin.y);
-    let max_y = (f32::from(work_area.bottom()) - extent).max(min_y);
-    let y = (f32::from(window.origin.y) - extent + 18.0).clamp(min_y, max_y);
-    Some(Point2::new(x, y))
+    perch_origin(
+        window,
+        work_area,
+        extent,
+        f32::from(window.center().x) - extent * 0.5,
+        min_horizontal_overlap,
+    )
 }
 
 fn attachment_target(
@@ -2412,23 +2799,48 @@ fn attachment_target(
     work_area: Bounds<Pixels>,
     extent: f32,
     preferred_x: f32,
+    min_horizontal_overlap: f32,
 ) -> Option<Point2> {
     if f32::from(window.size.width) < 80.0 || f32::from(window.size.height) < 40.0 {
+        return None;
+    }
+    perch_origin(
+        window,
+        work_area,
+        extent,
+        preferred_x,
+        min_horizontal_overlap,
+    )
+}
+
+fn perch_origin(
+    window: Bounds<Pixels>,
+    work_area: Bounds<Pixels>,
+    extent: f32,
+    preferred_x: f32,
+    min_horizontal_overlap: f32,
+) -> Option<Point2> {
+    if f32::from(window.size.width) <= 0.0 || f32::from(window.size.height) <= 0.0 {
         return None;
     }
     let min_x = f32::from(work_area.origin.x);
     let max_x = (f32::from(work_area.right()) - extent).max(min_x);
     let min_y = f32::from(work_area.origin.y);
     let max_y = (f32::from(work_area.bottom()) - extent).max(min_y);
-    let window_min_x = f32::from(window.origin.x);
-    let window_max_x = f32::from(window.right()) - extent;
+    let window_left = f32::from(window.origin.x);
+    let window_right = f32::from(window.right());
+    let overlap = min_horizontal_overlap
+        .min(extent)
+        .min(f32::from(window.size.width));
+    let window_min_x = window_left - extent + overlap;
+    let window_max_x = window_right - overlap;
     let x = preferred_x
         .clamp(
             window_min_x.min(window_max_x),
             window_min_x.max(window_max_x),
         )
         .clamp(min_x, max_x);
-    let y = (f32::from(window.origin.y) - extent + 18.0).clamp(min_y, max_y);
+    let y = (f32::from(window.origin.y) - extent).clamp(min_y, max_y);
     Some(Point2::new(x, y))
 }
 
@@ -2446,6 +2858,15 @@ fn to_rect(bounds: Bounds<Pixels>, extent: f32) -> Rect {
         f32::from(bounds.origin.y),
         (f32::from(bounds.size.width) - extent).max(1.0),
         (f32::from(bounds.size.height) - extent).max(1.0),
+    )
+}
+
+fn raw_rect(bounds: Bounds<Pixels>) -> Rect {
+    Rect::new(
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width).max(1.0),
+        f32::from(bounds.size.height).max(1.0),
     )
 }
 
@@ -2641,6 +3062,7 @@ mod tests {
             CharacterVisualState::Walking,
             CharacterVisualState::Flying,
             CharacterVisualState::Dragging,
+            CharacterVisualState::Snapping,
             CharacterVisualState::Reacting,
             CharacterVisualState::Landing,
         ];
@@ -2702,8 +3124,8 @@ mod tests {
             size: gpui::size(px(420.0), px(240.0)),
         };
         let extent = character_window_size(CompanionScale::Medium);
-        let target =
-            window_top_target(window, work_area, extent).expect("eligible external window");
+        let target = window_top_target(window, work_area, extent, SNAP_MIN_HORIZONTAL_OVERLAP)
+            .expect("eligible external window");
         assert!(to_rect(work_area, extent).contains(target));
         assert!(target.y < f32::from(window.origin.y));
         assert!(window_top_target(
@@ -2712,7 +3134,8 @@ mod tests {
                 ..window
             },
             work_area,
-            extent
+            extent,
+            SNAP_MIN_HORIZONTAL_OVERLAP,
         )
         .is_none());
     }
@@ -2951,7 +3374,7 @@ mod tests {
         let attachment = runtime.attachment.expect("attachment");
         assert_eq!(attachment.id, ExternalWindowId::from_raw(42));
         assert_eq!(attachment.top_edge_offset, 130.0);
-        assert_eq!(sim.simulation.position, Point2::new(370.0, 158.0));
+        assert_eq!(sim.simulation.position, Point2::new(370.0, 140.0));
         assert_eq!(sim.simulation.state, CharacterSimulationState::Perched);
         assert!(runtime.pending_native_move);
     }
@@ -2963,13 +3386,13 @@ mod tests {
         let initial = bounds(200.0, 260.0, 420.0, 240.0);
         assert!(runtime.begin_attachment(ExternalWindowId::from_raw(77), initial, &[display()]));
         runtime.mark_attachment_perched();
-        let resized = bounds(200.0, 260.0, 180.0, 240.0);
+        let resized = bounds(200.0, 260.0, 100.0, 240.0);
 
         let outcome = runtime.follow_attached_bounds(resized, &[display()]);
 
         assert!(outcome.attached);
         let sim = runtime.simulation.as_ref().expect("simulation");
-        assert_eq!(sim.simulation.position, Point2::new(220.0, 118.0));
+        assert_eq!(sim.simulation.position, Point2::new(264.0, 100.0));
     }
 
     // SDTEST-1502
@@ -3300,7 +3723,8 @@ mod tests {
     fn maximized_like_rejects_taskbar_inset_but_keeps_ordinary_large_window() {
         assert!(maximized_like(
             bounds(24.0, 32.0, 752.0, 552.0),
-            display().work_area
+            display().work_area,
+            display().scale_factor,
         ));
         assert!(!valid_physics_window(
             bounds(24.0, 32.0, 752.0, 552.0),
@@ -3308,7 +3732,8 @@ mod tests {
         ));
         assert!(!maximized_like(
             bounds(120.0, 96.0, 560.0, 420.0),
-            display().work_area
+            display().work_area,
+            display().scale_factor,
         ));
         assert!(valid_physics_window(
             bounds(120.0, 96.0, 560.0, 420.0),
@@ -3420,11 +3845,451 @@ mod tests {
         );
         assert_eq!(
             sim.simulation.position.y,
-            to_rect(primary.work_area, sim.extent).bottom() - sim.extent
+            raw_rect(primary.work_area).bottom() - sim.extent
         );
-        assert!(
-            sim.simulation.position.y
-                < to_rect(portrait.work_area, sim.extent).bottom() - sim.extent
+        assert!(sim.simulation.position.y < raw_rect(portrait.work_area).bottom() - sim.extent);
+    }
+
+    // SDTEST-1529
+    #[test]
+    fn magnetic_snap_acquires_early_and_releases_only_beyond_hysteresis() {
+        let window = external_window(81, bounds(200.0, 300.0, 360.0, 220.0));
+        let windows = vec![window.clone()];
+        let extent = 160.0;
+        let preview_position = Point2::new(230.0, 200.0);
+
+        assert!(choose_snap_window(&windows, &[display()], preview_position, extent).is_none());
+        let acquired =
+            choose_magnetic_snap_window(&windows, &[display()], preview_position, extent, None)
+                .expect("preview should acquire before the strict release threshold");
+        assert_eq!(acquired.window.id, window.id);
+
+        let hysteresis_position = Point2::new(230.0, 250.0);
+        assert!(choose_magnetic_snap_window(
+            &windows,
+            &[display()],
+            hysteresis_position,
+            extent,
+            None,
+        )
+        .is_none());
+        assert_eq!(
+            choose_magnetic_snap_window(
+                &windows,
+                &[display()],
+                hysteresis_position,
+                extent,
+                Some(window.id),
+            )
+            .expect("preferred target should remain sticky inside hysteresis")
+            .window
+            .id,
+            window.id
         );
+        assert!(choose_magnetic_snap_window(
+            &windows,
+            &[display()],
+            Point2::new(230.0, 251.0),
+            extent,
+            Some(window.id),
+        )
+        .is_none());
+    }
+
+    // SDTEST-1530
+    #[test]
+    fn magnetic_snap_position_lands_on_top_and_preserves_minimum_overlap() {
+        let extent = character_window_size(CompanionScale::Medium);
+        let candidate = SnapCandidate {
+            window: external_window(82, bounds(200.0, 300.0, 300.0, 180.0)),
+            display: display(),
+            extent,
+            min_horizontal_overlap: SNAP_MIN_HORIZONTAL_OVERLAP,
+            generation: 82,
+        };
+        let left = magnetic_snap_position(&candidate, Point2::new(0.0, 190.0));
+        assert_eq!(left, Some(Point2::new(76.0, 140.0)));
+        let right = magnetic_snap_position(&candidate, Point2::new(700.0, 190.0));
+        assert_eq!(right, Some(Point2::new(464.0, 140.0)));
+    }
+
+    // SDTEST-1531
+    #[test]
+    fn active_magnetic_preview_commits_attachment_on_release() {
+        let mut runtime = runtime_with_sim();
+        let window = external_window(83, bounds(200.0, 300.0, 360.0, 220.0));
+        runtime.drag_snap = Some(SnapCandidate {
+            window: window.clone(),
+            display: display(),
+            extent: character_window_size(CompanionScale::Medium),
+            min_horizontal_overlap: SNAP_MIN_HORIZONTAL_OVERLAP,
+            generation: window.id.raw(),
+        });
+        runtime.drag_free_position = Some(Point2::new(230.0, 200.0));
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(230.0, 200.0);
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                std::slice::from_ref(&window),
+                &[display()],
+            ),
+            ReleaseLifecycle::StartAttachmentFollow
+        );
+        assert_eq!(runtime.attachment.unwrap().id, window.id);
+        assert!(runtime.drag_snap.is_none());
+        assert_eq!(runtime.simulation.unwrap().simulation.position.y, 140.0);
+    }
+
+    // SDTEST-1534
+    #[test]
+    fn drag_window_snapshots_are_throttled_to_the_refresh_interval() {
+        let started = Instant::now();
+        assert!(drag_snapshot_refresh_due(
+            None,
+            started,
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ));
+        assert!(!drag_snapshot_refresh_due(
+            Some(started),
+            started + DRAG_WINDOW_LIST_REFRESH_INTERVAL - Duration::from_millis(1),
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ));
+        assert!(drag_snapshot_refresh_due(
+            Some(started),
+            started + DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ));
+    }
+
+    // SDTEST-1535
+    #[test]
+    fn runtime_floor_collision_subtracts_companion_extent_exactly_once() {
+        let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 80.0);
+        assert!(runtime.finish_user_drag_snapshot_for_test(
+            Point2::new(0.0, 0.0),
+            &[],
+            &[display()],
+        ));
+        let sim = runtime.simulation.as_mut().unwrap();
+        assert_eq!(sim.physics_bounds(), raw_rect(display().work_area));
+        for _ in 0..90 {
+            if sim.step_physics_capped(33, &[]).landed {
+                break;
+            }
+        }
+        assert_eq!(sim.simulation.position.y, 600.0 - sim.extent);
+        assert_eq!(
+            sim.body.contact().unwrap().kind,
+            WalkableSurfaceKind::ScreenFloor
+        );
+    }
+
+    // SDTEST-1536
+    #[test]
+    fn magnetic_release_never_switches_preview_window_id() {
+        let preview = external_window(91, bounds(200.0, 300.0, 360.0, 220.0));
+        let competitor = external_window(92, bounds(210.0, 292.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        runtime.drag_snap = choose_magnetic_snap_window(
+            std::slice::from_ref(&preview),
+            &[display()],
+            Point2::new(230.0, 200.0),
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            None,
+        );
+        runtime.drag_free_position = Some(Point2::new(230.0, 200.0));
+
+        let lifecycle = runtime.finish_user_drag_lifecycle_for_test(
+            Point2::new(0.0, 0.0),
+            &[competitor, preview.clone()],
+            &[display()],
+        );
+
+        assert_eq!(lifecycle, ReleaseLifecycle::StartAttachmentFollow);
+        assert_eq!(runtime.attachment.unwrap().id, preview.id);
+    }
+
+    // SDTEST-1537
+    #[test]
+    fn missing_preview_window_does_not_fallback_to_another_window() {
+        let preview = external_window(93, bounds(200.0, 300.0, 360.0, 220.0));
+        let competitor = external_window(94, bounds(210.0, 292.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        runtime.drag_snap = choose_magnetic_snap_window(
+            std::slice::from_ref(&preview),
+            &[display()],
+            Point2::new(230.0, 200.0),
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            None,
+        );
+        runtime.drag_free_position = Some(Point2::new(230.0, 200.0));
+
+        let lifecycle = runtime.finish_user_drag_lifecycle_for_test(
+            Point2::new(0.0, 0.0),
+            &[competitor],
+            &[display()],
+        );
+
+        assert_eq!(lifecycle, ReleaseLifecycle::RequestPhysicsFrame);
+        assert!(runtime.attachment.is_none());
+    }
+
+    // SDTEST-1538
+    #[test]
+    fn preview_release_and_follow_share_the_same_perch_origin() {
+        let window = external_window(95, bounds(200.0, 300.0, 130.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        let free_position = Point2::new(110.0, 200.0);
+        let candidate = choose_magnetic_snap_window(
+            std::slice::from_ref(&window),
+            &[display()],
+            free_position,
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            None,
+        )
+        .expect("narrow window should remain a valid partial-overlap perch");
+        let preview = magnetic_snap_position(&candidate, free_position).unwrap();
+        runtime.drag_snap = Some(candidate);
+        runtime.drag_free_position = Some(free_position);
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                std::slice::from_ref(&window),
+                &[display()],
+            ),
+            ReleaseLifecycle::StartAttachmentFollow
+        );
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().simulation.position,
+            preview
+        );
+        let follow = runtime.follow_attached_snapshot(std::slice::from_ref(&window), &[display()]);
+        assert!(follow.attached);
+        assert!(!follow.moved);
+        assert_eq!(runtime.simulation.unwrap().simulation.position, preview);
+    }
+
+    // SDTEST-1539
+    #[test]
+    fn windows_snap_metrics_scale_extent_and_thresholds_for_target_display() {
+        let physical = snap_coordinate_metrics(
+            160.0,
+            SNAP_PREVIEW_VERTICAL_GAP,
+            SNAP_MIN_HORIZONTAL_OVERLAP,
+            2.0,
+            true,
+        );
+        let logical = snap_coordinate_metrics(
+            160.0,
+            SNAP_PREVIEW_VERTICAL_GAP,
+            SNAP_MIN_HORIZONTAL_OVERLAP,
+            2.0,
+            false,
+        );
+
+        assert_eq!(physical, (320.0, 144.0, 72.0));
+        assert_eq!(logical, (160.0, 72.0, 36.0));
+        assert_eq!(scale_coordinate_distance(72.0, 2.0, true), 144.0);
+        assert_eq!(scale_coordinate_distance(72.0, 2.0, false), 72.0);
+    }
+
+    // SDTEST-1540
+    #[test]
+    fn drag_snapshot_policy_separates_full_list_and_locked_window_refreshes() {
+        let started = Instant::now();
+        assert!(!drag_snapshot_refresh_due(
+            Some(started),
+            started + DRAG_LOCKED_WINDOW_REFRESH_INTERVAL,
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ));
+        assert!(drag_snapshot_refresh_due(
+            Some(started),
+            started + DRAG_LOCKED_WINDOW_REFRESH_INTERVAL,
+            DRAG_LOCKED_WINDOW_REFRESH_INTERVAL,
+        ));
+        assert!(drag_snapshot_refresh_due(
+            Some(started),
+            started + DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+            DRAG_WINDOW_LIST_REFRESH_INTERVAL,
+        ));
+    }
+
+    // SDTEST-1541
+    #[test]
+    fn autonomous_climb_ignores_maximized_like_windows() {
+        let maximized = external_window(101, bounds(24.0, 32.0, 752.0, 552.0));
+        let ordinary = external_window(102, bounds(120.0, 96.0, 560.0, 420.0));
+        let selected = choose_external_window(
+            &[maximized, ordinary.clone()],
+            &[display()],
+            Point2::new(400.0, 80.0),
+            None,
+        )
+        .expect("an ordinary unmaximized window should remain climbable");
+
+        assert_eq!(selected.id, ordinary.id);
+    }
+
+    // SDTEST-1542
+    #[test]
+    fn invalidated_preview_blocks_retargeting_for_the_rest_of_the_drag() {
+        let preview = external_window(103, bounds(200.0, 300.0, 360.0, 220.0));
+        let competitor = external_window(104, bounds(210.0, 292.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        runtime.drag_invalidated_preview_id = Some(preview.id);
+        runtime.drag_free_position = Some(Point2::new(230.0, 200.0));
+
+        let lifecycle = runtime.finish_user_drag_lifecycle_for_test(
+            Point2::new(0.0, 0.0),
+            &[competitor],
+            &[display()],
+        );
+
+        assert_eq!(lifecycle, ReleaseLifecycle::RequestPhysicsFrame);
+        assert!(runtime.attachment.is_none());
+    }
+
+    // SDTEST-1543
+    #[test]
+    fn hysteresis_preview_release_and_follow_use_the_canonical_perch_overlap() {
+        let window = external_window(105, bounds(200.0, 300.0, 130.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        let free_position = Point2::new(55.0, 200.0);
+        let candidate = choose_magnetic_snap_window(
+            std::slice::from_ref(&window),
+            &[display()],
+            free_position,
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            Some(window.id),
+        )
+        .expect("the locked preview should remain eligible inside the hysteresis overlap");
+        let preview = magnetic_snap_position(&candidate, free_position).unwrap();
+        assert_eq!(
+            candidate.min_horizontal_overlap,
+            SNAP_MIN_HORIZONTAL_OVERLAP
+        );
+        runtime.drag_snap = Some(candidate);
+        runtime.drag_free_position = Some(free_position);
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                std::slice::from_ref(&window),
+                &[display()],
+            ),
+            ReleaseLifecycle::StartAttachmentFollow
+        );
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().simulation.position,
+            preview
+        );
+        let follow = runtime.follow_attached_snapshot(std::slice::from_ref(&window), &[display()]);
+        assert!(follow.attached);
+        assert!(!follow.moved);
+        assert_eq!(runtime.simulation.unwrap().simulation.position, preview);
+    }
+
+    // SDTEST-1544
+    #[test]
+    fn autonomous_climb_respects_single_monitor_routing() {
+        let primary = display();
+        let secondary = DesktopDisplay {
+            bounds: bounds(800.0, 0.0, 800.0, 600.0),
+            work_area: bounds(800.0, 0.0, 800.0, 600.0),
+            ..display()
+        };
+        let local = external_window(106, bounds(300.0, 360.0, 300.0, 180.0));
+        let remote = external_window(107, bounds(820.0, 120.0, 300.0, 180.0));
+
+        let selected = choose_external_window(
+            &[remote, local.clone()],
+            &[primary, secondary],
+            Point2::new(760.0, 100.0),
+            Some(primary),
+        )
+        .expect("the current display should retain an eligible autonomous target");
+
+        assert_eq!(selected.id, local.id);
+    }
+
+    // SDTEST-1545
+    #[test]
+    fn autonomous_climb_ranks_vertical_gap_then_horizontal_distance_then_native_id() {
+        let vertically_near = external_window(108, bounds(500.0, 120.0, 200.0, 180.0));
+        let horizontally_near_high_id = external_window(110, bounds(230.0, 160.0, 200.0, 180.0));
+        let horizontally_near_low_id = external_window(109, bounds(230.0, 160.0, 200.0, 180.0));
+
+        let selected = choose_external_window(
+            &[
+                horizontally_near_high_id,
+                vertically_near.clone(),
+                horizontally_near_low_id,
+            ],
+            &[display()],
+            Point2::new(300.0, 100.0),
+            None,
+        )
+        .expect("an eligible autonomous target should be selected");
+
+        assert_eq!(selected.id, vertically_near.id);
+
+        let horizontally_near = external_window(111, bounds(230.0, 160.0, 200.0, 180.0));
+        let horizontally_far = external_window(112, bounds(560.0, 160.0, 200.0, 180.0));
+        let horizontal = choose_external_window(
+            &[horizontally_far, horizontally_near.clone()],
+            &[display()],
+            Point2::new(300.0, 100.0),
+            None,
+        )
+        .unwrap();
+        assert_eq!(horizontal.id, horizontally_near.id);
+
+        let tied = choose_external_window(
+            &[
+                external_window(110, bounds(230.0, 160.0, 200.0, 180.0)),
+                external_window(109, bounds(230.0, 160.0, 200.0, 180.0)),
+            ],
+            &[display()],
+            Point2::new(300.0, 100.0),
+            None,
+        )
+        .unwrap();
+        assert_eq!(tied.id, ExternalWindowId::from_raw(109));
+    }
+
+    // SDTEST-1546
+    #[test]
+    fn moved_preview_geometry_invalidates_the_drag_without_competitor_fallback() {
+        let preview = external_window(113, bounds(200.0, 300.0, 360.0, 220.0));
+        let moved_preview = external_window(113, bounds(200.0, 500.0, 360.0, 220.0));
+        let competitor = external_window(114, bounds(210.0, 292.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        runtime.drag_snap = choose_magnetic_snap_window(
+            std::slice::from_ref(&preview),
+            &[display()],
+            Point2::new(230.0, 200.0),
+            runtime.simulation.as_ref().unwrap().logical_extent,
+            None,
+        );
+        runtime.drag_free_position = Some(Point2::new(230.0, 200.0));
+        runtime.drag_windows = vec![moved_preview, competitor.clone()];
+        runtime.drag_displays = vec![display()];
+
+        runtime.invalidate_drag_preview_if_geometry_changed(preview.id);
+
+        assert!(runtime.drag_snap.is_none());
+        assert_eq!(runtime.drag_invalidated_preview_id, Some(preview.id));
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                &[competitor],
+                &[display()],
+            ),
+            ReleaseLifecycle::RequestPhysicsFrame
+        );
+        assert!(runtime.attachment.is_none());
     }
 }

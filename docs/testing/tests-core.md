@@ -406,6 +406,8 @@ Existing: **0 tests**.
 | SDTEST-1509 | `companion/physics.rs::display_work_area_floor_is_used_when_no_platform_matches` | SDUC-451 | Green | With no valid platform, the display work-area floor becomes the fallback contact and landing surface. |
 | SDTEST-1510 | `companion/physics.rs::release_from_drag_bounds_velocity_and_clears_contact` | SDUC-451 | Green | Drag release switches to Dynamic, clears the previous stable contact, and clamps the sampled release velocity. |
 | SDTEST-1511 | `companion/physics.rs::repeated_steps_are_deterministic_and_stale_contacts_invalidate` | SDUC-451 | Green | Equal fixed-step inputs produce equal results, and source-generation changes invalidate stale surface contacts before falling resumes. |
+| SDTEST-1532 | `companion/physics.rs::side_wall_collision_clamps_and_reflects_horizontal_velocity` | SDUC-451 | Green | The single-body AABB solver cannot leave the display horizontally; wall impacts reflect with bounded restitution and tiny residual velocities settle to zero. |
+| SDTEST-1533 | `companion/physics.rs::ceiling_collision_clamps_and_reflects_upward_velocity_downward` | SDUC-451 | Green | Upward movement clamps at the work-area ceiling and reflects downward without creating a false landing contact. |
 
 ---
 

@@ -1826,8 +1826,14 @@ multi-monitor controls remain available directly below the cards.
 The selected mascot is rendered only in its transparent desktop window, never
 inside the AI Dock. Pressing and dragging the character preserves the exact grab
 offset, pauses autonomous movement, follows the pointer across monitor bounds,
-and clamps the dropped position to the selected display. Releasing after a drag
-resumes the configured one-shot roaming schedule. A click triggers a short hop;
+and clamps the dropped position to the selected display. Approaching the outer
+top edge of an eligible unmaximized window shows a live magnetic preview with a
+larger acquisition band and stable-ID hysteresis, so small pointer movements do
+not flicker between targets. Releasing revalidates that exact preview ID against
+a fresh native snapshot; it never silently switches to a competing window if the
+preview moved, minimized, or disappeared. Once a preview ID is invalidated, that
+drag remains unsnapped until release instead of acquiring a different cached
+window. A click triggers a short hop;
 a double-click triggers a larger bounded dash and no keyboard focus theft. Each
 mascot keeps its production PNG artwork while procedural poses provide distinct
 walking, flying, dragging, reaction, and landing motion. Character-specific
@@ -1838,15 +1844,27 @@ Motion preference changes apply immediately, and the tray can pause/resume the
 character or return it to a safe screen corner. When window climbing is enabled,
 the character chooses an eligible external top-level window by its stable native
 lifetime ID, climbs or snaps from drag release to its outer top edge, and treats
-window tops as one-way floors for falling only from above. Snap candidates exclude
-maximized/taskbar-inset windows and are ranked deterministically by vertical gap
-then horizontal distance with overlap and size thresholds. The attached character
+window tops as one-way floors for falling only from above. Snap and autonomous-
+climb candidates exclude maximized/taskbar-inset windows and are ranked
+deterministically by vertical gap, horizontal distance, then stable native ID
+with target-display DPI-scaled bands, overlap, extent, and size thresholds.
+Preview, release commit, and follow all use the same perch-origin calculation,
+including windows narrower than the mascot, so mouse-up and the first follow
+refresh cannot jump, including when the preview remains locked only through the
+wider hysteresis exit band. Autonomous climbing obeys the multi-monitor setting:
+when cross-monitor movement is disabled, only windows on the current display are
+eligible. The attached character
 preserves its horizontal perch offset as the window moves between displays or
 resizes; a snap also adopts the supporting window's display so later
 screen-floor recovery uses that monitor instead of an old display or virtual
 layout gap. If no eligible top is reached, the display work-area floor is the
-safe fallback landing surface. Cached platform snapshots feed the runtime
-instead of native enumeration on every animation frame. Closing, minimizing, or otherwise
+safe fallback landing surface. The single-body deterministic AABB solver also
+clamps and reflects against display side walls and the ceiling, settles tiny
+post-impact horizontal velocities, and prevents fast descending motion from
+tunnelling through one-way window tops. Cached platform snapshots feed the
+runtime instead of native enumeration on every animation frame: full lists
+refresh at a low rate while a locked preview uses targeted stable-ID lookup.
+Closing, minimizing, or otherwise
 losing the target window detaches safely, restarts falling only when full motion
 is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
 landings resume the one-shot roaming schedule only when the character is not
@@ -1861,6 +1879,12 @@ moves.
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1529..1546 for live
+  magnetic preview, stable-ID hysteresis and release validation, shared
+  preview/commit/follow perch geometry, target-display DPI scaling, throttled
+  full-list plus targeted locked-window refresh, exact screen-floor bounds,
+  autonomous unmaximized-window filtering, and deterministic wall/ceiling
+  collision response.
 - **2026-07-29** — Extended SDUC-451 and added SDTEST-1505..1528 for the
   standalone deterministic AABB companion physics/runtime: drag-release outer
   top-edge snapping, one-way window-top floors, screen-floor fallback, stable-ID

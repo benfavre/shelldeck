@@ -19,7 +19,7 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
-| Personnage desktop autonome | Physique AABB déterministe et runtime événementiel livrés | SDUC-451, SDTEST-1505..1528 |
+| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable et physique AABB déterministe livrés | SDUC-451, SDTEST-1505..1546 |
 
 ## Next
 
@@ -60,11 +60,13 @@ Vérification effectuée le 2026-07-29 contre le code et les inventaires :
   Terminal séquentiels bornés ;
 - le personnage desktop possède un solveur AABB déterministe dédié, pas un moteur
   de jeu général : gravité, vélocité terminale, drag horizontal, collision
-  descendante one-way avec les tops de fenêtre, fallback au sol d'écran, snap au
-  relâchement sur le bord supérieur externe, adoption du display porteur, suivi
-  par ID stable, chute à la disparition, nettoyage des plateformes si le
-  climbing est désactivé en chute
-  et suppression des boucles sous mouvement réduit/off/still.
+  descendante one-way avec les tops de fenêtre, collisions bornées contre les
+  murs latéraux et le plafond, fallback au sol d'écran, aperçu magnétique live
+  avec hystérésis et seuils DPI du display cible, validation du même ID natif au
+  relâchement, origine de perch partagée entre aperçu/commit/suivi, adoption du
+  display porteur, suivi par ID stable, chute à la disparition, nettoyage des
+  plateformes si le climbing est désactivé en chute et suppression des boucles
+  sous mouvement réduit/off/still.
 
 Les détails exhaustifs de comportement restent dans
 [`USE_CASES.md`](../testing/USE_CASES.md). Cette roadmap ne les duplique pas.
