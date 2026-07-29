@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **31**
+Total markers in code: **38**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -203,6 +203,36 @@ only, out of the src/-scoped marker convention.)
   set stays non-fatal and leaves ShellDeck's tray fallback available.
 - **Upstream status**: not filed yet — generic GPUI capability suitable for an
   upstream PR after live validation on GNOME and KDE portal backends.
+
+### SDPATCH-110 — Cross-platform `Window::set_window_origin`
+
+- **Sticky**: required by `docs/clippy.md`; keep this API across GPUI fork syncs.
+- **Files / symbols**:
+  - `src/window.rs` — `Window::set_window_origin` public API
+  - `src/platform.rs` — `PlatformWindow::set_window_origin` routing hook
+  - `src/platform/windows/window.rs` — `WindowsWindow::set_window_origin`
+  - `src/platform/mac/window.rs` — `MacWindow::set_window_origin`
+  - `src/platform/linux/x11/window.rs` — `X11Window::set_window_origin`
+  - `src/platform/linux/wayland/window.rs` — explicit unsupported Wayland backend
+  - `src/platform/test/window.rs` — explicit unsupported test backend
+- **Markers**:
+  - `src/platform.rs` — `// ShellDeck patch: route public window-origin changes through each platform backend.`
+  - `src/window.rs` — `// ShellDeck patch: expose cross-platform window positioning for ShellDeck's clippy tooling.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: move windows without resizing, changing Z-order, or activating them.`
+  - `src/platform/mac/window.rs` — `// ShellDeck patch: map GPUI's top-left logical origin onto AppKit's bottom-left frame origin.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: move X11 windows through ConfigureWindow without changing their size.`
+  - `src/platform/linux/wayland/window.rs` — `// ShellDeck patch: Wayland does not allow clients to set top-level window coordinates.`
+  - `src/platform/test/window.rs` — `// ShellDeck patch: test windows have no real platform surface to reposition.`
+- **Why**: ShellDeck's clippy helper needs to place auxiliary GPUI windows without
+  resizing or activating them. The public `Window` method delegates through
+  `PlatformWindow`; Windows uses `SetWindowPos` with `SWP_NOACTIVATE`,
+  `SWP_NOSIZE`, and `SWP_NOZORDER`, macOS calls `setFrameOrigin` after
+  converting GPUI's top-left logical coordinates to AppKit's bottom-left frame
+  coordinates, and X11 issues `ConfigureWindow` with only `x`/`y`. Wayland,
+  headless/default, and test windows return explicit unsupported errors because
+  those environments have no client-controlled top-level origin to set.
+- **Upstream status**: not filed yet — generally useful platform API, but the
+  Wayland semantics need to be clearly documented before upstreaming.
 
 ## Preserved files (do not overwrite on sync)
 

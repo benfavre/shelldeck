@@ -750,6 +750,28 @@ impl PlatformWindow for WindowsWindow {
             .ok();
     }
 
+    // ShellDeck patch: move windows without resizing, changing Z-order, or activating them.
+    fn set_window_origin(&self, origin: Point<Pixels>) -> Result<()> {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        let x = (origin.x.0 * scale_factor).round() as i32;
+        let y = (origin.y.0 * scale_factor).round() as i32;
+
+        unsafe {
+            SetWindowPos(
+                self.0.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )?;
+        }
+
+        self.0.state.borrow_mut().origin = origin;
+        Ok(())
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let hwnd = self.0.hwnd;
 

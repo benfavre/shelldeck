@@ -581,6 +581,10 @@ pub(crate) struct RequestFrameOptions {
 
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
+    // ShellDeck patch: route public window-origin changes through each platform backend.
+    fn set_window_origin(&self, _origin: Point<Pixels>) -> anyhow::Result<()> {
+        anyhow::bail!("setting window origin is unsupported on this platform")
+    }
     fn is_maximized(&self) -> bool;
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;

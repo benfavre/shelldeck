@@ -1247,6 +1247,29 @@ impl PlatformWindow for X11Window {
             .map(|size| size.div(state.scale_factor))
     }
 
+    // ShellDeck patch: move X11 windows through ConfigureWindow without changing their size.
+    fn set_window_origin(&self, origin: Point<Pixels>) -> anyhow::Result<()> {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        let x = (origin.x.0 * scale_factor).round() as i32;
+        let y = (origin.y.0 * scale_factor).round() as i32;
+
+        check_reply(
+            || format!("X11 ConfigureWindow failed. x: {}, y: {}", x, y),
+            self.0.xcb.configure_window(
+                self.0.x_window,
+                &xproto::ConfigureWindowAux::new().x(x).y(y),
+            ),
+        )?;
+        xcb_flush(&self.0.xcb);
+        self.0.state.borrow_mut().bounds.origin = origin;
+
+        if let Some(ref mut fun) = self.0.callbacks.borrow_mut().moved {
+            fun();
+        }
+
+        Ok(())
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let state = self.0.state.borrow();
         let size = size.to_device_pixels(state.scale_factor);

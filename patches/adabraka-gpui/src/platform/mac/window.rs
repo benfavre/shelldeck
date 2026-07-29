@@ -983,6 +983,27 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().bounds()
     }
 
+    // ShellDeck patch: map GPUI's top-left logical origin onto AppKit's bottom-left frame origin.
+    fn set_window_origin(&self, origin: Point<Pixels>) -> anyhow::Result<()> {
+        let native_window = self.0.lock().native_window;
+        unsafe {
+            let screen = NSWindow::screen(native_window);
+            if screen == nil {
+                anyhow::bail!("setting window origin requires a screen")
+            }
+
+            let frame = NSWindow::frame(native_window);
+            let screen_frame = NSScreen::frame(screen);
+            let cocoa_origin = NSPoint::new(
+                screen_frame.origin.x + origin.x.0 as f64,
+                screen_frame.origin.y + screen_frame.size.height - origin.y.0 as f64 - frame.size.height,
+            );
+            native_window.setFrameOrigin_(cocoa_origin);
+        }
+
+        Ok(())
+    }
+
     fn window_bounds(&self) -> WindowBounds {
         self.0.as_ref().lock().window_bounds()
     }

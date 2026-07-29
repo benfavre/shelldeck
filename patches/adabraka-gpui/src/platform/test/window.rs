@@ -128,6 +128,11 @@ impl PlatformWindow for TestWindow {
         self.bounds().size
     }
 
+    // ShellDeck patch: test windows have no real platform surface to reposition.
+    fn set_window_origin(&self, _origin: Point<Pixels>) -> anyhow::Result<()> {
+        anyhow::bail!("setting window origin is unsupported on test windows")
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let mut lock = self.0.lock();
         lock.bounds.size = size;
