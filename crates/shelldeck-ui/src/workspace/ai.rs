@@ -1834,6 +1834,7 @@ impl Workspace {
                 request_id,
                 conversation_id,
                 prompt,
+                latest_user_message,
                 context,
             } => {
                 let config = self.app_config.ai.clone();
@@ -1843,16 +1844,40 @@ impl Workspace {
                         .background_executor()
                         .spawn(async move {
                             let client = create_client(&config)?;
-                            client
-                                .complete(&prompt, context)
-                                .map(|response| response.text)
+                            complete_assistant_turn(
+                                client.as_ref(),
+                                &prompt,
+                                &latest_user_message,
+                                context,
+                            )
                         })
                         .await
                         .map_err(|error| error.to_string());
-                    let _ = this.update(cx, |_workspace, cx| {
-                        source.update(cx, |assistant, cx| {
-                            assistant.set_result(request_id, conversation_id, result, cx);
-                        });
+                    let _ = this.update(cx, |workspace, cx| match result {
+                        Ok(AiAssistantCompletion::Message(message)) => {
+                            source.update(cx, |assistant, cx| {
+                                assistant.set_result(request_id, conversation_id, Ok(message), cx);
+                            });
+                        }
+                        Ok(AiAssistantCompletion::RequestDraft(draft)) => {
+                            let accepted = source.update(cx, |assistant, cx| {
+                                assistant.set_result(
+                                    request_id,
+                                    conversation_id,
+                                    Ok(t!("ai.assistant.request_draft_ready").to_string()),
+                                    cx,
+                                )
+                            });
+                            if accepted {
+                                workspace.ai_sheet = None;
+                                workspace.open_ai_request_draft(draft, cx);
+                            }
+                        }
+                        Err(error) => {
+                            source.update(cx, |assistant, cx| {
+                                assistant.set_result(request_id, conversation_id, Err(error), cx);
+                            });
+                        }
                     });
                 })
                 .detach();
@@ -1896,6 +1921,9 @@ impl Workspace {
 
     pub fn handle_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut Context<Self>) {
         match event {
+            AiCompanionEvent::OpenRequestDraft(draft) => {
+                self.open_ai_request_draft(draft, cx);
+            }
             AiCompanionEvent::ResumeTask(task_id) => {
                 let target = self
                     .ai_tasks

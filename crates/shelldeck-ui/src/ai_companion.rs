@@ -1,7 +1,7 @@
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Subscription};
 use shelldeck_core::ai::{
-    configured_cli_available, create_client, AiConfig, AiContext, AiSurface, AiTask, AiTaskStatus,
-    AiTaskStore,
+    complete_assistant_turn, configured_cli_available, create_client, AiAssistantCompletion,
+    AiConfig, AiContext, AiGeneratedIssueDraft, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,6 +12,7 @@ use crate::t;
 
 #[derive(Debug, Clone)]
 pub enum AiCompanionEvent {
+    OpenRequestDraft(AiGeneratedIssueDraft),
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -71,25 +72,59 @@ impl AiCompanionController {
                         request_id,
                         conversation_id,
                         prompt,
+                        latest_user_message,
                         context,
                     } => {
                         let config = this.config.borrow().clone();
                         let source = view.clone();
-                        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+                        cx.spawn(async move |this, cx: &mut AsyncApp| {
                             let result = cx
                                 .background_executor()
                                 .spawn(async move {
                                     let client = create_client(&config)?;
-                                    client
-                                        .complete(&prompt, context)
-                                        .map(|response| response.text)
+                                    complete_assistant_turn(
+                                        client.as_ref(),
+                                        &prompt,
+                                        &latest_user_message,
+                                        context,
+                                    )
                                 })
                                 .await
                                 .map_err(|error| error.to_string());
-                            let _ = cx.update(|cx| {
-                                source.update(cx, |assistant, cx| {
-                                    assistant.set_result(request_id, conversation_id, result, cx);
-                                });
+                            let _ = this.update(cx, |_controller, cx| match result {
+                                Ok(AiAssistantCompletion::Message(message)) => {
+                                    source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Ok(message),
+                                            cx,
+                                        );
+                                    });
+                                }
+                                Ok(AiAssistantCompletion::RequestDraft(draft)) => {
+                                    let accepted = source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Ok(t!("ai.assistant.request_draft_ready").to_string()),
+                                            cx,
+                                        )
+                                    });
+                                    if accepted {
+                                        cx.emit(AiCompanionEvent::OpenRequestDraft(draft));
+                                    }
+                                }
+                                Err(error) => {
+                                    source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Err(error),
+                                            cx,
+                                        );
+                                    });
+                                }
                             });
                         })
                         .detach();

@@ -28,6 +28,7 @@ pub enum AiAssistantEvent {
         request_id: u64,
         conversation_id: Uuid,
         prompt: String,
+        latest_user_message: String,
         context: AiContext,
     },
     ResumeTask(Uuid),
@@ -63,6 +64,28 @@ enum AiAssistantTab {
     #[default]
     Chat,
     Tasks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiQuickActionMode {
+    Submit,
+    Prefill,
+}
+
+impl AiQuickActionMode {
+    fn button_variant(self) -> ButtonVariant {
+        match self {
+            Self::Submit => ButtonVariant::Ai,
+            Self::Prefill => ButtonVariant::Outline,
+        }
+    }
+}
+
+struct AiQuickAction {
+    label: String,
+    prompt_key: &'static str,
+    icon: &'static str,
+    mode: AiQuickActionMode,
 }
 
 pub struct AiAssistantView {
@@ -214,9 +237,9 @@ impl AiAssistantView {
         conversation_id: Uuid,
         result: Result<String, String>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if !self.request_gate.accepts(request_id) {
-            return;
+            return false;
         }
         self.loading = false;
         match result {
@@ -235,6 +258,7 @@ impl AiAssistantView {
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+        true
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -251,6 +275,7 @@ impl AiAssistantView {
     fn submit_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         if !self.loading {
             let conversation_id = self.ensure_active_conversation();
+            let latest_user_message = prompt.clone();
             if let Some(conversation) = self
                 .conversations
                 .iter_mut()
@@ -268,6 +293,7 @@ impl AiAssistantView {
                 request_id,
                 conversation_id,
                 prompt,
+                latest_user_message,
                 context: self.context.clone(),
             });
             cx.notify();
@@ -381,46 +407,138 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    fn quick_actions(surface: AiSurface) -> Vec<(String, String, &'static str)> {
-        let keys: &[(&str, &str, &str)] = match surface {
+    fn quick_actions(surface: AiSurface) -> Vec<AiQuickAction> {
+        let keys: &[(&str, &str, &str, AiQuickActionMode)] = match surface {
             AiSurface::Support => &[
-                ("ai.quick.support_reply", "ai.prompt.support_reply", "reply"),
+                (
+                    "ai.quick.support_reply",
+                    "ai.prompt.support_reply",
+                    "reply",
+                    AiQuickActionMode::Submit,
+                ),
                 (
                     "ai.quick.summarize",
                     "ai.prompt.support_summary",
                     "scroll-text",
+                    AiQuickActionMode::Submit,
                 ),
-                ("ai.quick.triage", "ai.prompt.support_triage", "flag"),
+                (
+                    "ai.quick.triage",
+                    "ai.prompt.support_triage_chat",
+                    "flag",
+                    AiQuickActionMode::Submit,
+                ),
             ],
             AiSurface::Issue => &[
-                ("ai.quick.issue_draft", "ai.prompt.issue_draft", "plus"),
-                ("ai.quick.tags", "ai.prompt.issue_tags", "tag"),
-                ("ai.quick.priority", "ai.prompt.issue_priority", "flag"),
+                (
+                    "ai.quick.issue_draft",
+                    "ai.prefill.issue_draft",
+                    "plus",
+                    AiQuickActionMode::Prefill,
+                ),
+                (
+                    "ai.quick.tags",
+                    "ai.prompt.issue_tags",
+                    "tag",
+                    AiQuickActionMode::Submit,
+                ),
+                (
+                    "ai.quick.priority",
+                    "ai.prompt.issue_priority",
+                    "flag",
+                    AiQuickActionMode::Submit,
+                ),
             ],
             AiSurface::Script => &[
-                ("ai.quick.generate", "ai.prompt.script_generate", "sparkles"),
-                ("ai.quick.explain", "ai.prompt.script_explain", "info"),
+                (
+                    "ai.quick.generate",
+                    "ai.prefill.script_generate",
+                    "sparkles",
+                    AiQuickActionMode::Prefill,
+                ),
+                (
+                    "ai.quick.explain",
+                    "ai.prompt.script_explain",
+                    "info",
+                    AiQuickActionMode::Submit,
+                ),
                 (
                     "ai.quick.convert",
-                    "ai.prompt.script_convert",
+                    "ai.prefill.script_convert",
                     "arrow-left-right",
+                    AiQuickActionMode::Prefill,
                 ),
-                ("ai.quick.review", "ai.prompt.script_review", "shield-check"),
-                ("ai.quick.naming", "ai.prompt.naming", "pencil"),
+                (
+                    "ai.quick.review",
+                    "ai.prompt.script_review",
+                    "shield-check",
+                    AiQuickActionMode::Submit,
+                ),
+                (
+                    "ai.quick.naming",
+                    "ai.prompt.naming",
+                    "pencil",
+                    AiQuickActionMode::Submit,
+                ),
             ],
             AiSurface::Terminal => &[
-                ("ai.quick.command", "ai.prompt.terminal_command", "terminal"),
-                ("ai.quick.error", "ai.prompt.terminal_error", "circle-alert"),
-                ("ai.quick.issue_draft", "ai.prompt.terminal_issue", "plus"),
+                (
+                    "ai.quick.command",
+                    "ai.prefill.terminal_command",
+                    "terminal",
+                    AiQuickActionMode::Prefill,
+                ),
+                (
+                    "ai.quick.error",
+                    "ai.prompt.terminal_error",
+                    "circle-alert",
+                    AiQuickActionMode::Submit,
+                ),
+                (
+                    "ai.quick.issue_draft",
+                    "ai.prefill.terminal_issue",
+                    "plus",
+                    AiQuickActionMode::Prefill,
+                ),
             ],
-            AiSurface::Jean => &[("ai.quick.jean", "ai.prompt.jean", "send")],
-            AiSurface::Naming => &[("ai.quick.naming", "ai.prompt.naming", "pencil")],
-            AiSurface::Recent => &[("ai.quick.summarize", "ai.prompt.recent", "activity")],
+            AiSurface::Jean => &[(
+                "ai.quick.jean",
+                "ai.prompt.jean",
+                "send",
+                AiQuickActionMode::Submit,
+            )],
+            AiSurface::Naming => &[(
+                "ai.quick.naming",
+                "ai.prompt.naming",
+                "pencil",
+                AiQuickActionMode::Submit,
+            )],
+            AiSurface::Recent => &[(
+                "ai.quick.summarize",
+                "ai.prompt.recent",
+                "activity",
+                AiQuickActionMode::Submit,
+            )],
             AiSurface::Global => &[],
         };
         keys.iter()
-            .map(|(label, prompt, icon)| (t!(*label).to_string(), t!(*prompt).to_string(), *icon))
+            .map(|(label, prompt, icon, mode)| AiQuickAction {
+                label: t!(*label).to_string(),
+                prompt_key: *prompt,
+                icon: *icon,
+                mode: *mode,
+            })
             .collect()
+    }
+
+    fn prefill_prompt(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading || !self.available {
+            return;
+        }
+        self.prompt_state
+            .update(cx, |state, cx| state.replace_content(prompt, cx));
+        self.prompt_state.read(cx).focus_handle(cx).focus(window);
+        cx.notify();
     }
 
     fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1058,7 +1176,8 @@ impl AiAssistantView {
 
 #[cfg(test)]
 mod tests {
-    use super::AiRequestGate;
+    use super::{AiAssistantView, AiQuickActionMode, AiRequestGate, ButtonVariant};
+    use shelldeck_core::ai::AiSurface;
 
     // SDTEST-1341
     #[test]
@@ -1072,6 +1191,58 @@ mod tests {
 
         let current_request = gate.begin();
         assert!(gate.accepts(current_request));
+    }
+
+    // SDTEST-1429
+    #[test]
+    fn quick_actions_distinguish_immediate_submit_from_composer_prefill() {
+        assert_eq!(
+            AiQuickActionMode::Submit.button_variant(),
+            ButtonVariant::Ai
+        );
+        assert_eq!(
+            AiQuickActionMode::Prefill.button_variant(),
+            ButtonVariant::Outline
+        );
+
+        let script = AiAssistantView::quick_actions(AiSurface::Script);
+        assert_eq!(script[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[0].prompt_key, "ai.prefill.script_generate");
+        assert_eq!(script[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(script[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[2].prompt_key, "ai.prefill.script_convert");
+        assert!(script[3..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let terminal = AiAssistantView::quick_actions(AiSurface::Terminal);
+        assert_eq!(terminal[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[0].prompt_key, "ai.prefill.terminal_command");
+        assert_eq!(terminal[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(terminal[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[2].prompt_key, "ai.prefill.terminal_issue");
+
+        let issue = AiAssistantView::quick_actions(AiSurface::Issue);
+        assert_eq!(issue[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(issue[0].prompt_key, "ai.prefill.issue_draft");
+        assert!(issue[1..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let support = AiAssistantView::quick_actions(AiSurface::Support);
+        assert_eq!(support[2].prompt_key, "ai.prompt.support_triage_chat");
+
+        for surface in [
+            AiSurface::Support,
+            AiSurface::Jean,
+            AiSurface::Naming,
+            AiSurface::Recent,
+            AiSurface::Global,
+        ] {
+            assert!(AiAssistantView::quick_actions(surface)
+                .iter()
+                .all(|action| action.mode == AiQuickActionMode::Submit));
+        }
     }
 }
 
@@ -1093,18 +1264,29 @@ impl Render for AiAssistantView {
             .on_enter(submit);
 
         let mut quick_actions = div().flex().flex_wrap().justify_center().gap(px(8.0));
-        for (index, (label, quick_prompt, icon)) in Self::quick_actions(self.context.surface)
+        for (index, action) in Self::quick_actions(self.context.surface)
             .into_iter()
             .enumerate()
         {
+            let quick_prompt = t!(action.prompt_key).to_string();
+            let tooltip = match action.mode {
+                AiQuickActionMode::Submit => t!("ai.quick.behavior.submit").to_string(),
+                AiQuickActionMode::Prefill => t!("ai.quick.behavior.prefill").to_string(),
+            };
             quick_actions = quick_actions.child(
-                Button::new(("ai-quick", index), label)
-                    .variant(ButtonVariant::Outline)
+                Button::new(("ai-quick", index), action.label)
+                    .variant(action.mode.button_variant())
                     .size(ButtonSize::Sm)
-                    .icon(IconSource::from(icon))
+                    .icon(IconSource::from(action.icon))
+                    .tooltip(tooltip)
                     .disabled(self.loading || !self.available)
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.submit_prompt(quick_prompt.clone(), cx);
+                    .on_click(cx.listener(move |this, _, _window, cx| match action.mode {
+                        AiQuickActionMode::Submit => {
+                            this.submit_prompt(quick_prompt.clone(), cx);
+                        }
+                        AiQuickActionMode::Prefill => {
+                            this.prefill_prompt(quick_prompt.clone(), _window, cx);
+                        }
                     })),
             );
         }

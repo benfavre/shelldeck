@@ -1766,10 +1766,41 @@ when the process started. A portal answers asynchronously and a tray-mode
 launch (`start_hidden`) has no Workspace to receive that answer, so the first
 window to open is seeded from the live registration state.
 
+### SDUC-445 — The assistant can prepare a real request form
+
+When the latest chat message explicitly asks ShellDeck to create, open, or
+prepare a customer request, the provider returns a strict routed request draft.
+The main Assistant sheet and the standalone Dock both open the existing New
+Request sheet with title, description, and priority prefilled. The conversation
+records a clear acknowledgement, while the existing Create button remains the
+only operation that submits the request. Questions, explanations, quoted
+instructions, malformed routing output, and ordinary chat continue through the
+normal Markdown response path.
+
+### SDUC-446 — Assistant shortcuts declare whether they send or prefill
+
+Every contextual Assistant shortcut has an explicit interaction mode. Actions
+that are complete from the current context submit immediately into the
+conversation. Actions that require the user to provide an objective — Script
+Generate, Script Convert, Terminal Command, and Create Request on Issue or
+Terminal — insert a localized, editable fill-in template and focus the composer,
+without creating a conversation message or starting an AI request.
+Context-complete analyses such as Summary submit immediately. Chat Triage uses
+a readable analysis prompt; the strict JSON prompt remains reserved for the
+typed triage workflow. A localized tooltip announces the behavior before the
+click. Immediate-submit shortcuts use the colored AI button variant; prefill
+shortcuts retain the neutral outline variant, giving the two behaviors a stable
+visual code.
+
 ---
 
 ## Change log
 
+- **2026-07-29** — Added SDUC-446 and SDTEST-1429 for typed Assistant shortcut
+  behavior: immediate contextual submissions versus editable composer prefill.
+- **2026-07-29** — Added SDUC-445 and SDTEST-1427/1428 for explicit
+  conversational request preparation from both Assistant surfaces, with strict
+  routing, normal-chat fallback, and the existing unsent review boundary.
 - **2026-07-29** — Extended SDUC-414/418 and added SDTEST-1425/1426 for
   Markdown rendering of durable conversations and free-form read-only analyses,
   while structured and executable/editable outputs retain their typed/raw

@@ -53,6 +53,29 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(super) fn open_ai_request_draft(
+        &mut self,
+        draft: AiGeneratedIssueDraft,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.app_config.cloud_sync.is_configured() {
+            self.show_toast(
+                t!("toast.issue.login_required_create").to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        self.open_prefilled_request(draft.title, draft.description, "user", cx);
+        self.issue_new_priority = draft.priority;
+        self.show_toast(
+            t!("toast.ai.request_draft_opened").to_string(),
+            ToastLevel::Success,
+            cx,
+        );
+        cx.notify();
+    }
+
     /// Reset an `InputState` entity's content back to empty. `set_value` needs
     /// a `Window`, which we don't have in async close callbacks, so we clear
     /// the public `content` field directly (the widget re-reads it on next
