@@ -263,20 +263,28 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         file.push(MenuEntry::Separator);
     }
     file.push(
-        MenuEntry::command("file-quit", t!("menu.file.quit").to_string(), MenuCommand::Quit)
-            .shortcut("secondary-q")
-            .icon("x"),
+        MenuEntry::command(
+            "file-quit",
+            t!("menu.file.quit").to_string(),
+            MenuCommand::Quit,
+        )
+        .shortcut("secondary-q")
+        .icon("x"),
     );
 
     // ── Édition ────────────────────────────────────────────────────────
     let mut edit = vec![
-        MenuEntry::command("edit-copy", t!("menu.edit.copy").to_string(), MenuCommand::Copy)
-            .shortcut(if cfg!(target_os = "macos") {
-                "secondary-c"
-            } else {
-                "ctrl-shift-c"
-            })
-            .icon("copy"),
+        MenuEntry::command(
+            "edit-copy",
+            t!("menu.edit.copy").to_string(),
+            MenuCommand::Copy,
+        )
+        .shortcut(if cfg!(target_os = "macos") {
+            "secondary-c"
+        } else {
+            "ctrl-shift-c"
+        })
+        .icon("copy"),
         MenuEntry::command(
             "edit-paste",
             t!("menu.edit.paste").to_string(),
@@ -292,9 +300,13 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
     ];
     if dev {
         edit.push(
-            MenuEntry::command("edit-find", t!("menu.edit.find").to_string(), MenuCommand::Find)
-                .shortcut("secondary-f")
-                .icon("search"),
+            MenuEntry::command(
+                "edit-find",
+                t!("menu.edit.find").to_string(),
+                MenuCommand::Find,
+            )
+            .shortcut("secondary-f")
+            .icon("search"),
         );
     }
     edit.push(
@@ -442,8 +454,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
                 .icon("refresh-cw"),
             );
             go.push(
-                MenuEntry::command("go-sites", t!("menu.go.sites").to_string(), MenuCommand::GoSites)
-                    .icon("globe"),
+                MenuEntry::command(
+                    "go-sites",
+                    t!("menu.go.sites").to_string(),
+                    MenuCommand::GoSites,
+                )
+                .icon("globe"),
             );
             go.push(
                 MenuEntry::command(
@@ -477,8 +493,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         if ctx.dev_capable && dev {
             if ctx.has_jean {
                 go.push(
-                    MenuEntry::command("go-jean", t!("menu.go.jean").to_string(), MenuCommand::GoJean)
-                        .icon("bot"),
+                    MenuEntry::command(
+                        "go-jean",
+                        t!("menu.go.jean").to_string(),
+                        MenuCommand::GoJean,
+                    )
+                    .icon("bot"),
                 );
             }
             if ctx.has_fleet {
@@ -583,8 +603,12 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         .icon("circle-help"),
     );
     help.push(
-        MenuEntry::command("help-about", t!("menu.help.about").to_string(), MenuCommand::About)
-            .icon("info"),
+        MenuEntry::command(
+            "help-about",
+            t!("menu.help.about").to_string(),
+            MenuCommand::About,
+        )
+        .icon("info"),
     );
     if ctx.signed_in {
         help.push(MenuEntry::Separator);
@@ -783,10 +807,7 @@ mod tests {
             "Ctrl"
         };
         assert_eq!(accel("secondary-k"), format!("{secondary}+K"));
-        assert_eq!(
-            accel("secondary-shift-p"),
-            format!("{secondary}+Shift+P")
-        );
+        assert_eq!(accel("secondary-shift-p"), format!("{secondary}+Shift+P"));
         assert_eq!(accel("ctrl-shift-tab"), "Ctrl+Shift+Tab");
     }
 }
