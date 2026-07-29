@@ -15,7 +15,10 @@ use windows::{
     core::*,
 };
 
-use crate::{Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, logical_point, point, size};
+use crate::{
+    Bounds, DesktopDisplayMetrics, DevicePixels, DisplayId, Pixels, PlatformDisplay,
+    logical_point, point, px, size,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WindowsDisplay {
@@ -23,7 +26,9 @@ pub(crate) struct WindowsDisplay {
     pub display_id: DisplayId,
     scale_factor: f32,
     bounds: Bounds<Pixels>,
+    work_area: Bounds<Pixels>,
     physical_bounds: Bounds<DevicePixels>,
+    physical_work_area: Bounds<DevicePixels>,
     uuid: Uuid,
 }
 
@@ -36,12 +41,14 @@ impl WindowsDisplay {
         let screen = available_monitors().into_iter().nth(display_id.0 as _)?;
         let info = get_monitor_info(screen).log_err()?;
         let monitor_size = info.monitorInfo.rcMonitor;
+        let monitor_work_area = info.monitorInfo.rcWork;
         let uuid = generate_uuid(&info.szDevice);
         let scale_factor = get_scale_factor_for_monitor(screen).log_err()?;
         let physical_size = size(
             (monitor_size.right - monitor_size.left).into(),
             (monitor_size.bottom - monitor_size.top).into(),
         );
+        let physical_work_area = rect_device_bounds(monitor_work_area);
 
         Some(WindowsDisplay {
             handle: screen,
@@ -55,10 +62,12 @@ impl WindowsDisplay {
                 ),
                 size: physical_size.to_pixels(scale_factor),
             },
+            work_area: device_bounds_to_logical(physical_work_area, scale_factor),
             physical_bounds: Bounds {
                 origin: point(monitor_size.left.into(), monitor_size.top.into()),
                 size: physical_size,
             },
+            physical_work_area,
             uuid,
         })
     }
@@ -66,6 +75,7 @@ impl WindowsDisplay {
     pub fn new_with_handle(monitor: HMONITOR) -> Self {
         let info = get_monitor_info(monitor).expect("unable to get monitor info");
         let monitor_size = info.monitorInfo.rcMonitor;
+        let monitor_work_area = info.monitorInfo.rcWork;
         let uuid = generate_uuid(&info.szDevice);
         let display_id = available_monitors()
             .iter()
@@ -77,6 +87,7 @@ impl WindowsDisplay {
             (monitor_size.right - monitor_size.left).into(),
             (monitor_size.bottom - monitor_size.top).into(),
         );
+        let physical_work_area = rect_device_bounds(monitor_work_area);
 
         WindowsDisplay {
             handle: monitor,
@@ -90,10 +101,12 @@ impl WindowsDisplay {
                 ),
                 size: physical_size.to_pixels(scale_factor),
             },
+            work_area: device_bounds_to_logical(physical_work_area, scale_factor),
             physical_bounds: Bounds {
                 origin: point(monitor_size.left.into(), monitor_size.top.into()),
                 size: physical_size,
             },
+            physical_work_area,
             uuid,
         }
     }
@@ -101,6 +114,7 @@ impl WindowsDisplay {
     fn new_with_handle_and_id(handle: HMONITOR, display_id: DisplayId) -> Self {
         let info = get_monitor_info(handle).expect("unable to get monitor info");
         let monitor_size = info.monitorInfo.rcMonitor;
+        let monitor_work_area = info.monitorInfo.rcWork;
         let uuid = generate_uuid(&info.szDevice);
         let scale_factor =
             get_scale_factor_for_monitor(handle).expect("unable to get scale factor for monitor");
@@ -108,6 +122,7 @@ impl WindowsDisplay {
             (monitor_size.right - monitor_size.left).into(),
             (monitor_size.bottom - monitor_size.top).into(),
         );
+        let physical_work_area = rect_device_bounds(monitor_work_area);
 
         WindowsDisplay {
             handle,
@@ -121,10 +136,12 @@ impl WindowsDisplay {
                 ),
                 size: physical_size.to_pixels(scale_factor),
             },
+            work_area: device_bounds_to_logical(physical_work_area, scale_factor),
             physical_bounds: Bounds {
                 origin: point(monitor_size.left.into(), monitor_size.top.into()),
                 size: physical_size,
             },
+            physical_work_area,
             uuid,
         }
     }
@@ -172,6 +189,22 @@ impl WindowsDisplay {
             .collect()
     }
 
+    // ShellDeck patch: keep concrete monitor metrics so Windows can expose physical desktop coordinates.
+    pub(crate) fn desktop_metrics() -> Vec<DesktopDisplayMetrics> {
+        available_monitors()
+            .into_iter()
+            .enumerate()
+            .map(|(id, handle)| Self::new_with_handle_and_id(handle, DisplayId(id as u32)))
+            .map(|display| DesktopDisplayMetrics {
+                id: display.display_id,
+                global_bounds: device_bounds_to_pixels(display.physical_bounds),
+                global_work_area: device_bounds_to_pixels(display.physical_work_area),
+                logical_work_area: display.work_area,
+                scale_factor: display.scale_factor,
+            })
+            .collect()
+    }
+
     /// Check if this monitor is still online
     pub fn is_connected(hmonitor: HMONITOR) -> bool {
         available_monitors().iter().contains(&hmonitor)
@@ -195,9 +228,48 @@ impl PlatformDisplay for WindowsDisplay {
         self.bounds
     }
 
+    // ShellDeck patch: Windows rcWork gives the true taskbar-aware per-monitor work area.
+    fn work_area(&self) -> Bounds<Pixels> {
+        self.work_area
+    }
+
     // ShellDeck patch: report the monitor DPI scale alongside global display geometry.
     fn scale_factor(&self) -> f32 {
         self.scale_factor
+    }
+}
+
+fn rect_device_bounds(rect: RECT) -> Bounds<DevicePixels> {
+    Bounds {
+        origin: point(rect.left.into(), rect.top.into()),
+        size: size(
+            (rect.right - rect.left).into(),
+            (rect.bottom - rect.top).into(),
+        ),
+    }
+}
+
+fn device_bounds_to_logical(
+    bounds: Bounds<DevicePixels>,
+    scale_factor: f32,
+) -> Bounds<Pixels> {
+    Bounds {
+        origin: logical_point(
+            bounds.origin.x.0 as f32,
+            bounds.origin.y.0 as f32,
+            scale_factor,
+        ),
+        size: bounds.size.to_pixels(scale_factor),
+    }
+}
+
+fn device_bounds_to_pixels(bounds: Bounds<DevicePixels>) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(px(bounds.origin.x.0 as f32), px(bounds.origin.y.0 as f32)),
+        size: size(
+            px(bounds.size.width.0 as f32),
+            px(bounds.size.height.0 as f32),
+        ),
     }
 }
 

@@ -208,6 +208,19 @@ pub(crate) trait Platform: 'static {
             .map(|display| (display.id(), display.bounds()))
             .collect()
     }
+    // ShellDeck patch: expose desktop display metrics in the same coordinate space as window routing.
+    fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        self.displays()
+            .into_iter()
+            .map(|display| DesktopDisplayMetrics {
+                id: display.id(),
+                global_bounds: display.bounds(),
+                global_work_area: display.work_area(),
+                logical_work_area: display.work_area(),
+                scale_factor: display.scale_factor(),
+            })
+            .collect()
+    }
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
     // ShellDeck patch: platform backends may expose safe read-only external window snapshots.
@@ -307,6 +320,11 @@ pub(crate) trait Platform: 'static {
 
     fn set_cursor_style(&self, style: CursorStyle);
     fn should_auto_hide_scrollbars(&self) -> bool;
+
+    // ShellDeck patch: cheap platform preference hook for reducing non-essential animation.
+    fn prefers_reduced_motion(&self) -> bool {
+        false
+    }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn write_to_primary(&self, item: ClipboardItem);
@@ -471,6 +489,28 @@ pub struct ExternalWindow {
     pub bounds: Bounds<Pixels>,
 }
 
+/// Display metrics for desktop companions and other global-placement clients.
+///
+/// `global_bounds` and `global_work_area` are reported in the same platform
+/// desktop coordinate space accepted by [`Window::set_window_origin`]. On
+/// Windows this is the native physical desktop-pixel space. `logical_work_area`
+/// remains in normal GPUI logical pixels for APIs such as
+/// [`WindowOptions::window_bounds`].
+// ShellDeck patch: expose coherent desktop metrics without changing legacy display APIs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DesktopDisplayMetrics {
+    /// Stable GPUI display ID.
+    pub id: DisplayId,
+    /// Full display bounds in the desktop coordinate space accepted by window routing APIs.
+    pub global_bounds: Bounds<Pixels>,
+    /// Usable display work area in the desktop coordinate space accepted by window routing APIs.
+    pub global_work_area: Bounds<Pixels>,
+    /// Usable display work area in normal GPUI logical coordinates.
+    pub logical_work_area: Bounds<Pixels>,
+    /// Native scale factor for this display.
+    pub scale_factor: f32,
+}
+
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
 pub trait PlatformDisplay: Send + Sync + Debug {
     /// Get the ID for this display
@@ -482,6 +522,12 @@ pub trait PlatformDisplay: Send + Sync + Debug {
 
     /// Get the bounds for this display
     fn bounds(&self) -> Bounds<Pixels>;
+
+    // ShellDeck patch: expose true usable area while preserving bounds fallback for existing platforms.
+    /// Get the usable work area for this display, excluding OS-reserved areas when available.
+    fn work_area(&self) -> Bounds<Pixels> {
+        self.bounds()
+    }
 
     // ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.
     /// Returns the scale factor used to convert this display's logical pixels to native pixels.

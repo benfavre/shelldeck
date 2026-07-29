@@ -37,8 +37,9 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
     CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter,
-    // ShellDeck patch: import the public external-window snapshot types for App APIs.
-    ExternalWindow, ExternalWindowId, FocusHandle, FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
+    // ShellDeck patch: import public desktop-companion snapshot and metrics types for App APIs.
+    DesktopDisplayMetrics, ExternalWindow, ExternalWindowId, FocusHandle, FocusMap,
+    FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
     Keystroke, LayoutId, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, PermissionStatus, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerSaveBlockerKind, PromptBuilder,
@@ -1309,6 +1310,28 @@ impl App {
             .into_iter()
             .map(|(id, bounds)| (id, bounds, scales.get(&id).copied().unwrap_or(1.0)))
             .collect()
+    }
+
+    /// Returns display metrics in the platform desktop coordinate space accepted
+    /// by [`Window::set_window_origin`] and external-window APIs.
+    ///
+    /// Prefer this over [`App::global_display_metrics`] for desktop companions
+    /// that need coherent mixed-DPI placement plus usable work areas. The legacy
+    /// metrics API is preserved for existing callers.
+    // ShellDeck patch: expose coherent desktop metrics with per-display work area.
+    pub fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        self.platform.desktop_display_metrics()
+    }
+
+    /// Returns whether the platform prefers reduced non-essential motion.
+    ///
+    /// This is a cheap best-effort query. Windows uses
+    /// `SPI_GETCLIENTAREAANIMATION`, macOS uses the accessibility reduce-motion
+    /// flag, Linux currently honors safe GTK settings fallbacks, and unsupported
+    /// platforms return `false`.
+    // ShellDeck patch: expose reduced-motion platform preference for animation policy.
+    pub fn prefers_reduced_motion(&self) -> bool {
+        self.platform.prefers_reduced_motion()
     }
 
     /// Returns visible external top-level window bounds in the platform desktop

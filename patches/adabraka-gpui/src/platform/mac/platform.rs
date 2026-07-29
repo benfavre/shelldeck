@@ -8,8 +8,9 @@ use super::{
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardItem, ClipboardString,
     CursorStyle, ForegroundExecutor, Image, ImageFormat, KeyContext, Keymap, MacDispatcher,
-    MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    Bounds, DesktopDisplayMetrics, DisplayId, MacDisplay, MacWindow, Menu, MenuItem, OsMenu,
+    OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Result, SemanticVersion, SharedString, SystemMenuType, Task, TrayIconEvent,
     TrayMenuItem, WindowAppearance, WindowParams, hash,
 };
@@ -694,6 +695,19 @@ impl Platform for MacPlatform {
             .collect()
     }
 
+    // ShellDeck patch: expose CoreGraphics global display metrics with AppKit visible work areas.
+    fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        MacDisplay::all()
+            .map(|display| DesktopDisplayMetrics {
+                id: display.id(),
+                global_bounds: display.global_bounds(),
+                global_work_area: display.global_work_area(),
+                logical_work_area: display.work_area(),
+                scale_factor: display.scale_factor(),
+            })
+            .collect()
+    }
+
     #[cfg(feature = "screen-capture")]
     fn is_screen_capture_supported(&self) -> bool {
         let min_version = cocoa::foundation::NSOperatingSystemVersion::new(12, 3, 0);
@@ -1116,6 +1130,15 @@ impl Platform for MacPlatform {
         unsafe {
             let style: NSInteger = msg_send![class!(NSScroller), preferredScrollerStyle];
             style == NSScrollerStyleOverlay
+        }
+    }
+
+    // ShellDeck patch: query macOS Accessibility reduce-motion preference cheaply.
+    fn prefers_reduced_motion(&self) -> bool {
+        unsafe {
+            let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let reduced: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+            reduced == YES
         }
     }
 

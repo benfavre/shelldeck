@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **82**
+Total markers in code: **105**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -254,7 +254,7 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/mac/external_windows.rs` — CoreGraphics window-list and targeted lookup helpers
 - **Markers**:
   - `src/app.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
-  - `src/app.rs` — `// ShellDeck patch: import the public external-window snapshot types for App APIs.`
+  - `src/app.rs` — `// ShellDeck patch: import public desktop-companion snapshot and metrics types for App APIs.`
   - `src/app.rs` — `// ShellDeck patch: expose scale-aware global display metrics for desktop companions.`
   - `src/app.rs` — `// ShellDeck patch: expose read-only external window geometry for desktop companions.`
   - `src/app.rs` — `// ShellDeck patch: expose stable read-only external window snapshots for desktop companions.`
@@ -324,6 +324,69 @@ only, out of the src/-scoped marker convention.)
   geometry safely.
 - **Upstream status**: not filed yet — useful as an opt-in desktop integration
   API, but platform privacy and capability semantics need upstream discussion.
+
+### SDPATCH-112 — Platform companion hardening, work areas, and reduced motion
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::{desktop_display_metrics,prefers_reduced_motion}`
+  - `src/platform.rs` — `DesktopDisplayMetrics`, `Platform::desktop_display_metrics`,
+    `Platform::prefers_reduced_motion`, and `PlatformDisplay::work_area`
+  - `src/platform/windows/window.rs` — non-activating `WindowKind::Overlay` style,
+    first show, and explicit activation path
+  - `src/platform/windows/display.rs` — `WindowsDisplay::{all,desktop_metrics}`
+    and `rcWork` work-area conversion
+  - `src/platform/windows/platform.rs` — physical desktop display metrics and
+    `SPI_GETCLIENTAREAANIMATION`
+  - `src/platform/mac/display.rs` — `MacDisplay::{global_work_area,scale_factor}`
+    using `NSScreen.visibleFrame`
+  - `src/platform/mac/platform.rs` — desktop display metrics and
+    accessibility reduce-motion preference
+  - `src/platform/linux/x11/display.rs` — `_NET_WORKAREA` work-area fallback and
+    scale reporting
+  - `src/platform/linux/platform.rs` — cheap GTK animation preference fallback
+- **Markers** (23 net-new markers; the App import marker is renamed in SDPATCH-111):
+  - `src/app.rs` — `// ShellDeck patch: expose coherent desktop metrics with per-display work area.`
+  - `src/app.rs` — `// ShellDeck patch: expose reduced-motion platform preference for animation policy.`
+  - `src/platform.rs` — `// ShellDeck patch: expose desktop display metrics in the same coordinate space as window routing.`
+  - `src/platform.rs` — `// ShellDeck patch: cheap platform preference hook for reducing non-essential animation.`
+  - `src/platform.rs` — `// ShellDeck patch: add a coherent desktop metrics API for companion placement.`
+  - `src/platform.rs` — `// ShellDeck patch: expose per-display usable work area with a safe full-bounds fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: cheap Linux fallback for GTK's gtk-enable-animations setting.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: honor cheap Linux animation settings fallbacks.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: use EWMH _NET_WORKAREA when the window manager exposes it.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: report X11 scale alongside display metrics.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: read the first EWMH work area entry and keep it root-bounds-relative.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: expose AppKit's true visible work area in GPUI's global top-left coordinates.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: expose NSScreen.visibleFrame as the per-display usable work area.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: report the backing scale for display metrics.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose CoreGraphics global display metrics with AppKit visible work areas.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: query macOS Accessibility reduce-motion preference cheaply.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: keep concrete monitor metrics so Windows can expose physical desktop coordinates.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: Windows rcWork gives the true taskbar-aware per-monitor work area.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: Windows desktop companion placement uses native physical pixels.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: map Windows client-area animation preference to reduced motion.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: overlays are interactive but must never activate or steal foreground focus.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: opening an overlay must be non-activating even when first shown.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: explicit activation requests keep overlays visible without focus theft.`
+- **Why**: ShellDeck's desktop companions need a single explicit placement
+  contract that separates native desktop routing coordinates from normal GPUI
+  window-creation coordinates. `DesktopDisplayMetrics::global_bounds` and
+  `global_work_area` are in the coordinate space accepted by
+  `Window::set_window_origin`; on Windows this is native physical desktop pixels
+  to avoid mixed-DPI virtual monitor overlap. `logical_work_area` remains in
+  normal GPUI logical coordinates for `WindowOptions::window_bounds` and other
+  creation-time APIs. Per-display work areas use Win32 `rcWork`, macOS
+  `NSScreen.visibleFrame` converted to GPUI's global top-left space, and X11
+  EWMH `_NET_WORKAREA` intersected with the root/display bounds; Wayland,
+  headless, and test backends inherit the safe full-bounds fallback.
+  Windows overlay windows also gain `WS_EX_NOACTIVATE` and non-activating show
+  paths so interactive mouse input remains available without stealing foreground
+  focus. Reduced-motion is a cheap best-effort platform query: Windows uses
+  `SPI_GETCLIENTAREAANIMATION`, macOS uses the accessibility reduce-motion flag,
+  Linux uses GTK animation settings from environment/config files, and other
+  platforms default to `false`.
+- **Upstream status**: not filed yet — should be split into smaller upstreamable
+  platform capability PRs after native Windows/macOS validation.
 
 ## Preserved files (do not overwrite on sync)
 

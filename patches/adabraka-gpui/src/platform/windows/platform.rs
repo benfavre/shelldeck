@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::OsStr,
+    ffi::{OsStr, c_void},
     mem::ManuallyDrop,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
@@ -522,8 +522,28 @@ impl Platform for WindowsPlatform {
         WindowsDisplay::displays()
     }
 
+    // ShellDeck patch: Windows desktop companion placement uses native physical pixels.
+    fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        WindowsDisplay::desktop_metrics()
+    }
+
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         WindowsDisplay::primary_monitor().map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
+    }
+
+    // ShellDeck patch: map Windows client-area animation preference to reduced motion.
+    fn prefers_reduced_motion(&self) -> bool {
+        let mut animations_enabled = BOOL::default();
+        unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                Some((&mut animations_enabled) as *mut BOOL as *mut c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+            )
+            .is_ok()
+                && !animations_enabled.as_bool()
+        }
     }
 
     #[cfg(feature = "screen-capture")]

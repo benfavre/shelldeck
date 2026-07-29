@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -165,6 +165,7 @@ pub(crate) struct LinuxCommon {
     pub(crate) next_blocker_id: u32,
     pub(crate) last_network_status: NetworkStatus,
     pub(crate) attention_window: Option<AnyWindowHandle>,
+    pub(crate) prefers_reduced_motion: bool,
 }
 
 impl LinuxCommon {
@@ -196,9 +197,47 @@ impl LinuxCommon {
             next_blocker_id: 0,
             last_network_status: NetworkStatus::Online,
             attention_window: None,
+            prefers_reduced_motion: linux_prefers_reduced_motion(),
         };
 
         (common, main_receiver)
+    }
+}
+
+// ShellDeck patch: cheap Linux fallback for GTK's gtk-enable-animations setting.
+fn linux_prefers_reduced_motion() -> bool {
+    gtk_enable_animations_from_env().is_some_and(|enabled| !enabled)
+        || gtk_enable_animations_from_settings_file().is_some_and(|enabled| !enabled)
+}
+
+fn gtk_enable_animations_from_env() -> Option<bool> {
+    env::var("GTK_ENABLE_ANIMATIONS")
+        .ok()
+        .and_then(|value| parse_gtk_enable_animations(&value))
+}
+
+fn gtk_enable_animations_from_settings_file() -> Option<bool> {
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    ["gtk-4.0/settings.ini", "gtk-3.0/settings.ini"]
+        .into_iter()
+        .filter_map(|relative| fs::read_to_string(config_home.join(relative)).ok())
+        .find_map(|contents| {
+            contents.lines().find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "gtk-enable-animations")
+                    .then(|| parse_gtk_enable_animations(value.trim()))
+                    .flatten()
+            })
+        })
+}
+
+fn parse_gtk_enable_animations(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -736,6 +775,11 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         LinuxClient::focused_window_info(self)
+    }
+
+    // ShellDeck patch: honor cheap Linux animation settings fallbacks.
+    fn prefers_reduced_motion(&self) -> bool {
+        self.with_common(|common| common.prefers_reduced_motion)
     }
 
     // ShellDeck patch: route external desktop snapshots through the active Linux backend.
@@ -1335,5 +1379,15 @@ mod tests {
             zero,
             Point::new(px(5.0), px(5.1))
         ),);
+    }
+
+    #[test]
+    fn parses_gtk_enable_animations_values() {
+        assert_eq!(parse_gtk_enable_animations("0"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("false"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("off"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("1"), Some(true));
+        assert_eq!(parse_gtk_enable_animations("TRUE"), Some(true));
+        assert_eq!(parse_gtk_enable_animations("unexpected"), None);
     }
 }
