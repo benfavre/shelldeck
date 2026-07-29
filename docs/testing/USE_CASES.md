@@ -1828,14 +1828,23 @@ inside the AI Dock. Pressing and dragging the character preserves the exact grab
 offset, pauses autonomous movement, follows the pointer across monitor bounds,
 and clamps the dropped position to the selected display. Releasing after a drag
 resumes the configured one-shot roaming schedule. A click triggers a short hop;
-a double-click triggers a larger bounded dash with an authored expression
-reaction and no keyboard focus theft. The tray can pause/resume it or return it
-to a safe screen corner.
+a double-click triggers a larger bounded dash and no keyboard focus theft. Each
+mascot keeps its production PNG artwork while procedural poses provide distinct
+walking, flying, dragging, reaction, and landing motion. Character-specific
+speeds, bounce, tilt, and target choices make their movement visibly different.
+Static idle periods use no continuous runtime frames; an occasional one-shot
+flourish adds life without turning the overlay into a permanent render loop.
+Motion preference changes apply immediately, and the tray can pause/resume the
+character or return it to a safe screen corner.
 
 ---
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1494..1499 for production
+  PNG-backed procedural poses, distinct mascot personalities, bounded varied
+  roam targets, one-shot idle flourishes, real-time frame pacing, DPI-aware drag
+  thresholds, and suppression of redundant native window movement.
 - **2026-07-29** — Added SDUC-451 and SDTEST-1491/1492 after clarifying that
   companions are standalone interactive desktop characters, not AI Dock art.
   The overlay now accepts direct dragging across displays, bounded click and

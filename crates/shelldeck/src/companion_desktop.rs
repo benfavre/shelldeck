@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, img, prelude::*, px, AnyWindowHandle, App, AppContext, Bounds, Context, Entity,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
-    Point, Render, Size, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind,
-    WindowOptions,
+    div, ease_in_out, img, prelude::*, px, Animation, AnimationExt, AnyWindowHandle, App,
+    AppContext, Bounds, Context, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, Pixels, Point, Render, SharedString, Size, Window, WindowBounds,
+    WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use shelldeck_core::ai::{
     ClippyConfig, CompanionCharacterId, CompanionMotionPreference, CompanionScale,
@@ -12,7 +12,7 @@ use shelldeck_core::ai::{
 };
 use shelldeck_core::companion::geometry::{Point2, Rect};
 use shelldeck_core::companion::simulation::{
-    AnimationFramePolicy, CharacterSimulation, CharacterSimulationState,
+    AnimationFramePolicy, CharacterSimulation, CharacterSimulationState, DeterministicRng,
 };
 
 const STEP: Duration = Duration::from_millis(33);
@@ -20,6 +20,9 @@ const STATIC_MARGIN: f32 = 24.0;
 const DRAG_THRESHOLD: f32 = 4.0;
 const CLICK_NUDGE: f32 = 112.0;
 const REACTION_DURATION: Duration = Duration::from_millis(650);
+const LANDING_DURATION: Duration = Duration::from_millis(320);
+const IDLE_FLOURISH_DURATION: Duration = Duration::from_millis(2_800);
+const IDLE_FLOURISH_DELAY: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompanionRuntimeCommand {
@@ -88,6 +91,8 @@ fn frame_elapsed_millis(last_tick: Option<Instant>, now: Instant) -> u64 {
 struct RuntimeSimulation {
     simulation: CharacterSimulation,
     display: DesktopDisplay,
+    character: CompanionCharacterId,
+    rng: DeterministicRng,
     logical_extent: f32,
     extent: f32,
     pending_ms: u64,
@@ -95,12 +100,18 @@ struct RuntimeSimulation {
 }
 
 impl RuntimeSimulation {
-    fn new(display: DesktopDisplay, logical_extent: f32) -> Self {
+    fn new(display: DesktopDisplay, logical_extent: f32, character: CompanionCharacterId) -> Self {
         let extent = desktop_coordinate_extent(logical_extent, display.scale_factor);
         let position = safe_corner(display.work_area, extent);
+        let profile = character_personality(character);
+        let mut simulation =
+            CharacterSimulation::new(display_label(display.id), to_point2(position));
+        simulation.config.speed_per_second = profile.base_speed;
         Self {
-            simulation: CharacterSimulation::new(display_label(display.id), to_point2(position)),
+            simulation,
             display,
+            character,
+            rng: DeterministicRng::seeded(character_seed(character)),
             logical_extent,
             extent,
             pending_ms: 0,
@@ -117,9 +128,12 @@ impl RuntimeSimulation {
 
     fn return_to_corner(&mut self) {
         self.pending_ms = 0;
+        self.simulation.config.speed_per_second =
+            character_personality(self.character).return_speed;
         self.simulation.state = CharacterSimulationState::ReturningToDock;
         self.simulation
             .set_target(to_point2(safe_corner(self.display.work_area, self.extent)));
+        self.simulation.state = CharacterSimulationState::ReturningToDock;
     }
 
     fn place_from_drag(&mut self, origin: Point<Pixels>, extent: f32) -> Point<Pixels> {
@@ -144,8 +158,18 @@ impl RuntimeSimulation {
             extent,
             click_count >= 2,
         );
+        let profile = character_personality(self.character);
+        self.simulation.config.speed_per_second = if click_count >= 2 {
+            profile.double_click_speed
+        } else {
+            profile.click_speed
+        };
         self.simulation.set_target(target);
-        self.simulation.state = CharacterSimulationState::Jumping;
+        self.simulation.state = if profile.airborne || click_count >= 2 {
+            CharacterSimulationState::Flying
+        } else {
+            CharacterSimulationState::Jumping
+        };
         self.pending_ms = 0;
         self.simulation.remember_action(if click_count >= 2 {
             "double-click-zoom"
@@ -165,18 +189,43 @@ impl RuntimeSimulation {
         if !self.simulation.can_start_action() {
             return;
         }
-        let bounds = self.display.work_area;
-        let left = f32::from(bounds.origin.x) + STATIC_MARGIN;
-        let right = f32::from(bounds.right()) - self.extent - STATIC_MARGIN;
-        let floor = f32::from(bounds.bottom()) - self.extent - STATIC_MARGIN;
-        let next_x = if self.simulation.position.x < (left + right) * 0.5 {
-            right
-        } else {
-            left
+        let Some(target) = self.next_playful_target() else {
+            return;
         };
-        self.simulation
-            .set_target(Point2::new(next_x, floor.max(f32::from(bounds.origin.y))));
-        self.simulation.remember_action("screen-edge-hop");
+        let profile = character_personality(self.character);
+        self.simulation.config.speed_per_second = target.speed;
+        self.simulation.set_target(target.point);
+        self.simulation.state = if profile.airborne || target.airborne {
+            CharacterSimulationState::Flying
+        } else {
+            CharacterSimulationState::Walking
+        };
+        self.simulation.remember_action(target.action_id);
+    }
+
+    fn next_playful_target(&mut self) -> Option<PlayfulTarget> {
+        let bounds = self.display.work_area;
+        let profile = character_personality(self.character);
+        let candidates = playful_targets(
+            self.character,
+            bounds,
+            self.extent,
+            self.simulation.position,
+            &mut self.rng,
+        );
+        let target_count = candidates.len();
+        let start_index = self.rng.choose_index(target_count).unwrap_or(0);
+        for offset in 0..target_count {
+            let index = (start_index + offset) % target_count;
+            let candidate = candidates[index];
+            if !self.simulation.action_on_cooldown(candidate.action_id) {
+                return Some(candidate.with_speed(profile, &mut self.rng));
+            }
+        }
+        candidates
+            .get(start_index)
+            .copied()
+            .map(|candidate| candidate.with_speed(profile, &mut self.rng))
     }
 
     fn climb_window(&mut self, window: Bounds<Pixels>) -> bool {
@@ -186,13 +235,16 @@ impl RuntimeSimulation {
         let Some(target) = window_top_target(window, self.display.work_area, self.extent) else {
             return false;
         };
+        self.simulation.config.speed_per_second = character_personality(self.character).climb_speed;
         self.simulation.set_target(target);
+        self.simulation.state = CharacterSimulationState::Climbing;
         self.simulation.remember_action("window-climb");
         true
     }
 
-    fn step_capped(&mut self, elapsed_ms: u64) -> bool {
+    fn step_capped(&mut self, elapsed_ms: u64) -> StepOutcome {
         let before = self.simulation.position;
+        let had_target = self.simulation.target.is_some();
         let step_ms = self.simulation.config.fixed_timestep_ms.max(1);
         let max_steps = u64::from(self.simulation.config.max_catch_up_steps);
         let max_budget_ms = step_ms.saturating_mul(max_steps);
@@ -206,7 +258,10 @@ impl RuntimeSimulation {
             self.pending_ms.saturating_sub(consumed_ms)
         };
         self.steps += u64::from(steps);
-        self.simulation.position != before
+        StepOutcome {
+            moved: self.simulation.position != before,
+            landed: had_target && self.simulation.target.is_none(),
+        }
     }
 
     fn position(&self) -> Point<Pixels> {
@@ -264,15 +319,22 @@ impl DesktopCharacterRuntime {
         main_window: AnyWindowHandle,
         cx: &mut App,
     ) {
+        let was_paused = self.diagnostics.paused;
+        let was_reduced = reduced_motion_for_config(&self.config);
+        let previous_movement = self.config.appearance.desktop.movement;
         let recreate = self.config.appearance.character_id() != config.appearance.character_id()
             || self.config.appearance.scale != config.appearance.scale;
         self.config = config;
+        let reduced_motion = reduced_motion_for_config(&self.config);
+        let motion_policy_changed = was_reduced != reduced_motion
+            || previous_movement != self.config.appearance.desktop.movement;
         self.roam_generation = self.roam_generation.wrapping_add(1);
         self.roam_timer_scheduled = false;
         if recreate {
             self.close_overlay(cx);
         }
         self.diagnostics = detect_capabilities(cx, runtime_route(&self.config));
+        self.diagnostics.paused = was_paused;
         if self.diagnostics.tier == OverlayCapabilityTier::ScreenEdgeOnly
             && self.config.appearance.desktop.allow_window_climbing
         {
@@ -284,6 +346,17 @@ impl DesktopCharacterRuntime {
             && self.diagnostics.tier != OverlayCapabilityTier::Unavailable
         {
             self.ensure_overlay(runtime_entity.clone(), main_window, cx);
+            if !recreate && motion_policy_changed {
+                if let Some(sim) = &mut self.simulation {
+                    if reduced_motion || self.diagnostics.paused {
+                        sim.pause();
+                    } else {
+                        sim.playful_target();
+                    }
+                }
+                self.last_tick = None;
+                self.request_frame(cx);
+            }
             self.schedule_roam(runtime_entity, cx);
         } else {
             self.close_overlay(cx);
@@ -519,7 +592,8 @@ impl DesktopCharacterRuntime {
             return;
         };
         let window_size = character_window_size(self.config.appearance.scale);
-        self.simulation = Some(RuntimeSimulation::new(display, window_size));
+        let character = self.config.appearance.character_id();
+        self.simulation = Some(RuntimeSimulation::new(display, window_size, character));
         if let Some(sim) = &mut self.simulation {
             if !matches!(
                 self.config.appearance.motion,
@@ -552,9 +626,11 @@ impl DesktopCharacterRuntime {
             app_id: Some("shelldeck-character".to_string()),
             ..Default::default()
         };
-        let character = self.config.appearance.character_id();
+        let reduced_motion = reduced_motion_for_config(&self.config);
         match cx.open_window(options, move |_window, cx| {
-            cx.new(|_cx| CharacterOverlayView::new(main_window, character, runtime_entity))
+            cx.new(|_cx| {
+                CharacterOverlayView::new(main_window, character, reduced_motion, runtime_entity)
+            })
         }) {
             Ok(handle) => {
                 self.overlay = Some(handle);
@@ -608,19 +684,18 @@ impl DesktopCharacterRuntime {
     }
 
     fn on_frame(&mut self, cx: &mut App) -> CharacterFrameState {
-        let reduced_motion = matches!(
-            self.config.appearance.motion,
-            CompanionMotionPreference::Reduced | CompanionMotionPreference::Off
-        ) || self.config.appearance.desktop.movement
-            == DesktopCompanionMovement::Still;
+        let reduced_motion = reduced_motion_for_config(&self.config);
         if self.diagnostics.paused || reduced_motion {
             if let Some(sim) = &mut self.simulation {
                 sim.pause();
             }
-            return self.frame_state();
+            return self.frame_state(false, false, true);
         }
+        let mut landed = false;
+        let mut moved = false;
         let displays = desktop_displays(cx);
         if let Some(sim) = &mut self.simulation {
+            let before = sim.position();
             let current_display = displays
                 .iter()
                 .copied()
@@ -633,35 +708,50 @@ impl DesktopCharacterRuntime {
             let now = Instant::now();
             let elapsed_ms = frame_elapsed_millis(self.last_tick, now);
             self.last_tick = Some(now);
-            let moved = sim.step_capped(elapsed_ms);
+            let outcome = sim.step_capped(elapsed_ms);
             self.diagnostics.simulation_steps = sim.steps;
+            moved = outcome.moved || sim.position() != before;
             if moved {
                 self.diagnostics.native_moves += 1;
             }
+            landed = outcome.landed;
         }
-        self.frame_state()
+        self.frame_state(moved, landed, reduced_motion)
     }
 
-    fn frame_state(&self) -> CharacterFrameState {
-        let reduced_motion = matches!(
-            self.config.appearance.motion,
-            CompanionMotionPreference::Reduced | CompanionMotionPreference::Off
-        ) || self.config.appearance.desktop.movement
-            == DesktopCompanionMovement::Still;
+    fn frame_state(&self, moved: bool, landed: bool, reduced_motion: bool) -> CharacterFrameState {
         CharacterFrameState {
             position: self.simulation.as_ref().map(|sim| sim.position()),
+            moved,
             moving: self
                 .simulation
                 .as_ref()
                 .is_some_and(|sim| sim.moving(reduced_motion)),
+            runtime_visual_state: self
+                .simulation
+                .as_ref()
+                .map(runtime_visual_state)
+                .unwrap_or(CharacterVisualState::Idle),
+            landed,
+            reduced_motion,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StepOutcome {
+    moved: bool,
+    landed: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CharacterFrameState {
     position: Option<Point<Pixels>>,
+    moved: bool,
     moving: bool,
+    runtime_visual_state: CharacterVisualState,
+    landed: bool,
+    reduced_motion: bool,
 }
 
 pub struct CharacterOverlayView {
@@ -671,7 +761,13 @@ pub struct CharacterOverlayView {
     frame_scheduled: bool,
     drag: Option<CharacterDrag>,
     visual_state: CharacterVisualState,
+    pose_started_at: Instant,
+    facing: f32,
+    last_origin: Option<Point<Pixels>>,
+    reduced_motion: bool,
     reaction_generation: u64,
+    idle_timer_scheduled: bool,
+    idle_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -684,14 +780,19 @@ struct CharacterDrag {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CharacterVisualState {
     Idle,
+    IdleFlourish,
+    Walking,
+    Flying,
     Dragging,
     Reacting,
+    Landing,
 }
 
 impl CharacterOverlayView {
     fn new(
         main_window: AnyWindowHandle,
         character: CompanionCharacterId,
+        reduced_motion: bool,
         runtime: Entity<DesktopCharacterRuntime>,
     ) -> Self {
         Self {
@@ -701,8 +802,71 @@ impl CharacterOverlayView {
             frame_scheduled: false,
             drag: None,
             visual_state: CharacterVisualState::Idle,
+            pose_started_at: Instant::now(),
+            facing: 1.0,
+            last_origin: None,
+            reduced_motion,
             reaction_generation: 0,
+            idle_timer_scheduled: false,
+            idle_generation: 0,
         }
+    }
+
+    fn set_visual_state(&mut self, state: CharacterVisualState) {
+        if self.visual_state != state {
+            self.visual_state = state;
+            self.pose_started_at = Instant::now();
+        }
+    }
+
+    fn cancel_idle_flourish(&mut self) {
+        self.idle_generation = self.idle_generation.wrapping_add(1);
+        self.idle_timer_scheduled = false;
+    }
+
+    fn schedule_idle_flourish(&mut self, cx: &mut Context<Self>) {
+        if self.reduced_motion
+            || self.idle_timer_scheduled
+            || self.drag.is_some()
+            || self.visual_state != CharacterVisualState::Idle
+        {
+            return;
+        }
+        self.idle_timer_scheduled = true;
+        self.idle_generation = self.idle_generation.wrapping_add(1);
+        let generation = self.idle_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(IDLE_FLOURISH_DELAY).await;
+            let _ = this.update(cx, |view, cx| {
+                if view.idle_generation != generation {
+                    return;
+                }
+                view.idle_timer_scheduled = false;
+                if view.reduced_motion
+                    || view.drag.is_some()
+                    || view.visual_state != CharacterVisualState::Idle
+                {
+                    return;
+                }
+                view.set_visual_state(CharacterVisualState::IdleFlourish);
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(IDLE_FLOURISH_DURATION).await;
+                    let _ = this.update(cx, |view, cx| {
+                        if view.idle_generation == generation
+                            && view.drag.is_none()
+                            && view.visual_state == CharacterVisualState::IdleFlourish
+                        {
+                            view.set_visual_state(CharacterVisualState::Idle);
+                            view.schedule_idle_flourish(cx);
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            });
+        })
+        .detach();
     }
 
     fn handle_mouse_down(
@@ -720,7 +884,8 @@ impl CharacterOverlayView {
                 .unwrap_or(window.bounds().origin),
             moved: false,
         });
-        self.visual_state = CharacterVisualState::Dragging;
+        self.cancel_idle_flourish();
+        self.set_visual_state(CharacterVisualState::Dragging);
         self.reaction_generation = self.reaction_generation.wrapping_add(1);
         self.runtime
             .update(cx, |runtime, _cx| runtime.begin_user_drag());
@@ -751,10 +916,16 @@ impl CharacterOverlayView {
             drag.grab_offset,
             desktop_pointer_scale(window.scale_factor()),
         );
-        let dx = f32::from(origin.x) - f32::from(drag.start_origin.x);
-        let dy = f32::from(origin.y) - f32::from(drag.start_origin.y);
-        drag.moved |= dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD;
+        drag.moved |= drag_crossed_threshold(
+            drag.start_origin,
+            origin,
+            desktop_pointer_scale(window.scale_factor()),
+        );
         self.drag = Some(drag);
+        if !drag.moved {
+            cx.stop_propagation();
+            return;
+        }
         let position = self
             .runtime
             .update(cx, |runtime, cx| runtime.drag_to(origin, cx));
@@ -784,34 +955,75 @@ impl CharacterOverlayView {
             self.runtime.update(cx, |runtime, cx| {
                 runtime.finish_user_drag(runtime_entity.clone(), cx)
             });
+            self.show_landing(window, cx);
             false
         } else {
             self.runtime.update(cx, |runtime, cx| {
                 runtime.react_to_click(event.click_count, runtime_entity.clone(), cx)
             })
         };
-        self.show_reaction(cx);
-        if started_motion {
+        if !drag.moved {
+            self.show_reaction(window, cx);
+        }
+        if started_motion || visual_state_needs_frames(self.visual_state, self.reduced_motion) {
             self.schedule_frame(window, cx);
         }
         cx.stop_propagation();
     }
 
-    fn show_reaction(&mut self, cx: &mut Context<Self>) {
-        self.visual_state = CharacterVisualState::Reacting;
+    fn show_reaction(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_idle_flourish();
+        self.set_visual_state(CharacterVisualState::Reacting);
         self.reaction_generation = self.reaction_generation.wrapping_add(1);
         let generation = self.reaction_generation;
         cx.notify();
+        self.schedule_frame(window, cx);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REACTION_DURATION).await;
             let _ = this.update(cx, |view, cx| {
                 if view.reaction_generation == generation && view.drag.is_none() {
-                    view.visual_state = CharacterVisualState::Idle;
+                    view.set_visual_state(CharacterVisualState::Idle);
+                    view.schedule_idle_flourish(cx);
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    fn show_landing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reduced_motion {
+            self.set_visual_state(CharacterVisualState::Idle);
+            cx.notify();
+            return;
+        }
+        self.cancel_idle_flourish();
+        self.set_visual_state(CharacterVisualState::Landing);
+        self.reaction_generation = self.reaction_generation.wrapping_add(1);
+        let generation = self.reaction_generation;
+        cx.notify();
+        self.schedule_frame(window, cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LANDING_DURATION).await;
+            let _ = this.update(cx, |view, cx| {
+                if view.reaction_generation == generation && view.drag.is_none() {
+                    view.set_visual_state(CharacterVisualState::Idle);
+                    view.schedule_idle_flourish(cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn update_facing(&mut self, position: Point<Pixels>) {
+        if let Some(last) = self.last_origin {
+            let dx = f32::from(position.x) - f32::from(last.x);
+            if dx.abs() > 0.5 {
+                self.facing = dx.signum();
+            }
+        }
+        self.last_origin = Some(position);
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -822,16 +1034,37 @@ impl CharacterOverlayView {
         cx.on_next_frame(window, |view, window, cx| {
             view.frame_scheduled = false;
             let state = view.runtime.update(cx, |runtime, cx| runtime.on_frame(cx));
+            view.reduced_motion = state.reduced_motion;
             if let Some(position) = state.position {
-                if let Err(error) = window.set_window_origin(position) {
-                    tracing::warn!(error = %error, "desktop character native movement failed");
-                    view.runtime.update(cx, |runtime, _cx| {
-                        runtime.record_movement_error(error.to_string())
-                    });
+                let must_apply_origin =
+                    should_apply_native_origin(state.moved, view.last_origin.is_some());
+                if must_apply_origin {
+                    view.update_facing(position);
+                    if let Err(error) = window.set_window_origin(position) {
+                        tracing::warn!(error = %error, "desktop character native movement failed");
+                        view.runtime.update(cx, |runtime, _cx| {
+                            runtime.record_movement_error(error.to_string())
+                        });
+                    }
                 }
             }
-            if state.moving {
+            if view.drag.is_none()
+                && !matches!(view.visual_state, CharacterVisualState::Reacting)
+                && !matches!(view.visual_state, CharacterVisualState::Landing)
+                && view.visual_state != state.runtime_visual_state
+            {
+                if state.runtime_visual_state != CharacterVisualState::Idle {
+                    view.cancel_idle_flourish();
+                }
+                view.set_visual_state(state.runtime_visual_state);
+            }
+            if state.landed && view.drag.is_none() {
+                view.show_landing(window, cx);
+            }
+            if should_schedule_next_frame(state.moving, view.visual_state, state.reduced_motion) {
                 view.schedule_frame(window, cx);
+            } else if view.visual_state == CharacterVisualState::Idle {
+                view.schedule_idle_flourish(cx);
             }
             cx.notify();
         });
@@ -841,8 +1074,72 @@ impl CharacterOverlayView {
 impl Render for CharacterOverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = self.main_window;
+        let phase = procedural_pose_phase(self.pose_started_at.elapsed());
+        let pose = character_pose(self.character, self.visual_state, phase, self.facing);
+        let mascot_base = div()
+            .absolute()
+            .inset_0()
+            .top(px(pose.float_y))
+            .scale_xy(pose.scale_x * self.facing, pose.scale_y)
+            .rotate(pose.rotation_deg)
+            .transform_origin(0.5, 0.82)
+            .opacity(pose.opacity)
+            .child(
+                img(character_idle_asset(self.character))
+                    .w_full()
+                    .h_full()
+                    .object_fit(ObjectFit::Contain),
+            );
+        let mascot =
+            if !self.reduced_motion && self.visual_state == CharacterVisualState::IdleFlourish {
+                mascot_base
+                    .with_animation(
+                        SharedString::from(format!(
+                            "desktop-character-{:?}-idle-flourish-{}",
+                            self.character, self.idle_generation
+                        )),
+                        Animation::new(IDLE_FLOURISH_DURATION).with_easing(ease_in_out),
+                        |element, delta| {
+                            let wave = (delta * std::f32::consts::TAU).sin();
+                            let blink = if delta > 0.78 && delta < 0.84 {
+                                0.975
+                            } else {
+                                1.0
+                            };
+                            element
+                                .top(px(wave * -3.0))
+                                .scale_xy(1.0 + wave * 0.012, blink)
+                                .rotate(wave * 1.8)
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                mascot_base.into_any_element()
+            };
+
+        let shadow = div()
+            .absolute()
+            .left(px(26.0))
+            .right(px(26.0))
+            .bottom(px(9.0))
+            .h(px(15.0))
+            .rounded_full()
+            .bg(gpui::black().opacity(pose.shadow_opacity))
+            .scale_xy(pose.shadow_scale, 1.0)
+            .transform_origin(0.5, 0.5);
+
+        let sparkle = div()
+            .absolute()
+            .right(px(20.0 + pose.sparkle_offset))
+            .top(px(18.0 - pose.float_y * 0.35))
+            .size(px(13.0))
+            .rounded_full()
+            .bg(gpui::white().opacity(pose.sparkle_opacity))
+            .scale(pose.sparkle_scale);
+
         let character = div()
             .id("desktop-character-interaction-surface")
+            .relative()
             .size_full()
             .cursor_pointer()
             .on_mouse_down(
@@ -860,18 +1157,367 @@ impl Render for CharacterOverlayView {
                     view.handle_mouse_up(event, window, cx)
                 }),
             )
-            .child(
-                img(character_visual_asset(self.character, self.visual_state))
-                    .w_full()
-                    .h_full()
-                    .object_fit(ObjectFit::Contain),
-            );
+            .child(shadow)
+            .child(mascot)
+            .child(sparkle);
 
         div()
             .size_full()
             .bg(gpui::transparent_black())
             .child(character)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CharacterPersonality {
+    base_speed: f32,
+    return_speed: f32,
+    click_speed: f32,
+    double_click_speed: f32,
+    climb_speed: f32,
+    roam_speed_min: f32,
+    roam_speed_max: f32,
+    vertical_min: f32,
+    vertical_max: f32,
+    bounce: f32,
+    stride: f32,
+    tilt: f32,
+    airborne: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlayfulTarget {
+    point: Point2,
+    action_id: &'static str,
+    speed: f32,
+    airborne: bool,
+}
+
+impl PlayfulTarget {
+    fn with_speed(mut self, profile: CharacterPersonality, rng: &mut DeterministicRng) -> Self {
+        self.speed = rng_f32(rng, profile.roam_speed_min, profile.roam_speed_max);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CharacterPose {
+    float_y: f32,
+    scale_x: f32,
+    scale_y: f32,
+    rotation_deg: f32,
+    opacity: f32,
+    shadow_scale: f32,
+    shadow_opacity: f32,
+    sparkle_opacity: f32,
+    sparkle_scale: f32,
+    sparkle_offset: f32,
+}
+
+fn character_personality(character: CompanionCharacterId) -> CharacterPersonality {
+    match character {
+        CompanionCharacterId::None | CompanionCharacterId::Clippy => CharacterPersonality {
+            base_speed: 132.0,
+            return_speed: 158.0,
+            click_speed: 185.0,
+            double_click_speed: 270.0,
+            climb_speed: 118.0,
+            roam_speed_min: 112.0,
+            roam_speed_max: 168.0,
+            vertical_min: 0.72,
+            vertical_max: 0.95,
+            bounce: 8.0,
+            stride: 1.0,
+            tilt: 5.5,
+            airborne: false,
+        },
+        CompanionCharacterId::Shelly => CharacterPersonality {
+            base_speed: 104.0,
+            return_speed: 132.0,
+            click_speed: 150.0,
+            double_click_speed: 218.0,
+            climb_speed: 94.0,
+            roam_speed_min: 86.0,
+            roam_speed_max: 126.0,
+            vertical_min: 0.76,
+            vertical_max: 0.96,
+            bounce: 5.5,
+            stride: 0.72,
+            tilt: 3.5,
+            airborne: false,
+        },
+        CompanionCharacterId::Spark => CharacterPersonality {
+            base_speed: 184.0,
+            return_speed: 220.0,
+            click_speed: 245.0,
+            double_click_speed: 340.0,
+            climb_speed: 150.0,
+            roam_speed_min: 172.0,
+            roam_speed_max: 252.0,
+            vertical_min: 0.18,
+            vertical_max: 0.68,
+            bounce: 14.0,
+            stride: 1.48,
+            tilt: 9.0,
+            airborne: true,
+        },
+        CompanionCharacterId::Byte => CharacterPersonality {
+            base_speed: 148.0,
+            return_speed: 170.0,
+            click_speed: 192.0,
+            double_click_speed: 275.0,
+            climb_speed: 142.0,
+            roam_speed_min: 122.0,
+            roam_speed_max: 188.0,
+            vertical_min: 0.48,
+            vertical_max: 0.88,
+            bounce: 6.5,
+            stride: 1.22,
+            tilt: 4.5,
+            airborne: false,
+        },
+        CompanionCharacterId::Orbit => CharacterPersonality {
+            base_speed: 124.0,
+            return_speed: 154.0,
+            click_speed: 178.0,
+            double_click_speed: 250.0,
+            climb_speed: 118.0,
+            roam_speed_min: 112.0,
+            roam_speed_max: 158.0,
+            vertical_min: 0.22,
+            vertical_max: 0.62,
+            bounce: 11.0,
+            stride: 0.86,
+            tilt: 7.0,
+            airborne: true,
+        },
+        CompanionCharacterId::Nox => CharacterPersonality {
+            base_speed: 116.0,
+            return_speed: 146.0,
+            click_speed: 164.0,
+            double_click_speed: 232.0,
+            climb_speed: 112.0,
+            roam_speed_min: 96.0,
+            roam_speed_max: 148.0,
+            vertical_min: 0.54,
+            vertical_max: 0.92,
+            bounce: 4.0,
+            stride: 0.92,
+            tilt: 6.0,
+            airborne: false,
+        },
+    }
+}
+
+fn character_seed(character: CompanionCharacterId) -> u64 {
+    match character {
+        CompanionCharacterId::None | CompanionCharacterId::Clippy => 0xC11F_F11E,
+        CompanionCharacterId::Shelly => 0x5E11_0001,
+        CompanionCharacterId::Spark => 0x5A11_5A11,
+        CompanionCharacterId::Byte => 0xB17E_B17E,
+        CompanionCharacterId::Orbit => 0x0B17_0001,
+        CompanionCharacterId::Nox => 0xA10C_0001,
+    }
+}
+
+fn rng_f32(rng: &mut DeterministicRng, min: f32, max: f32) -> f32 {
+    let unit = rng.next_u32() as f32 / u32::MAX as f32;
+    min + (max - min) * unit
+}
+
+fn playful_targets(
+    character: CompanionCharacterId,
+    bounds: Bounds<Pixels>,
+    extent: f32,
+    position: Point2,
+    rng: &mut DeterministicRng,
+) -> Vec<PlayfulTarget> {
+    let profile = character_personality(character);
+    let min_x = f32::from(bounds.origin.x) + STATIC_MARGIN;
+    let max_x = (f32::from(bounds.right()) - extent - STATIC_MARGIN).max(min_x);
+    let min_y = f32::from(bounds.origin.y) + STATIC_MARGIN;
+    let max_y = (f32::from(bounds.bottom()) - extent - STATIC_MARGIN).max(min_y);
+    let width = (max_x - min_x).max(1.0);
+    let height = (max_y - min_y).max(1.0);
+    let left = min_x + width * rng_f32(rng, 0.03, 0.18);
+    let right = min_x + width * rng_f32(rng, 0.82, 0.97);
+    let center = min_x + width * rng_f32(rng, 0.40, 0.60);
+    let air_y = min_y + height * rng_f32(rng, profile.vertical_min, profile.vertical_max);
+    let floor_y = max_y;
+    let far_x = if position.x < (min_x + max_x) * 0.5 {
+        right
+    } else {
+        left
+    };
+    let near_x = (position.x + rng_f32(rng, -width * 0.28, width * 0.28)).clamp(min_x, max_x);
+
+    vec![
+        PlayfulTarget {
+            point: Point2::new(far_x, floor_y),
+            action_id: "roam-edge-scamp",
+            speed: profile.base_speed,
+            airborne: false,
+        },
+        PlayfulTarget {
+            point: Point2::new(center, air_y),
+            action_id: "roam-float-arc",
+            speed: profile.base_speed,
+            airborne: true,
+        },
+        PlayfulTarget {
+            point: Point2::new(near_x, (air_y * 0.45 + floor_y * 0.55).clamp(min_y, max_y)),
+            action_id: "roam-curious-peek",
+            speed: profile.base_speed,
+            airborne: profile.airborne,
+        },
+        PlayfulTarget {
+            point: Point2::new(if far_x == left { right } else { left }, floor_y),
+            action_id: "roam-corner-loop",
+            speed: profile.base_speed,
+            airborne: false,
+        },
+    ]
+}
+
+fn character_pose(
+    character: CompanionCharacterId,
+    state: CharacterVisualState,
+    phase: f32,
+    facing: f32,
+) -> CharacterPose {
+    let profile = character_personality(character);
+    let wave = phase.sin();
+    let quick = (phase * profile.stride * 1.8).sin();
+    let base = CharacterPose {
+        float_y: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+        rotation_deg: 0.0,
+        opacity: 1.0,
+        shadow_scale: 0.72,
+        shadow_opacity: 0.22,
+        sparkle_opacity: 0.0,
+        sparkle_scale: 0.5,
+        sparkle_offset: 0.0,
+    };
+    match state {
+        CharacterVisualState::Idle => CharacterPose {
+            shadow_scale: 0.70,
+            shadow_opacity: 0.18,
+            ..base
+        },
+        CharacterVisualState::IdleFlourish => CharacterPose {
+            shadow_scale: 0.70,
+            shadow_opacity: 0.18,
+            ..base
+        },
+        CharacterVisualState::Walking => CharacterPose {
+            float_y: -quick.abs() * profile.bounce,
+            scale_x: 1.0 + quick.abs() * 0.035,
+            scale_y: 1.0 - quick.abs() * 0.03,
+            rotation_deg: facing * quick * profile.tilt,
+            shadow_scale: 0.62 + quick.abs() * 0.18,
+            shadow_opacity: 0.24 - quick.abs() * 0.06,
+            sparkle_opacity: 0.08 + quick.abs() * 0.12,
+            sparkle_scale: 0.45 + quick.abs() * 0.25,
+            sparkle_offset: quick * 5.0,
+            ..base
+        },
+        CharacterVisualState::Flying => CharacterPose {
+            float_y: -profile.bounce - wave * profile.bounce * 0.42,
+            scale_x: 1.0 + wave * 0.025,
+            scale_y: 1.0 - wave * 0.018,
+            rotation_deg: facing * (profile.tilt + wave * profile.tilt * 0.65),
+            shadow_scale: 0.48 + wave.abs() * 0.10,
+            shadow_opacity: 0.13,
+            sparkle_opacity: 0.24 + wave.abs() * 0.22,
+            sparkle_scale: 0.65 + wave.abs() * 0.30,
+            sparkle_offset: wave * 9.0,
+            ..base
+        },
+        CharacterVisualState::Dragging => CharacterPose {
+            float_y: 5.0 + wave * 1.5,
+            scale_x: 1.08,
+            scale_y: 0.91,
+            rotation_deg: facing * (6.0 + wave * 2.0),
+            shadow_scale: 0.82,
+            shadow_opacity: 0.28,
+            sparkle_opacity: 0.18,
+            sparkle_scale: 0.65,
+            ..base
+        },
+        CharacterVisualState::Reacting => CharacterPose {
+            float_y: -12.0 - quick.abs() * 10.0,
+            scale_x: 1.08 + quick.abs() * 0.05,
+            scale_y: 0.96 + quick.abs() * 0.05,
+            rotation_deg: facing * quick * profile.tilt * 1.35,
+            shadow_scale: 0.56 + quick.abs() * 0.12,
+            shadow_opacity: 0.16,
+            sparkle_opacity: 0.50 + quick.abs() * 0.35,
+            sparkle_scale: 0.82 + quick.abs() * 0.28,
+            sparkle_offset: quick * 12.0,
+            ..base
+        },
+        CharacterVisualState::Landing => CharacterPose {
+            float_y: 3.5 - quick.abs() * 2.0,
+            scale_x: 1.10 - quick.abs() * 0.04,
+            scale_y: 0.88 + quick.abs() * 0.06,
+            rotation_deg: facing * wave * profile.tilt * 0.42,
+            shadow_scale: 0.84,
+            shadow_opacity: 0.30,
+            sparkle_opacity: 0.18 + quick.abs() * 0.18,
+            sparkle_scale: 0.70,
+            sparkle_offset: quick * 6.0,
+            ..base
+        },
+    }
+}
+
+fn runtime_visual_state(sim: &RuntimeSimulation) -> CharacterVisualState {
+    match sim.simulation.state {
+        CharacterSimulationState::Walking
+        | CharacterSimulationState::Climbing
+        | CharacterSimulationState::ReturningToDock => CharacterVisualState::Walking,
+        CharacterSimulationState::Jumping | CharacterSimulationState::Flying => {
+            CharacterVisualState::Flying
+        }
+        CharacterSimulationState::Landing => CharacterVisualState::Landing,
+        _ => CharacterVisualState::Idle,
+    }
+}
+
+fn visual_state_needs_frames(state: CharacterVisualState, reduced_motion: bool) -> bool {
+    !reduced_motion
+        && matches!(
+            state,
+            CharacterVisualState::Walking
+                | CharacterVisualState::Flying
+                | CharacterVisualState::Reacting
+                | CharacterVisualState::Landing
+        )
+}
+
+fn should_schedule_next_frame(
+    moving: bool,
+    visual_state: CharacterVisualState,
+    reduced_motion: bool,
+) -> bool {
+    !reduced_motion && (moving || visual_state_needs_frames(visual_state, reduced_motion))
+}
+
+fn should_apply_native_origin(moved: bool, has_last_origin: bool) -> bool {
+    moved || !has_last_origin
+}
+
+fn procedural_pose_phase(elapsed: Duration) -> f32 {
+    elapsed.as_secs_f32() * std::f32::consts::TAU
+}
+
+fn reduced_motion_for_config(config: &ClippyConfig) -> bool {
+    matches!(
+        config.appearance.motion,
+        CompanionMotionPreference::Reduced | CompanionMotionPreference::Off
+    ) || config.appearance.desktop.movement == DesktopCompanionMovement::Still
 }
 
 fn detect_capabilities(cx: &App, route: RuntimeRoute) -> OverlayDiagnostics {
@@ -959,6 +1605,21 @@ fn drag_origin(
         window_origin.x + (pointer_position.x - grab_offset.x) * pointer_scale,
         window_origin.y + (pointer_position.y - grab_offset.y) * pointer_scale,
     )
+}
+
+fn drag_threshold_squared(pointer_scale: f32) -> f32 {
+    let threshold = DRAG_THRESHOLD * pointer_scale.max(1.0);
+    threshold * threshold
+}
+
+fn drag_crossed_threshold(
+    start_origin: Point<Pixels>,
+    current_origin: Point<Pixels>,
+    pointer_scale: f32,
+) -> bool {
+    let dx = f32::from(current_origin.x) - f32::from(start_origin.x);
+    let dy = f32::from(current_origin.y) - f32::from(start_origin.y);
+    dx * dx + dy * dy >= drag_threshold_squared(pointer_scale)
 }
 
 #[cfg(target_os = "windows")]
@@ -1131,33 +1792,12 @@ fn character_window_size(scale: CompanionScale) -> f32 {
     character_render_size(scale)
 }
 
+#[cfg(test)]
 fn character_visual_asset(
     character: CompanionCharacterId,
-    state: CharacterVisualState,
+    _state: CharacterVisualState,
 ) -> &'static str {
-    match state {
-        CharacterVisualState::Idle => character_idle_asset(character),
-        CharacterVisualState::Dragging => match character {
-            CompanionCharacterId::None | CompanionCharacterId::Clippy => {
-                "characters/clippy/listening.svg"
-            }
-            CompanionCharacterId::Shelly => "characters/shelly/listening.svg",
-            CompanionCharacterId::Spark => "characters/spark/listening.svg",
-            CompanionCharacterId::Byte => "characters/byte/listening.svg",
-            CompanionCharacterId::Orbit => "characters/orbit/listening.svg",
-            CompanionCharacterId::Nox => "characters/nox/listening.svg",
-        },
-        CharacterVisualState::Reacting => match character {
-            CompanionCharacterId::None | CompanionCharacterId::Clippy => {
-                "characters/clippy/success.svg"
-            }
-            CompanionCharacterId::Shelly => "characters/shelly/success.svg",
-            CompanionCharacterId::Spark => "characters/spark/success.svg",
-            CompanionCharacterId::Byte => "characters/byte/success.svg",
-            CompanionCharacterId::Orbit => "characters/orbit/success.svg",
-            CompanionCharacterId::Nox => "characters/nox/success.svg",
-        },
-    }
+    character_idle_asset(character)
 }
 
 #[cfg(target_os = "linux")]
@@ -1218,8 +1858,11 @@ mod tests {
     // SDTEST-1479
     #[test]
     fn runtime_uses_core_simulation_and_clamps_after_monitor_removal() {
-        let mut sim =
-            RuntimeSimulation::new(display(), character_window_size(CompanionScale::Medium));
+        let mut sim = RuntimeSimulation::new(
+            display(),
+            character_window_size(CompanionScale::Medium),
+            CompanionCharacterId::Clippy,
+        );
         sim.simulation.position = Point2::new(2000.0, 2000.0);
         let smaller = DesktopDisplay {
             bounds: Bounds {
@@ -1239,8 +1882,11 @@ mod tests {
     // SDTEST-1480
     #[test]
     fn paused_and_reduced_motion_request_no_continuous_frames() {
-        let mut sim =
-            RuntimeSimulation::new(display(), character_window_size(CompanionScale::Medium));
+        let mut sim = RuntimeSimulation::new(
+            display(),
+            character_window_size(CompanionScale::Medium),
+            CompanionCharacterId::Clippy,
+        );
         sim.playful_target();
         assert!(sim.moving(false));
         assert!(!sim.moving(true));
@@ -1261,12 +1907,81 @@ mod tests {
         );
         assert_eq!(
             character_visual_asset(CompanionCharacterId::Orbit, CharacterVisualState::Dragging),
-            "characters/orbit/listening.svg"
+            "characters/orbit/idle.png"
         );
         assert_eq!(
             character_visual_asset(CompanionCharacterId::Nox, CharacterVisualState::Reacting),
-            "characters/nox/success.svg"
+            "characters/nox/idle.png"
         );
+    }
+
+    // SDTEST-1494
+    #[test]
+    fn procedural_pose_values_stay_inside_safe_visual_bounds() {
+        let characters = [
+            CompanionCharacterId::Clippy,
+            CompanionCharacterId::Shelly,
+            CompanionCharacterId::Spark,
+            CompanionCharacterId::Byte,
+            CompanionCharacterId::Orbit,
+            CompanionCharacterId::Nox,
+        ];
+        let states = [
+            CharacterVisualState::Idle,
+            CharacterVisualState::IdleFlourish,
+            CharacterVisualState::Walking,
+            CharacterVisualState::Flying,
+            CharacterVisualState::Dragging,
+            CharacterVisualState::Reacting,
+            CharacterVisualState::Landing,
+        ];
+
+        for character in characters {
+            for state in states {
+                for phase in [0.0, 0.6, 1.4, 2.2, 3.1, 4.7] {
+                    let pose = character_pose(character, state, phase, 1.0);
+                    assert!(pose.float_y >= -26.0 && pose.float_y <= 7.0, "{pose:?}");
+                    assert!(pose.scale_x >= 0.92 && pose.scale_x <= 1.15, "{pose:?}");
+                    assert!(pose.scale_y >= 0.86 && pose.scale_y <= 1.08, "{pose:?}");
+                    assert!(pose.rotation_deg.abs() <= 22.0, "{pose:?}");
+                    assert!(pose.opacity >= 0.0 && pose.opacity <= 1.0, "{pose:?}");
+                    assert!(
+                        pose.sparkle_opacity >= 0.0 && pose.sparkle_opacity <= 0.9,
+                        "{pose:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // SDTEST-1495
+    #[test]
+    fn character_personalities_are_visibly_and_kinetically_distinct() {
+        let shelly = character_personality(CompanionCharacterId::Shelly);
+        let spark = character_personality(CompanionCharacterId::Spark);
+        let orbit = character_personality(CompanionCharacterId::Orbit);
+        let nox = character_personality(CompanionCharacterId::Nox);
+
+        assert!(spark.airborne);
+        assert!(orbit.airborne);
+        assert!(!shelly.airborne);
+        assert!(spark.roam_speed_min > shelly.roam_speed_max);
+        assert!(nox.bounce < spark.bounce);
+
+        let shelly_walk = character_pose(
+            CompanionCharacterId::Shelly,
+            CharacterVisualState::Walking,
+            1.25,
+            1.0,
+        );
+        let spark_flight = character_pose(
+            CompanionCharacterId::Spark,
+            CharacterVisualState::Flying,
+            1.25,
+            1.0,
+        );
+        assert!(spark_flight.float_y < shelly_walk.float_y);
+        assert!(spark_flight.rotation_deg.abs() > shelly_walk.rotation_deg.abs());
     }
 
     // SDTEST-1485
@@ -1305,13 +2020,13 @@ mod tests {
         assert_eq!(frame_elapsed_millis(Some(first), first), 0);
 
         let extent = character_window_size(CompanionScale::Medium);
-        let mut sim = RuntimeSimulation::new(display(), extent);
+        let mut sim = RuntimeSimulation::new(display(), extent, CompanionCharacterId::Clippy);
         let start = sim.simulation.position;
         sim.simulation
             .set_target(Point2::new(start.x - 100.0, start.y));
-        assert!(!sim.step_capped(16));
+        assert!(!sim.step_capped(16).moved);
         assert_eq!(sim.pending_ms, 16);
-        assert!(sim.step_capped(17));
+        assert!(sim.step_capped(17).moved);
         assert_eq!(sim.pending_ms, 0);
     }
 
@@ -1378,7 +2093,7 @@ mod tests {
     #[test]
     fn clicks_start_bounded_playful_reactions_from_the_current_position() {
         let extent = character_window_size(CompanionScale::Medium);
-        let mut sim = RuntimeSimulation::new(display(), extent);
+        let mut sim = RuntimeSimulation::new(display(), extent, CompanionCharacterId::Clippy);
         sim.simulation.position = Point2::new(100.0, 300.0);
         assert!(sim.react_to_click(1, extent));
         assert_eq!(sim.simulation.state, CharacterSimulationState::Jumping);
@@ -1388,5 +2103,119 @@ mod tests {
         assert!(sim.react_to_click(2, extent));
         assert_eq!(sim.simulation.target, Some(Point2::new(640.0, 300.0)));
         assert!(sim.moving(false));
+    }
+
+    // SDTEST-1496
+    #[test]
+    fn playful_targets_are_bounded_varied_and_cooldown_aware() {
+        let extent = character_window_size(CompanionScale::Medium);
+        let work_area = display().work_area;
+        let mut rng = DeterministicRng::seeded(character_seed(CompanionCharacterId::Spark));
+        let targets = playful_targets(
+            CompanionCharacterId::Spark,
+            work_area,
+            extent,
+            Point2::new(120.0, 400.0),
+            &mut rng,
+        );
+        assert!(targets.len() >= 4);
+        let bounds = to_rect(work_area, extent);
+        for target in &targets {
+            assert!(bounds.contains(target.point), "{target:?}");
+        }
+        assert!(targets.iter().any(|target| target.airborne));
+        assert!(targets
+            .windows(2)
+            .any(|pair| pair[0].point != pair[1].point));
+
+        let mut sim = RuntimeSimulation::new(display(), extent, CompanionCharacterId::Spark);
+        let first = sim.next_playful_target().expect("first target");
+        sim.simulation.remember_action(first.action_id);
+        let second = sim.next_playful_target().expect("second target");
+        assert_ne!(first.action_id, second.action_id);
+        assert!(bounds.contains(second.point));
+        let profile = character_personality(CompanionCharacterId::Spark);
+        assert!(second.speed >= profile.roam_speed_min && second.speed <= profile.roam_speed_max);
+
+        sim.simulation.last_actions.clear();
+        sim.simulation.config.cooldown_memory = 3;
+        for action in ["roam-edge-scamp", "roam-float-arc", "roam-curious-peek"] {
+            sim.simulation.remember_action(action);
+        }
+        let only_available = sim.next_playful_target().expect("remaining target");
+        assert_eq!(only_available.action_id, "roam-corner-loop");
+    }
+
+    // SDTEST-1497
+    #[test]
+    fn frame_scheduling_policy_is_event_driven_and_honors_reduced_motion() {
+        assert!(!should_schedule_next_frame(
+            false,
+            CharacterVisualState::Idle,
+            false
+        ));
+        assert!(!should_schedule_next_frame(
+            false,
+            CharacterVisualState::IdleFlourish,
+            false
+        ));
+        assert!(should_schedule_next_frame(
+            true,
+            CharacterVisualState::Walking,
+            false
+        ));
+        assert!(should_schedule_next_frame(
+            false,
+            CharacterVisualState::Reacting,
+            false
+        ));
+        assert!(should_schedule_next_frame(
+            false,
+            CharacterVisualState::Landing,
+            false
+        ));
+        assert!(!should_schedule_next_frame(
+            true,
+            CharacterVisualState::Walking,
+            true
+        ));
+
+        let mut off = config(true);
+        off.appearance.motion = CompanionMotionPreference::Off;
+        assert!(reduced_motion_for_config(&off));
+        let mut still = config(true);
+        still.appearance.desktop.movement = DesktopCompanionMovement::Still;
+        assert!(reduced_motion_for_config(&still));
+    }
+
+    // SDTEST-1498
+    #[test]
+    fn dpi_aware_drag_threshold_preserves_clicks_and_native_moves_are_gated() {
+        assert_eq!(drag_threshold_squared(1.0), 16.0);
+        assert_eq!(drag_threshold_squared(1.5), 36.0);
+        assert_eq!(drag_threshold_squared(2.0), 64.0);
+        assert!(!drag_crossed_threshold(
+            gpui::point(px(100.0), px(100.0)),
+            gpui::point(px(105.0), px(100.0)),
+            1.5,
+        ));
+        assert!(drag_crossed_threshold(
+            gpui::point(px(100.0), px(100.0)),
+            gpui::point(px(106.0), px(100.0)),
+            1.5,
+        ));
+
+        assert!(should_apply_native_origin(false, false));
+        assert!(should_apply_native_origin(true, true));
+        assert!(!should_apply_native_origin(false, true));
+    }
+
+    // SDTEST-1499
+    #[test]
+    fn procedural_pose_phase_tracks_wall_clock_time_not_refresh_count() {
+        let quarter = procedural_pose_phase(Duration::from_millis(250));
+        let half = procedural_pose_phase(Duration::from_millis(500));
+        assert!((quarter - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+        assert!((half - std::f32::consts::PI).abs() < 0.0001);
     }
 }
