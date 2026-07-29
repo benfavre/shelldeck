@@ -351,6 +351,165 @@ compile and return explicit capability states.
 - Test UTF-16 conversion, empty selections, stale element handles, and applications
   that deny UI Automation access.
 
+## Selectable characters
+
+Clippy is the feature name, while the visible companion is user-selectable. Character
+choice changes presentation only. It must never alter model quality, available tools,
+autonomy policy, permissions, or safety behavior.
+
+### Visual reference
+
+![Selectable ShellDeck assistant character reference](assets/clippy/character-reference.png)
+
+The generated sheet is a direction reference, not a final sprite atlas. Production
+assets should be redrawn as consistent vector or raster layers with verified
+silhouettes, transparent backgrounds, and exact animation bounds. In particular,
+**Clippy must remain legally and visually distinct from Microsoft's Office Assistant**:
+use ShellDeck's cyan technical styling, a different face construction, different limb
+proportions, and no copied poses, sounds, animation timing, or dialogue.
+
+### Initial roster
+
+| ID | Display name | Role and personality | Primary palette | Motion language |
+|---|---|---|---|---|
+| `clippy` | Clippy | Clever, direct, classic assistant; the neutral default | steel, charcoal, cyan | elastic bend, small hover, precise pointing |
+| `shelly` | Shelly | Calm, reassuring ShellDeck-native guide | navy, teal, cyan | shell opens slightly, gentle rocking, terminal-face expressions |
+| `spark` | Spark | Fast, enthusiastic, action-oriented | amber, orange, charcoal | sharp squash/stretch, short electric arcs, quick anticipation |
+| `byte` | Byte | Technical, methodical, developer-friendly | mint, emerald, black | pixel assembly, stepped turns, screen-face glyphs |
+| `orbit` | Orbit | Analytical, quiet, futuristic | violet, indigo, cyan | slow levitation, orbital ring rotation, smooth easing |
+| `nox` | Nox | Warm, observant, unobtrusive | black, graphite, cyan | cat blinks, ear turns, tail status gestures |
+
+The roster deliberately covers different emotional preferences without assigning
+characters to account roles, genders, capabilities, or paid tiers. All characters are
+available to every user when the feature is enabled.
+
+### Shared character states
+
+Every production character must support the same semantic states so the UI does not
+contain character-specific behavior branches:
+
+| State | Trigger | Maximum behavior |
+|---|---|---|
+| `idle` | Dock visible, no work | subtle loop every 4-8 seconds |
+| `listening` | Composer focused or context imported | face/user-facing pose, no distracting loop |
+| `thinking` | AI request running | continuous but low-motion progress loop |
+| `success` | Result or action completed | one short celebration, then idle |
+| `warning` | Permission, stale selection, or recoverable error | one alert pose, then static |
+| `error` | Request/action failed | brief sympathetic reaction, never comic blame |
+| `sleeping` | Dock idle for an extended period | near-static low-power loop |
+
+Animation state is driven by existing `AiTaskStatus` and view state. It must not create
+another timer or poll model. GPUI should request animation frames only while a visible
+state is actually animated.
+
+### Selection experience
+
+Add a **Companion** subsection to Settings > Appearance:
+
+- six preview cards using the idle pose
+- localized name and one-line personality description
+- a reduced-motion toggle that follows the OS preference by default
+- a “No character” option for a minimal icon-only Dock
+- a preview button cycling idle, thinking, success, and warning locally
+
+Selection applies immediately to the AI Dock and persists in `AppConfig`. Changing a
+character must not reset the current conversation, imported context, running task, or
+Dock position.
+
+Suggested configuration:
+
+```toml
+[clippy.appearance]
+character = "clippy"
+motion = "system" # system | full | reduced | off
+scale = "medium"  # small | medium | large
+```
+
+Unknown character IDs from newer config files must fall back to `clippy` without
+failing config parsing. `off` freezes the selected character on its idle pose; the
+separate “No character” choice removes the mascot area entirely.
+
+### Asset contract
+
+Store production assets under:
+
+```text
+crates/shelldeck/assets/characters/
+├── manifest.json
+├── clippy/
+├── shelly/
+├── spark/
+├── byte/
+├── orbit/
+└── nox/
+```
+
+Each character directory must provide:
+
+- `idle`, `listening`, `thinking`, `success`, `warning`, `error`, and `sleeping`
+- a static fallback frame for every state
+- `1x` and `2x` raster assets, or one vector source supported by the selected renderer
+- transparent background and a shared logical canvas
+- fixed visual anchor, baseline, and maximum bounds to prevent Dock layout movement
+- light-theme and dark-theme validation, without relying on the background for shape
+  readability
+
+A typed manifest should describe the files and timing instead of hardcoding paths in
+the view:
+
+```rust
+pub struct CharacterManifest {
+    pub id: String,
+    pub states: HashMap<CharacterState, CharacterAnimation>,
+    pub anchor: CharacterAnchor,
+    pub intrinsic_size: CharacterSize,
+}
+
+pub enum CharacterState {
+    Idle,
+    Listening,
+    Thinking,
+    Success,
+    Warning,
+    Error,
+    Sleeping,
+}
+```
+
+Prefer a small sprite sheet or frame sequence for the MVP. Do not add a large animation
+runtime until memory use, startup impact, licensing, Linux support, and release
+packaging have been measured. Asset decoding should happen once and be cached outside
+the paint hot path.
+
+### Accessibility and interaction rules
+
+- The mascot is decorative and must be hidden from the accessibility tree unless it
+  exposes an actual action.
+- Never communicate task state by character pose or color alone; retain text, icons,
+  and accessible status labels.
+- Reduced motion removes bounce, rotation, electrical flashes, and repeated loops.
+- Avoid rapid flashing and keep all brightness changes below photosensitivity-risk
+  thresholds.
+- The character must not cover the composer, result, confirmation controls, or diff.
+- Clicking the character may focus the composer, but it must not trigger AI requests
+  or external actions.
+- Character sounds are out of scope and default to absent.
+
+### Character delivery sequence
+
+1. Implement the manifest, character setting, static rendering, fallback behavior, and
+   “No character” option.
+2. Ship Clippy and Shelly first to validate two different silhouettes and animation
+   bounds.
+3. Add the shared state controller using existing AI task/view events.
+4. Produce and optimize the seven state animations for all six characters.
+5. Validate memory, frame time, package-size impact, themes, scaling, and reduced
+   motion on Linux, macOS, and Windows.
+
+The first character milestone is complete when selection persists, unknown IDs safely
+fall back, static assets render without layout shift, reduced/off motion works, and a
+running AI task maps deterministically to the same semantic state for every character.
+
 ## Configuration
 
 Extend the current configuration instead of introducing a database:
