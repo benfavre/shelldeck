@@ -5,6 +5,10 @@
 
 use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
+pub mod clippy;
+
+pub use clippy::*;
+
 use crate::error::{Result, ShellDeckError};
 use crate::models::connection::Connection;
 use crate::models::script::{ScriptCategory, ScriptLanguage};
@@ -87,6 +91,7 @@ pub struct AiSurfaceConfig {
     pub jean: bool,
     pub naming: bool,
     pub recent: bool,
+    pub clippy: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -107,6 +112,7 @@ pub struct AiPolicyConfig {
     pub script_execute: AiAutonomyLevel,
     pub jean_dispatch: AiAutonomyLevel,
     pub fleet_dispatch: AiAutonomyLevel,
+    pub clippy_replace_selection: AiAutonomyLevel,
 }
 
 impl Default for AiPolicyConfig {
@@ -118,6 +124,7 @@ impl Default for AiPolicyConfig {
             script_execute: AiAutonomyLevel::Confirmation,
             jean_dispatch: AiAutonomyLevel::Confirmation,
             fleet_dispatch: AiAutonomyLevel::Confirmation,
+            clippy_replace_selection: AiAutonomyLevel::Confirmation,
         }
     }
 }
@@ -131,6 +138,10 @@ impl AiPolicyConfig {
             AiCapability::ScriptGenerate | AiCapability::ScriptFix => self.script_execute,
             AiCapability::JeanDispatch => self.jean_dispatch,
             AiCapability::FleetDispatch => self.fleet_dispatch,
+            AiCapability::ClippyReplaceSelection => self.clippy_replace_selection,
+            AiCapability::ClippyTransform | AiCapability::ClippyExplain => {
+                AiAutonomyLevel::Preparation
+            }
             _ => AiAutonomyLevel::Preparation,
         }
     }
@@ -346,6 +357,7 @@ impl Default for AiSurfaceConfig {
             jean: true,
             naming: true,
             recent: true,
+            clippy: false,
         }
     }
 }
@@ -377,6 +389,7 @@ impl AiConfig {
                 AiSurface::Jean => self.surfaces.jean,
                 AiSurface::Naming => self.surfaces.naming,
                 AiSurface::Recent => self.surfaces.recent,
+                AiSurface::Clippy => self.surfaces.clippy,
             }
     }
 }
@@ -392,6 +405,7 @@ pub enum AiSurface {
     Jean,
     Naming,
     Recent,
+    Clippy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -683,6 +697,9 @@ pub enum AiCapability {
     ScriptFix,
     TerminalCommand,
     TerminalDiagnose,
+    ClippyTransform,
+    ClippyExplain,
+    ClippyReplaceSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,8 +709,8 @@ pub enum AiActionKind {
     SupportSend,
     JeanDispatch,
     FleetDispatch,
+    ClippyReplaceSelection,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiActionRisk {
     Low,
@@ -735,6 +752,10 @@ pub enum AiActionPayload {
     FleetDispatch {
         issue_id: String,
         instance_id: String,
+    },
+    ClippyReplaceSelection {
+        expected_selection: clippy::DesktopSelection,
+        replacement: String,
     },
 }
 
@@ -801,6 +822,9 @@ impl AiActionPlan {
             ) | (
                 AiActionKind::FleetDispatch,
                 AiActionPayload::FleetDispatch { .. }
+            ) | (
+                AiActionKind::ClippyReplaceSelection,
+                AiActionPayload::ClippyReplaceSelection { .. }
             )
         );
         if !payload_matches {
@@ -824,11 +848,32 @@ impl AiActionPlan {
                 }
                 issue_id
             }
+            AiActionPayload::ClippyReplaceSelection {
+                expected_selection,
+                replacement,
+            } => {
+                clippy::ClippyReplaceSelectionPayload {
+                    expected_selection: expected_selection.clone(),
+                    replacement: replacement.clone(),
+                }
+                .validate()?;
+                replacement
+            }
         };
         if content.trim().is_empty() {
             return Err(ShellDeckError::Config(
                 "AI action content cannot be empty".to_string(),
             ));
+        }
+        if matches!(
+            capability,
+            AiCapability::ClippyTransform
+                | AiCapability::ClippyExplain
+                | AiCapability::ClippyReplaceSelection
+        ) || matches!(kind, AiActionKind::ClippyReplaceSelection)
+            || matches!(payload, AiActionPayload::ClippyReplaceSelection { .. })
+        {
+            clippy::validate_clippy_action_payload(capability, kind, &payload)?;
         }
         Ok(Self {
             id: Uuid::new_v4(),
@@ -1040,6 +1085,9 @@ impl AiTask {
                 }
                 AiCapability::JeanDispatch => AiSurface::Jean,
                 AiCapability::Naming => AiSurface::Naming,
+                AiCapability::ClippyTransform
+                | AiCapability::ClippyExplain
+                | AiCapability::ClippyReplaceSelection => AiSurface::Clippy,
             },
             target_id: plan.target_id.clone(),
             target_kind: None,

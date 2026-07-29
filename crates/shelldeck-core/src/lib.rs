@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod companion;
 pub mod config;
 pub mod error;
 pub mod git;

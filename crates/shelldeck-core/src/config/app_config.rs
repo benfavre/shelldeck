@@ -15,6 +15,11 @@ pub struct AppConfig {
     /// API credentials are stored separately in the OS keychain.
     #[serde(default)]
     pub ai: crate::ai::AiConfig,
+    /// `[clippy]` — portable desktop assistant preferences. AI/backend selection
+    /// remains in `[ai]`; this section only stores opt-in collection and companion
+    /// presentation settings. Defaults keep older configs parsing and Clippy disabled.
+    #[serde(default)]
+    pub clippy: crate::ai::ClippyConfig,
     /// `[editor]` — code editor preferences (font, indent, wrap, gutter…).
     /// `#[serde(default)]` keeps existing `shelldeck.toml` files without an
     /// `[editor]` section parsing cleanly.
@@ -799,6 +804,11 @@ ui_font_size = 14.0
         assert!(loaded.account.is_none());
         assert!(!loaded.ai.enabled);
         assert_eq!(loaded.ai.backend, crate::ai::AiBackend::Disabled);
+        assert!(!loaded.clippy.auto_import_clipboard_on_shortcut);
+        assert_eq!(
+            loaded.clippy.appearance.character_id(),
+            crate::ai::CompanionCharacterId::Clippy
+        );
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
@@ -824,6 +834,41 @@ ui_font_size = 14.0
         assert_eq!(loaded.ai.backend, crate::ai::AiBackend::OpenAi);
         assert_eq!(loaded.ai.model, "gpt-test");
         assert!(!loaded.ai.surfaces.terminal);
+    }
+
+    #[test]
+    fn clippy_config_defaults_and_surface_opt_in_round_trip() {
+        let mut config = AppConfig::default();
+        assert!(!config.ai.surfaces.clippy);
+        assert!(!config.clippy.auto_import_clipboard_on_shortcut);
+        assert!(config.clippy.allow_application_names);
+        assert!(!config.clippy.allow_window_titles);
+        assert!(!config.clippy.allow_screenshots);
+        assert!(!config.clippy.appearance.desktop.enabled);
+
+        config.ai.enabled = true;
+        config.ai.backend = crate::ai::AiBackend::OpenAi;
+        config.ai.surfaces.clippy = true;
+        config.clippy.auto_import_clipboard_on_shortcut = true;
+        config.clippy.appearance.character = "shelly".to_string();
+        config.clippy.appearance.desktop.enabled = true;
+        config.clippy.appearance.desktop.preferred_display = "display-2".to_string();
+
+        let serialized = toml::to_string_pretty(&config).expect("serialize clippy config");
+        assert!(serialized.contains("[clippy]"));
+        assert!(serialized.contains("clippy = true"));
+        let loaded: AppConfig = toml::from_str(&serialized).expect("reload clippy config");
+        assert!(loaded.ai.surfaces.clippy);
+        assert!(loaded.clippy.auto_import_clipboard_on_shortcut);
+        assert_eq!(
+            loaded.clippy.appearance.character_id(),
+            crate::ai::CompanionCharacterId::Shelly
+        );
+        assert!(loaded.clippy.appearance.desktop.enabled);
+        assert_eq!(
+            loaded.clippy.appearance.desktop.preferred_display,
+            "display-2"
+        );
     }
 
     #[test]
