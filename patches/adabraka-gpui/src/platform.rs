@@ -210,9 +210,16 @@ pub(crate) trait Platform: 'static {
     }
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
-    // ShellDeck patch: platform backends may expose safe read-only external window geometry.
-    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+    // ShellDeck patch: platform backends may expose safe read-only external window snapshots.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         Vec::new()
+    }
+    // ShellDeck patch: preserve the legacy bounds-only external window API.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.visible_external_windows()
+            .into_iter()
+            .map(|window| window.bounds)
+            .collect()
     }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
         None
@@ -407,6 +414,57 @@ pub(crate) trait Platform: 'static {
     ) {
         callback(false);
     }
+}
+
+/// A stable native identifier for a visible top-level window owned by another app.
+///
+/// The value is valid only for the lifetime of the native window and may be
+/// recycled by the OS after that window closes. Platform backends derive it from
+/// the native lifetime identifier directly: X11 XID, Win32 HWND raw pointer
+/// value, and macOS `kCGWindowNumber`.
+// ShellDeck patch: expose typed external-window IDs without making raw IDs structural API.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExternalWindowId {
+    raw: u64,
+}
+
+impl ExternalWindowId {
+    /// Creates an external-window ID from a native platform lifetime identifier.
+    ///
+    /// This is primarily for platform backends and deterministic tests. The raw
+    /// value is platform-specific and may be recycled by the OS after the native
+    /// window closes.
+    // ShellDeck patch: let backends and tests construct typed IDs from native lifetime values.
+    pub const fn from_raw(raw: u64) -> Self {
+        Self { raw }
+    }
+
+    /// Returns the underlying platform lifetime identifier for diagnostics.
+    ///
+    /// This value is platform-specific and may be recycled by the OS after the
+    /// native window closes. Prefer storing and comparing [`ExternalWindowId`]
+    /// directly instead of relying on this raw value.
+    // ShellDeck patch: document the optional diagnostic raw external-window ID accessor.
+    pub fn raw(self) -> u64 {
+        self.raw
+    }
+}
+
+/// Read-only snapshot of a visible external top-level window.
+///
+/// `bounds` are reported in the same platform desktop coordinate space accepted
+/// by [`Window::set_window_origin`]. Wayland, headless, and test platforms
+/// intentionally return no snapshots because they cannot safely observe other
+/// clients' top-level windows.
+// ShellDeck patch: expose documented external-window snapshots with native IDs and bounds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalWindow {
+    /// Native lifetime identifier for the external top-level window.
+    // ShellDeck patch: document the public native external-window ID field.
+    pub id: ExternalWindowId,
+    /// Current global desktop bounds of the external top-level window.
+    // ShellDeck patch: document the public external-window bounds field.
+    pub bounds: Bounds<Pixels>,
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.

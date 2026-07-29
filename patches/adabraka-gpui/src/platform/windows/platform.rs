@@ -110,8 +110,8 @@ impl WindowsPlatformState {
     }
 }
 
-// ShellDeck patch: enumerate visible external top-level Win32 windows for desktop companion geometry.
-fn collect_visible_external_window_bounds(own_windows: &[HWND]) -> Vec<Bounds<Pixels>> {
+// ShellDeck patch: enumerate visible external top-level Win32 windows with native HWND snapshots.
+fn collect_visible_external_windows(own_windows: &[HWND]) -> Vec<ExternalWindow> {
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let windows = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
         windows.push(hwnd);
@@ -131,9 +131,16 @@ fn collect_visible_external_window_bounds(own_windows: &[HWND]) -> Vec<Bounds<Pi
         .filter(|&hwnd| unsafe { (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0) == 0 })
         .filter(|&hwnd| !is_cloaked_window(hwnd))
         .filter(|&hwnd| !is_fullscreen_window(hwnd))
-        .filter_map(window_bounds)
-        .filter(|bounds| {
-            f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0
+        .filter_map(|hwnd| {
+            let bounds = window_bounds(hwnd)?;
+            Some(ExternalWindow {
+                id: ExternalWindowId::from_raw(hwnd.0 as u64),
+                bounds,
+            })
+        })
+        .filter(|window| {
+            f32::from(window.bounds.size.width) > 0.0
+                && f32::from(window.bounds.size.height) > 0.0
         })
         .collect()
 }
@@ -842,8 +849,8 @@ impl Platform for WindowsPlatform {
         super::active_window::get_focused_window_info()
     }
 
-    // ShellDeck patch: expose visible external top-level Win32 window bounds.
-    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+    // ShellDeck patch: expose visible external top-level Win32 window snapshots.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         let mut own_windows = self
             .raw_window_handles
             .read()
@@ -851,7 +858,7 @@ impl Platform for WindowsPlatform {
             .map(|hwnd| hwnd.as_raw())
             .collect_vec();
         own_windows.push(self.handle);
-        collect_visible_external_window_bounds(&own_windows)
+        collect_visible_external_windows(&own_windows)
     }
 
     fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {

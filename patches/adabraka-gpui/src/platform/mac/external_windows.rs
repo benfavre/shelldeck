@@ -9,7 +9,8 @@ use core_graphics::{
 };
 use objc::{msg_send, sel, sel_impl};
 
-use crate::{point, px, size, Bounds, Pixels};
+// ShellDeck patch: import external-window snapshot types for CoreGraphics window IDs.
+use crate::{Bounds, ExternalWindow, ExternalWindowId, Pixels, point, px, size};
 
 const K_CG_NULL_WINDOW_ID: u32 = 0;
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
@@ -19,14 +20,16 @@ const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 unsafe extern "C" {
     static kCGWindowBounds: CFStringRef;
     static kCGWindowLayer: CFStringRef;
+    // ShellDeck patch: read CoreGraphics' native per-window lifetime ID.
+    static kCGWindowNumber: CFStringRef;
     static kCGWindowOwnerPID: CFStringRef;
 
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
     fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect) -> bool;
 }
 
-// ShellDeck patch: enumerate visible external top-level macOS windows for desktop companion geometry.
-pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
+// ShellDeck patch: enumerate visible external top-level macOS windows with CoreGraphics IDs.
+pub(super) fn visible_external_windows() -> Vec<ExternalWindow> {
     unsafe {
         let window_list = CGWindowListCopyWindowInfo(
             K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
@@ -45,6 +48,13 @@ pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
             if window_info == nil || !is_normal_window(window_info) {
                 continue;
             }
+
+            // ShellDeck patch: include kCGWindowNumber in each external-window snapshot.
+            let window_id_value: id = msg_send![window_info, objectForKey: kCGWindowNumber as id];
+            if window_id_value == nil {
+                continue;
+            }
+            let window_id: u32 = msg_send![window_id_value, unsignedIntValue];
 
             let window_bounds_value: id =
                 msg_send![window_info, objectForKey: kCGWindowBounds as id];
@@ -72,12 +82,23 @@ pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
                 continue;
             }
 
-            result.push(window_bounds);
+            result.push(ExternalWindow {
+                id: ExternalWindowId::from_raw(window_id as u64),
+                bounds: window_bounds,
+            });
         }
 
         CFRelease(window_list as _);
         result
     }
+}
+
+// ShellDeck patch: preserve the legacy bounds-only macOS helper for App compatibility.
+pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
+    visible_external_windows()
+        .into_iter()
+        .map(|window| window.bounds)
+        .collect()
 }
 
 unsafe fn is_normal_window(window_info: id) -> bool {

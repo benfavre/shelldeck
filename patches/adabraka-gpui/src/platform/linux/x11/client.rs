@@ -60,10 +60,12 @@ use crate::platform::{
     },
 };
 use crate::{
-    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
-    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
-    PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RequestFrameOptions,
-    ScrollDelta, Size, TouchPhase, WindowParams, X11Window, modifiers_from_xinput_info, point, px,
+    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId,
+    // ShellDeck patch: import external-window snapshot types for X11 native IDs.
+    ExternalWindow, ExternalWindowId, FileDropEvent, Keystroke, LinuxKeyboardLayout, Modifiers,
+    ModifiersChangedEvent, MouseButton, Pixels, Platform, PlatformDisplay, PlatformInput,
+    PlatformKeyboardLayout, Point, RequestFrameOptions, ScrollDelta, Size, TouchPhase, WindowParams,
+    X11Window, modifiers_from_xinput_info, point, px,
 };
 
 /// Value for DeviceId parameters which selects all devices.
@@ -1849,8 +1851,8 @@ impl LinuxClient for X11Client {
         })
     }
 
-    // ShellDeck patch: enumerate eligible visible X11 windows for companion climbing.
-    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+    // ShellDeck patch: enumerate eligible visible X11 windows with native XID snapshots for companion climbing.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         let state = self.0.borrow();
         let xcb = &state.xcb_connection;
         let root = xcb.setup().roots[state.x_root_index].root;
@@ -1894,9 +1896,16 @@ impl LinuxClient for X11Client {
                 !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
                     .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
             })
-            .filter_map(|x_window| x11_window_bounds(xcb, root, x_window, scale_factor))
-            .filter(|bounds| {
-                f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0
+            .filter_map(|x_window| {
+                let bounds = x11_window_bounds(xcb, root, x_window, scale_factor)?;
+                Some(ExternalWindow {
+                    id: ExternalWindowId::from_raw(x_window as u64),
+                    bounds,
+                })
+            })
+            .filter(|window| {
+                f32::from(window.bounds.size.width) > 0.0
+                    && f32::from(window.bounds.size.height) > 0.0
             })
             .collect()
     }

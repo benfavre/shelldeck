@@ -1452,9 +1452,9 @@ impl Platform for MacPlatform {
         super::active_window::get_focused_window_info()
     }
 
-    // ShellDeck patch: expose visible external top-level macOS window bounds.
-    fn visible_external_window_bounds(&self) -> Vec<crate::Bounds<crate::Pixels>> {
-        super::external_windows::visible_external_window_bounds()
+    // ShellDeck patch: expose visible external top-level macOS window snapshots.
+    fn visible_external_windows(&self) -> Vec<crate::ExternalWindow> {
+        super::external_windows::visible_external_windows()
     }
 
     fn accessibility_status(&self) -> crate::PermissionStatus {

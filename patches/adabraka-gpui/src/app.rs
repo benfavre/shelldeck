@@ -36,8 +36,9 @@ use crate::InspectorElementRegistry;
 use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
-    CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter, FocusHandle,
-    FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
+    CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter,
+    // ShellDeck patch: import the public external-window snapshot type for App APIs.
+    ExternalWindow, FocusHandle, FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
     Keystroke, LayoutId, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, PermissionStatus, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerSaveBlockerKind, PromptBuilder,
@@ -1315,6 +1316,14 @@ impl App {
     // ShellDeck patch: expose read-only external window geometry for desktop companions.
     pub fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
         self.platform.visible_external_window_bounds()
+    }
+
+    /// Returns visible external top-level window snapshots with native lifetime
+    /// IDs and bounds in the platform desktop coordinate space accepted by
+    /// [`Window::set_window_origin`].
+    // ShellDeck patch: expose stable read-only external window snapshots for desktop companions.
+    pub fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        self.platform.visible_external_windows()
     }
 
     /// Returns the primary display that will be used for new windows.

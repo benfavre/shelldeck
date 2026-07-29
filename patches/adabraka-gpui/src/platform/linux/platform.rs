@@ -25,7 +25,9 @@ use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
     Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
-    CursorStyle, DialogOptions, DisplayId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
+    CursorStyle, DialogOptions, DisplayId,
+    // ShellDeck patch: import external-window snapshots for the Linux platform trait.
+    ExternalWindow, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
     LinuxDispatcher, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, PowerSaveBlockerKind,
@@ -75,9 +77,16 @@ pub trait LinuxClient {
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
-    // ShellDeck patch: X11 overrides this while Wayland retains the safe empty fallback.
-    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+    // ShellDeck patch: X11 overrides this while Wayland retains the safe empty snapshot fallback.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         Vec::new()
+    }
+    // ShellDeck patch: preserve the legacy bounds-only external window API.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.visible_external_windows()
+            .into_iter()
+            .map(|window| window.bounds)
+            .collect()
     }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
     fn run(&self);
@@ -725,7 +734,12 @@ impl<P: LinuxClient + 'static> Platform for P {
         LinuxClient::focused_window_info(self)
     }
 
-    // ShellDeck patch: route external desktop geometry through the active Linux backend.
+    // ShellDeck patch: route external desktop snapshots through the active Linux backend.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        LinuxClient::visible_external_windows(self)
+    }
+
+    // ShellDeck patch: route legacy external desktop geometry through the active Linux backend.
     fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
         LinuxClient::visible_external_window_bounds(self)
     }
