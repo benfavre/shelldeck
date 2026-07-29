@@ -249,7 +249,7 @@ parallel `cargo test`.
 
 ---
 
-## 8d. `shelldeck` AI Dock companion
+## 8d. `shelldeck` AI Dock and desktop companion
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -295,11 +295,13 @@ parallel `cargo test`.
 | SDTEST-1444 | `.github/workflows/release.yml` Linux/macOS/Windows compile matrix | SDUC-448, SDUC-449 | Green | The GPUI top-level movement and geometry APIs are platform-gated; every release target must type-check before assets or manifests publish. |
 | SDTEST-1445 | `tray::tests::clippy_menu_id_routes_directly_to_clippy` | SDUC-445 | Green | The stable native menu id opens the dedicated Clippy surface instead of toggling the generic Assistant or revealing the main window. |
 | SDTEST-1446 | `companion_desktop.rs::external_window_target_perches_above_the_window_inside_the_work_area` | SDUC-448, SDUC-449 | Green | Eligible external window tops produce an on-screen perch target; tiny invalid surfaces are rejected before the native overlay moves. |
-| SDTEST-1447 | `companion_desktop.rs::frame_elapsed_uses_real_refresh_delta_after_the_first_frame` | SDUC-448 | Green | Animation-frame simulation uses real elapsed time after startup, so 60 Hz and 30 Hz displays move the character at the same configured speed. |
+| SDTEST-1447 | `companion_desktop.rs::frame_elapsed_uses_real_refresh_delta_after_the_first_frame` | SDUC-448 | Green | Animation-frame simulation uses real elapsed time and accumulates sub-33 ms refresh deltas, so 60 Hz and 30 Hz displays both advance at the configured fixed-step speed without freezing or running fast. |
 | SDTEST-1448 | `ai_assistant.rs::automatic_clipboard_import_requires_opt_in_and_an_empty_draft` | SDUC-445, SDUC-446 | Green | Shortcut clipboard import is disabled by default and never overwrites an existing Clippy draft. |
 | SDTEST-1449 | `ai_assistant.rs::backend_result_must_satisfy_clippy_proposal_bounds_before_display` | SDUC-445, SDUC-446 | Green | Blank or oversized model output is rejected through the core proposal contract before it can enter the result preview, diff, clipboard, or edit paths. |
 | SDTEST-1450 | `settings::tests::choosing_a_visible_character_enables_it_and_none_disables_it` | SDUC-447, SDUC-450 | Green | Selecting a real mascot cannot leave a hidden selected-but-disabled state; choosing None reliably turns the desktop runtime off. |
 | SDTEST-1451 | `tray::tests::choose_character_menu_id_routes_to_targeted_settings` | SDUC-450 | Green | The stable native tray ID opens the targeted character settings command rather than pausing movement or opening generic Settings. |
+| SDTEST-1452 | `companion_desktop.rs::user_drag_preserves_grab_offset_and_routes_across_display_bounds` | SDUC-448, SDUC-451 | Green | Native hit windows exactly track the selected mascot scale; dragging keeps the pointer-to-character grab offset, scales deltas for mixed-DPI Windows displays, supports negative monitor origins, selects the display under the character center, and clamps the final window origin to it. |
+| SDTEST-1453 | `companion_desktop.rs::clicks_start_bounded_playful_reactions_from_the_current_position` | SDUC-448, SDUC-451 | Green | A click starts a bounded short hop; a sequential double-click upgrades that in-flight hop to the opposite display edge while preserving vertical work-area bounds and continuous-frame policy only during motion. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 

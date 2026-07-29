@@ -143,7 +143,6 @@ impl AiCompanionController {
         let available = backend_available && config.allows(AiSurface::Global);
         let clippy_available = backend_available && config.allows(AiSurface::Clippy);
         let clippy_config = self.clippy_config.borrow().clone();
-        let character = clippy_config.appearance.character_id();
         self.assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(config.backend, config.model, cx);
@@ -157,7 +156,6 @@ impl AiCompanionController {
             );
             assistant.set_available(available, cx);
             assistant.set_clippy_available(clippy_available, cx);
-            assistant.set_clippy_character(character, cx);
             assistant.set_clippy_auto_import_clipboard(
                 clippy_config.auto_import_clipboard_on_shortcut,
                 cx,
@@ -186,13 +184,11 @@ impl AiCompanionController {
         let available = backend_available && config.allows(AiSurface::Global);
         let clippy_available = backend_available && config.allows(AiSurface::Clippy);
         let clippy_config = self.clippy_config.borrow().clone();
-        let character = clippy_config.appearance.character_id();
         self.assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(config.backend, config.model, cx);
             assistant.set_available(available, cx);
             assistant.set_clippy_available(clippy_available, cx);
-            assistant.set_clippy_character(character, cx);
             assistant.set_clippy_auto_import_clipboard(
                 clippy_config.auto_import_clipboard_on_shortcut,
                 cx,

@@ -1294,7 +1294,24 @@ impl App {
         self.platform.global_display_bounds()
     }
 
-    /// Returns visible external top-level window bounds in global logical pixels.
+    /// Returns global bounds paired with each display's native scale factor.
+    // ShellDeck patch: expose scale-aware global display metrics for desktop companions.
+    pub fn global_display_metrics(&self) -> Vec<(DisplayId, Bounds<Pixels>, f32)> {
+        let scales = self
+            .platform
+            .displays()
+            .into_iter()
+            .map(|display| (display.id(), display.scale_factor()))
+            .collect::<std::collections::HashMap<_, _>>();
+        self.platform
+            .global_display_bounds()
+            .into_iter()
+            .map(|(id, bounds)| (id, bounds, scales.get(&id).copied().unwrap_or(1.0)))
+            .collect()
+    }
+
+    /// Returns visible external top-level window bounds in the platform desktop
+    /// coordinate space accepted by [`Window::set_window_origin`].
     // ShellDeck patch: expose read-only external window geometry for desktop companions.
     pub fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
         self.platform.visible_external_window_bounds()

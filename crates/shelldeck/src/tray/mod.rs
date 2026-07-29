@@ -75,8 +75,8 @@ pub enum TrayCommand {
     ChooseCharacter,
     /// Pause or resume the optional desktop character runtime.
     PauseCharacter,
-    /// Ask the desktop character to return to its safe Dock corner.
-    ReturnCharacterToDock,
+    /// Ask the desktop character to return to a safe screen corner.
+    ReturnCharacterToCorner,
     /// Connect one of the persisted quick-access hosts.
     ConnectPinned(Uuid),
     /// Quit the app.
@@ -234,7 +234,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
         PALETTE_ID => Some(TrayCommand::OpenPalette),
         CHOOSE_CHARACTER_ID => Some(TrayCommand::ChooseCharacter),
         PAUSE_CHARACTER_ID => Some(TrayCommand::PauseCharacter),
-        RETURN_CHARACTER_ID => Some(TrayCommand::ReturnCharacterToDock),
+        RETURN_CHARACTER_ID => Some(TrayCommand::ReturnCharacterToCorner),
         QUIT_ID => Some(TrayCommand::Quit),
         _ => id
             .strip_prefix(PINNED_ID_PREFIX)

@@ -753,8 +753,11 @@ impl PlatformWindow for WindowsWindow {
     // ShellDeck patch: move windows without resizing, changing Z-order, or activating them.
     fn set_window_origin(&self, origin: Point<Pixels>) -> Result<()> {
         let scale_factor = self.0.state.borrow().scale_factor;
-        let x = (origin.x.0 * scale_factor).round() as i32;
-        let y = (origin.y.0 * scale_factor).round() as i32;
+        // Global Windows desktop coordinates are physical pixels. Keeping the
+        // public unit as `Pixels` avoids a platform-specific API while preventing
+        // per-monitor scale factors from creating overlapping virtual bounds.
+        let x = origin.x.0.round() as i32;
+        let y = origin.y.0.round() as i32;
 
         unsafe {
             SetWindowPos(
@@ -768,7 +771,7 @@ impl PlatformWindow for WindowsWindow {
             )?;
         }
 
-        self.0.state.borrow_mut().origin = origin;
+        self.0.state.borrow_mut().origin = logical_point(x as f32, y as f32, scale_factor);
         Ok(())
     }
 

@@ -194,6 +194,11 @@ impl PlatformDisplay for WindowsDisplay {
     fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
     }
+
+    // ShellDeck patch: report the monitor DPI scale alongside global display geometry.
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
 }
 
 fn available_monitors() -> SmallVec<[HMONITOR; 4]> {

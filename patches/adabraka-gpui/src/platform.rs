@@ -421,6 +421,12 @@ pub trait PlatformDisplay: Send + Sync + Debug {
     /// Get the bounds for this display
     fn bounds(&self) -> Bounds<Pixels>;
 
+    // ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.
+    /// Returns the scale factor used to convert this display's logical pixels to native pixels.
+    fn scale_factor(&self) -> f32 {
+        1.0
+    }
+
     /// Get the default bounds for this display to place a window
     fn default_bounds(&self) -> Bounds<Pixels> {
         let center = self.bounds().center();

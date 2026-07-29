@@ -662,9 +662,12 @@ fn dispatch_tray_command(
         TrayCommand::PauseCharacter => {
             route_desktop_character_command(root, window, CompanionRuntimeCommand::Pause, cx)
         }
-        TrayCommand::ReturnCharacterToDock => {
-            route_desktop_character_command(root, window, CompanionRuntimeCommand::ReturnToDock, cx)
-        }
+        TrayCommand::ReturnCharacterToCorner => route_desktop_character_command(
+            root,
+            window,
+            CompanionRuntimeCommand::ReturnToCorner,
+            cx,
+        ),
         TrayCommand::ConnectPinned(id) => {
             if let Err(error) = window.update(cx, |_, window, cx| {
                 if let Some(root) = root.upgrade() {

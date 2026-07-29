@@ -177,14 +177,11 @@ fn is_fullscreen_window(hwnd: HWND) -> bool {
 
 fn window_bounds(hwnd: HWND) -> Option<Bounds<Pixels>> {
     let rect = win32_window_rect(hwnd)?;
-    let scale_factor = (unsafe { GetDpiForWindow(hwnd) } as f32 / USER_DEFAULT_SCREEN_DPI as f32)
-        .max(1.0);
-
     Some(Bounds {
-        origin: point(px(rect.left as f32 / scale_factor), px(rect.top as f32 / scale_factor)),
+        origin: point(px(rect.left as f32), px(rect.top as f32)),
         size: size(
-            px((rect.right - rect.left) as f32 / scale_factor),
-            px((rect.bottom - rect.top) as f32 / scale_factor),
+            px((rect.right - rect.left) as f32),
+            px((rect.bottom - rect.top) as f32),
         ),
     })
 }

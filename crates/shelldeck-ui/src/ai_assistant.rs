@@ -13,7 +13,6 @@ use shelldeck_core::ai::{
     ai_line_diff, clippy_prompt as build_clippy_prompt, AiBackend, AiCapability, AiChatRole,
     AiContext, AiConversation, AiConversationStore, AiDiffLine, AiSurface, AiTask, AiTaskStatus,
     ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
-    CompanionCharacterId,
 };
 use uuid::Uuid;
 
@@ -167,7 +166,6 @@ pub struct AiAssistantView {
     clippy_error: Option<String>,
     clippy_operation: ClippyOperationKind,
     clippy_pending_request: Option<u64>,
-    clippy_character: CompanionCharacterId,
     clippy_auto_import_clipboard: bool,
 }
 
@@ -207,7 +205,6 @@ impl AiAssistantView {
             clippy_error: None,
             clippy_operation: ClippyOperationKind::Rewrite,
             clippy_pending_request: None,
-            clippy_character: CompanionCharacterId::Clippy,
             clippy_auto_import_clipboard: false,
         }
     }
@@ -309,17 +306,6 @@ impl AiAssistantView {
     pub fn set_clippy_auto_import_clipboard(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.clippy_auto_import_clipboard != enabled {
             self.clippy_auto_import_clipboard = enabled;
-            cx.notify();
-        }
-    }
-
-    pub fn set_clippy_character(
-        &mut self,
-        character: CompanionCharacterId,
-        cx: &mut Context<Self>,
-    ) {
-        if self.clippy_character != character {
-            self.clippy_character = character;
             cx.notify();
         }
     }
@@ -1342,19 +1328,11 @@ impl AiAssistantView {
             );
         }
 
-        let mut header = div().flex().items_start().justify_between().gap(px(12.0));
-        if self.clippy_character != CompanionCharacterId::None {
-            header = header.child(
-                img(SharedString::from(format!(
-                    "characters/{}/idle.png",
-                    self.clippy_character.as_str()
-                )))
-                .w(px(64.0))
-                .h(px(64.0))
-                .object_fit(ObjectFit::Contain),
-            );
-        }
-        header = header
+        let header = div()
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap(px(12.0))
             .child(
                 div()
                     .flex()

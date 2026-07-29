@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **54**
+Total markers in code: **57**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -225,8 +225,8 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/test/window.rs` — `// ShellDeck patch: test windows have no real platform surface to reposition.`
 - **Why**: ShellDeck's clippy helper needs to place auxiliary GPUI windows without
   resizing or activating them. The public `Window` method delegates through
-  `PlatformWindow`; Windows uses `SetWindowPos` with `SWP_NOACTIVATE`,
-  `SWP_NOSIZE`, and `SWP_NOZORDER`, macOS calls `setFrameOrigin` after
+  `PlatformWindow`; Windows uses native global desktop coordinates with
+  `SetWindowPos`, `SWP_NOACTIVATE`, `SWP_NOSIZE`, and `SWP_NOZORDER`, macOS
   converting GPUI's top-left logical coordinates to AppKit's bottom-left frame
   coordinates, and X11 issues `ConfigureWindow` with only `x`/`y`. Wayland,
   headless/default, and test windows return explicit unsupported errors because
@@ -239,12 +239,13 @@ only, out of the src/-scoped marker convention.)
 ### SDPATCH-111 — Read-only external top-level window geometry
 
 - **Files / symbols**:
-  - `src/app.rs` — `App::{global_display_bounds,visible_external_window_bounds}`
-  - `src/platform.rs` — `Platform::{global_display_bounds,visible_external_window_bounds}`
+  - `src/app.rs` — `App::{global_display_bounds,global_display_metrics,visible_external_window_bounds}`
+  - `src/platform.rs` — `Platform::{global_display_bounds,visible_external_window_bounds}` and `PlatformDisplay::scale_factor`
   - `src/platform/linux/platform.rs` — `LinuxClient` and `Platform for P`
   - `src/platform/linux/x11/client.rs` — X11 property/geometry helpers and
     `LinuxClient::visible_external_window_bounds`
   - `src/platform/linux/x11/window.rs` — `_NET_WM_WINDOW_TYPE_DESKTOP` atom
+  - `src/platform/windows/display.rs` — per-monitor DPI scale exposure
   - `src/platform/windows/platform.rs` — Win32 enumeration/filtering helpers and
     `Platform::visible_external_window_bounds`
   - `src/platform/mac.rs` — `external_windows` module wiring
@@ -253,7 +254,9 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/mac/external_windows.rs` — CoreGraphics window-list helper
 - **Markers**:
   - `src/app.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: expose scale-aware global display metrics for desktop companions.`
   - `src/app.rs` — `// ShellDeck patch: expose read-only external window geometry for desktop companions.`
+  - `src/platform.rs` — `// ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.`
   - `src/platform.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
   - `src/platform.rs` — `// ShellDeck patch: platform backends may expose safe read-only external window geometry.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides this while Wayland retains the safe empty fallback.`
@@ -261,6 +264,7 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: enumerate eligible visible X11 windows for companion climbing.`
   - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: external geometry excludes desktop-background windows.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: report the monitor DPI scale alongside global display geometry.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: enumerate visible external top-level Win32 windows for desktop companion geometry.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: expose visible external top-level Win32 window bounds.`
   - `src/platform/mac.rs` — `// ShellDeck patch: wire the read-only external window geometry helper.`
@@ -269,12 +273,16 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/mac/platform.rs` — `// ShellDeck patch: return CoreGraphics global display origins instead of local NSScreen coordinates.`
   - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose visible external top-level macOS window bounds.`
 - **Why**: The desktop companion can climb only geometry that is current and
-  safe to observe. The App-facing API returns logical global bounds without
-  mutating any platform state. X11 uses the EWMH stacking list and returns
+  safe to observe. The App-facing APIs return global bounds plus per-display DPI
+  scale without mutating platform state. ShellDeck uses those metrics to build a
+  coherent native Windows desktop coordinate space for mixed-DPI monitor routing.
+  X11 uses the EWMH stacking list and returns
   mapped external input/output windows after excluding ShellDeck-owned, hidden,
   fullscreen, desktop-background, and zero-size surfaces. Windows uses Win32
   `EnumWindows` plus visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen
-  filters, excluding ShellDeck-owned HWNDs. macOS uses CoreGraphics'
+  filters, excluding ShellDeck-owned HWNDs; its companion geometry uses native
+  global desktop coordinates so per-window DPI scaling cannot overlap monitors.
+  macOS uses CoreGraphics'
   on-screen window list with desktop elements excluded, keeps only normal layer-0
   windows, and drops fullscreen-like display-covering windows. Wayland, test,
   headless/default backends intentionally return an empty vector because they do

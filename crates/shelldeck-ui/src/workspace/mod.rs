@@ -1811,8 +1811,6 @@ impl Workspace {
                     );
                     assistant.set_available(dock_available, cx);
                     assistant.set_clippy_available(clippy_available, cx);
-                    assistant
-                        .set_clippy_character(self.app_config.clippy.appearance.character_id(), cx);
                     assistant.set_clippy_auto_import_clipboard(
                         self.app_config.clippy.auto_import_clipboard_on_shortcut,
                         cx,

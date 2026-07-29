@@ -1779,27 +1779,27 @@ Appearance settings offer no character plus Clippy, Shelly, Spark, Byte, Orbit,
 and Nox with real embedded previews. Character, motion preference, scale,
 desktop enablement, roaming level, window-climbing preference, and multi-screen
 preference persist in `[clippy]`. Unknown future character IDs fall back safely
-to Clippy. The selected mascot is reflected in the AI Dock and the optional
-desktop overlay without requiring a restart.
+to Clippy. The selected mascot appears as an independent desktop character
+without being embedded in the AI Dock, and updates without requiring a restart.
 
-### SDUC-448 — Desktop roaming is transparent, click-through, and event-driven
+### SDUC-448 — Desktop roaming is transparent, interactive, and event-driven
 
 On X11, Windows, and macOS, an enabled desktop character uses one transparent,
-no-focus, mouse-passthrough overlay and native top-level window movement. A
+no-focus pointer-enabled overlay and native top-level window movement. A
 fixed-step simulation caps catch-up, clamps positions to available work areas,
 stops animation-frame requests at rest, and wakes from one-shot timers for
 occasional or playful actions rather than polling continuously. When enabled,
 multi-display routing cycles through connected displays and recovers to an
 available work area after monitor changes. Tray actions pause/resume movement
-and return the character to its safe Dock corner.
+and return the character to a safe screen corner.
 
 ### SDUC-449 — Unsupported desktop capabilities degrade honestly and safely
 
 Wayland does not permit reliable arbitrary top-level positioning, so ShellDeck
-does not fake roaming there: it keeps the Dock character available and reports
-the Dock-only limitation. Reduced/off motion and Still roaming request no
+does not fake roaming there: it keeps the desktop character disabled and reports
+the platform limitation. Reduced/off motion and Still roaming request no
 continuous frames. Overlay creation or native movement failures pause the
-character without stealing focus or clicks. External-window climbing is used
+character without stealing keyboard focus. External-window climbing is used
 only when the platform geometry provider can supply eligible visible window
 edges; invalid, minimized, fullscreen, and desktop surfaces are excluded.
 
@@ -1812,10 +1812,25 @@ the top. Choosing any mascot enables its desktop runtime immediately; choosing
 None disables it. The separate motion, size, roaming, window-climbing, and
 multi-monitor controls remain available directly below the cards.
 
+### SDUC-451 — The desktop character responds directly to the user
+
+The selected mascot is rendered only in its transparent desktop window, never
+inside the AI Dock. Pressing and dragging the character preserves the exact grab
+offset, pauses autonomous movement, follows the pointer across monitor bounds,
+and clamps the dropped position to the selected display. Releasing after a drag
+resumes the configured one-shot roaming schedule. A click triggers a short hop;
+a double-click triggers a larger bounded dash with an authored expression
+reaction and no keyboard focus theft. The tray can pause/resume it or return it
+to a safe screen corner.
+
 ---
 
 ## Change log
 
+- **2026-07-29** — Added SDUC-451 and SDTEST-1452/1453 after clarifying that
+  companions are standalone interactive desktop characters, not AI Dock art.
+  The overlay now accepts direct dragging across displays, bounded click and
+  double-click reactions, and resumes event-driven roaming after interaction.
 - **2026-07-29** — Added SDUC-450 and SDTEST-1450/1451 after live launch showed
   the character picker was technically present but hidden below theme controls
   and required a second enable toggle. File, palette, and tray routes now land
@@ -1823,7 +1838,7 @@ multi-monitor controls remain available directly below the cards.
 - **2026-07-29** — Added SDUC-445..449 and SDTEST-1421..1449 for the native
   Clippy clipboard assistant, privacy and stale-selection contracts, selectable
   character persistence, deterministic desktop simulation, multi-display
-  routing, click-through overlays, and honest Wayland fallback.
+  routing, pointer-interactive overlays, and honest Wayland fallback.
 - **2026-07-25** — Added SDUC-444 and SDTEST-1415..1420 for global-shortcut
   failure reporting, and renumbered the v0.6.4 shortcut-toast tests off
   SDTEST-1220/1221/1222, which were already held by the updater rows.
