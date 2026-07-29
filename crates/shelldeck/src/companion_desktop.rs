@@ -638,13 +638,21 @@ impl DesktopCharacterRuntime {
     }
 
     fn follow_attached_window(&mut self, cx: &App) -> AttachmentFollowOutcome {
-        let windows = cx.visible_external_windows();
+        let Some(attachment) = self.attachment else {
+            return AttachmentFollowOutcome::inactive();
+        };
+        let window = cx.external_window(attachment.id);
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
         let displays = desktop_displays(cx);
-        self.follow_attached_snapshot(&windows, &displays)
+        let Some(window) = window else {
+            self.cancel_attachment();
+            return AttachmentFollowOutcome::inactive();
+        };
+        self.follow_attached_bounds(window.bounds, &displays)
     }
 
+    #[cfg(test)]
     fn follow_attached_snapshot(
         &mut self,
         windows: &[ExternalWindow],
