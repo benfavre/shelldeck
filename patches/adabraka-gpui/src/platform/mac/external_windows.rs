@@ -1,10 +1,7 @@
 use cocoa::base::{id, nil};
 use cocoa::foundation::{NSArray, NSUInteger};
 use core_foundation::{
-    array::CFArrayRef,
-    base::CFRelease,
-    dictionary::CFDictionaryRef,
-    string::CFStringRef,
+    array::CFArrayRef, base::CFRelease, dictionary::CFDictionaryRef, string::CFStringRef,
 };
 use core_graphics::{
     display::{CGDirectDisplayID, CGDisplayBounds, CGGetActiveDisplayList},
@@ -12,7 +9,7 @@ use core_graphics::{
 };
 use objc::{msg_send, sel, sel_impl};
 
-use crate::{Bounds, Pixels, point, px, size};
+use crate::{point, px, size, Bounds, Pixels};
 
 const K_CG_NULL_WINDOW_ID: u32 = 0;
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
@@ -22,12 +19,10 @@ const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 unsafe extern "C" {
     static kCGWindowBounds: CFStringRef;
     static kCGWindowLayer: CFStringRef;
+    static kCGWindowOwnerPID: CFStringRef;
 
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
-    fn CGRectMakeWithDictionaryRepresentation(
-        dict: CFDictionaryRef,
-        rect: *mut CGRect,
-    ) -> bool;
+    fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect) -> bool;
 }
 
 // ShellDeck patch: enumerate visible external top-level macOS windows for desktop companion geometry.
@@ -43,7 +38,7 @@ pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
 
         let screen_bounds = active_display_bounds();
         let count: NSUInteger = msg_send![window_list as id, count];
-        let mut bounds = Vec::new();
+        let mut result = Vec::new();
 
         for index in 0..count {
             let window_info: id = msg_send![window_list as id, objectAtIndex: index];
@@ -51,34 +46,37 @@ pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
                 continue;
             }
 
-            let window_bounds_value: id = msg_send![window_info, objectForKey: kCGWindowBounds as id];
+            let window_bounds_value: id =
+                msg_send![window_info, objectForKey: kCGWindowBounds as id];
             if window_bounds_value == nil {
                 continue;
             }
 
             let mut rect: CGRect = std::mem::zeroed();
-            if !CGRectMakeWithDictionaryRepresentation(window_bounds_value as CFDictionaryRef, &mut rect)
-            {
+            if !CGRectMakeWithDictionaryRepresentation(
+                window_bounds_value as CFDictionaryRef,
+                &mut rect,
+            ) {
                 continue;
             }
 
-            let bounds = Bounds {
+            let window_bounds = Bounds {
                 origin: point(px(rect.origin.x as f32), px(rect.origin.y as f32)),
                 size: size(px(rect.size.width as f32), px(rect.size.height as f32)),
             };
 
-            if f32::from(bounds.size.width) <= 0.0
-                || f32::from(bounds.size.height) <= 0.0
-                || is_fullscreen(bounds.clone(), &screen_bounds)
+            if f32::from(window_bounds.size.width) <= 0.0
+                || f32::from(window_bounds.size.height) <= 0.0
+                || is_fullscreen(window_bounds.clone(), &screen_bounds)
             {
                 continue;
             }
 
-            bounds.push(bounds);
+            result.push(window_bounds);
         }
 
         CFRelease(window_list as _);
-        bounds
+        result
     }
 }
 
@@ -89,7 +87,16 @@ unsafe fn is_normal_window(window_info: id) -> bool {
             return false;
         }
         let layer: i32 = msg_send![layer_value, intValue];
-        layer == 0
+        if layer != 0 {
+            return false;
+        }
+
+        let owner_value: id = msg_send![window_info, objectForKey: kCGWindowOwnerPID as id];
+        if owner_value == nil {
+            return false;
+        }
+        let owner_pid: i32 = msg_send![owner_value, intValue];
+        owner_pid != std::process::id() as i32
     }
 }
 
