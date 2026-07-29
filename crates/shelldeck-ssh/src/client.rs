@@ -2,6 +2,7 @@ use crate::handler::ClientHandler;
 use crate::session::SshSession;
 use crate::SshError;
 use russh::client;
+use russh::keys::{Algorithm, PrivateKeyWithHashAlg};
 use shelldeck_core::models::{Connection, ConnectionSource, ConnectionStatus};
 use std::path::Path;
 use std::sync::Arc;
@@ -307,7 +308,7 @@ impl SshClient {
         user: &str,
         key_path: &Path,
     ) -> crate::Result<()> {
-        let key_pair = match russh_keys::load_secret_key(key_path, None) {
+        let key_pair = match russh::keys::load_secret_key(key_path, None) {
             Ok(kp) => kp,
             Err(unencrypted_err) => {
                 // Key may be encrypted — try passphrase from keychain
@@ -320,7 +321,7 @@ impl SshClient {
 
                 match shelldeck_core::config::keychain::get_key_passphrase(&path_str) {
                     Ok(Some(passphrase)) => {
-                        russh_keys::load_secret_key(key_path, Some(&passphrase)).map_err(|e| {
+                        russh::keys::load_secret_key(key_path, Some(&passphrase)).map_err(|e| {
                             tracing::warn!(
                                 "Key {} failed with keychain passphrase: {}",
                                 path_str,
@@ -357,12 +358,24 @@ impl SshClient {
             }
         };
 
+        let rsa_hash = if matches!(key_pair.algorithm(), Algorithm::Rsa { .. }) {
+            handle
+                .best_supported_rsa_hash()
+                .await
+                .map_err(|e| SshError::AuthFailed(e.to_string()))?
+                .flatten()
+        } else {
+            None
+        };
         let auth_result = handle
-            .authenticate_publickey(user, Arc::new(key_pair))
+            .authenticate_publickey(
+                user,
+                PrivateKeyWithHashAlg::new(Arc::new(key_pair), rsa_hash),
+            )
             .await
             .map_err(|e| SshError::AuthFailed(e.to_string()))?;
 
-        if !auth_result {
+        if !auth_result.success() {
             return Err(SshError::AuthFailed("Public key rejected".into()));
         }
 
@@ -402,7 +415,7 @@ impl SshClient {
             .await
             .map_err(|e| SshError::AuthFailed(e.to_string()))?;
 
-        if !auth_result {
+        if !auth_result.success() {
             tracing::warn!("Password authentication rejected for {}@{}", user, hostname);
             return Err(SshError::AuthFailed("Password rejected by server".into()));
         }

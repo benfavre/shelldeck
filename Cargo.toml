@@ -24,8 +24,7 @@ gpui = { package = "adabraka-gpui", version = "0.5" }
 adabraka-ui = { version = "0.3", features = ["markdown"] }
 
 # SSH
-russh = { version = "0.45" }
-russh-keys = { version = "0.45" }
+russh = { version = "0.60.3" }
 ssh2-config = "0.2"
 
 # Terminal

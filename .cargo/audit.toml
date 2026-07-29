@@ -1,0 +1,9 @@
+[advisories]
+# Existing findings are tracked as an explicit baseline so cargo-audit fails on
+# every newly introduced RustSec advisory. Remove each entry as its dependency
+# chain is upgraded.
+ignore = [
+    "RUSTSEC-2023-0071", # rsa: no patched release; transitive through russh
+    "RUSTSEC-2026-0194", # quick-xml 0.30: build dependency pinned by latest xcb
+    "RUSTSEC-2026-0195", # quick-xml 0.30: build dependency pinned by latest xcb
+]
