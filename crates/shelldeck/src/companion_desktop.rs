@@ -432,18 +432,11 @@ impl DesktopCharacterRuntime {
             app_id: Some("shelldeck-character".to_string()),
             ..Default::default()
         };
-        let paused = self.diagnostics.paused;
         let asset_path = character_idle_asset(self.config.appearance.character_id());
         let render_size = character_render_size(self.config.appearance.scale);
         match cx.open_window(options, move |_window, cx| {
             cx.new(|_cx| {
-                CharacterOverlayView::new(
-                    main_window,
-                    paused,
-                    asset_path,
-                    render_size,
-                    runtime_entity,
-                )
+                CharacterOverlayView::new(main_window, asset_path, render_size, runtime_entity)
             })
         }) {
             Ok(handle) => {
@@ -451,7 +444,18 @@ impl DesktopCharacterRuntime {
                 self.diagnostics.overlay_open = true;
                 self.diagnostics.mouse_passthrough = true;
                 self.diagnostics.display_count = cx.displays().len();
-                self.request_frame(cx);
+                // `open_window` renders the new view synchronously while this
+                // runtime entity is still being updated. Arm runtime-backed
+                // frames on the next application turn to avoid re-entering the
+                // same entity from the overlay's initial render.
+                cx.spawn(async move |cx| {
+                    let _ = cx.update(|cx| {
+                        let _ = handle.update(cx, |view, window, cx| {
+                            view.schedule_frame(window, cx);
+                        });
+                    });
+                })
+                .detach();
             }
             Err(error) => {
                 self.diagnostics.tier = OverlayCapabilityTier::DockOnly;
@@ -474,7 +478,7 @@ impl DesktopCharacterRuntime {
 
     fn request_frame(&self, cx: &mut App) {
         if let Some(handle) = self.overlay {
-            let _ = handle.update(cx, |_view, window, _cx| window.request_animation_frame());
+            let _ = handle.update(cx, |view, window, cx| view.schedule_frame(window, cx));
         }
     }
 
@@ -533,7 +537,6 @@ impl DesktopCharacterRuntime {
                 .simulation
                 .as_ref()
                 .is_some_and(|sim| sim.moving(reduced_motion)),
-            paused: self.diagnostics.paused,
         }
     }
 }
@@ -542,50 +545,58 @@ impl DesktopCharacterRuntime {
 struct CharacterFrameState {
     position: Option<Point<Pixels>>,
     moving: bool,
-    paused: bool,
 }
 
 pub struct CharacterOverlayView {
-    paused: bool,
     runtime: Entity<DesktopCharacterRuntime>,
     asset_path: &'static str,
     render_size: f32,
     main_window: AnyWindowHandle,
+    frame_scheduled: bool,
 }
 
 impl CharacterOverlayView {
     fn new(
         main_window: AnyWindowHandle,
-        paused: bool,
         asset_path: &'static str,
         render_size: f32,
         runtime: Entity<DesktopCharacterRuntime>,
     ) -> Self {
         Self {
-            paused,
             runtime,
             asset_path,
             render_size,
             main_window,
+            frame_scheduled: false,
         }
+    }
+
+    fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.frame_scheduled {
+            return;
+        }
+        self.frame_scheduled = true;
+        cx.on_next_frame(window, |view, window, cx| {
+            view.frame_scheduled = false;
+            let state = view.runtime.update(cx, |runtime, cx| runtime.on_frame(cx));
+            if let Some(position) = state.position {
+                if let Err(error) = window.set_window_origin(position) {
+                    tracing::warn!(error = %error, "desktop character native movement failed");
+                    view.runtime.update(cx, |runtime, _cx| {
+                        runtime.record_movement_error(error.to_string())
+                    });
+                }
+            }
+            if state.moving {
+                view.schedule_frame(window, cx);
+            }
+            cx.notify();
+        });
     }
 }
 
 impl Render for CharacterOverlayView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.runtime.update(cx, |runtime, cx| runtime.on_frame(cx));
-        self.paused = state.paused;
-        if let Some(position) = state.position {
-            if let Err(error) = window.set_window_origin(position) {
-                tracing::warn!(error = %error, "desktop character native movement failed");
-                self.runtime.update(cx, |runtime, _cx| {
-                    runtime.record_movement_error(error.to_string())
-                });
-            }
-        }
-        if state.moving {
-            window.request_animation_frame();
-        }
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let _ = self.main_window;
         div().size_full().bg(gpui::transparent_black()).child(
             div()

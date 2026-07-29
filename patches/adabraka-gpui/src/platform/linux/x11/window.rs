@@ -1265,9 +1265,9 @@ impl PlatformWindow for X11Window {
         xcb_flush(&self.0.xcb);
         self.0.state.borrow_mut().bounds.origin = origin;
 
-        if let Some(ref mut fun) = self.0.callbacks.borrow_mut().moved {
-            fun();
-        }
+        // ConfigureNotify will deliver the moved callback through set_bounds.
+        // Calling it synchronously here can re-borrow the callback RefCell when
+        // movement is requested from a GPUI next-frame callback.
 
         Ok(())
     }

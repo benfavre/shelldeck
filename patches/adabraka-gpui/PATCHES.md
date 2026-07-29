@@ -230,7 +230,9 @@ only, out of the src/-scoped marker convention.)
   converting GPUI's top-left logical coordinates to AppKit's bottom-left frame
   coordinates, and X11 issues `ConfigureWindow` with only `x`/`y`. Wayland,
   headless/default, and test windows return explicit unsupported errors because
-  those environments have no client-controlled top-level origin to set.
+  those environments have no client-controlled top-level origin to set. X11
+  relies on the resulting `ConfigureNotify` to dispatch the moved callback
+  rather than re-borrowing platform callbacks synchronously during frame work.
 - **Upstream status**: not filed yet — generally useful platform API, but the
   Wayland semantics need to be clearly documented before upstreaming.
 
