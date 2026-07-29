@@ -418,9 +418,11 @@ impl DesktopCharacterRuntime {
         let was_paused = self.diagnostics.paused;
         let was_reduced = reduced_motion_for_config(&self.config);
         let previous_movement = self.config.appearance.desktop.movement;
+        let previous_window_climbing = self.config.appearance.desktop.allow_window_climbing;
         let recreate = self.config.appearance.character_id() != config.appearance.character_id()
             || self.config.appearance.scale != config.appearance.scale;
         self.config = config;
+        self.apply_window_climbing_transition(previous_window_climbing);
         let reduced_motion = reduced_motion_for_config(&self.config);
         let motion_policy_changed = was_reduced != reduced_motion
             || previous_movement != self.config.appearance.desktop.movement;
@@ -921,6 +923,12 @@ impl DesktopCharacterRuntime {
     fn clear_physics_snapshot(&mut self) {
         self.physics_windows.clear();
         self.physics_platforms.clear();
+    }
+
+    fn apply_window_climbing_transition(&mut self, previous_window_climbing: bool) {
+        if previous_window_climbing && !self.config.appearance.desktop.allow_window_climbing {
+            self.clear_physics_snapshot();
+        }
     }
 
     fn detach_missing_attachment(&mut self) -> bool {
@@ -3321,6 +3329,43 @@ mod tests {
                 now + DRAG_VELOCITY_SAMPLE_LIMIT + Duration::from_millis(1),
             ),
             Point2::new(0.0, 0.0)
+        );
+    }
+
+    // SDTEST-1527
+    #[test]
+    fn disabling_window_climbing_mid_fall_clears_cached_window_platforms() {
+        let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 40.0);
+        let window = external_window(88, bounds(200.0, 300.0, 260.0, 180.0));
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                &[window],
+                &[display()],
+            ),
+            ReleaseLifecycle::RequestPhysicsFrame
+        );
+        assert_eq!(runtime.physics_platforms.len(), 1);
+
+        runtime.config.appearance.desktop.allow_window_climbing = false;
+        runtime.apply_window_climbing_transition(true);
+
+        assert!(runtime.physics_windows.is_empty());
+        assert!(runtime.physics_platforms.is_empty());
+        let sim = runtime.simulation.as_mut().unwrap();
+        for _ in 0..90 {
+            if sim
+                .step_physics_capped(33, &runtime.physics_platforms)
+                .landed
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            sim.body.contact().unwrap().kind,
+            WalkableSurfaceKind::ScreenFloor
         );
     }
 }
