@@ -15,6 +15,8 @@ pub struct PhysicsConfig {
     pub terminal_velocity: f32,
     pub max_horizontal_speed: f32,
     pub air_drag: f32,
+    pub boundary_restitution: f32,
+    pub boundary_settle_velocity: f32,
 }
 
 impl Default for PhysicsConfig {
@@ -24,6 +26,8 @@ impl Default for PhysicsConfig {
             terminal_velocity: 2_400.0,
             max_horizontal_speed: 1_600.0,
             air_drag: 0.08,
+            boundary_restitution: 0.35,
+            boundary_settle_velocity: 4.0,
         }
     }
 }
@@ -143,10 +147,16 @@ impl CompanionBody {
             self.position.x + self.velocity.x * dt_seconds,
             self.position.y + self.velocity.y * dt_seconds,
         );
-        self.position.x = desired.x.clamp(
-            work_area.x,
-            (work_area.right() - self.size.x).max(work_area.x),
-        );
+        let min_x = work_area.x;
+        let max_x = (work_area.right() - self.size.x).max(min_x);
+        self.position.x = desired.x.clamp(min_x, max_x);
+        if desired.x < min_x && self.velocity.x < 0.0 {
+            self.velocity.x = reflected_velocity(self.velocity.x, config.boundary_restitution);
+            settle_axis(&mut self.velocity.x, config.boundary_settle_velocity);
+        } else if desired.x > max_x && self.velocity.x > 0.0 {
+            self.velocity.x = -reflected_velocity(self.velocity.x, config.boundary_restitution);
+            settle_axis(&mut self.velocity.x, config.boundary_settle_velocity);
+        }
 
         let previous_bottom = previous_position.y + self.size.y;
         let desired_bottom = desired.y + self.size.y;
@@ -184,6 +194,11 @@ impl CompanionBody {
                 kind: WalkableSurfaceKind::ScreenFloor,
             });
             landed = true;
+        } else if desired.y < work_area.y && self.velocity.y < 0.0 {
+            self.position.y = work_area.y;
+            self.velocity.y = reflected_velocity(self.velocity.y, config.boundary_restitution);
+            settle_axis(&mut self.velocity.y, config.boundary_settle_velocity);
+            self.contact = None;
         } else {
             self.position.y = desired.y;
             self.contact = None;
@@ -251,6 +266,16 @@ fn surface_y(surface: &WalkableSurface) -> f32 {
     surface.segment.start.y.min(surface.segment.end.y)
 }
 
+fn reflected_velocity(velocity: f32, restitution: f32) -> f32 {
+    velocity.abs() * restitution.clamp(0.0, 1.0)
+}
+
+fn settle_axis(velocity: &mut f32, settle_velocity: f32) {
+    if velocity.abs() <= settle_velocity.max(0.0) {
+        *velocity = 0.0;
+    }
+}
+
 fn contact_for(surface: &WalkableSurface) -> SurfaceContact {
     SurfaceContact {
         id: surface.id.clone(),
@@ -270,6 +295,8 @@ mod tests {
             terminal_velocity: 300.0,
             max_horizontal_speed: 50.0,
             air_drag: 0.0,
+            boundary_restitution: 0.5,
+            boundary_settle_velocity: 1.0,
         }
     }
 
@@ -279,6 +306,8 @@ mod tests {
             terminal_velocity: 1_200.0,
             max_horizontal_speed: 50.0,
             air_drag: 0.0,
+            boundary_restitution: 0.5,
+            boundary_settle_velocity: 1.0,
         }
     }
 
@@ -398,5 +427,44 @@ mod tests {
         assert!(a.invalidate_contact(&platform.id, 2));
         assert_eq!(a.mode, BodyMode::Dynamic);
         assert!(a.contact().is_none());
+    }
+
+    // SDTEST-1532
+    #[test]
+    fn side_wall_collision_clamps_and_reflects_horizontal_velocity() {
+        let mut body = CompanionBody::new(Point2::new(185.0, 40.0), Point2::new(10.0, 10.0));
+        body.velocity.x = 40.0;
+
+        let result = body.step(1.0, config(), &[], area());
+
+        assert_eq!(result.position.x, 190.0);
+        assert_eq!(result.velocity.x, -20.0);
+        assert!(result.contact.is_none());
+
+        body.velocity.x = -1.5;
+        let result = body.step(1.0, config(), &[], Rect::new(190.0, 0.0, 10.0, 180.0));
+
+        assert_eq!(result.position.x, 190.0);
+        assert_eq!(result.velocity.x, 0.0);
+    }
+
+    // SDTEST-1533
+    #[test]
+    fn ceiling_collision_clamps_and_reflects_upward_velocity_downward() {
+        let mut body = CompanionBody::new(Point2::new(20.0, 3.0), Point2::new(10.0, 10.0));
+        body.velocity.y = -50.0;
+
+        let result = body.step(0.1, config(), &[], area());
+
+        assert_eq!(result.position.y, 0.0);
+        assert_eq!(result.velocity.y, 20.0);
+        assert!(!result.landed);
+        assert!(result.contact.is_none());
+
+        body.velocity.y = -1.5;
+        let result = body.step(0.01, config(), &[], area());
+
+        assert_eq!(result.position.y, 0.0);
+        assert_eq!(result.velocity.y, 0.0);
     }
 }
