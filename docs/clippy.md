@@ -1,7 +1,25 @@
 # Clippy in ShellDeck: implementation plan
 
-> Status: design and delivery plan. This document describes a ShellDeck feature named
-> **Clippy**, not the Rust `cargo clippy` linter.
+> Status: portable Clippy and the opt-in desktop companion baseline are implemented as
+> of 2026-07-29. This document also tracks later capability tiers. **Clippy** here is
+> the ShellDeck feature, not the Rust `cargo clippy` linter.
+
+## Implementation status
+
+| Area | Status | Implementation |
+|---|---|---|
+| Portable text assistant | Delivered | Dedicated AI Dock surface with explicit clipboard import, optional shortcut import, seven operations, bounded/redacted context, result preview, diff, Copy, Edit, Regenerate, and Cancel |
+| Safety contracts | Delivered | `shelldeck-core::ai::clippy` types, strict validation, typed action policy, metadata-only audit copy, stale-selection checks, and a fake desktop provider workflow |
+| Native selection replacement | Contract delivered, adapters pending | Copy remains the universal fallback. Windows UI Automation, macOS Accessibility, and Linux AT-SPI adapters are not enabled yet |
+| Character roster | Delivered | No character plus Clippy, Shelly, Spark, Byte, Orbit, and Nox with embedded transparent PNG assets and persisted appearance settings |
+| Desktop overlay | Delivered where absolute positioning is supported | One transparent, no-focus, mouse-pass-through overlay with native origin movement, pause/return tray controls, and no continuous frames while static |
+| Window geometry and climbing | Delivered by capability | X11, macOS, and Windows expose filtered external top-level rectangles; the runtime chooses bounded window-top targets. Wayland remains Dock-only by design |
+| Multi-display roaming | Delivered | One-shot occasional/playful timers, capped fixed-step simulation, live display cycling, monitor-removal clamping, and movement duty-cycle recovery |
+| Advanced animation and OS lifecycle | Later tier | Authored sprite states, direct character interaction, fullscreen suppression, battery policy, lock/suspend hooks, and performance telemetry UI remain follow-up work |
+| Screenshot context | Deferred Phase 3 | No continuous capture exists. Explicit previewable capture remains intentionally outside the portable baseline |
+
+The code and regression inventory are mapped by SDUC-445..449 and
+SDTEST-1421..1449 in `docs/testing/`.
 
 ## Objective
 
@@ -809,18 +827,19 @@ enabled = false
 movement = "occasional" # still | occasional | playful
 allow_window_climbing = true
 allow_multi_monitor = true
-show_over_fullscreen = false
-pause_on_battery = true
-preferred_display = "auto"
 ```
+
+Fullscreen overrides, battery policy, and preferred-display persistence remain future
+lifecycle work. They are not persisted as inactive settings in the delivered baseline.
 
 Behavior requirements:
 
 - desktop roaming is off by default until the platform capability check succeeds
-- pause movement during screen lock, suspend, remote desktop transitions, and system
+- future lifecycle integration should pause movement during screen lock, suspend, remote desktop transitions, and system
   sleep
-- hide or sleep during fullscreen games, presentations, and video unless opted in
-- pause on battery according to the setting while retaining the static character
+- future lifecycle integration should hide or sleep during fullscreen games,
+  presentations, and video unless explicitly opted in
+- future lifecycle integration should pause on battery while retaining the static character
 - respect reduced motion globally
 - “still” keeps a static pet at a chosen screen corner with no simulation loop
 - provide immediate **Pause character** and **Return to Dock** tray actions
@@ -900,9 +919,6 @@ clippy = false
 
 [clippy]
 auto_import_clipboard_on_shortcut = false
-allow_application_names = true
-allow_window_titles = false
-allow_screenshots = false
 ```
 
 All fields require defaults so existing `shelldeck.toml` files remain compatible.
@@ -910,10 +926,11 @@ Settings should expose:
 
 - enable Clippy
 - automatic clipboard import on explicit shortcut invocation
-- include application name
-- include window title
-- allow screenshots
 - platform permission and capability status
+
+Application-name, window-title, and screenshot permission fields are intentionally
+deferred until their native providers exist. Persisting inactive privacy toggles would
+mislead users about data the portable clipboard implementation never collects.
 
 Clippy should use the existing AI backend/model selection. It should not own a second
 API key or model configuration.

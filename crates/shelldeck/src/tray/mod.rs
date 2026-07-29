@@ -65,6 +65,8 @@ pub enum TrayCommand {
     ShowWindow,
     /// Show or hide the compact standalone AI assistant window.
     ToggleAiDock,
+    /// Open the Dock directly on the Clippy clipboard assistant.
+    OpenClippy,
     /// Open the Dock directly on its durable AI task center.
     OpenAiTasks,
     /// Open the command palette.
@@ -225,6 +227,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
     match id {
         SHOW_ID => Some(TrayCommand::ShowWindow),
         ASSISTANT_ID => Some(TrayCommand::ToggleAiDock),
+        CLIPPY_ID => Some(TrayCommand::OpenClippy),
         AI_TASKS_ID => Some(TrayCommand::OpenAiTasks),
         PALETTE_ID => Some(TrayCommand::OpenPalette),
         PAUSE_CHARACTER_ID => Some(TrayCommand::PauseCharacter),
@@ -239,6 +242,7 @@ fn command_for_menu_id(id: &str) -> Option<TrayCommand> {
 
 const SHOW_ID: &str = "shelldeck.tray.show";
 const ASSISTANT_ID: &str = "shelldeck.tray.assistant";
+const CLIPPY_ID: &str = "shelldeck.tray.clippy";
 const AI_TASKS_ID: &str = "shelldeck.tray.ai_tasks";
 const PALETTE_ID: &str = "shelldeck.tray.palette";
 const PAUSE_CHARACTER_ID: &str = "shelldeck.tray.character.pause";
@@ -267,6 +271,7 @@ struct CounterItems {
 
 struct MenuItems {
     assistant: MenuItem,
+    clippy: MenuItem,
     show: MenuItem,
     palette: MenuItem,
     pause_character: MenuItem,
@@ -291,11 +296,13 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     let labels = TrayLabels::localized();
 
     let assistant_item = MenuItem::with_id(ASSISTANT_ID, &labels.assistant, true, None);
+    let clippy_item = MenuItem::with_id(CLIPPY_ID, &labels.clippy, true, None);
     let show_item = MenuItem::with_id(SHOW_ID, &labels.show, true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, &labels.palette, true, None);
-    let pause_character_item = MenuItem::with_id(PAUSE_CHARACTER_ID, "Pause character", true, None);
+    let pause_character_item =
+        MenuItem::with_id(PAUSE_CHARACTER_ID, &labels.pause_character, true, None);
     let return_character_item =
-        MenuItem::with_id(RETURN_CHARACTER_ID, "Return character to Dock", true, None);
+        MenuItem::with_id(RETURN_CHARACTER_ID, &labels.return_character, true, None);
     let quit_item = MenuItem::with_id(QUIT_ID, &labels.quit, true, None);
     let pinned_menu = Submenu::new(&labels.pinned, true);
     let no_pinned = MenuItem::new(&labels.no_pinned, false, None);
@@ -315,6 +322,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
 
     menu.append(&assistant_item)
         .context("append Assistant item")?;
+    menu.append(&clippy_item).context("append Clippy item")?;
     menu.append(&show_item).context("append Show item")?;
     menu.append(&palette_item).context("append Palette item")?;
     menu.append(&pause_character_item)
@@ -341,6 +349,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         menu,
         MenuItems {
             assistant: assistant_item,
+            clippy: clippy_item,
             show: show_item,
             palette: palette_item,
             pause_character: pause_character_item,
@@ -361,8 +370,13 @@ fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     let language_changed = prev.labels != next.labels;
     if language_changed {
         items.assistant.set_text(&next.labels.assistant);
+        items.clippy.set_text(&next.labels.clippy);
         items.show.set_text(&next.labels.show);
         items.palette.set_text(&next.labels.palette);
+        items.pause_character.set_text(&next.labels.pause_character);
+        items
+            .return_character
+            .set_text(&next.labels.return_character);
         items.quit.set_text(&next.labels.quit);
         items.pinned_menu.set_text(&next.labels.pinned);
     }
@@ -561,6 +575,15 @@ mod tests {
         assert!(matches!(
             command_for_menu_id(ASSISTANT_ID),
             Some(TrayCommand::ToggleAiDock)
+        ));
+    }
+
+    // SDTEST-1445
+    #[test]
+    fn clippy_menu_id_routes_directly_to_clippy() {
+        assert!(matches!(
+            command_for_menu_id(CLIPPY_ID),
+            Some(TrayCommand::OpenClippy)
         ));
     }
 

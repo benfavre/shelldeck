@@ -146,6 +146,12 @@ impl CharacterSimulation {
         self.duty_cycle() < self.config.movement_duty_cycle_limit
     }
 
+    pub fn advance_idle_time(&mut self, elapsed_ms: u64) {
+        if self.target.is_none() {
+            self.elapsed_ms = self.elapsed_ms.saturating_add(elapsed_ms);
+        }
+    }
+
     pub fn remember_action(&mut self, action_id: impl Into<String>) {
         self.last_actions.push_back(action_id.into());
         while self.last_actions.len() > self.config.cooldown_memory {
@@ -196,6 +202,7 @@ mod tests {
     use super::*;
     use crate::companion::geometry::{LineSegment, Vector2, WalkableSurfaceKind};
 
+    // SDTEST-1433
     #[test]
     fn movement_stays_inside_work_area_and_catch_up_is_capped() {
         let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -206,6 +213,7 @@ mod tests {
         assert!(bounds.contains(sim.position));
     }
 
+    // SDTEST-1434
     #[test]
     fn reduced_motion_and_sleeping_request_no_frames() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));
@@ -221,6 +229,7 @@ mod tests {
         );
     }
 
+    // SDTEST-1435
     #[test]
     fn stale_surface_moves_to_recovering() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));
@@ -240,6 +249,7 @@ mod tests {
         assert_eq!(sim.state, CharacterSimulationState::Recovering);
     }
 
+    // SDTEST-1436
     #[test]
     fn seeded_random_source_is_deterministic_and_cooldowns_work() {
         let mut a = DeterministicRng::seeded(42);
@@ -254,11 +264,14 @@ mod tests {
         assert!(sim.action_on_cooldown("sleep"));
     }
 
+    // SDTEST-1437
     #[test]
     fn duty_cycle_blocks_excessive_movement() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));
         sim.elapsed_ms = 10_000;
         sim.moving_ms = 3_000;
         assert!(!sim.can_start_action());
+        sim.advance_idle_time(10_000);
+        assert!(sim.can_start_action());
     }
 }

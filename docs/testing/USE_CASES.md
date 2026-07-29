@@ -1752,8 +1752,65 @@ window to open is seeded from the live registration state.
 
 ---
 
+## 29. Clippy assistant and desktop characters
+
+### SDUC-445 — Clippy transforms explicitly supplied clipboard text
+
+The AI Dock and native tray can open a dedicated Clippy surface. Clipboard text
+enters ShellDeck only after the user presses **Use clipboard** or pastes it into
+the source field. Rewrite, translate, shorten, summarize, explain, draft reply,
+and custom operations use the configured AI backend. The response remains a
+reviewable draft with a line diff and explicit Edit, Regenerate, Copy, and
+Cancel controls. Clippy is an opt-in AI surface and is disabled by default.
+
+### SDUC-446 — Desktop context is bounded, untrusted, and replacement-safe
+
+Clippy delimits application text from trusted instructions, redacts common
+credential forms, blocks password-role selections, and bounds source, result,
+instruction, and screenshot metadata. Logs and durable audit details retain
+only operation and size metadata, never source or generated text. A native
+selection replacement can proceed only when the adapter still reports the same
+window, identity, and text that produced the reviewed result. Unsupported,
+closed, permission-denied, and stale targets preserve Copy as the fallback.
+
+### SDUC-447 — The selected companion character persists everywhere
+
+Appearance settings offer no character plus Clippy, Shelly, Spark, Byte, Orbit,
+and Nox with real embedded previews. Character, motion preference, scale,
+desktop enablement, roaming level, window-climbing preference, and multi-screen
+preference persist in `[clippy]`. Unknown future character IDs fall back safely
+to Clippy. The selected mascot is reflected in the AI Dock and the optional
+desktop overlay without requiring a restart.
+
+### SDUC-448 — Desktop roaming is transparent, click-through, and event-driven
+
+On X11, Windows, and macOS, an enabled desktop character uses one transparent,
+no-focus, mouse-passthrough overlay and native top-level window movement. A
+fixed-step simulation caps catch-up, clamps positions to available work areas,
+stops animation-frame requests at rest, and wakes from one-shot timers for
+occasional or playful actions rather than polling continuously. When enabled,
+multi-display routing cycles through connected displays and recovers to an
+available work area after monitor changes. Tray actions pause/resume movement
+and return the character to its safe Dock corner.
+
+### SDUC-449 — Unsupported desktop capabilities degrade honestly and safely
+
+Wayland does not permit reliable arbitrary top-level positioning, so ShellDeck
+does not fake roaming there: it keeps the Dock character available and reports
+the Dock-only limitation. Reduced/off motion and Still roaming request no
+continuous frames. Overlay creation or native movement failures pause the
+character without stealing focus or clicks. External-window climbing is used
+only when the platform geometry provider can supply eligible visible window
+edges; invalid, minimized, fullscreen, and desktop surfaces are excluded.
+
+---
+
 ## Change log
 
+- **2026-07-29** — Added SDUC-445..449 and SDTEST-1421..1449 for the native
+  Clippy clipboard assistant, privacy and stale-selection contracts, selectable
+  character persistence, deterministic desktop simulation, multi-display
+  routing, click-through overlays, and honest Wayland fallback.
 - **2026-07-25** — Added SDUC-444 and SDTEST-1415..1420 for global-shortcut
   failure reporting, and renumbered the v0.6.4 shortcut-toast tests off
   SDTEST-1220/1221/1222, which were already held by the updater rows.

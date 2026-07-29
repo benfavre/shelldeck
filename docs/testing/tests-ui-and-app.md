@@ -288,6 +288,16 @@ parallel `cargo test`.
 | SDTEST-1418 | `workspace::tests::portal_absence_is_explained_but_other_errors_pass_through` | SDUC-444 | Green | A Wayland session with no Global Shortcuts portal reaches the user as the translated explanation, never as the ashpd/D-Bus sentence; unrecognized platform errors still arrive verbatim. |
 | SDTEST-1419 | `settings::tests::portal_missing_matches_ashpd_shapes_only` | SDUC-444 | Green | The classifier catches both ashpd shapes (resolved interface name, raw `ServiceUnknown`) without swallowing keycode, `BadAccess`, or portal-refused errors. |
 | SDTEST-1420 | *to write* — tray-mode registration results survive until the Workspace exists | SDUC-444 | **Red / P1** | GPUI integration: with `start_hidden`, a portal answer arriving before the first window must be the status the Workspace is seeded with — the bug behind the silent `PendingPortal` badge. Covered by construction today (the root reads the live registration state instead of a boot snapshot). |
+| SDTEST-1439 | `companion_desktop.rs::runtime_route_requires_enabled_character` | SDUC-447, SDUC-448 | Green | The overlay exists only when desktop mode is explicitly enabled and the selected roster entry is not None. |
+| SDTEST-1440 | `companion_desktop.rs::runtime_uses_core_simulation_and_clamps_after_monitor_removal` | SDUC-448, SDUC-449 | Green | The native owner consumes the tested core simulation and recovers into a smaller surviving work area. |
+| SDTEST-1441 | `companion_desktop.rs::paused_and_reduced_motion_request_no_continuous_frames` | SDUC-448, SDUC-449 | Green | Pause and reduced motion make the overlay event-idle rather than maintaining a render poll. |
+| SDTEST-1442 | `companion_desktop.rs::character_assets_route_to_existing_pngs` | SDUC-447 | Green | Runtime roster IDs resolve to embedded production PNG paths. |
+| SDTEST-1444 | `.github/workflows/release.yml` Linux/macOS/Windows compile matrix | SDUC-448, SDUC-449 | Green | The GPUI top-level movement and geometry APIs are platform-gated; every release target must type-check before assets or manifests publish. |
+| SDTEST-1445 | `tray::tests::clippy_menu_id_routes_directly_to_clippy` | SDUC-445 | Green | The stable native menu id opens the dedicated Clippy surface instead of toggling the generic Assistant or revealing the main window. |
+| SDTEST-1446 | `companion_desktop.rs::external_window_target_perches_above_the_window_inside_the_work_area` | SDUC-448, SDUC-449 | Green | Eligible external window tops produce an on-screen perch target; tiny invalid surfaces are rejected before the native overlay moves. |
+| SDTEST-1447 | `companion_desktop.rs::frame_elapsed_uses_real_refresh_delta_after_the_first_frame` | SDUC-448 | Green | Animation-frame simulation uses real elapsed time after startup, so 60 Hz and 30 Hz displays move the character at the same configured speed. |
+| SDTEST-1448 | `ai_assistant.rs::automatic_clipboard_import_requires_opt_in_and_an_empty_draft` | SDUC-445, SDUC-446 | Green | Shortcut clipboard import is disabled by default and never overwrites an existing Clippy draft. |
+| SDTEST-1449 | `ai_assistant.rs::backend_result_must_satisfy_clippy_proposal_bounds_before_display` | SDUC-445, SDUC-446 | Green | Blank or oversized model output is rejected through the core proposal contract before it can enter the result preview, diff, clipboard, or edit paths. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
@@ -321,6 +331,7 @@ checklist:
 - SDTEST-1201, SDTEST-1202 (platform key mapping)
 - SDTEST-1242, SDTEST-1243 (installer replace on Unix / Windows)
 - SDTEST-1260, SDTEST-1261 (install-script + manifest parity)
+- SDTEST-1444 (desktop overlay native movement/geometry API)
 
 The release-day rule: **all P0 cross-platform tests must be green on
 the matching CI runner before the tag goes out.** This maps directly

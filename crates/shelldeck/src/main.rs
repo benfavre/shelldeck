@@ -5,6 +5,7 @@ mod tray;
 use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString, WindowDecorations};
+use shelldeck_core::ai::ClippyConfig;
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig};
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::single_instance::{self, Acquire};
@@ -15,6 +16,7 @@ use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
+    WorkspaceAiBindings,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -274,6 +276,16 @@ impl AssetSource for Assets {
             "images/logo-github.svg" => include_bytes!("../assets/images/logo-github.svg"),
             "images/logo-google.svg" => include_bytes!("../assets/images/logo-google.svg"),
             "images/logo-1clicpro.svg" => include_bytes!("../assets/images/logo-1clicpro.svg"),
+            "characters/clippy/idle.png" => {
+                include_bytes!("../assets/characters/clippy/idle.png")
+            }
+            "characters/shelly/idle.png" => {
+                include_bytes!("../assets/characters/shelly/idle.png")
+            }
+            "characters/spark/idle.png" => include_bytes!("../assets/characters/spark/idle.png"),
+            "characters/byte/idle.png" => include_bytes!("../assets/characters/byte/idle.png"),
+            "characters/orbit/idle.png" => include_bytes!("../assets/characters/orbit/idle.png"),
+            "characters/nox/idle.png" => include_bytes!("../assets/characters/nox/idle.png"),
             _ => {
                 if let Some(bytes) = simple_bytes(path) {
                     return Ok(Some(Cow::Borrowed(bytes)));
@@ -330,6 +342,12 @@ impl AssetSource for Assets {
             SharedString::from("images/logo-github.svg"),
             SharedString::from("images/logo-google.svg"),
             SharedString::from("images/logo-1clicpro.svg"),
+            SharedString::from("characters/clippy/idle.png"),
+            SharedString::from("characters/shelly/idle.png"),
+            SharedString::from("characters/spark/idle.png"),
+            SharedString::from("characters/byte/idle.png"),
+            SharedString::from("characters/orbit/idle.png"),
+            SharedString::from("characters/nox/idle.png"),
         ];
         paths.extend(simple_asset_paths());
         paths.extend(lucide_asset_paths());
@@ -380,7 +398,7 @@ struct CompanionRuntime {
     ai_companion: gpui::Entity<AiCompanionController>,
     desktop_character: gpui::Entity<DesktopCharacterRuntime>,
     tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
-    companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
+    companion_config_tx: tokio::sync::mpsc::UnboundedSender<(CompanionConfig, ClippyConfig)>,
     ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
     command_palette_window: Option<gpui::WindowHandle<CommandPaletteWindowView>>,
 }
@@ -423,14 +441,14 @@ impl CompanionRoot {
         config: AppConfig,
         workspace_slot: WorkspaceSlot,
         tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
-        companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
+        companion_config_tx: tokio::sync::mpsc::UnboundedSender<(CompanionConfig, ClippyConfig)>,
         shortcut_state: Rc<RefCell<GlobalShortcutRegistrationState>>,
         main_window: gpui::AnyWindowHandle,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let ai_companion = cx.new(|cx| AiCompanionController::new(config.ai.clone(), cx));
-        let desktop_character =
-            cx.new(|_cx| DesktopCharacterRuntime::new(config.companion.clone()));
+        let ai_companion =
+            cx.new(|cx| AiCompanionController::new(config.ai.clone(), config.clippy.clone(), cx));
+        let desktop_character = cx.new(|_cx| DesktopCharacterRuntime::new(config.clippy.clone()));
         let ai_companion_sub = cx.subscribe(
             &ai_companion,
             |this, _controller, event: &AiCompanionEvent, cx| {
@@ -491,15 +509,19 @@ impl CompanionRoot {
         let ai_dock_assistant = controller.assistant();
         let ai_tasks = controller.tasks();
         let ai_companion_config = controller.shared_config();
+        let clippy_companion_config = controller.shared_clippy_config();
         let workspace = cx.new(|cx| {
             Workspace::new(
                 cx,
                 config,
                 connections,
                 store,
-                ai_dock_assistant,
-                ai_tasks,
-                ai_companion_config,
+                WorkspaceAiBindings {
+                    assistant: ai_dock_assistant,
+                    tasks: ai_tasks,
+                    config: ai_companion_config,
+                    clippy_config: clippy_companion_config,
+                },
             )
         });
 
@@ -516,8 +538,8 @@ impl CompanionRoot {
 
         let companion_config_tx = self.runtime.companion_config_tx.clone();
         workspace.update(cx, |ws, _cx| {
-            ws.set_companion_config_publisher(Box::new(move |config| {
-                if companion_config_tx.send(config).is_err() {
+            ws.set_companion_config_publisher(Box::new(move |companion, clippy| {
+                if companion_config_tx.send((companion, clippy)).is_err() {
                     tracing::debug!("companion config dropped during shutdown");
                 }
             }));
@@ -623,6 +645,7 @@ fn dispatch_tray_command(
         }
         TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
         TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
+        TrayCommand::OpenClippy => show_clippy(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
         TrayCommand::PauseCharacter => {
             route_desktop_character_command(root, window, CompanionRuntimeCommand::Pause, cx)
@@ -678,6 +701,7 @@ enum AiDockRequest {
     Toggle,
     Show,
     ShowTasks,
+    ShowClippy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -690,9 +714,11 @@ enum AiDockWindowAction {
 fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDockWindowAction {
     match (visible, request) {
         (None, _) => AiDockWindowAction::Create,
-        (Some(false), _) | (Some(true), AiDockRequest::Show | AiDockRequest::ShowTasks) => {
-            AiDockWindowAction::Show
-        }
+        (Some(false), _)
+        | (
+            Some(true),
+            AiDockRequest::Show | AiDockRequest::ShowTasks | AiDockRequest::ShowClippy,
+        ) => AiDockWindowAction::Show,
         (Some(true), AiDockRequest::Toggle) => AiDockWindowAction::Hide,
     }
 }
@@ -1139,6 +1165,14 @@ fn show_ai_task_center(
     open_ai_dock(root, main_window, AiDockRequest::ShowTasks, cx);
 }
 
+fn show_clippy(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::ShowClippy, cx);
+}
+
 fn open_ai_dock(
     root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
@@ -1177,10 +1211,14 @@ fn open_ai_dock(
                         window.remove_window();
                         return (true, true);
                     }
-                    ai_companion.update(cx, |controller, cx| {
-                        if request == AiDockRequest::ShowTasks {
+                    ai_companion.update(cx, |controller, cx| match request {
+                        AiDockRequest::ShowTasks => {
                             controller.prepare_task_center(cx);
-                        } else {
+                        }
+                        AiDockRequest::ShowClippy => {
+                            controller.prepare_clippy(cx);
+                        }
+                        AiDockRequest::Toggle | AiDockRequest::Show => {
                             controller.refresh(cx);
                         }
                     });
@@ -1212,12 +1250,10 @@ fn open_ai_dock(
         }
     }
 
-    let assistant = ai_companion.update(cx, |controller, cx| {
-        if request == AiDockRequest::ShowTasks {
-            controller.prepare_task_center(cx)
-        } else {
-            controller.prepare(cx)
-        }
+    let assistant = ai_companion.update(cx, |controller, cx| match request {
+        AiDockRequest::ShowTasks => controller.prepare_task_center(cx),
+        AiDockRequest::ShowClippy => controller.prepare_clippy(cx),
+        AiDockRequest::Toggle | AiDockRequest::Show => controller.prepare(cx),
     });
     let bounds = ai_dock_bounds(display.bounds);
     let options = WindowOptions {
@@ -1529,7 +1565,7 @@ fn main() -> Result<()> {
         initial_global_shortcut_state.sync(&config.companion, cx);
         let global_shortcut_state = Rc::new(RefCell::new(initial_global_shortcut_state));
         let (companion_config_tx, companion_config_rx) =
-            tokio::sync::mpsc::unbounded_channel::<CompanionConfig>();
+            tokio::sync::mpsc::unbounded_channel::<(CompanionConfig, ClippyConfig)>();
 
         // Open main window
         let mut window_options = WindowOptions {
@@ -1616,7 +1652,7 @@ fn main() -> Result<()> {
                 desktop_character.update(cx, |runtime, cx| {
                     runtime.apply_config(
                         runtime_entity.clone(),
-                        config.companion.clone(),
+                        config.clippy.clone(),
                         main_window,
                         cx,
                     );
@@ -1717,10 +1753,10 @@ fn main() -> Result<()> {
                 let root_handle = root.downgrade();
                 let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    while let Some(config) = companion_config_rx.recv().await {
+                    while let Some((companion, clippy)) = companion_config_rx.recv().await {
                         let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| {
-                            global_shortcut_state.borrow_mut().sync(&config, cx);
+                            global_shortcut_state.borrow_mut().sync(&companion, cx);
                             if let Some(root) = root_handle.upgrade() {
                                 let desktop_character =
                                     root.read(cx).runtime.desktop_character.clone();
@@ -1728,7 +1764,7 @@ fn main() -> Result<()> {
                                 desktop_character.update(cx, |runtime, cx| {
                                     runtime.apply_config(
                                         runtime_entity.clone(),
-                                        config.clone(),
+                                        clippy.clone(),
                                         window_handle,
                                         cx,
                                     );

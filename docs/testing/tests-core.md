@@ -374,6 +374,32 @@ Existing: **0 tests**.
 
 ---
 
+## 23. `ai/clippy.rs` + `companion/` + `[clippy]` config
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1421 | `ai/clippy.rs::defaults_are_safe_and_unknown_character_falls_back` | SDUC-447 | Green | Clippy and desktop roaming default off; unknown roster IDs safely resolve to Clippy. |
+| SDTEST-1422 | `ai/clippy.rs::context_rejects_blank_oversized_and_password_roles` | SDUC-446 | Green | Blank/oversized input and password-role accessibility context cannot reach a provider. |
+| SDTEST-1423 | `ai/clippy.rs::prompt_delimits_and_redacts_untrusted_context` | SDUC-445, SDUC-446 | Green | Provider input carries explicit trust boundaries and removes common bearer-token material. |
+| SDTEST-1424 | `ai/clippy.rs::ai_context_omits_screenshot_bytes_and_delimits_titles` | SDUC-446 | Green | Context metadata never serializes screenshot bytes and treats titles as untrusted data. |
+| SDTEST-1425 | `ai/clippy.rs::proposal_and_replace_payload_are_bounded` | SDUC-446 | Green | Result and replacement payloads reject blank or excessive content. |
+| SDTEST-1426 | `ai/clippy.rs::stale_selection_identity_is_detected` | SDUC-446 | Green | Window/range identity and selected text must still match before replacement. |
+| SDTEST-1427 | `ai/clippy.rs::audit_metadata_excludes_source_and_result_content` | SDUC-446 | Green | Durable audit copy records operation and counts, never private text. |
+| SDTEST-1428 | `companion/geometry.rs::window_filter_rejects_fullscreen_and_invalid_windows` | SDUC-449 | Green | Invalid, minimized, fullscreen and desktop surfaces are not walkable. |
+| SDTEST-1429 | `companion/geometry.rs::work_area_clamps_points` | SDUC-448 | Green | Recovery cannot strand the overlay beyond a display work area. |
+| SDTEST-1430 | `companion/navigation.rs::shared_edge_route_prefers_overlap` | SDUC-448 | Green | Adjacent monitors route through their real overlapping edge. |
+| SDTEST-1431 | `companion/navigation.rs::disconnected_displays_use_portal_route` | SDUC-448 | Green | Gapped monitor layouts use an explicit portal transition rather than an invalid walk. |
+| SDTEST-1432 | `companion/navigation.rs::removed_monitor_recovers_to_primary_work_area` | SDUC-448, SDUC-449 | Green | Hot-unplug recovers to a valid remaining display. |
+| SDTEST-1433 | `companion/simulation.rs::movement_stays_inside_work_area_and_catch_up_is_capped` | SDUC-448 | Green | Fixed-step movement clamps coordinates and limits resume catch-up work. |
+| SDTEST-1434 | `companion/simulation.rs::reduced_motion_and_sleeping_request_no_frames` | SDUC-448, SDUC-449 | Green | Static states do not keep the GPU animation loop awake. |
+| SDTEST-1435 | `companion/simulation.rs::stale_surface_moves_to_recovering` | SDUC-449 | Green | Invalidated external surfaces cancel the action and enter recovery. |
+| SDTEST-1436 | `companion/simulation.rs::seeded_random_source_is_deterministic_and_cooldowns_work` | SDUC-448 | Green | Behavior selection is reproducible and avoids immediate repetition. |
+| SDTEST-1437 | `companion/simulation.rs::duty_cycle_blocks_excessive_movement` | SDUC-448 | Green | The simulation enforces its movement duty-cycle budget. |
+| SDTEST-1438 | `app_config.rs::clippy_config_defaults_and_surface_opt_in_round_trip` | SDUC-445, SDUC-447 | Green | Old configs parse safely and selected character/desktop preferences persist without enabling AI implicitly. |
+| SDTEST-1443 | `ai/clippy.rs::fake_adapter_preserves_copy_fallback_and_rejects_stale_replacement` | SDUC-446 | Green | One fake-adapter workflow covers apply, unsupported, closed target, stale focus/text, password role, and permission-denied replacement while retaining the reviewed draft. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

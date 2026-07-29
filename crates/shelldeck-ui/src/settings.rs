@@ -13,7 +13,10 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::t;
-use shelldeck_core::ai::{configured_cli_available, AiAutonomyLevel, AiBackend};
+use shelldeck_core::ai::{
+    configured_cli_available, AiAutonomyLevel, AiBackend, CompanionMotionPreference,
+    CompanionScale, DesktopCompanionMovement,
+};
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig, ThemePreference, UiLanguage};
 use shelldeck_core::config::themes::TerminalTheme;
 
@@ -205,9 +208,6 @@ pub struct SettingsView {
     shortcut_status_before_capture: Option<(CompanionShortcutKind, ShortcutRegistrationStatus)>,
     shortcut_capture_focus: FocusHandle,
     companion_shortcut_statuses: CompanionShortcutStatuses,
-    companion_character_preview: &'static str,
-    companion_motion_preview: &'static str,
-    companion_desktop_preview: bool,
 }
 
 impl SettingsView {
@@ -244,9 +244,6 @@ impl SettingsView {
             shortcut_status_before_capture: None,
             shortcut_capture_focus,
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
-            companion_character_preview: "clippy",
-            companion_motion_preview: "full",
-            companion_desktop_preview: false,
         }
     }
 
@@ -979,7 +976,7 @@ impl SettingsView {
         checked: bool,
         entity: &Entity<SettingsView>,
         set: impl Fn(&mut SettingsView, bool) + 'static,
-    ) -> impl IntoElement {
+    ) -> Toggle {
         let entity = entity.clone();
         Toggle::new(id)
             .checked(checked)
@@ -1395,6 +1392,19 @@ impl SettingsView {
         ));
 
         root.child(Self::render_about_section(
+            t!("settings.ai.clippy.section").as_ref(),
+        ))
+        .child(Self::render_setting_row(
+            t!("settings.ai.clippy.auto_clipboard.label").as_ref(),
+            t!("settings.ai.clippy.auto_clipboard.description").as_ref(),
+            Self::bind_toggle(
+                "ai-clippy-auto-clipboard",
+                self.config.clippy.auto_import_clipboard_on_shortcut,
+                &entity,
+                |this, value| this.config.clippy.auto_import_clipboard_on_shortcut = value,
+            ),
+        ))
+        .child(Self::render_about_section(
             t!("settings.ai.surfaces.section").as_ref(),
         ))
         .child(ai_surface_row(
@@ -1445,6 +1455,13 @@ impl SettingsView {
             self.config.ai.surfaces.recent,
             &entity,
             |this, value| this.config.ai.surfaces.recent = value,
+        ))
+        .child(ai_surface_row(
+            "ai-surface-clippy",
+            "clippy",
+            self.config.ai.surfaces.clippy,
+            &entity,
+            |this, value| this.config.ai.surfaces.clippy = value,
         ))
         .child(Self::render_about_section(
             t!("settings.ai.policies.section").as_ref(),
@@ -1945,14 +1962,34 @@ impl SettingsView {
                 ShellDeckColors::text_primary(),
             ),
         ] {
-            let active = self.companion_character_preview == id;
+            let active = self.config.clippy.appearance.character_id().as_str() == id;
+            let preview = if id == "none" {
+                div()
+                    .w(px(54.0))
+                    .h(px(44.0))
+                    .rounded(px(8.0))
+                    .bg(accent.opacity(0.12))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(18.0))
+                    .text_color(accent)
+                    .child("—")
+                    .into_any_element()
+            } else {
+                img(SharedString::from(format!("characters/{id}/idle.png")))
+                    .w(px(54.0))
+                    .h(px(44.0))
+                    .object_fit(ObjectFit::Contain)
+                    .into_any_element()
+            };
             character_cards = character_cards.child(
                 div()
                     .id(ElementId::from(SharedString::from(format!(
                         "companion-character-{id}"
                     ))))
                     .w(px(112.0))
-                    .h(px(82.0))
+                    .h(px(96.0))
                     .rounded(px(7.0))
                     .border_1()
                     .border_color(if active {
@@ -1966,26 +2003,7 @@ impl SettingsView {
                     .flex_col()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .w(px(34.0))
-                            .h(px(34.0))
-                            .rounded(px(17.0))
-                            .bg(accent.opacity(if id == "none" { 0.12 } else { 0.22 }))
-                            .border_1()
-                            .border_color(accent.opacity(0.55))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(accent)
-                            .child(if id == "none" {
-                                "—".to_string()
-                            } else {
-                                id.chars().next().unwrap_or('c').to_uppercase().to_string()
-                            }),
-                    )
+                    .child(preview)
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -2002,28 +2020,122 @@ impl SettingsView {
                             .child(label),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.companion_character_preview = id;
-                        cx.notify();
+                        this.config.clippy.appearance.character = id.to_string();
+                        if id == "none" {
+                            this.config.clippy.appearance.desktop.enabled = false;
+                        }
+                        this.save_config(cx);
                     })),
             );
         }
 
         let mut motion_buttons = div().flex().gap(px(8.0)).flex_wrap();
-        for (id, label) in [("full", "Full"), ("reduced", "Reduced"), ("off", "Off")] {
+        for (id, preference, label) in [
+            (
+                "system",
+                CompanionMotionPreference::System,
+                t!("settings.companion.characters.motion.system").to_string(),
+            ),
+            (
+                "full",
+                CompanionMotionPreference::Full,
+                t!("settings.companion.characters.motion.full").to_string(),
+            ),
+            (
+                "reduced",
+                CompanionMotionPreference::Reduced,
+                t!("settings.companion.characters.motion.reduced").to_string(),
+            ),
+            (
+                "off",
+                CompanionMotionPreference::Off,
+                t!("settings.companion.characters.motion.off").to_string(),
+            ),
+        ] {
             motion_buttons = motion_buttons.child(
                 Button::new(SharedString::from(format!("companion-motion-{id}")), label)
-                    .variant(if self.companion_motion_preview == id {
+                    .variant(if self.config.clippy.appearance.motion == preference {
                         ButtonVariant::Secondary
                     } else {
                         ButtonVariant::Outline
                     })
                     .size(ButtonSize::Sm)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.companion_motion_preview = id;
-                        cx.notify();
+                        this.config.clippy.appearance.motion = preference;
+                        this.save_config(cx);
                     })),
             );
         }
+
+        let mut scale_buttons = div().flex().gap(px(8.0));
+        for (id, scale, label) in [
+            (
+                "small",
+                CompanionScale::Small,
+                t!("settings.companion.characters.scale.small").to_string(),
+            ),
+            (
+                "medium",
+                CompanionScale::Medium,
+                t!("settings.companion.characters.scale.medium").to_string(),
+            ),
+            (
+                "large",
+                CompanionScale::Large,
+                t!("settings.companion.characters.scale.large").to_string(),
+            ),
+        ] {
+            scale_buttons = scale_buttons.child(
+                Button::new(SharedString::from(format!("companion-scale-{id}")), label)
+                    .variant(if self.config.clippy.appearance.scale == scale {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Outline
+                    })
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.config.clippy.appearance.scale = scale;
+                        this.save_config(cx);
+                    })),
+            );
+        }
+
+        let mut roaming_buttons = div().flex().gap(px(8.0));
+        for (id, movement, label) in [
+            (
+                "still",
+                DesktopCompanionMovement::Still,
+                t!("settings.companion.characters.roaming.still").to_string(),
+            ),
+            (
+                "occasional",
+                DesktopCompanionMovement::Occasional,
+                t!("settings.companion.characters.roaming.occasional").to_string(),
+            ),
+            (
+                "playful",
+                DesktopCompanionMovement::Playful,
+                t!("settings.companion.characters.roaming.playful").to_string(),
+            ),
+        ] {
+            roaming_buttons = roaming_buttons.child(
+                Button::new(SharedString::from(format!("companion-roaming-{id}")), label)
+                    .variant(
+                        if self.config.clippy.appearance.desktop.movement == movement {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Outline
+                        },
+                    )
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.config.clippy.appearance.desktop.movement = movement;
+                        this.save_config(cx);
+                    })),
+            );
+        }
+
+        let entity = cx.entity();
 
         div()
             .flex()
@@ -2080,11 +2192,47 @@ impl SettingsView {
                 motion_buttons,
             ))
             .child(Self::render_setting_row(
+                t!("settings.companion.characters.scale.label").as_ref(),
+                t!("settings.companion.characters.scale.description").as_ref(),
+                scale_buttons,
+            ))
+            .child(Self::render_setting_row(
                 t!("settings.companion.characters.desktop.label").as_ref(),
                 t!("settings.companion.characters.desktop.description").as_ref(),
-                Toggle::new("companion-desktop-character")
-                    .checked(self.companion_desktop_preview)
-                    .disabled(true),
+                Self::bind_toggle(
+                    "companion-desktop-character",
+                    self.config.clippy.appearance.desktop.enabled,
+                    &entity,
+                    |this, value| this.config.clippy.appearance.desktop.enabled = value,
+                )
+                .disabled(self.config.clippy.appearance.character_id().as_str() == "none"),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.characters.roaming.label").as_ref(),
+                t!("settings.companion.characters.roaming.description").as_ref(),
+                roaming_buttons,
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.characters.window_climbing.label").as_ref(),
+                t!("settings.companion.characters.window_climbing.description").as_ref(),
+                Self::bind_toggle(
+                    "companion-window-climbing",
+                    self.config.clippy.appearance.desktop.allow_window_climbing,
+                    &entity,
+                    |this, value| {
+                        this.config.clippy.appearance.desktop.allow_window_climbing = value
+                    },
+                ),
+            ))
+            .child(Self::render_setting_row(
+                t!("settings.companion.characters.multi_monitor.label").as_ref(),
+                t!("settings.companion.characters.multi_monitor.description").as_ref(),
+                Self::bind_toggle(
+                    "companion-multi-monitor",
+                    self.config.clippy.appearance.desktop.allow_multi_monitor,
+                    &entity,
+                    |this, value| this.config.clippy.appearance.desktop.allow_multi_monitor = value,
+                ),
             ))
             .child(
                 div()
@@ -2850,6 +2998,7 @@ fn ai_surface_row(
         "jean" => t!("settings.ai.surfaces.jean").to_string(),
         "naming" => t!("settings.ai.surfaces.naming").to_string(),
         "recent" => t!("settings.ai.surfaces.recent").to_string(),
+        "clippy" => t!("settings.ai.surfaces.clippy").to_string(),
         _ => name.to_string(),
     };
     SettingsView::render_setting_row(

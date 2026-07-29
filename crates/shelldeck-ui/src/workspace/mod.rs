@@ -290,6 +290,7 @@ pub struct Workspace {
     ai_assistant: Entity<AiAssistantView>,
     ai_dock_assistant: Entity<AiAssistantView>,
     ai_companion_config: Rc<RefCell<AiConfig>>,
+    clippy_companion_config: Rc<RefCell<shelldeck_core::ai::ClippyConfig>>,
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
@@ -512,7 +513,8 @@ pub struct Workspace {
     tray_notifier: Option<Box<dyn Fn(TrayNotification) + Send + Sync>>,
     /// Publishes Settings-owned companion changes back to the binary-level
     /// runtime, which owns the platform global-hotkey registrations.
-    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig) + Send + Sync>>,
+    companion_config_publisher:
+        Option<Box<dyn Fn(CompanionConfig, shelldeck_core::ai::ClippyConfig) + Send + Sync>>,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -605,16 +607,27 @@ impl TrayNotification {
     }
 }
 
+pub struct WorkspaceAiBindings {
+    pub assistant: Entity<AiAssistantView>,
+    pub tasks: Vec<AiTask>,
+    pub config: Rc<RefCell<AiConfig>>,
+    pub clippy_config: Rc<RefCell<shelldeck_core::ai::ClippyConfig>>,
+}
+
 impl Workspace {
     pub fn new(
         cx: &mut Context<Self>,
         config: AppConfig,
         connections: Vec<Connection>,
         store: ConnectionStore,
-        ai_dock_assistant: Entity<AiAssistantView>,
-        ai_tasks: Vec<AiTask>,
-        ai_companion_config: Rc<RefCell<AiConfig>>,
+        ai: WorkspaceAiBindings,
     ) -> Self {
+        let WorkspaceAiBindings {
+            assistant: ai_dock_assistant,
+            tasks: ai_tasks,
+            config: ai_companion_config,
+            clippy_config: clippy_companion_config,
+        } = ai;
         crate::i18n::apply_ui_language(&config.general.ui_language);
         let issue_site_select = Self::build_issue_site_select(&[], None, cx);
 
@@ -960,6 +973,7 @@ impl Workspace {
             ai_assistant,
             ai_dock_assistant,
             ai_companion_config,
+            clippy_companion_config,
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,
@@ -1113,7 +1127,7 @@ impl Workspace {
     /// dependency boundary.
     pub fn set_companion_config_publisher(
         &mut self,
-        publisher: Box<dyn Fn(CompanionConfig) + Send + Sync>,
+        publisher: Box<dyn Fn(CompanionConfig, shelldeck_core::ai::ClippyConfig) + Send + Sync>,
     ) {
         self.companion_config_publisher = Some(publisher);
     }
@@ -1766,7 +1780,8 @@ impl Workspace {
             }
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
-                let companion_changed = self.app_config.companion != config.companion;
+                let companion_changed = self.app_config.companion != config.companion
+                    || self.app_config.clippy != config.clippy;
                 if self.app_config.ai != config.ai {
                     self.ai_sheet = None;
                     self.ai_workflow_sheet = None;
@@ -1779,10 +1794,14 @@ impl Workspace {
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
                 self.app_config.companion = config.companion.clone();
+                self.app_config.clippy = config.clippy.clone();
                 self.app_config.ai = config.ai.clone();
                 *self.ai_companion_config.borrow_mut() = config.ai.clone();
+                *self.clippy_companion_config.borrow_mut() = config.clippy.clone();
                 let dock_available =
                     self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+                let clippy_available =
+                    self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Clippy);
                 self.ai_dock_assistant.update(cx, |assistant, cx| {
                     assistant.set_backend(
                         self.app_config.ai.backend,
@@ -1790,6 +1809,13 @@ impl Workspace {
                         cx,
                     );
                     assistant.set_available(dock_available, cx);
+                    assistant.set_clippy_available(clippy_available, cx);
+                    assistant
+                        .set_clippy_character(self.app_config.clippy.appearance.character_id(), cx);
+                    assistant.set_clippy_auto_import_clipboard(
+                        self.app_config.clippy.auto_import_clipboard_on_shortcut,
+                        cx,
+                    );
                 });
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
@@ -1829,7 +1855,10 @@ impl Workspace {
                 self.publish_tray_state(cx);
                 if companion_changed {
                     if let Some(publisher) = self.companion_config_publisher.as_ref() {
-                        publisher(self.app_config.companion.clone());
+                        publisher(
+                            self.app_config.companion.clone(),
+                            self.app_config.clippy.clone(),
+                        );
                     }
                 }
                 self.refresh_command_palette(cx);
@@ -2839,6 +2868,7 @@ impl Workspace {
             AiActionKind::SupportSend => ActivityKind::Support,
             AiActionKind::JeanDispatch => ActivityKind::Jean,
             AiActionKind::FleetDispatch => ActivityKind::Fleet,
+            AiActionKind::ClippyReplaceSelection => ActivityKind::Script,
         };
         let actor = self
             .app_config
@@ -3062,6 +3092,14 @@ impl Workspace {
                 instance_id,
             } => {
                 self.execute_ai_fleet_dispatch(plan, issue_id, instance_id, cx);
+            }
+            AiActionPayload::ClippyReplaceSelection { .. } => {
+                self.audit_ai_action(&plan, "unsupported", cx);
+                self.show_toast(
+                    t!("toast.ai.action_clippy_replace_unsupported").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -3841,7 +3879,7 @@ impl Workspace {
                     }
                 }
             }
-            AiSurface::Recent | AiSurface::Global => {}
+            AiSurface::Recent | AiSurface::Global | AiSurface::Clippy => {}
         }
         cx.notify();
     }
@@ -9564,9 +9602,7 @@ fn shortcut_failure_toasts(
             return;
         }
         let reason = match after {
-            ShortcutRegistrationStatus::Conflict => {
-                t!("shortcut.failure.conflict").to_string()
-            }
+            ShortcutRegistrationStatus::Conflict => t!("shortcut.failure.conflict").to_string(),
             ShortcutRegistrationStatus::Error(error) => {
                 if crate::settings::shortcut_error_is_portal_missing(error) {
                     t!("shortcut.failure.portal_missing").to_string()
@@ -14633,7 +14669,6 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::{shortcut_failure_toasts, shortcut_status_is_failure, ShortcutToastKind};
-    use crate::t;
     use crate::settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus};
 
     fn statuses(
@@ -14752,9 +14787,9 @@ mod tests {
 
         let toasts = shortcut_failure_toasts(&ok, &portal_missing);
         assert_eq!(toasts.len(), 1);
-        assert!(toasts[0]
-            .1
-            .contains(&t!("shortcut.failure.portal_missing").to_string()));
+        // Other i18n tests switch the process-global locale in parallel. Both
+        // supported translations deliberately retain this product name.
+        assert!(toasts[0].1.contains("Global Shortcuts"));
         assert!(!toasts[0].1.contains("portal frontend"));
 
         let other = statuses(
