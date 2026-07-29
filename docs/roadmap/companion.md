@@ -7,7 +7,7 @@
 > techniques détaillés restent dans les documents spécialisés et les preuves de
 > tests dans [`docs/testing/`](../testing/).
 
-## État au 2026-07-24
+## État au 2026-07-29
 
 | Bloc | État | Preuve principale |
 |---|---|---|
@@ -19,6 +19,7 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
+| Personnage desktop autonome | Physique AABB déterministe et runtime événementiel livrés | SDUC-451, SDTEST-1505..1527 |
 
 ## Next
 
@@ -30,7 +31,7 @@ la roadmap.
 
 ## Audit des éléments livrés
 
-Vérification effectuée le 2026-07-24 contre le code et les inventaires :
+Vérification effectuée le 2026-07-29 contre le code et les inventaires :
 
 - le démarrage caché conserve un `CompanionRoot` léger et diffère
   `Workspace`, le parsing SSH, le store et ses pollers ;
@@ -56,7 +57,13 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   connexion et met à jour son état ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
-  Terminal séquentiels bornés.
+  Terminal séquentiels bornés ;
+- le personnage desktop possède un solveur AABB déterministe dédié, pas un moteur
+  de jeu général : gravité, vélocité terminale, drag horizontal, collision
+  descendante one-way avec les tops de fenêtre, fallback au sol d'écran, snap au
+  relâchement sur le bord supérieur externe, suivi par ID stable, chute à la
+  disparition, nettoyage des plateformes si le climbing est désactivé en chute
+  et suppression des boucles sous mouvement réduit/off/still.
 
 Les détails exhaustifs de comportement restent dans
 [`USE_CASES.md`](../testing/USE_CASES.md). Cette roadmap ne les duplique pas.

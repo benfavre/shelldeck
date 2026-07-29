@@ -617,6 +617,7 @@ Recommended ownership:
 
 ```text
 crates/shelldeck-core/src/companion/
+├── physics.rs                # deterministic single-body AABB gravity/platform solver
 ├── simulation.rs             # pure fixed-step movement and state transitions
 ├── navigation.rs             # surfaces, routes, monitor adjacency
 └── geometry.rs               # platform-neutral rectangles and capabilities
@@ -633,7 +634,9 @@ crates/shelldeck-ui/src/
 ```
 
 Do not put physics, native window enumeration, or route selection in
-`workspace/mod.rs` or the paint method.
+`workspace/mod.rs` or the paint method. `companion/physics.rs` is intentionally a
+small deterministic solver for one AABB companion body, not a general game or
+rigid-body engine.
 
 ### Coordinate system and multiple monitors
 
@@ -718,7 +721,8 @@ blindly.
 
 ### Climbing and play behavior
 
-Use a small deterministic state machine rather than general rigid-body physics:
+Use a small deterministic state machine plus the dedicated `CompanionBody` AABB
+solver rather than a general rigid-body engine:
 
 ```text
 Resting -> ChoosingTarget -> Walking -> Climbing -> Perched
@@ -728,12 +732,17 @@ Any state -> Summoned -> ReturningToDock
 ```
 
 Behaviors are short authored actions with bounded duration and clear interruption
-points:
+points. `CompanionBody` supports Dynamic, Kinematic, and Sleeping modes, gravity,
+terminal velocity, horizontal air drag, bounded drag-release velocity, one-way
+swept descending collision against window tops, display work-area floor fallback,
+and stable contact generations for attachment invalidation:
 
 - walk along the top edge of a stable window
 - climb a left or right edge using a character-specific animation
 - hop between nearby overlapping windows
 - sit or sleep on a window corner
+- snap from drag release to a nearby eligible outer top edge
+- fall under gravity to a one-way window-top floor or the screen-floor fallback
 - fly or portal between monitors when no continuous route exists
 - react to a window being moved, minimized, or closed
 - return to a safe screen corner when the user opens the AI Dock
@@ -743,8 +752,9 @@ with cooldowns. Repeated behavior is avoided by keeping the last few action IDs.
 character should spend most of its time resting. Default movement duty cycle should be
 below 20 percent over a five-minute idle period.
 
-Do not model collisions against arbitrary pixels or screenshot content. Rectangles and
-line segments are sufficient, deterministic, private, and inexpensive.
+Do not model collisions against arbitrary pixels, screenshots, or arbitrary rigid
+bodies. Rectangles and line segments are sufficient, deterministic, private, and
+inexpensive for the single-body platform solver.
 
 ### Render and simulation loop
 
@@ -753,15 +763,19 @@ geometry:
 
 | Work | Active target | Idle target |
 |---|---:|---:|
-| Simulation | fixed 30 Hz | 4-8 Hz or stopped |
+| Physics/simulation | fixed 30 Hz while Dynamic/Kinematic | stopped while Sleeping/reduced/off/still |
 | Sprite animation | 24-30 fps | 2-8 fps |
 | Native overlay reposition | at most 30 Hz | only on position change |
 | Window geometry updates | event-driven, debounced to 10 Hz | event-driven |
 | Display topology refresh | display event or 1 Hz recovery check | no periodic refresh when stable |
 
-The simulation uses a fixed timestep and monotonic time. Limit catch-up to two steps
-per rendered frame so a resumed or stalled app does not execute a long burst of
-physics. Interpolate only the visual pose between simulation states.
+The simulation and AABB physics use a fixed timestep and monotonic time. Limit
+catch-up to two steps per rendered frame so a resumed or stalled app does not
+execute a long burst of physics. Interpolate only the visual pose between
+simulation states. Runtime drag release should use cached platform snapshots,
+not native enumeration per RAF; stale mouse-up velocity samples are zeroed before
+release, and snap ranking is deterministic by vertical gap then horizontal
+distance.
 
 Call `Window::request_animation_frame()` only while the visible character is moving or
 its current sprite is animated. Sleeping, hidden, off, and static reduced-motion states
@@ -851,8 +865,9 @@ The controller must always have a safe fallback:
 - geometry provider unavailable: use screen-floor and screen-edge surfaces only
 - topmost overlay unavailable: fall back to Dock-only mode and explain the limitation
 - monitor removed: clamp or portal to the primary display
-- target window disappears: enter recovering/flying state, never leave the overlay
-  stranded off-screen
+- target window disappears: invalidate the stable contact; fall with a fresh frame
+  restart when full motion is allowed, or sleep/still under reduced motion, never
+  leaving the overlay stranded off-screen
 - invalid asset: use the character's static fallback, then the generic bot icon
 - frame-time overload: lower sprite and movement rate automatically
 - native movement error: stop movement, keep the last visible safe position, and
@@ -876,16 +891,21 @@ Pure core tests must cover:
 - monitor adjacency and disconnected-monitor portal routing
 - mixed scale-factor crossings
 - monitor removal recovery
-- stale surface invalidation after window movement or closure
-- no route through filtered/fullscreen windows
+- deterministic AABB gravity, terminal velocity, drag, one-way top collisions, and
+  display floor fallback
+- stable contact generation invalidation after window movement or closure
+- no snap or route through filtered/fullscreen/maximized/taskbar-inset windows
 - deterministic behavior under a seeded random source
 - fixed-step catch-up cap
-- reduced-motion and sleeping states request no continuous frames
+- reduced-motion, off, still, and sleeping states request no continuous frames
+- drag release sampling, stale-sample zeroing, snap thresholds, subthreshold
+  jitter preserving click delivery, and mid-fall climbing-disable cache clearing
 - duty-cycle and behavior cooldown limits
 
-Use fake topology and window-geometry providers for integration tests. Platform tests
-should validate native rectangle conversion and filtering without opening or moving
-real third-party windows in CI.
+Use fake topology and window-geometry providers for integration tests. Platform
+tests should validate native rectangle conversion, cached snapshot refresh,
+stable-ID follow after snap or physics landing, disappearance-to-fall recovery,
+mid-fall `allow_window_climbing` disablement, and filtering without opening or moving real third-party windows in CI.
 
 Manual release validation should run for at least 30 minutes on one single-monitor and
 one mixed-DPI multi-monitor setup per supported Tier A platform. Record CPU, GPU,
@@ -897,9 +917,9 @@ recovery, fullscreen suppression, and suspend/resume behavior.
 1. Add pure simulation, topology, fake providers, and performance counters.
 2. Add static small overlay creation and safe passthrough on Windows, macOS, and X11.
 3. Add the GPUI runtime window-origin patch with platform tests and patch inventory.
-4. Add walking on screen-floor/work-area edges without external window discovery.
-5. Add event-driven external window geometry per Tier A platform.
-6. Add climbing, perching, recovery, and multi-monitor routing.
+4. Add walking and falling on screen-floor/work-area edges without external window discovery.
+5. Add event-driven external window geometry per Tier A platform, cached for runtime frames.
+6. Add climbing, drag-release top-edge snap, perching, recovery, and multi-monitor routing.
 7. Add Interact mode, tray controls, fullscreen/power suppression, and diagnostics.
 8. Optimize assets and rates against the stated budgets before enabling the feature by
    default on any platform.

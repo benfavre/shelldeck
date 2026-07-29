@@ -399,6 +399,13 @@ Existing: **0 tests**.
 | SDTEST-1476 | `companion/simulation.rs::duty_cycle_blocks_excessive_movement` | SDUC-448 | Green | The simulation enforces its movement duty-cycle budget. |
 | SDTEST-1477 | `app_config.rs::clippy_config_defaults_and_surface_opt_in_round_trip` | SDUC-445, SDUC-447 | Green | Old configs parse safely and selected character/desktop preferences persist without enabling AI implicitly. |
 | SDTEST-1482 | `ai/clippy.rs::fake_adapter_preserves_copy_fallback_and_rejects_stale_replacement` | SDUC-446 | Green | One fake-adapter workflow covers apply, unsupported, closed target, stale focus/text, password role, and permission-denied replacement while retaining the reviewed draft. |
+| SDTEST-1505 | `companion/physics.rs::gravity_accelerates_dynamic_body_and_clamps_terminal_velocity` | SDUC-451 | Green | The dedicated single-body AABB solver applies gravity to a Dynamic companion and clamps falling speed at the configured terminal velocity. |
+| SDTEST-1506 | `companion/physics.rs::swept_descending_collision_does_not_tunnel_through_window_top` | SDUC-451 | Green | Descending swept collision catches a window top crossed in one fixed step instead of tunneling through it. |
+| SDTEST-1507 | `companion/physics.rs::descending_collision_selects_nearest_crossed_platform` | SDUC-451 | Green | When multiple one-way tops are crossed, the solver lands on the nearest upper platform deterministically. |
+| SDTEST-1508 | `companion/physics.rs::platforms_without_horizontal_overlap_are_rejected` | SDUC-451 | Green | A window top is eligible only when the falling AABB overlaps it horizontally. |
+| SDTEST-1509 | `companion/physics.rs::display_work_area_floor_is_used_when_no_platform_matches` | SDUC-451 | Green | With no valid platform, the display work-area floor becomes the fallback contact and landing surface. |
+| SDTEST-1510 | `companion/physics.rs::release_from_drag_bounds_velocity_and_clears_contact` | SDUC-451 | Green | Drag release switches to Dynamic, clears the previous stable contact, and clamps the sampled release velocity. |
+| SDTEST-1511 | `companion/physics.rs::repeated_steps_are_deterministic_and_stale_contacts_invalidate` | SDUC-451 | Green | Equal fixed-step inputs produce equal results, and source-generation changes invalidate stale surface contacts before falling resumes. |
 
 ---
 

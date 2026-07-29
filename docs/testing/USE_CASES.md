@@ -1837,18 +1837,33 @@ flourish adds life without turning the overlay into a permanent render loop.
 Motion preference changes apply immediately, and the tray can pause/resume the
 character or return it to a safe screen corner. When window climbing is enabled,
 the character chooses an eligible external top-level window by its stable native
-lifetime ID, climbs to its top edge, and preserves its horizontal perch offset as
-the window moves between displays or resizes. Only an attached character performs
-the low-rate geometry refresh; unchanged snapshots issue no native move. Closing,
-minimizing, or otherwise losing the target window detaches safely and resumes the
-normal one-shot roaming lifecycle. Dragging, clicking, pausing, returning to a
-corner, disabling climbing, or closing the overlay cancels the attachment and its
-generation-guarded refresh timer immediately.
+lifetime ID, climbs or snaps from drag release to its outer top edge, and treats
+window tops as one-way floors for falling only from above. Snap candidates exclude
+maximized/taskbar-inset windows and are ranked deterministically by vertical gap
+then horizontal distance with overlap and size thresholds. The attached character
+preserves its horizontal perch offset as the window moves between displays or
+resizes; if no eligible top is reached, the display work-area floor is the safe
+fallback landing surface. Cached platform snapshots feed the runtime instead of
+native enumeration on every animation frame. Closing, minimizing, or otherwise
+losing the target window detaches safely, restarts falling only when full motion
+is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
+landings resume the one-shot roaming schedule only when the character is not
+attached or being dragged. Dragging, clicking, pausing, returning to a corner,
+disabling climbing, or closing the overlay cancels the attachment and its
+generation-guarded refresh timer immediately; disabling climbing during a fall
+clears cached window platforms so the character continues to the screen floor. Subthreshold pointer jitter must
+preserve click delivery and avoid native overlay moves.
 
 ---
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1505..1527 for the
+  standalone deterministic AABB companion physics/runtime: drag-release outer
+  top-edge snapping, one-way window-top floors, screen-floor fallback, stable-ID
+  attachment/follow after snapping or landing, disappearance-to-fall recovery,
+  reduced/off/still suppression, cached event-driven snapshots, and
+  subthreshold-jitter click preservation, and mid-fall climbing-disable platform clearing.
 - **2026-07-29** — Extended SDUC-451 and added SDTEST-1500..1504 for stable
   external-window identities, top-edge attachment, movement and resize following,
   redundant-move suppression, disappearance recovery, and generation-cancelled
