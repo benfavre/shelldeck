@@ -26,8 +26,8 @@ use xkbcommon::xkb::{self, Keycode, Keysym, State};
 use crate::{
     Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
     CursorStyle, DialogOptions, DisplayId,
-    // ShellDeck patch: import external-window snapshots for the Linux platform trait.
-    ExternalWindow, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
+    // ShellDeck patch: import external-window snapshot types for the Linux platform trait.
+    ExternalWindow, ExternalWindowId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
     LinuxDispatcher, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, PowerSaveBlockerKind,
@@ -80,6 +80,10 @@ pub trait LinuxClient {
     // ShellDeck patch: X11 overrides this while Wayland retains the safe empty snapshot fallback.
     fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         Vec::new()
+    }
+    // ShellDeck patch: X11 overrides targeted lookup while Wayland keeps the safe None fallback.
+    fn external_window(&self, _id: ExternalWindowId) -> Option<ExternalWindow> {
+        None
     }
     // ShellDeck patch: preserve the legacy bounds-only external window API.
     fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
@@ -737,6 +741,11 @@ impl<P: LinuxClient + 'static> Platform for P {
     // ShellDeck patch: route external desktop snapshots through the active Linux backend.
     fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         LinuxClient::visible_external_windows(self)
+    }
+
+    // ShellDeck patch: route targeted external desktop lookup through the active Linux backend.
+    fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        LinuxClient::external_window(self, id)
     }
 
     // ShellDeck patch: route legacy external desktop geometry through the active Linux backend.

@@ -214,6 +214,10 @@ pub(crate) trait Platform: 'static {
     fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         Vec::new()
     }
+    // ShellDeck patch: allow targeted native-ID lookup without forcing callers to rescan all windows.
+    fn external_window(&self, _id: ExternalWindowId) -> Option<ExternalWindow> {
+        None
+    }
     // ShellDeck patch: preserve the legacy bounds-only external window API.
     fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
         self.visible_external_windows()

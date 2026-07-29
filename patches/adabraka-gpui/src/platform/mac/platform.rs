@@ -1457,6 +1457,11 @@ impl Platform for MacPlatform {
         super::external_windows::visible_external_windows()
     }
 
+    // ShellDeck patch: expose targeted CoreGraphics external-window lookup.
+    fn external_window(&self, id: crate::ExternalWindowId) -> Option<crate::ExternalWindow> {
+        super::external_windows::external_window(id)
+    }
+
     fn accessibility_status(&self) -> crate::PermissionStatus {
         super::permissions::accessibility_status()
     }

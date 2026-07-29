@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **57**
+Total markers in code: **82**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -239,25 +239,26 @@ only, out of the src/-scoped marker convention.)
 ### SDPATCH-111 — Read-only external top-level window snapshots
 
 - **Files / symbols**:
-  - `src/app.rs` — `App::{global_display_bounds,global_display_metrics,visible_external_window_bounds,visible_external_windows}`
-  - `src/platform.rs` — `ExternalWindowId`, `ExternalWindow`, `Platform::{global_display_bounds,visible_external_windows,visible_external_window_bounds}` and `PlatformDisplay::scale_factor`
+  - `src/app.rs` — `App::{global_display_bounds,global_display_metrics,visible_external_window_bounds,visible_external_windows,external_window}`
+  - `src/platform.rs` — `ExternalWindowId`, `ExternalWindow`, `Platform::{global_display_bounds,visible_external_windows,external_window,visible_external_window_bounds}` and `PlatformDisplay::scale_factor`
   - `src/platform/linux/platform.rs` — `LinuxClient` and `Platform for P`
   - `src/platform/linux/x11/client.rs` — X11 property/geometry helpers and
-    `LinuxClient::{visible_external_windows,visible_external_window_bounds}`
+    `LinuxClient::{visible_external_windows,external_window,visible_external_window_bounds}`
   - `src/platform/linux/x11/window.rs` — `_NET_WM_WINDOW_TYPE_DESKTOP` atom
   - `src/platform/windows/display.rs` — per-monitor DPI scale exposure
   - `src/platform/windows/platform.rs` — Win32 enumeration/filtering helpers and
-    `Platform::visible_external_windows`
+    `Platform::{visible_external_windows,external_window}`
   - `src/platform/mac.rs` — `external_windows` module wiring
   - `src/platform/mac/display.rs` — `MacDisplay::global_bounds`
-  - `src/platform/mac/platform.rs` — `Platform::visible_external_windows`
-  - `src/platform/mac/external_windows.rs` — CoreGraphics window-list helper
+  - `src/platform/mac/platform.rs` — `Platform::{visible_external_windows,external_window}`
+  - `src/platform/mac/external_windows.rs` — CoreGraphics window-list and targeted lookup helpers
 - **Markers**:
   - `src/app.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
-  - `src/app.rs` — `// ShellDeck patch: import the public external-window snapshot type for App APIs.`
+  - `src/app.rs` — `// ShellDeck patch: import the public external-window snapshot types for App APIs.`
   - `src/app.rs` — `// ShellDeck patch: expose scale-aware global display metrics for desktop companions.`
   - `src/app.rs` — `// ShellDeck patch: expose read-only external window geometry for desktop companions.`
   - `src/app.rs` — `// ShellDeck patch: expose stable read-only external window snapshots for desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: expose targeted external-window lookup for attached companions.`
   - `src/platform.rs` — `// ShellDeck patch: document the optional diagnostic raw external-window ID accessor.`
   - `src/platform.rs` — `// ShellDeck patch: document the public external-window bounds field.`
   - `src/platform.rs` — `// ShellDeck patch: document the public native external-window ID field.`
@@ -267,33 +268,42 @@ only, out of the src/-scoped marker convention.)
   - `src/platform.rs` — `// ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.`
   - `src/platform.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
   - `src/platform.rs` — `// ShellDeck patch: platform backends may expose safe read-only external window snapshots.`
+  - `src/platform.rs` — `// ShellDeck patch: allow targeted native-ID lookup without forcing callers to rescan all windows.`
   - `src/platform.rs` — `// ShellDeck patch: preserve the legacy bounds-only external window API.`
-  - `src/platform/linux/platform.rs` — `// ShellDeck patch: import external-window snapshots for the Linux platform trait.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: import external-window snapshot types for the Linux platform trait.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides this while Wayland retains the safe empty snapshot fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides targeted lookup while Wayland keeps the safe None fallback.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: preserve the legacy bounds-only external window API.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: route external desktop snapshots through the active Linux backend.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route targeted external desktop lookup through the active Linux backend.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: route legacy external desktop geometry through the active Linux backend.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: import external-window snapshot types for X11 native IDs.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: enumerate eligible visible X11 windows with native XID snapshots for companion climbing.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: target one X11 XID directly for attached companion following.`
   - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: external geometry excludes desktop-background windows.`
   - `src/platform/windows/display.rs` — `// ShellDeck patch: report the monitor DPI scale alongside global display geometry.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: enumerate visible external top-level Win32 windows with native HWND snapshots.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: expose visible external top-level Win32 window snapshots.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: target one Win32 HWND directly for attached companion following.`
   - `src/platform/mac.rs` — `// ShellDeck patch: wire the read-only external window geometry helper.`
   - `src/platform/mac/display.rs` — `// ShellDeck patch: retain CoreGraphics global origins for desktop companion routing.`
   - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: enumerate visible external top-level macOS windows with CoreGraphics IDs.`
   - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: import external-window snapshot types for CoreGraphics window IDs.`
   - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: include kCGWindowNumber in each external-window snapshot.`
   - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: preserve the legacy bounds-only macOS helper for App compatibility.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: target one CoreGraphics window ID directly for attached companion following.`
   - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: read CoreGraphics' native per-window lifetime ID.`
   - `src/platform/mac/platform.rs` — `// ShellDeck patch: return CoreGraphics global display origins instead of local NSScreen coordinates.`
   - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose visible external top-level macOS window snapshots.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose targeted CoreGraphics external-window lookup.`
 - **Why**: The desktop companion can climb only geometry that is current and
   safe to observe. The App-facing APIs return global bounds plus per-display DPI
   scale and stable external-window snapshots without mutating platform state.
   `visible_external_window_bounds` remains as a compatibility wrapper over
-  `visible_external_windows`. `ExternalWindowId` stores the raw native lifetime
+  `visible_external_windows`, while `external_window` lets attached followers
+  refresh one known native ID without rescanning every top-level window.
+  `ExternalWindowId` stores the raw native lifetime
   ID privately, exposes typed equality/hash/copy, and provides `from_raw` for
   backends/tests plus a documented diagnostic `raw()` accessor. ShellDeck uses
   those metrics to build a coherent native Windows desktop coordinate space for
@@ -301,16 +311,17 @@ only, out of the src/-scoped marker convention.)
   X11 uses the EWMH stacking list and returns
   mapped external input/output windows with their native XIDs after excluding
   ShellDeck-owned, hidden, fullscreen, desktop-background, and zero-size
-  surfaces. Windows uses Win32 `EnumWindows` plus
+  surfaces, and can re-check one XID directly with the same filters. Windows uses Win32 `EnumWindows` plus
   visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen filters, excluding
   ShellDeck-owned HWNDs and returning the raw HWND pointer value; its companion
   geometry uses native global desktop coordinates so per-window DPI scaling
-  cannot overlap monitors. macOS uses CoreGraphics'
+  cannot overlap monitors, and can re-check one HWND directly. macOS uses CoreGraphics'
   on-screen window list with desktop elements excluded, keeps only normal layer-0
   windows, returns `kCGWindowNumber`, and drops fullscreen-like display-covering
-  windows. Wayland, test, headless/default backends intentionally return an
-  empty vector because they do not expose other clients' top-level geometry
-  safely.
+  windows; targeted lookup uses `kCGWindowListOptionIncludingWindow` with the
+  same filtering. Wayland, test, headless/default backends intentionally return
+  an empty vector or `None` because they do not expose other clients' top-level
+  geometry safely.
 - **Upstream status**: not filed yet — useful as an opt-in desktop integration
   API, but platform privacy and capability semantics need upstream discussion.
 

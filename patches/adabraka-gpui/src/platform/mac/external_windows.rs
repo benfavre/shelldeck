@@ -14,6 +14,7 @@ use crate::{Bounds, ExternalWindow, ExternalWindowId, Pixels, point, px, size};
 
 const K_CG_NULL_WINDOW_ID: u32 = 0;
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
+const K_CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW: u32 = 1 << 3;
 const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -99,6 +100,79 @@ pub(super) fn visible_external_window_bounds() -> Vec<Bounds<Pixels>> {
         .into_iter()
         .map(|window| window.bounds)
         .collect()
+}
+
+// ShellDeck patch: target one CoreGraphics window ID directly for attached companion following.
+pub(super) fn external_window(external_id: ExternalWindowId) -> Option<ExternalWindow> {
+    let window_id = u32::try_from(external_id.raw()).ok()?;
+    unsafe {
+        let window_list = CGWindowListCopyWindowInfo(
+            K_CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+            window_id,
+        );
+        if window_list.is_null() {
+            return None;
+        }
+
+        let screen_bounds = active_display_bounds();
+        let count: NSUInteger = msg_send![window_list as id, count];
+        let mut result = None;
+
+        for index in 0..count {
+            let window_info: id = msg_send![window_list as id, objectAtIndex: index];
+            if window_info == nil {
+                continue;
+            }
+            result = external_window_from_info(window_info, &screen_bounds)
+                .filter(|window| window.id == external_id);
+            if result.is_some() {
+                break;
+            }
+        }
+
+        CFRelease(window_list as _);
+        result
+    }
+}
+
+unsafe fn external_window_from_info(
+    window_info: id,
+    screen_bounds: &[Bounds<Pixels>],
+) -> Option<ExternalWindow> {
+    unsafe {
+        if !is_normal_window(window_info) {
+            return None;
+        }
+
+        let window_id_value: id = msg_send![window_info, objectForKey: kCGWindowNumber as id];
+        if window_id_value == nil {
+            return None;
+        }
+        let window_id: u32 = msg_send![window_id_value, unsignedIntValue];
+
+        let window_bounds_value: id = msg_send![window_info, objectForKey: kCGWindowBounds as id];
+        if window_bounds_value == nil {
+            return None;
+        }
+
+        let mut rect: CGRect = std::mem::zeroed();
+        if !CGRectMakeWithDictionaryRepresentation(window_bounds_value as CFDictionaryRef, &mut rect) {
+            return None;
+        }
+
+        let window_bounds = Bounds {
+            origin: point(px(rect.origin.x as f32), px(rect.origin.y as f32)),
+            size: size(px(rect.size.width as f32), px(rect.size.height as f32)),
+        };
+
+        (f32::from(window_bounds.size.width) > 0.0
+            && f32::from(window_bounds.size.height) > 0.0
+            && !is_fullscreen(window_bounds.clone(), screen_bounds))
+        .then_some(ExternalWindow {
+            id: ExternalWindowId::from_raw(window_id as u64),
+            bounds: window_bounds,
+        })
+    }
 }
 
 unsafe fn is_normal_window(window_info: id) -> bool {

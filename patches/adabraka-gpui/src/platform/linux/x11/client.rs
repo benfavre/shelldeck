@@ -1482,6 +1482,45 @@ fn x11_window_bounds(
     })
 }
 
+fn x11_external_window_snapshot(
+    xcb: &XCBConnection,
+    root: xproto::Window,
+    x_window: xproto::Window,
+    scale_factor: f32,
+) -> Option<ExternalWindow> {
+    let bounds = x11_window_bounds(xcb, root, x_window, scale_factor)?;
+    (f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0).then_some(
+        ExternalWindow {
+            id: ExternalWindowId::from_raw(x_window as u64),
+            bounds,
+        },
+    )
+}
+
+fn is_visible_external_x11_window(
+    xcb: &XCBConnection,
+    state: &X11ClientState,
+    x_window: xproto::Window,
+) -> bool {
+    !state.windows.contains_key(&x_window)
+        && xcb
+            .get_window_attributes(x_window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|attrs| {
+                attrs.class == xproto::WindowClass::INPUT_OUTPUT
+                    && attrs.map_state == xproto::MapState::VIEWABLE
+            })
+        && !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_STATE)
+            .iter()
+            .any(|atom| {
+                *atom == state.atoms._NET_WM_STATE_HIDDEN
+                    || *atom == state.atoms._NET_WM_STATE_FULLSCREEN
+            })
+        && !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
+            .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
+}
+
 impl LinuxClient for X11Client {
     fn compositor_name(&self) -> &'static str {
         "X11"
@@ -1874,40 +1913,19 @@ impl LinuxClient for X11Client {
             .value
             .chunks_exact(4)
             .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
-            .filter(|x_window| !state.windows.contains_key(x_window))
-            .filter(|&x_window| {
-                xcb.get_window_attributes(x_window)
-                    .ok()
-                    .and_then(|cookie| cookie.reply().ok())
-                    .is_some_and(|attrs| {
-                        attrs.class == xproto::WindowClass::INPUT_OUTPUT
-                            && attrs.map_state == xproto::MapState::VIEWABLE
-                    })
-            })
-            .filter(|&x_window| {
-                !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_STATE)
-                    .iter()
-                    .any(|atom| {
-                        *atom == state.atoms._NET_WM_STATE_HIDDEN
-                            || *atom == state.atoms._NET_WM_STATE_FULLSCREEN
-                    })
-            })
-            .filter(|&x_window| {
-                !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
-                    .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
-            })
-            .filter_map(|x_window| {
-                let bounds = x11_window_bounds(xcb, root, x_window, scale_factor)?;
-                Some(ExternalWindow {
-                    id: ExternalWindowId::from_raw(x_window as u64),
-                    bounds,
-                })
-            })
-            .filter(|window| {
-                f32::from(window.bounds.size.width) > 0.0
-                    && f32::from(window.bounds.size.height) > 0.0
-            })
+            .filter(|&x_window| is_visible_external_x11_window(xcb, &state, x_window))
+            .filter_map(|x_window| x11_external_window_snapshot(xcb, root, x_window, scale_factor))
             .collect()
+    }
+
+    // ShellDeck patch: target one X11 XID directly for attached companion following.
+    fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        let state = self.0.borrow();
+        let xcb = &state.xcb_connection;
+        let root = xcb.setup().roots[state.x_root_index].root;
+        let x_window = u32::try_from(id.raw()).ok()?;
+        is_visible_external_x11_window(xcb, &state, x_window)
+            .then(|| x11_external_window_snapshot(xcb, root, x_window, state.scale_factor))?
     }
 
     fn set_tray_icon(&self, icon: Option<&[u8]>) {

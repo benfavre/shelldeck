@@ -37,8 +37,8 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
     CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter,
-    // ShellDeck patch: import the public external-window snapshot type for App APIs.
-    ExternalWindow, FocusHandle, FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
+    // ShellDeck patch: import the public external-window snapshot types for App APIs.
+    ExternalWindow, ExternalWindowId, FocusHandle, FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
     Keystroke, LayoutId, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, PermissionStatus, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerSaveBlockerKind, PromptBuilder,
@@ -1324,6 +1324,13 @@ impl App {
     // ShellDeck patch: expose stable read-only external window snapshots for desktop companions.
     pub fn visible_external_windows(&self) -> Vec<ExternalWindow> {
         self.platform.visible_external_windows()
+    }
+
+    /// Returns a visible external top-level window snapshot for a native lifetime
+    /// ID, when the active platform can perform a targeted lookup.
+    // ShellDeck patch: expose targeted external-window lookup for attached companions.
+    pub fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        self.platform.external_window(id)
     }
 
     /// Returns the primary display that will be used for new windows.

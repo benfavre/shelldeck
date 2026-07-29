@@ -145,6 +145,26 @@ fn collect_visible_external_windows(own_windows: &[HWND]) -> Vec<ExternalWindow>
         .collect()
 }
 
+fn external_window_snapshot(hwnd: HWND) -> Option<ExternalWindow> {
+    let bounds = window_bounds(hwnd)?;
+    (f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0).then_some(
+        ExternalWindow {
+            id: ExternalWindowId::from_raw(hwnd.0 as u64),
+            bounds,
+        },
+    )
+}
+
+fn is_visible_external_window(hwnd: HWND, own_windows: &[HWND]) -> bool {
+    unsafe { IsWindow(hwnd).as_bool() }
+        && !own_windows.iter().any(|own_window| own_window == &hwnd)
+        && unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
+        && unsafe { GetWindow(hwnd, GW_OWNER).is_err() }
+        && unsafe { (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0) == 0 }
+        && !is_cloaked_window(hwnd)
+        && !is_fullscreen_window(hwnd)
+}
+
 fn is_cloaked_window(hwnd: HWND) -> bool {
     let mut cloaked = 0u32;
     unsafe {
@@ -859,6 +879,19 @@ impl Platform for WindowsPlatform {
             .collect_vec();
         own_windows.push(self.handle);
         collect_visible_external_windows(&own_windows)
+    }
+
+    // ShellDeck patch: target one Win32 HWND directly for attached companion following.
+    fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        let hwnd = HWND(id.raw() as isize);
+        let mut own_windows = self
+            .raw_window_handles
+            .read()
+            .iter()
+            .map(|hwnd| hwnd.as_raw())
+            .collect_vec();
+        own_windows.push(self.handle);
+        is_visible_external_window(hwnd, &own_windows).then(|| external_window_snapshot(hwnd))?
     }
 
     fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {
