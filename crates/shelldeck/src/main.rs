@@ -169,6 +169,43 @@ simple_assets!(
     "systemd",
 );
 
+macro_rules! character_assets {
+    ($($character:literal),+ $(,)?) => {
+        fn character_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(
+                    concat!("characters/", $character, "/idle.png") => Some(include_bytes!(concat!("../assets/characters/", $character, "/idle.png"))),
+                    concat!("characters/", $character, "/idle.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/idle.svg"))),
+                    concat!("characters/", $character, "/listening.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/listening.svg"))),
+                    concat!("characters/", $character, "/thinking.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/thinking.svg"))),
+                    concat!("characters/", $character, "/success.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/success.svg"))),
+                    concat!("characters/", $character, "/warning.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/warning.svg"))),
+                    concat!("characters/", $character, "/error.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/error.svg"))),
+                    concat!("characters/", $character, "/sleeping.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/sleeping.svg"))),
+                )+
+                _ => None,
+            }
+        }
+
+        fn character_asset_paths() -> Vec<SharedString> {
+            vec![
+                $(
+                    SharedString::from(concat!("characters/", $character, "/idle.png")),
+                    SharedString::from(concat!("characters/", $character, "/idle.svg")),
+                    SharedString::from(concat!("characters/", $character, "/listening.svg")),
+                    SharedString::from(concat!("characters/", $character, "/thinking.svg")),
+                    SharedString::from(concat!("characters/", $character, "/success.svg")),
+                    SharedString::from(concat!("characters/", $character, "/warning.svg")),
+                    SharedString::from(concat!("characters/", $character, "/error.svg")),
+                    SharedString::from(concat!("characters/", $character, "/sleeping.svg")),
+                )+
+            ]
+        }
+    };
+}
+
+character_assets!("clippy", "shelly", "spark", "byte", "orbit", "nox");
+
 /// In-process asset source that ships a small set of images embedded in the
 /// binary (see `assets/images/`). GPUI's `svg()` element requires an
 /// `AssetSource` to resolve `.path("images/…")`.
@@ -276,17 +313,10 @@ impl AssetSource for Assets {
             "images/logo-github.svg" => include_bytes!("../assets/images/logo-github.svg"),
             "images/logo-google.svg" => include_bytes!("../assets/images/logo-google.svg"),
             "images/logo-1clicpro.svg" => include_bytes!("../assets/images/logo-1clicpro.svg"),
-            "characters/clippy/idle.png" => {
-                include_bytes!("../assets/characters/clippy/idle.png")
-            }
-            "characters/shelly/idle.png" => {
-                include_bytes!("../assets/characters/shelly/idle.png")
-            }
-            "characters/spark/idle.png" => include_bytes!("../assets/characters/spark/idle.png"),
-            "characters/byte/idle.png" => include_bytes!("../assets/characters/byte/idle.png"),
-            "characters/orbit/idle.png" => include_bytes!("../assets/characters/orbit/idle.png"),
-            "characters/nox/idle.png" => include_bytes!("../assets/characters/nox/idle.png"),
             _ => {
+                if let Some(bytes) = character_bytes(path) {
+                    return Ok(Some(Cow::Borrowed(bytes)));
+                }
                 if let Some(bytes) = simple_bytes(path) {
                     return Ok(Some(Cow::Borrowed(bytes)));
                 }
@@ -342,13 +372,8 @@ impl AssetSource for Assets {
             SharedString::from("images/logo-github.svg"),
             SharedString::from("images/logo-google.svg"),
             SharedString::from("images/logo-1clicpro.svg"),
-            SharedString::from("characters/clippy/idle.png"),
-            SharedString::from("characters/shelly/idle.png"),
-            SharedString::from("characters/spark/idle.png"),
-            SharedString::from("characters/byte/idle.png"),
-            SharedString::from("characters/orbit/idle.png"),
-            SharedString::from("characters/nox/idle.png"),
         ];
+        paths.extend(character_asset_paths());
         paths.extend(simple_asset_paths());
         paths.extend(lucide_asset_paths());
         Ok(paths)
@@ -1007,12 +1032,10 @@ fn x11_monitor_bounds(scale_factor: f32) -> Vec<gpui::Bounds<gpui::Pixels>> {
 fn parse_x11_workarea(properties: &str, scale_factor: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
     let desktop = properties
         .lines()
-        .find(|line| line.starts_with("_NET_CURRENT_DESKTOP"))?
-        .split_once('=')?
-        .1
-        .trim()
-        .parse::<usize>()
-        .ok()?;
+        .find(|line| line.starts_with("_NET_CURRENT_DESKTOP"))
+        .and_then(|line| line.split_once('='))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
     let values = properties
         .lines()
         .find(|line| line.starts_with("_NET_WORKAREA"))?
@@ -2068,14 +2091,16 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
-        command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
-        CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
-        ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, character_asset_paths,
+        command_palette_bounds, command_palette_global_shortcut, companion_main_window_visible,
+        companion_pointer, merge_workspace_connections, workspace_created_at_boot, AiDockRequest,
+        AiDockWindowAction, Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
+        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
+        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
+    use gpui::AssetSource;
     use shelldeck_core::config::app_config::CompanionConfig;
     use shelldeck_core::models::connection::Connection;
     use std::cell::{Cell, RefCell};
@@ -2167,6 +2192,26 @@ mod tests {
         assert!(companion_main_window_visible(false, true));
         assert!(companion_main_window_visible(true, false));
         assert!(!companion_main_window_visible(true, true));
+    }
+
+    // SDTEST-1454
+    #[test]
+    fn every_authored_character_state_is_embedded_in_the_binary_asset_source() {
+        let assets = Assets;
+        let paths = character_asset_paths();
+        let listed = assets.list("").expect("character asset list");
+
+        assert_eq!(paths.len(), 48);
+        for path in paths {
+            assert!(listed.contains(&path), "asset list omitted {path}");
+            assert!(
+                assets
+                    .load(path.as_ref())
+                    .expect("embedded character asset load")
+                    .is_some(),
+                "asset bytes omitted {path}"
+            );
+        }
     }
 
     // SDTEST-1391
@@ -2387,6 +2432,13 @@ mod tests {
 
         assert_eq!(usable.origin, gpui::point(gpui::px(1920.0), gpui::px(32.0)));
         assert_eq!(usable.size, gpui::size(gpui::px(1920.0), gpui::px(1048.0)));
+
+        let missing_current_desktop =
+            "_NET_CURRENT_DESKTOP:  not found.\n_NET_WORKAREA(CARDINAL) = 0, 32, 3840, 1048\n";
+        assert_eq!(
+            parse_x11_workarea(missing_current_desktop, 1.0),
+            Some(workarea)
+        );
     }
 
     #[test]

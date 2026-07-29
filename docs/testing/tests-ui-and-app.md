@@ -302,6 +302,7 @@ parallel `cargo test`.
 | SDTEST-1451 | `tray::tests::choose_character_menu_id_routes_to_targeted_settings` | SDUC-450 | Green | The stable native tray ID opens the targeted character settings command rather than pausing movement or opening generic Settings. |
 | SDTEST-1452 | `companion_desktop.rs::user_drag_preserves_grab_offset_and_routes_across_display_bounds` | SDUC-448, SDUC-451 | Green | Native hit windows exactly track the selected mascot scale; dragging keeps the pointer-to-character grab offset, scales deltas for mixed-DPI Windows displays, supports negative monitor origins, selects the display under the character center, and clamps the final window origin to it. |
 | SDTEST-1453 | `companion_desktop.rs::clicks_start_bounded_playful_reactions_from_the_current_position` | SDUC-448, SDUC-451 | Green | A click starts a bounded short hop; a sequential double-click upgrades that in-flight hop to the opposite display edge while preserving vertical work-area bounds and continuous-frame policy only during motion. |
+| SDTEST-1454 | `main.rs::every_authored_character_state_is_embedded_in_the_binary_asset_source` | SDUC-447, SDUC-451 | Green | The production asset source lists and loads all 48 idle, listening, thinking, success, warning, error, and sleeping resources across the six mascots, preventing live drag/click reactions from resolving to missing embedded files. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
