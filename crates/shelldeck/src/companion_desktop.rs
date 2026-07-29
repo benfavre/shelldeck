@@ -602,6 +602,9 @@ impl DesktopCharacterRuntime {
             if let Some(candidate) =
                 choose_snap_window(windows, displays, sim.simulation.position, sim.extent)
             {
+                if let Some(display) = display_for_window(displays, candidate.window.bounds) {
+                    sim.update_display(display);
+                }
                 let surface = window_top_surface(&candidate.window, candidate.generation);
                 let x = sim.simulation.position.x.clamp(
                     f32::from(candidate.window.bounds.origin.x),
@@ -3366,6 +3369,62 @@ mod tests {
         assert_eq!(
             sim.body.contact().unwrap().kind,
             WalkableSurfaceKind::ScreenFloor
+        );
+    }
+
+    // SDTEST-1528
+    #[test]
+    fn snapped_window_display_becomes_disappearance_fall_floor_context() {
+        let primary = DesktopDisplay {
+            bounds: bounds(0.0, 0.0, 1600.0, 900.0),
+            work_area: bounds(0.0, 0.0, 1600.0, 900.0),
+            ..display()
+        };
+        let portrait = DesktopDisplay {
+            bounds: bounds(1600.0, 0.0, 600.0, 3000.0),
+            work_area: bounds(1600.0, 0.0, 600.0, 3000.0),
+            ..display()
+        };
+        let displays = [portrait, primary];
+        let window = external_window(99, bounds(200.0, 300.0, 360.0, 220.0));
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.update_display(portrait);
+        sim.simulation.position = Point2::new(220.0, 140.0);
+
+        assert_eq!(
+            runtime.finish_user_drag_lifecycle_for_test(
+                Point2::new(0.0, 0.0),
+                std::slice::from_ref(&window),
+                &displays,
+            ),
+            ReleaseLifecycle::StartAttachmentFollow
+        );
+        assert_eq!(
+            runtime.simulation.as_ref().unwrap().display.work_area,
+            primary.work_area
+        );
+
+        assert!(runtime.detach_missing_attachment());
+        let sim = runtime.simulation.as_mut().unwrap();
+        assert_eq!(sim.display.work_area, primary.work_area);
+        for _ in 0..90 {
+            if sim.step_physics_capped(33, &[]).landed {
+                break;
+            }
+        }
+
+        assert_eq!(
+            sim.body.contact().unwrap().kind,
+            WalkableSurfaceKind::ScreenFloor
+        );
+        assert_eq!(
+            sim.simulation.position.y,
+            to_rect(primary.work_area, sim.extent).bottom() - sim.extent
+        );
+        assert!(
+            sim.simulation.position.y
+                < to_rect(portrait.work_area, sim.extent).bottom() - sim.extent
         );
     }
 }
