@@ -1835,12 +1835,24 @@ speeds, bounce, tilt, and target choices make their movement visibly different.
 Static idle periods use no continuous runtime frames; an occasional one-shot
 flourish adds life without turning the overlay into a permanent render loop.
 Motion preference changes apply immediately, and the tray can pause/resume the
-character or return it to a safe screen corner.
+character or return it to a safe screen corner. When window climbing is enabled,
+the character chooses an eligible external top-level window by its stable native
+lifetime ID, climbs to its top edge, and preserves its horizontal perch offset as
+the window moves between displays or resizes. Only an attached character performs
+the low-rate geometry refresh; unchanged snapshots issue no native move. Closing,
+minimizing, or otherwise losing the target window detaches safely and resumes the
+normal one-shot roaming lifecycle. Dragging, clicking, pausing, returning to a
+corner, disabling climbing, or closing the overlay cancels the attachment and its
+generation-guarded refresh timer immediately.
 
 ---
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1500..1504 for stable
+  external-window identities, top-edge attachment, movement and resize following,
+  redundant-move suppression, disappearance recovery, and generation-cancelled
+  low-rate monitoring only while a character is attached.
 - **2026-07-29** — Extended SDUC-451 and added SDTEST-1494..1499 for production
   PNG-backed procedural poses, distinct mascot personalities, bounded varied
   roam targets, one-shot idle flourishes, real-time frame pacing, DPI-aware drag
