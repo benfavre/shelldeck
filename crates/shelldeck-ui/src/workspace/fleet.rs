@@ -52,7 +52,8 @@ impl Workspace {
             .or_else(|| self.app_config.jean_runtime.workdir.clone())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
-        let model = inst.map(|i| i.model.clone()).unwrap_or_default();
+        let fleet_model = inst.map(|i| i.model.clone()).unwrap_or_default();
+        let model = self.app_config.jean_runtime.job_model(&fleet_model);
         (workdir, model)
     }
 
@@ -65,7 +66,8 @@ impl Workspace {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(cloud_account::device_name);
-        let (workdir, _) = self.runtime_workdir_model();
+        let (workdir, model) = self.runtime_workdir_model();
+        let model = (!model.trim().is_empty()).then_some(model);
         Some(RegisterInstance {
             id: self.app_config.jean_runtime.instance_id.clone(),
             name,
@@ -74,7 +76,7 @@ impl Workspace {
             site_id: self.app_config.cloud_sync.active_site_id.clone(),
             slack_channel: None,
             workdir,
-            model: None,
+            model,
             // Only set autonomy on the FIRST register (safe default = confirm);
             // later leave it so an admin can flip it to "auto" in the console.
             autonomy: if self.app_config.jean_runtime.instance_id.is_none() {
@@ -127,11 +129,17 @@ impl Workspace {
         let status = if !enabled {
             "désactivé".to_string()
         } else {
-            self.runtime_instance
+            let base = self
+                .runtime_instance
                 .as_ref()
                 .map(|i| i.status.clone())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "démarrage…".to_string())
+                .unwrap_or_else(|| "démarrage…".to_string());
+            format!(
+                "{} · {}",
+                base,
+                self.app_config.jean_runtime.executor.self_report_label()
+            )
         };
         let awaiting = self.runtime_awaiting.clone();
         self.fleet_view.update(cx, |v, cx| {
@@ -293,6 +301,8 @@ impl Workspace {
                                 let r = cx
                                     .background_executor()
                                     .spawn(async move {
+                                        let exec = tc.runtime_config.job_executor();
+                                        let timeout = tc.runtime_config.job_timeout();
                                         jean_fleet::runtime_tick(
                                             &tc.base,
                                             &tc.token,
@@ -301,8 +311,8 @@ impl Workspace {
                                             &tc.model,
                                             &tc.autonomy,
                                             &tc.version,
-                                            &ClaudeExecutor::default(),
-                                            std::time::Duration::from_secs(1800),
+                                            &exec,
+                                            timeout,
                                         )
                                     })
                                     .await;
@@ -349,6 +359,7 @@ impl Workspace {
             model,
             autonomy,
             version,
+            runtime_config: self.app_config.jean_runtime.clone(),
         }))
     }
 
@@ -437,6 +448,7 @@ impl Workspace {
             return;
         };
         let (workdir, model) = self.runtime_workdir_model();
+        let runtime_config = self.app_config.jean_runtime.clone();
         self.runtime_awaiting.retain(|j| j.id != job_id);
         self.publish_tray_state(cx);
         // busy stays true through execution.
@@ -462,15 +474,9 @@ impl Workspace {
             let r = cx
                 .background_executor()
                 .spawn(async move {
-                    jean_fleet::execute_job(
-                        &base,
-                        &token,
-                        &job,
-                        &workdir,
-                        &model,
-                        &ClaudeExecutor::default(),
-                        std::time::Duration::from_secs(1800),
-                    )
+                    let exec = runtime_config.job_executor();
+                    let timeout = runtime_config.job_timeout();
+                    jean_fleet::execute_job(&base, &token, &job, &workdir, &model, &exec, timeout)
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {

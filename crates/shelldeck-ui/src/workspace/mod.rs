@@ -34,7 +34,7 @@ use shelldeck_core::config::cloud_account::{self, AccountInfo, AppMode};
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::issues::{self, Issue, IssueInstance};
 use shelldeck_core::config::jean_fleet::{
-    self, ClaudeExecutor, FleetSnapshot, JeanInstance, JeanJob, RegisterInstance,
+    self, FleetSnapshot, JeanInstance, JeanJob, JeanRuntimeConfig, RegisterInstance,
 };
 use shelldeck_core::config::jeanclaude::{self, JeanConfig, JeanState};
 use shelldeck_core::config::manage_sites::{self, ManagedSiteInfo, SitesPayload};
@@ -290,6 +290,7 @@ struct RuntimeTickCtx {
     model: String,
     autonomy: String,
     version: String,
+    runtime_config: JeanRuntimeConfig,
 }
 
 /// One decision of the runtime loop, produced on the UI thread.

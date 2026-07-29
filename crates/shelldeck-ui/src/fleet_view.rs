@@ -449,6 +449,12 @@ impl FleetView {
                                     .text_size(px(10.0))
                                     .px(px(7.0)),
                             )
+                            .children((!inst.model.trim().is_empty()).then(|| {
+                                Badge::new(inst.model.clone())
+                                    .variant(BadgeVariant::Outline)
+                                    .text_size(px(10.0))
+                                    .px(px(7.0))
+                            }))
                             .child(
                                 Badge::new(inst.autonomy.clone())
                                     .variant(BadgeVariant::Secondary)
