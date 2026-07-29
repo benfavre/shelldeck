@@ -1,5 +1,5 @@
-use super::mascot::{animated_monolith, MonolithMotion};
 use super::*;
+use crate::monolith::{MonolithMotion, animated_monolith};
 
 impl Workspace {
     /// User-mode "Demander à JeanClaude" card: a composer that files a request
@@ -143,8 +143,7 @@ impl Workspace {
     pub(super) fn render_post_login_splash(&self, splash: &PostLoginSplash) -> impl IntoElement {
         use std::time::Duration;
 
-        let mascot =
-            animated_monolith("post-login-mascot", 188.0, MonolithMotion::FloatAndBreathe);
+        let mascot = animated_monolith("post-login-mascot", 188.0, MonolithMotion::FloatAndBreathe);
 
         let progress_bar = div()
             .relative()

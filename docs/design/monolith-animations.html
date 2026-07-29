@@ -602,12 +602,20 @@
        un scanner / une réflexion en cours.
     */
     @keyframes sd4-default {
-      0%, 18%, 84%, 100% { opacity: 1; transform: scale(1); }
-      26%, 76% { opacity: 0; transform: scale(0.94); }
+      0%, 12%, 96%, 100% { opacity: 1; transform: scale(1); }
+      22%, 88% { opacity: 0; transform: scale(0.94); }
     }
-    @keyframes sd4-thinking {
-      0%, 20%, 80%, 100% { opacity: 0; transform: rotate(0deg) translateY(8px); }
-      30%, 68% { opacity: 1; transform: rotate(-2deg) translateY(0); }
+    @keyframes sd4-left {
+      0%, 12%, 48%, 100% { opacity: 0; transform: rotate(0deg) translate(8px, 8px) scale(0.94); }
+      22%, 40% { opacity: 1; transform: rotate(-3deg) translate(0, 0) scale(1); }
+    }
+    @keyframes sd4-right {
+      0%, 40%, 76%, 100% { opacity: 0; transform: rotate(0deg) translate(-8px, 6px) scale(0.94); }
+      50%, 68% { opacity: 1; transform: rotate(3deg) translate(0, 0) scale(1); }
+    }
+    @keyframes sd4-scrunch {
+      0%, 68%, 96%, 100% { opacity: 0; transform: translateY(6px) scale(0.9); }
+      78%, 88% { opacity: 1; transform: translateY(0) scale(1); }
     }
     @keyframes sd4-bubble {
       0%, 22%, 100% { opacity: 0; transform: translate(0, 18px) scale(0.4); }
@@ -615,22 +623,32 @@
       78% { opacity: 0; transform: translate(10px, -18px) scale(1.15); }
     }
     .sd4-default {
-      animation: sd4-default 3.2s ease-in-out infinite;
+      animation: sd4-default 6s ease-in-out infinite;
       transform-box: fill-box;
       transform-origin: center;
     }
-    .sd4-thinking {
-      animation: sd4-thinking 3.2s ease-in-out infinite;
+    .sd4-left {
+      animation: sd4-left 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-right {
+      animation: sd4-right 6s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .sd4-scrunch {
+      animation: sd4-scrunch 6s ease-in-out infinite;
       transform-box: fill-box;
       transform-origin: center;
     }
     .sd4-bubble {
-      animation: sd4-bubble 3.2s ease-in-out infinite;
+      animation: sd4-bubble 1.5s ease-in-out infinite;
       transform-box: fill-box;
       transform-origin: center;
     }
-    .sd4-bubble.b { --phase: 0.16s; animation-delay: var(--phase); }
-    .sd4-bubble.c { --phase: 0.32s; animation-delay: var(--phase); }
+    .sd4-bubble.b { --phase: 0.12s; animation-delay: var(--phase); }
+    .sd4-bubble.c { --phase: 0.24s; animation-delay: var(--phase); }
 
     /* ─────────────────────────────────────────────────────────
        Card #5 — Working / busy (cadre pulse fort + halo)
@@ -714,7 +732,7 @@
       90%  { opacity: 0.9; }
       100% { transform: translateY(320px); opacity: 0; }
     }
-    .sd9-line { animation: sd9-sweep 2.4s linear infinite; transform-box: fill-box; }
+    .sd9-line { animation: sd9-sweep 1.2s linear infinite; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #10 — Boot / startup (le logo se compose)
@@ -795,8 +813,8 @@
       0%, 49%   { opacity: 1; }
       50%, 100% { opacity: 0.25; }
     }
-    .sd14-typed { animation: sd14-type 2.4s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
-    .sd14-caret { animation: sd14-caret 2.4s ease-in-out infinite, sd14-blink 1s step-end infinite; transform-box: fill-box; }
+    .sd14-typed { animation: sd14-type 1.4s ease-in-out infinite; transform-origin: left; transform-box: fill-box; }
+    .sd14-caret { animation: sd14-caret 1.4s ease-in-out infinite, sd14-blink 0.7s step-end infinite; transform-box: fill-box; }
 
     /* ─────────────────────────────────────────────────────────
        Card #15 — Chevron rain (Matrix-style, geeky)
@@ -854,6 +872,23 @@
         <circle cx="316" cy="476" r="20" fill="#e6e6e6"/>
         <circle cx="660" cy="476" r="20" fill="#e6e6e6"/>
         <path d="M 425 656 Q 512 620 599 656" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round"/>
+      </g>
+
+      <g id="face-thinking-right">
+        <g fill="none" stroke="#e6e6e6" stroke-width="24">
+          <circle cx="340" cy="500" r="65"/>
+          <circle cx="684" cy="500" r="65"/>
+        </g>
+        <circle cx="365" cy="478" r="20" fill="#e6e6e6"/>
+        <circle cx="709" cy="478" r="20" fill="#e6e6e6"/>
+        <path d="M 425 642 Q 512 684 599 642" fill="none" stroke="#e6e6e6" stroke-width="34" stroke-linecap="round"/>
+      </g>
+
+      <g id="face-thinking-scrunch" fill="none" stroke="#e6e6e6" stroke-linecap="round">
+        <path d="M 270 532 Q 336 472 402 532" stroke-width="32"/>
+        <circle cx="684" cy="508" r="62" stroke-width="24"/>
+        <circle cx="666" cy="490" r="18" fill="#e6e6e6" stroke="none"/>
+        <path d="M 426 650 Q 468 612 512 650 Q 556 688 598 650" stroke-width="30"/>
       </g>
 
       <g id="face-support-focus" fill="none" stroke="#e6e6e6">
@@ -1081,7 +1116,9 @@
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="125 125 774 774">
             <use href="#monolith-shell"/>
             <g class="sd4-default"><use href="#face-default"/></g>
-            <g class="sd4-thinking"><use href="#face-thinking"/></g>
+            <g class="sd4-left"><use href="#face-thinking"/></g>
+            <g class="sd4-right"><use href="#face-thinking-right"/></g>
+            <g class="sd4-scrunch"><use href="#face-thinking-scrunch"/></g>
             <circle class="sd4-bubble a" cx="742" cy="350" r="23" fill="#2ec4a8" opacity="0"/>
             <circle class="sd4-bubble b" cx="790" cy="286" r="15" fill="#75ead3" opacity="0"/>
             <circle class="sd4-bubble c" cx="824" cy="232" r="9" fill="#e6e6e6" opacity="0"/>
@@ -1089,7 +1126,7 @@
         </div>
         <figcaption>
           <strong>4 · Thinking (réflexion)</strong>
-          <span>Le regard monte à gauche, la bouche hésite et une pensée se forme. Pour "IA rédige", "Jean réfléchit"…</span>
+          <span>La face <code>&gt;_&lt;</code> se concentre, cherche à gauche puis à droite, grimace une seconde et reprend sa réflexion. Pour "IA rédige", "Jean réfléchit"…</span>
         </figcaption>
       </figure>
 

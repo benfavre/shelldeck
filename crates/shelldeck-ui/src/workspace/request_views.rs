@@ -807,12 +807,15 @@ impl Workspace {
                         .gap(px(8.0))
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(
-                            Spinner::new()
-                                .size(SpinnerSize::Xs)
-                                .variant(SpinnerVariant::Primary),
-                        )
-                        .child(t!("user.requests.ai.generating").to_string()),
+                        .child(animated_monolith(
+                            "request-ai-thinking",
+                            28.0,
+                            MonolithMotion::Thinking,
+                        ))
+                        .child(animated_loading_text(
+                            "request-ai-thinking-text",
+                            t!("user.requests.ai.generating").to_string(),
+                        )),
                 );
             }
             if let Some(error) = &self.issue_ai_error {

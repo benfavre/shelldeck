@@ -9,8 +9,7 @@ use adabraka_ui::navigation::menu::{
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize, SheetVariant};
 use adabraka_ui::prelude::{
     AnimatedCollapsible, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Select,
-    SelectOption, Spinner, SpinnerSize, SpinnerVariant, install_theme, scrollable_vertical,
-    use_theme,
+    SelectOption, install_theme, scrollable_vertical, use_theme,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -72,6 +71,7 @@ use crate::issue_attachments::{
 };
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
+use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
 use crate::onboarding_view::{OnboardingEvent, OnboardingView};
 use crate::port_forward_form::PortForwardForm;
 use crate::port_forward_view::{PortForwardEvent, PortForwardView};
@@ -111,7 +111,6 @@ mod events;
 mod fleet;
 mod forwards;
 mod jean;
-mod mascot;
 mod menu;
 mod modes;
 mod navigation;

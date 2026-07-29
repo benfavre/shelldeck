@@ -1654,12 +1654,14 @@ main window is hidden in the tray.
 
 ## 27. Embedded icon integrity
 
-### SDUC-438 — Reachable named icons render instead of reserving blank slots
+### SDUC-438 — Reachable icons and Monolith motions render instead of blank slots
 
 Every named Lucide icon selected dynamically by ShellDeck's AI actions and
 shared Alert variants is present in the curated asset directory and registered
-in the binary asset source. Missing icon names must fail a unit test instead of
-silently rendering an empty fixed-size slot in the interface.
+in the binary asset source. Contextual Monolith WebP motions used during AI
+generation and on terminal/site empty states follow the same contract. Missing
+assets or non-WebP study exports must fail a unit test instead of silently
+rendering an empty fixed-size slot in the interface.
 
 ### SDUC-439 — Only unexpected SSH transport loss produces an OS notification
 
@@ -1761,6 +1763,8 @@ window to open is seeded from the live registration state.
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-438 and added SDTEST-1424 for the contextual
+  Monolith motions used by AI generation, terminal startup, and site discovery.
 - **2026-07-27** — Extended SDUC-432 and added SDTEST-1421..1423 for native
   capture annotation plus confirmed, coordinated deletion of posted request
   and Support images from both the discussion and Share storage.

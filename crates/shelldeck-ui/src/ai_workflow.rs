@@ -2,17 +2,18 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Spinner,
-    SpinnerSize, SpinnerVariant,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, scrollable_vertical,
 };
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    ai_line_diff, parse_diagnostic_plan, parse_issue_triage_proposal, AiAutonomyLevel, AiBackend,
-    AiCapability, AiDiagnosticPlan, AiDiffLine, AiDraft, AiIssueTriageProposal, AiSurface,
+    AiAutonomyLevel, AiBackend, AiCapability, AiDiagnosticPlan, AiDiffLine, AiDraft,
+    AiIssueTriageProposal, AiSurface, ai_line_diff, parse_diagnostic_plan,
+    parse_issue_triage_proposal,
 };
 
 use crate::icons::{ai_provider_badge, lucide_icon};
+use crate::monolith::{MonolithMotion, animated_loading_text, animated_monolith};
 use crate::scale::px;
 use crate::support_view::{assignee_display, priority_badge};
 use crate::t;
@@ -920,12 +921,15 @@ impl Render for AiWorkflowView {
                     .py(px(12.0))
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(
-                        Spinner::new()
-                            .size(SpinnerSize::Xs)
-                            .variant(SpinnerVariant::Primary),
-                    )
-                    .child(t!("ai.assistant.generating").to_string()),
+                    .child(animated_monolith(
+                        "ai-workflow-thinking",
+                        34.0,
+                        MonolithMotion::Thinking,
+                    ))
+                    .child(animated_loading_text(
+                        "ai-workflow-thinking-text",
+                        t!("ai.assistant.generating").to_string(),
+                    )),
             );
         } else {
             if let Some(error) = &self.error {

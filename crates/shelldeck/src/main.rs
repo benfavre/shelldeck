@@ -12,8 +12,8 @@ use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
-    settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
+    settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -200,6 +200,17 @@ impl AssetSource for Assets {
             "images/brand/webp/modes/monolith-dev.webp" => {
                 include_bytes!("../assets/images/brand/webp/modes/monolith-dev.webp")
             }
+            // Compact Monolith motions used by contextual loading and empty
+            // states throughout the application.
+            "images/brand/webp/studies/monolith-thinking.webp" => {
+                include_bytes!("../assets/images/brand/webp/studies/monolith-thinking.webp")
+            }
+            "images/brand/webp/studies/monolith-scan.webp" => {
+                include_bytes!("../assets/images/brand/webp/studies/monolith-scan.webp")
+            }
+            "images/brand/webp/studies/monolith-terminal-typing.webp" => {
+                include_bytes!("../assets/images/brand/webp/studies/monolith-terminal-typing.webp")
+            }
             // Per-theme in-app badge PNGs — `brand_badge()` swaps to match the
             // active palette. Kept as PNG because GPUI `svg()` is monochrome.
             "images/brand/png/themes/monolith-dark-128.png" => {
@@ -307,6 +318,9 @@ impl AssetSource for Assets {
             SharedString::from("images/brand/webp/modes/monolith-user.webp"),
             SharedString::from("images/brand/webp/modes/monolith-support.webp"),
             SharedString::from("images/brand/webp/modes/monolith-dev.webp"),
+            SharedString::from("images/brand/webp/studies/monolith-thinking.webp"),
+            SharedString::from("images/brand/webp/studies/monolith-scan.webp"),
+            SharedString::from("images/brand/webp/studies/monolith-terminal-typing.webp"),
             SharedString::from("images/brand/png/themes/monolith-dark-128.png"),
             SharedString::from("images/brand/png/themes/monolith-light-128.png"),
             SharedString::from("images/brand/png/themes/monolith-dracula-128.png"),
@@ -1956,14 +1970,16 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
+        AI_DOCK_GLOBAL_HOTKEY_ID, AiDockRequest, AiDockWindowAction, Assets,
+        COMMAND_PALETTE_GLOBAL_HOTKEY_ID, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
+        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, ai_dock_bounds,
+        ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
         command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
-        CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
-        ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        merge_workspace_connections, workspace_created_at_boot,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
+    use gpui::AssetSource;
     use shelldeck_core::config::app_config::CompanionConfig;
     use shelldeck_core::models::connection::Connection;
     use std::cell::{Cell, RefCell};
@@ -1977,11 +1993,7 @@ mod tests {
 
     impl GlobalHotkeyRegistry for FakeGlobalHotkeyRegistry {
         fn compositor_name(&self) -> &'static str {
-            if self.wayland {
-                "Wayland"
-            } else {
-                "Test"
-            }
+            if self.wayland { "Wayland" } else { "Test" }
         }
 
         fn register(&self, id: u32, _keystroke: &gpui::Keystroke) -> anyhow::Result<()> {
@@ -2320,6 +2332,26 @@ mod tests {
             assert!(
                 super::lucide_bytes(&path).is_some(),
                 "reachable icon is not embedded: {path}"
+            );
+        }
+    }
+
+    // SDTEST-1424
+    #[test]
+    fn contextual_monolith_animations_are_embedded_webp_assets() {
+        for path in [
+            "images/brand/webp/studies/monolith-thinking.webp",
+            "images/brand/webp/studies/monolith-scan.webp",
+            "images/brand/webp/studies/monolith-terminal-typing.webp",
+        ] {
+            let bytes = Assets
+                .load(path)
+                .expect("embedded asset lookup succeeds")
+                .unwrap_or_else(|| panic!("contextual Monolith motion is not embedded: {path}"));
+
+            assert!(
+                bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+                "contextual Monolith motion is not a WebP asset: {path}"
             );
         }
     }

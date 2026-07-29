@@ -16,6 +16,7 @@ use uuid::Uuid;
 const PAGE_SIZE: usize = 50;
 
 use crate::icons::lucide_icon;
+use crate::monolith::{MonolithMotion, animated_monolith};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -1552,19 +1553,11 @@ impl SitesView {
             .justify_center()
             .flex_grow()
             .gap(px(12.0))
-            .child(
-                div()
-                    .w(px(48.0))
-                    .h(px(48.0))
-                    .rounded(px(12.0))
-                    .bg(ShellDeckColors::primary().opacity(0.1))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(20.0))
-                    .text_color(ShellDeckColors::primary())
-                    .child(t!("sites.empty.badge").to_string()),
-            )
+            .child(animated_monolith(
+                "sites-empty-scan",
+                72.0,
+                MonolithMotion::SiteScan,
+            ))
             .child(
                 div()
                     .text_size(px(14.0))

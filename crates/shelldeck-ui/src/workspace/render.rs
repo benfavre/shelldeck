@@ -1,5 +1,5 @@
-use super::mascot::{animated_monolith, MonolithMotion};
 use super::*;
+use crate::monolith::{MonolithMotion, animated_monolith};
 
 fn mode_transition_overlay_opacity(delta: f32) -> f32 {
     let delta = delta.clamp(0.0, 1.0);
@@ -740,8 +740,8 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        mode_transition_overlay_opacity, MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS,
-        MODE_TRANSITION_TOTAL_MS,
+        MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
+        mode_transition_overlay_opacity,
     };
 
     #[test]

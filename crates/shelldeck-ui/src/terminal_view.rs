@@ -19,6 +19,7 @@ use uuid::Uuid;
 use shelldeck_core::config::themes::TerminalTheme;
 
 use crate::glyph_cache::GlyphCache;
+use crate::monolith::{MonolithMotion, animated_monolith};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -4631,12 +4632,11 @@ impl TerminalView {
                     .flex_col()
                     .items_center()
                     .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(48.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(">_"),
-                    )
+                    .child(animated_monolith(
+                        "terminal-empty-typing",
+                        96.0,
+                        MonolithMotion::TerminalTyping,
+                    ))
                     .child(
                         div()
                             .text_size(px(16.0))
