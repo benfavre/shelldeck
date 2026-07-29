@@ -4,7 +4,8 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Markdown, Spinner, SpinnerSize,
+    SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -14,6 +15,7 @@ use shelldeck_core::ai::{
 };
 use uuid::Uuid;
 
+use crate::ai_workflow::capability_result_is_markdown;
 use crate::icons::{ai_provider_badge, lucide_icon};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
@@ -614,7 +616,7 @@ impl AiAssistantView {
             .into_any_element()
     }
 
-    fn render_messages(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_messages(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut thread = div()
             .flex()
             .flex_col()
@@ -628,21 +630,19 @@ impl AiAssistantView {
                 if is_user {
                     row = row.justify_end();
                 }
-                let lines = message
-                    .content
-                    .split('\n')
-                    .map(|line| {
-                        div()
-                            .min_h(px(18.0))
-                            .child(if line.is_empty() { " " } else { line }.to_string())
-                    })
-                    .collect::<Vec<_>>();
                 let message_id = message.id;
                 let content = message.content.clone();
+                let markdown = Markdown::new(content.clone())
+                    .base_font_size(px(12.0).to_pixels(window.rem_size()))
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal();
                 thread =
                     thread.child(
                         row.child(
                             div()
+                                .id(SharedString::from(format!("ai-message-{message_id}")))
+                                .w_full()
                                 .max_w(px(480.0))
                                 .min_w(px(0.0))
                                 .overflow_hidden()
@@ -708,10 +708,11 @@ impl AiAssistantView {
                                     div()
                                         .flex()
                                         .flex_col()
-                                        .gap(px(1.0))
-                                        .text_size(px(12.0))
+                                        .w_full()
+                                        .min_w_0()
+                                        .whitespace_normal()
                                         .text_color(ShellDeckColors::text_primary())
-                                        .children(lines),
+                                        .child(markdown),
                                 ),
                         ),
                     );
@@ -797,7 +798,7 @@ impl AiAssistantView {
         }
     }
 
-    fn render_task(&self, task: &AiTask, cx: &mut Context<Self>) -> AnyElement {
+    fn render_task(&self, task: &AiTask, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let task_id = task.id;
         let target = if task.target_label.trim().is_empty() {
             task.target_id.clone()
@@ -825,14 +826,19 @@ impl AiAssistantView {
             AiSurface::Naming => task.target_kind.as_deref() == Some("naming_terminal"),
             AiSurface::Recent | AiSurface::Global => false,
         };
-        let detail = task
+        let status_detail = task
             .status_message
             .as_ref()
             .filter(|message| !message.trim().is_empty())
-            .cloned()
-            .or_else(|| (!task.result.trim().is_empty()).then(|| task.result.trim().to_string()));
+            .cloned();
+        let result_detail =
+            (!task.result.trim().is_empty()).then(|| task.result.trim().to_string());
+        let detail_is_markdown =
+            status_detail.is_none() && capability_result_is_markdown(task.capability);
+        let detail = status_detail.or(result_detail);
 
         div()
+            .id(SharedString::from(format!("ai-task-card-{task_id}")))
             .flex()
             .flex_col()
             .gap(px(9.0))
@@ -892,14 +898,32 @@ impl AiAssistantView {
                     ),
             )
             .when_some(detail, |row, detail| {
-                row.child(
-                    div()
-                        .line_clamp(3)
-                        .overflow_hidden()
-                        .text_size(px(11.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(detail),
-                )
+                if detail_is_markdown {
+                    row.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .max_h(px(96.0))
+                            .overflow_hidden()
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(
+                                Markdown::new(detail)
+                                    .base_font_size(px(11.0).to_pixels(window.rem_size()))
+                                    .w_full()
+                                    .min_w_0()
+                                    .whitespace_normal(),
+                            ),
+                    )
+                } else {
+                    row.child(
+                        div()
+                            .line_clamp(3)
+                            .overflow_hidden()
+                            .text_size(px(11.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(detail),
+                    )
+                }
             })
             .child(
                 div()
@@ -991,7 +1015,7 @@ impl AiAssistantView {
             .into_any_element()
     }
 
-    fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tasks(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut tasks = self.tasks.clone();
         tasks.sort_by_key(|task| {
             (
@@ -1017,7 +1041,7 @@ impl AiAssistantView {
 
         let mut list = div().flex().flex_col();
         for task in &tasks {
-            list = list.child(self.render_task(task, cx));
+            list = list.child(self.render_task(task, window, cx));
         }
         div()
             .id("ai-task-scroll")
@@ -1052,7 +1076,7 @@ mod tests {
 }
 
 impl Render for AiAssistantView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let submit = {
             let entity = cx.entity();
             move |_value: SharedString, cx: &mut App| {
@@ -1160,7 +1184,7 @@ impl Render for AiAssistantView {
             .active_conversation()
             .is_some_and(|conversation| !conversation.messages.is_empty());
         let conversation_body = if has_messages {
-            self.render_messages(cx)
+            self.render_messages(window, cx)
         } else {
             div()
                 .flex()
@@ -1303,7 +1327,7 @@ impl Render for AiAssistantView {
             }
             content = content.child(chat);
         } else {
-            content = content.child(self.render_tasks(cx));
+            content = content.child(self.render_tasks(window, cx));
         }
 
         let mut root = div()

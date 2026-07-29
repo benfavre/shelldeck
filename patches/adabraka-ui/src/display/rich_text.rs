@@ -669,7 +669,15 @@ fn render_list_items(
                     .text_color(theme.tokens.muted_foreground)
                     .child(bullet),
             )
-            .child(div().flex_1().child(content_el));
+            // ShellDeck patch: SDPATCH-027 — list text must be the flex child
+            // that shrinks so GPUI receives a definite width and wraps it.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .child(content_el),
+            );
 
         elements.push(row.into_any_element());
 
@@ -728,6 +736,10 @@ fn render_table(
             let el = render_inline_element(header, base_size, on_link_click, Some(id));
             let mut cell = div()
                 .flex_1()
+                // ShellDeck patch: SDPATCH-027 — table headers need a
+                // shrinkable width before StyledText can wrap inside them.
+                .min_w(px(0.0))
+                .whitespace_normal()
                 .px(px(12.0))
                 .py(px(8.0))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -764,6 +776,10 @@ fn render_table(
             let el = render_inline_element(cell_data, base_size, on_link_click, Some(id));
             let mut cell = div()
                 .flex_1()
+                // ShellDeck patch: SDPATCH-027 — body cells follow the same
+                // wrapping contract as headers instead of bleeding or clipping.
+                .min_w(px(0.0))
+                .whitespace_normal()
                 .px(px(12.0))
                 .py(px(6.0))
                 .text_size(base_size)

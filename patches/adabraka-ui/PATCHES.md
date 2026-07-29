@@ -515,6 +515,22 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — generic menu geometry fix suitable for
   upstreaming.
 
+### SDPATCH-027 — Markdown list and table text wraps inside narrow containers
+
+- **Files / symbols**:
+  - `src/display/rich_text.rs` — `render_list_items`, `render_table`
+- **Markers**:
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — list text must be the flex child`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — table headers need a`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — body cells follow the same`
+- **Why**: Markdown paragraphs wrapped in constrained assistant bubbles, but
+  list bodies and table cells were non-shrinkable flex children. GPUI therefore
+  measured them at their intrinsic width and the bubble's overflow guard cut
+  off the remaining text. Giving those children `min-width: 0` and normal
+  whitespace supplies a definite wrap width without weakening the outer cap.
+- **Upstream status**: not filed yet — generic Markdown overflow fix suitable
+  for upstreaming.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -595,6 +611,8 @@ carries no marker of its own — see its entry).
   `last_layouts: Vec<ShapedLine>` with `Vec<WrappedLine>` + a
   `wrapped_line_count` for the request_layout feedback loop). Net
   marker count 29 → 30.
+- **2026-07-29** — added SDPATCH-027: Markdown list and table flex children
+  now shrink to their constrained parent and wrap instead of being clipped.
 
 ## Retired patches
 

@@ -1322,7 +1322,10 @@ The shared AI sheet receives bounded structured context from Support,
 requests, scripts, terminal, Jean, naming, or recent activity. Every call is
 explicit and every result remains a draft: ShellDeck never sends a reply,
 executes a terminal command, mutates a request, or overwrites a script from an
-AI response.
+AI response. In the durable assistant conversation, both user and assistant
+message bodies render Markdown structure—including headings, emphasis, lists,
+links, code blocks, and tables—while the assistant copy action preserves the
+original source text.
 
 ### SDUC-415 — AI context and API privacy boundaries
 
@@ -1362,6 +1365,10 @@ offers a compact AI instruction field. Its provider response must validate
 against the structured name/description/language/category/body contract before
 all five unsaved fields are populated; one corrective regeneration is attempted
 for invalid JSON. The selected target and host are never changed implicitly. A
+free-form read-only analysis (Support/request summary, script explanation, or
+script review) renders as Markdown in both its workflow and task preview.
+Structured JSON keeps its dedicated typed presentation, while editable replies,
+commands, and script bodies remain raw so formatting cannot alter the payload. A
 failed latest execution exposes a contextual correction action using its exact
 exit code and output log; accepting opens the corrected body in the unsaved
 inline editor and never reruns it automatically. A draft put on hold is
@@ -1763,6 +1770,10 @@ window to open is seeded from the live registration state.
 
 ## Change log
 
+- **2026-07-29** — Extended SDUC-414/418 and added SDTEST-1425/1426 for
+  Markdown rendering of durable conversations and free-form read-only analyses,
+  while structured and executable/editable outputs retain their typed/raw
+  presentation.
 - **2026-07-29** — Extended SDUC-438 and added SDTEST-1424 for the contextual
   Monolith motions used by AI generation, terminal startup, and site discovery.
 - **2026-07-27** — Extended SDUC-432 and added SDTEST-1421..1423 for native

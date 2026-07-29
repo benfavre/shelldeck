@@ -2,7 +2,7 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Markdown,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -68,6 +68,23 @@ pub enum AiWorkflowTarget {
     TerminalDiagnose {
         session_id: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiResultPresentation {
+    EditableRaw,
+    Markdown,
+    Structured,
+}
+
+pub(crate) fn capability_result_is_markdown(capability: AiCapability) -> bool {
+    matches!(
+        capability,
+        AiCapability::SupportSummary
+            | AiCapability::IssueSummary
+            | AiCapability::ScriptExplain
+            | AiCapability::ScriptReview
+    )
 }
 
 impl AiWorkflowTarget {
@@ -197,16 +214,28 @@ impl AiWorkflowTarget {
     }
 
     fn result_is_read_only(&self) -> bool {
-        matches!(
-            self,
+        self.result_presentation() != AiResultPresentation::EditableRaw
+    }
+
+    fn result_presentation(&self) -> AiResultPresentation {
+        if capability_result_is_markdown(self.capability()) {
+            return AiResultPresentation::Markdown;
+        }
+        match self {
+            Self::SupportTriage { .. }
+            | Self::IssueTriage { .. }
+            | Self::TerminalDiagnose { .. } => AiResultPresentation::Structured,
+            Self::EntityNaming { .. }
+            | Self::SupportReply { .. }
+            | Self::IssueReply { .. }
+            | Self::ScriptGenerate { .. }
+            | Self::ScriptFix { .. }
+            | Self::TerminalCommand { .. } => AiResultPresentation::EditableRaw,
             Self::SupportSummary { .. }
-                | Self::SupportTriage { .. }
-                | Self::IssueSummary { .. }
-                | Self::IssueTriage { .. }
-                | Self::ScriptExplain { .. }
-                | Self::ScriptReview { .. }
-                | Self::TerminalDiagnose { .. }
-        )
+            | Self::IssueSummary { .. }
+            | Self::ScriptExplain { .. }
+            | Self::ScriptReview { .. } => unreachable!("handled by capability"),
+        }
     }
 
     fn can_prepare_action(&self) -> bool {
@@ -678,7 +707,7 @@ impl AiWorkflowView {
 }
 
 impl Render for AiWorkflowView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = if self.model.trim().is_empty() {
             self.backend.default_model().to_string()
         } else {
@@ -962,6 +991,27 @@ impl Render for AiWorkflowView {
                             proposal,
                             self.issue_triage_current.as_ref(),
                         ));
+                    } else if self.target.result_presentation() == AiResultPresentation::Markdown {
+                        let result = self.result_state.read(cx).content().to_string();
+                        let content = div().w_full().min_w_0().p(px(12.0)).child(
+                            Markdown::new(result)
+                                .base_font_size(px(12.0).to_pixels(window.rem_size()))
+                                .w_full()
+                                .min_w_0()
+                                .whitespace_normal(),
+                        );
+                        body = body.child(
+                            div()
+                                .w_full()
+                                .h(px(280.0))
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(ShellDeckColors::border())
+                                .bg(ShellDeckColors::bg_primary())
+                                .child(scrollable_vertical(content)),
+                        );
                     } else {
                         let result = self.result_state.read(cx).content().to_string();
                         let mut content = div()
@@ -1207,5 +1257,49 @@ impl Render for AiWorkflowView {
                     .child(cancel)
                     .child(action_group),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capability_result_is_markdown;
+    use shelldeck_core::ai::AiCapability;
+
+    // SDTEST-1426
+    #[test]
+    fn only_read_only_free_form_ai_capabilities_render_as_markdown() {
+        let markdown = [
+            AiCapability::SupportSummary,
+            AiCapability::IssueSummary,
+            AiCapability::ScriptExplain,
+            AiCapability::ScriptReview,
+        ];
+        for capability in markdown {
+            assert!(
+                capability_result_is_markdown(capability),
+                "{capability:?} should render as Markdown"
+            );
+        }
+
+        let raw_or_structured = [
+            AiCapability::Naming,
+            AiCapability::JeanDispatch,
+            AiCapability::FleetDispatch,
+            AiCapability::SupportReply,
+            AiCapability::SupportTriage,
+            AiCapability::IssueReply,
+            AiCapability::IssueTriage,
+            AiCapability::IssueCompose,
+            AiCapability::ScriptGenerate,
+            AiCapability::ScriptFix,
+            AiCapability::TerminalCommand,
+            AiCapability::TerminalDiagnose,
+        ];
+        for capability in raw_or_structured {
+            assert!(
+                !capability_result_is_markdown(capability),
+                "{capability:?} must preserve its raw or structured response"
+            );
+        }
     }
 }

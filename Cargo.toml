@@ -21,7 +21,7 @@ homepage = "https://github.com/benfavre/shelldeck"
 [workspace.dependencies]
 # GPUI framework (via adabraka fork)
 gpui = { package = "adabraka-gpui", version = "0.5" }
-adabraka-ui = "0.3"
+adabraka-ui = { version = "0.3", features = ["markdown"] }
 
 # SSH
 russh = { version = "0.45" }
