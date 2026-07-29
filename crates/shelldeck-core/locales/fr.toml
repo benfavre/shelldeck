@@ -1667,6 +1667,7 @@ ai.clippy.error.no_clipboard_text = "Le presse-papiers ne contient pas de texte.
 settings.companion.characters.section = "PERSONNAGE COMPAGNON"
 settings.companion.characters.label = "Personnage"
 settings.companion.characters.description = "Choisissez la mascotte indépendante qui vit et joue sur votre bureau."
+settings.companion.characters.platform_warning = "Les compagnons de bureau interactifs ne sont pas disponibles dans les sessions Wayland natives, car le compositeur n’expose pas un positionnement fiable des fenêtres de premier niveau. Votre choix est conservé pour les sessions X11, Windows ou macOS compatibles."
 settings.companion.characters.none = "Aucun personnage"
 settings.companion.characters.clippy = "Clippy"
 settings.companion.characters.shelly = "Shelly"

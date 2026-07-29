@@ -42,6 +42,30 @@ fn apply_character_choice(appearance: &mut ClippyAppearanceConfig, id: &str) {
     appearance.desktop.enabled = id != "none";
 }
 
+fn native_wayland_companion_limited(
+    session_type: Option<&str>,
+    has_x11_display: bool,
+    has_wayland_display: bool,
+) -> bool {
+    session_type.is_some_and(|session| session.eq_ignore_ascii_case("wayland"))
+        || (session_type.is_none() && has_wayland_display && !has_x11_display)
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_companion_platform_limited() -> bool {
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    native_wayland_companion_limited(
+        session_type.as_deref(),
+        std::env::var_os("DISPLAY").is_some(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn desktop_companion_platform_limited() -> bool {
+    false
+}
+
 fn display_shortcut(shortcut: &str) -> String {
     let Ok(keystroke) = Keystroke::parse(shortcut) else {
         return shortcut.to_string();
@@ -2148,6 +2172,20 @@ impl SettingsView {
         }
 
         let entity = cx.entity();
+        let platform_warning = if desktop_companion_platform_limited() {
+            div()
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(ShellDeckColors::warning().opacity(0.45))
+                .bg(ShellDeckColors::warning().opacity(0.08))
+                .px(px(10.0))
+                .py(px(8.0))
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_primary())
+                .child(t!("settings.companion.characters.platform_warning").to_string())
+        } else {
+            div()
+        };
 
         div()
             .flex()
@@ -2175,6 +2213,7 @@ impl SettingsView {
                             .text_color(ShellDeckColors::text_muted())
                             .child(t!("settings.companion.characters.description").to_string()),
                     )
+                    .child(platform_warning)
                     .child(character_cards),
             )
             .child(Self::render_setting_row(
@@ -3078,8 +3117,9 @@ fn ai_policy_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_character_choice, display_shortcut, shortcut_error_is_portal_missing,
-        validate_shortcut_capture, ClippyAppearanceConfig, ShortcutCaptureValidation,
+        apply_character_choice, display_shortcut, native_wayland_companion_limited,
+        shortcut_error_is_portal_missing, validate_shortcut_capture, ClippyAppearanceConfig,
+        ShortcutCaptureValidation,
     };
     use gpui::Keystroke;
 
@@ -3144,5 +3184,18 @@ mod tests {
         apply_character_choice(&mut appearance, "none");
         assert_eq!(appearance.character, "none");
         assert!(!appearance.desktop.enabled);
+    }
+
+    // SDTEST-1570
+    #[test]
+    fn native_wayland_companion_limitation_is_reported_without_misclassifying_x11() {
+        assert!(native_wayland_companion_limited(
+            Some("wayland"),
+            true,
+            true
+        ));
+        assert!(native_wayland_companion_limited(None, false, true));
+        assert!(!native_wayland_companion_limited(Some("x11"), true, true));
+        assert!(!native_wayland_companion_limited(None, true, false));
     }
 }
