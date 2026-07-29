@@ -24,7 +24,7 @@ use util::ResultExt as _;
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
-    Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, ClipboardItem,
+    Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
     CursorStyle, DialogOptions, DisplayId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
     LinuxDispatcher, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
@@ -75,6 +75,10 @@ pub trait LinuxClient {
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
+    // ShellDeck patch: X11 overrides this while Wayland retains the safe empty fallback.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        Vec::new()
+    }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
     fn run(&self);
 
@@ -719,6 +723,11 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         LinuxClient::focused_window_info(self)
+    }
+
+    // ShellDeck patch: route external desktop geometry through the active Linux backend.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        LinuxClient::visible_external_window_bounds(self)
     }
 
     fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {

@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **38**
+Total markers in code: **50**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -233,6 +233,47 @@ only, out of the src/-scoped marker convention.)
   those environments have no client-controlled top-level origin to set.
 - **Upstream status**: not filed yet — generally useful platform API, but the
   Wayland semantics need to be clearly documented before upstreaming.
+
+### SDPATCH-111 — Read-only external top-level window geometry
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::visible_external_window_bounds`
+  - `src/platform.rs` — `Platform::visible_external_window_bounds`
+  - `src/platform/linux/platform.rs` — `LinuxClient` and `Platform for P`
+  - `src/platform/linux/x11/client.rs` — X11 property/geometry helpers and
+    `LinuxClient::visible_external_window_bounds`
+  - `src/platform/linux/x11/window.rs` — `_NET_WM_WINDOW_TYPE_DESKTOP` atom
+  - `src/platform/windows/platform.rs` — Win32 enumeration/filtering helpers and
+    `Platform::visible_external_window_bounds`
+  - `src/platform/mac.rs` — `external_windows` module wiring
+  - `src/platform/mac/platform.rs` — `Platform::visible_external_window_bounds`
+  - `src/platform/mac/external_windows.rs` — CoreGraphics window-list helper
+- **Markers**:
+  - `src/app.rs` — `// ShellDeck patch: expose read-only external window geometry for desktop companions.`
+  - `src/platform.rs` — `// ShellDeck patch: platform backends may expose safe read-only external window geometry.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides this while Wayland retains the safe empty fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route external desktop geometry through the active Linux backend.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: enumerate eligible visible X11 windows for companion climbing.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: external geometry excludes desktop-background windows.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: enumerate visible external top-level Win32 windows for desktop companion geometry.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: expose visible external top-level Win32 window bounds.`
+  - `src/platform/mac.rs` — `// ShellDeck patch: wire the read-only external window geometry helper.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: enumerate visible external top-level macOS windows for desktop companion geometry.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose visible external top-level macOS window bounds.`
+- **Why**: The desktop companion can climb only geometry that is current and
+  safe to observe. The App-facing API returns logical global bounds without
+  mutating any platform state. X11 uses the EWMH stacking list and returns
+  mapped external input/output windows after excluding ShellDeck-owned, hidden,
+  fullscreen, desktop-background, and zero-size surfaces. Windows uses Win32
+  `EnumWindows` plus visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen
+  filters, excluding ShellDeck-owned HWNDs. macOS uses CoreGraphics'
+  on-screen window list with desktop elements excluded, keeps only normal layer-0
+  windows, and drops fullscreen-like display-covering windows. Wayland, test,
+  headless/default backends intentionally return an empty vector because they do
+  not expose other clients' top-level geometry safely.
+- **Upstream status**: not filed yet — useful as an opt-in desktop integration
+  API, but platform privacy and capability semantics need upstream discussion.
 
 ## Preserved files (do not overwrite on sync)
 

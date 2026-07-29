@@ -73,6 +73,8 @@ x11rb::atom_manager! {
         _NET_WM_BYPASS_COMPOSITOR,
         _NET_WM_MOVERESIZE,
         _NET_WM_WINDOW_TYPE,
+        // ShellDeck patch: external geometry excludes desktop-background windows.
+        _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WM_WINDOW_TYPE_NOTIFICATION,
         _NET_WM_WINDOW_TYPE_DIALOG,
         // ShellDeck patch: interactive overlays need a focusable EWMH type.

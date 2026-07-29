@@ -1288,6 +1288,12 @@ impl App {
         self.platform.displays()
     }
 
+    /// Returns visible external top-level window bounds in global logical pixels.
+    // ShellDeck patch: expose read-only external window geometry for desktop companions.
+    pub fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.platform.visible_external_window_bounds()
+    }
+
     /// Returns the primary display that will be used for new windows.
     pub fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         self.platform.primary_display()

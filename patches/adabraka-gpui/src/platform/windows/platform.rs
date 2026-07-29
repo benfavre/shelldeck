@@ -23,10 +23,10 @@ use windows::{
     UI::ViewManagement::UISettings,
     Win32::{
         Foundation::*,
-        Graphics::{Direct3D11::ID3D11Device, Gdi::*},
+        Graphics::{Direct3D11::ID3D11Device, Dwm::*, Gdi::*},
         Security::Credentials::*,
         System::{Com::*, LibraryLoader::*, Ole::*, SystemInformation::*},
-        UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
+        UI::{HiDpi::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
     },
     core::*,
 };
@@ -108,6 +108,90 @@ impl WindowsPlatformState {
             flashing_hwnd: None,
         }
     }
+}
+
+// ShellDeck patch: enumerate visible external top-level Win32 windows for desktop companion geometry.
+fn collect_visible_external_window_bounds(own_windows: &[HWND]) -> Vec<Bounds<Pixels>> {
+    unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let windows = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+        windows.push(hwnd);
+        TRUE
+    }
+
+    let mut windows = Vec::new();
+    unsafe {
+        EnumWindows(Some(enum_window), LPARAM(&mut windows as *mut _ as isize)).ok();
+    }
+
+    windows
+        .into_iter()
+        .filter(|hwnd| !own_windows.iter().any(|own_window| own_window == hwnd))
+        .filter(|&hwnd| unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() })
+        .filter(|&hwnd| unsafe { GetWindow(hwnd, GW_OWNER).0 == 0 })
+        .filter(|&hwnd| unsafe { (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0) == 0 })
+        .filter(|&hwnd| !is_cloaked_window(hwnd))
+        .filter(|&hwnd| !is_fullscreen_window(hwnd))
+        .filter_map(window_bounds)
+        .filter(|bounds| {
+            f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0
+        })
+        .collect()
+}
+
+fn is_cloaked_window(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as _,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+    }
+}
+
+fn is_fullscreen_window(hwnd: HWND) -> bool {
+    let Some(window_rect) = win32_window_rect(hwnd) else {
+        return true;
+    };
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0 == 0 {
+        return false;
+    }
+
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info).as_bool() } {
+        return false;
+    }
+
+    window_rect.left <= monitor_info.rcMonitor.left
+        && window_rect.top <= monitor_info.rcMonitor.top
+        && window_rect.right >= monitor_info.rcMonitor.right
+        && window_rect.bottom >= monitor_info.rcMonitor.bottom
+}
+
+fn window_bounds(hwnd: HWND) -> Option<Bounds<Pixels>> {
+    let rect = win32_window_rect(hwnd)?;
+    let scale_factor = (unsafe { GetDpiForWindow(hwnd) } as f32 / USER_DEFAULT_SCREEN_DPI as f32)
+        .max(1.0);
+
+    Some(Bounds {
+        origin: point(px(rect.left as f32 / scale_factor), px(rect.top as f32 / scale_factor)),
+        size: size(
+            px((rect.right - rect.left) as f32 / scale_factor),
+            px((rect.bottom - rect.top) as f32 / scale_factor),
+        ),
+    })
+}
+
+fn win32_window_rect(hwnd: HWND) -> Option<RECT> {
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect).as_bool().then_some(rect) }
 }
 
 impl WindowsPlatform {
@@ -759,6 +843,18 @@ impl Platform for WindowsPlatform {
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         super::active_window::get_focused_window_info()
+    }
+
+    // ShellDeck patch: expose visible external top-level Win32 window bounds.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        let mut own_windows = self
+            .raw_window_handles
+            .read()
+            .iter()
+            .map(|hwnd| hwnd.as_raw())
+            .collect_vec();
+        own_windows.push(self.handle);
+        collect_visible_external_window_bounds(&own_windows)
     }
 
     fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {

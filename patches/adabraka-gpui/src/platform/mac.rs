@@ -4,6 +4,8 @@ mod dispatcher;
 mod display;
 mod display_link;
 mod events;
+// ShellDeck patch: wire the read-only external window geometry helper.
+mod external_windows;
 mod keyboard;
 
 #[cfg(feature = "screen-capture")]

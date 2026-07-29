@@ -203,6 +203,10 @@ pub(crate) trait Platform: 'static {
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
+    // ShellDeck patch: platform backends may expose safe read-only external window geometry.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        Vec::new()
+    }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
         None
     }

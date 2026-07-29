@@ -1436,6 +1436,50 @@ impl X11Client {
     }
 }
 
+// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.
+fn x11_window_atoms(
+    xcb: &XCBConnection,
+    x_window: xproto::Window,
+    property: xproto::Atom,
+) -> Vec<xproto::Atom> {
+    xcb.get_property(false, x_window, property, xproto::AtomEnum::ATOM, 0, u32::MAX)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| {
+            reply
+                .value
+                .chunks_exact(4)
+                .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn x11_window_bounds(
+    xcb: &XCBConnection,
+    root: xproto::Window,
+    x_window: xproto::Window,
+    scale_factor: f32,
+) -> Option<Bounds<Pixels>> {
+    let scale_factor = scale_factor.max(1.0);
+    let geometry = xcb.get_geometry(x_window).ok()?.reply().ok()?;
+    let translated = xcb
+        .translate_coordinates(x_window, root, 0, 0)
+        .ok()?
+        .reply()
+        .ok()?;
+    Some(Bounds {
+        origin: point(
+            px(translated.dst_x as f32 / scale_factor),
+            px(translated.dst_y as f32 / scale_factor),
+        ),
+        size: Size {
+            width: px(geometry.width as f32 / scale_factor),
+            height: px(geometry.height as f32 / scale_factor),
+        },
+    })
+}
+
 impl LinuxClient for X11Client {
     fn compositor_name(&self) -> &'static str {
         "X11"
@@ -1803,6 +1847,58 @@ impl LinuxClient for X11Client {
             bundle_id: None,
             pid,
         })
+    }
+
+    // ShellDeck patch: enumerate eligible visible X11 windows for companion climbing.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        let state = self.0.borrow();
+        let xcb = &state.xcb_connection;
+        let root = xcb.setup().roots[state.x_root_index].root;
+        let scale_factor = state.scale_factor;
+        let Ok(client_list) = xcb.get_property(
+            false,
+            root,
+            state.atoms._NET_CLIENT_LIST_STACKING,
+            xproto::AtomEnum::WINDOW,
+            0,
+            u32::MAX,
+        ) else {
+            return Vec::new();
+        };
+        let Ok(client_list) = client_list.reply() else {
+            return Vec::new();
+        };
+        client_list
+            .value
+            .chunks_exact(4)
+            .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+            .filter(|x_window| !state.windows.contains_key(x_window))
+            .filter(|&x_window| {
+                xcb.get_window_attributes(x_window)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .is_some_and(|attrs| {
+                        attrs.class == xproto::WindowClass::INPUT_OUTPUT
+                            && attrs.map_state == xproto::MapState::VIEWABLE
+                    })
+            })
+            .filter(|&x_window| {
+                !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_STATE)
+                    .iter()
+                    .any(|atom| {
+                        *atom == state.atoms._NET_WM_STATE_HIDDEN
+                            || *atom == state.atoms._NET_WM_STATE_FULLSCREEN
+                    })
+            })
+            .filter(|&x_window| {
+                !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
+                    .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
+            })
+            .filter_map(|x_window| x11_window_bounds(xcb, root, x_window, scale_factor))
+            .filter(|bounds| {
+                f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0
+            })
+            .collect()
     }
 
     fn set_tray_icon(&self, icon: Option<&[u8]>) {
