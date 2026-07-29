@@ -66,7 +66,7 @@ fn default_timeout_seconds() -> u64 {
 }
 
 /// Explicit rollout switch for the local fleet executor.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JeanRuntimeExecutorRollout {
     /// Preferred runtime: `jcode run`.
@@ -77,7 +77,7 @@ pub enum JeanRuntimeExecutorRollout {
 }
 
 /// Jcode can emit either a final JSON object or newline-delimited stream events.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JcodeOutputFormat {
     #[default]
@@ -91,7 +91,7 @@ pub enum JcodeOutputFormat {
 /// ACP-ready configuration hooks: they perform a capability probe and strictly
 /// fall back to the existing `jcode run` process transport until Jcode ACP has a
 /// versioned public client contract we can safely execute against.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JcodeTransportPreference {
     #[default]

@@ -591,7 +591,7 @@ mod tests {
         ));
     }
 
-    // SDTEST-1445
+    // SDTEST-1484
     #[test]
     fn clippy_menu_id_routes_directly_to_clippy() {
         assert!(matches!(
@@ -600,7 +600,7 @@ mod tests {
         ));
     }
 
-    // SDTEST-1451
+    // SDTEST-1490
     #[test]
     fn choose_character_menu_id_routes_to_targeted_settings() {
         assert!(matches!(

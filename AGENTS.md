@@ -190,6 +190,7 @@ rules loader.
 @.agents/overflow.md
 @.agents/spacing.md
 @.agents/session-state.md
+@.agents/workspace-architecture.md
 @.agents/roles.md
 @.agents/patches.md
 @.agents/testing.md

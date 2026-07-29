@@ -3132,7 +3132,7 @@ mod tests {
         assert_eq!(display_shortcut("ctrl-shift-k"), "Ctrl+Shift+K");
     }
 
-    // SDTEST-1450
+    // SDTEST-1489
     #[test]
     fn choosing_a_visible_character_enables_it_and_none_disables_it() {
         let mut appearance = ClippyAppearanceConfig::default();

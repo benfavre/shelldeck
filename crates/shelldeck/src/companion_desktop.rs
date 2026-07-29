@@ -1205,7 +1205,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1439
+    // SDTEST-1478
     #[test]
     fn runtime_route_requires_enabled_character() {
         assert!(!runtime_route(&config(false)).enabled);
@@ -1215,7 +1215,7 @@ mod tests {
         assert!(!runtime_route(&hidden).enabled);
     }
 
-    // SDTEST-1440
+    // SDTEST-1479
     #[test]
     fn runtime_uses_core_simulation_and_clamps_after_monitor_removal() {
         let mut sim =
@@ -1236,7 +1236,7 @@ mod tests {
         assert!(sim.bounds().contains(sim.simulation.position));
     }
 
-    // SDTEST-1441
+    // SDTEST-1480
     #[test]
     fn paused_and_reduced_motion_request_no_continuous_frames() {
         let mut sim =
@@ -1248,7 +1248,7 @@ mod tests {
         assert!(!sim.moving(false));
     }
 
-    // SDTEST-1442
+    // SDTEST-1481
     #[test]
     fn character_assets_route_to_existing_pngs() {
         assert_eq!(
@@ -1269,7 +1269,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1446
+    // SDTEST-1485
     #[test]
     fn external_window_target_perches_above_the_window_inside_the_work_area() {
         let work_area = display().work_area;
@@ -1293,7 +1293,7 @@ mod tests {
         .is_none());
     }
 
-    // SDTEST-1447
+    // SDTEST-1486
     #[test]
     fn frame_elapsed_uses_real_refresh_delta_after_the_first_frame() {
         let first = Instant::now();
@@ -1315,7 +1315,7 @@ mod tests {
         assert_eq!(sim.pending_ms, 0);
     }
 
-    // SDTEST-1452
+    // SDTEST-1491
     #[test]
     fn user_drag_preserves_grab_offset_and_routes_across_display_bounds() {
         assert_eq!(character_window_size(CompanionScale::Small), 120.0);
@@ -1374,7 +1374,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1453
+    // SDTEST-1492
     #[test]
     fn clicks_start_bounded_playful_reactions_from_the_current_position() {
         let extent = character_window_size(CompanionScale::Medium);

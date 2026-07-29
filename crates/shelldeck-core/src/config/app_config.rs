@@ -836,7 +836,7 @@ ui_font_size = 14.0
         assert!(!loaded.ai.surfaces.terminal);
     }
 
-    // SDTEST-1438
+    // SDTEST-1477
     #[test]
     fn clippy_config_defaults_and_surface_opt_in_round_trip() {
         let mut config = AppConfig::default();

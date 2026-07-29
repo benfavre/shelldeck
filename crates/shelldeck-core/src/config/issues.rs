@@ -700,6 +700,25 @@ pub fn delete_issue(base_url: &str, token: &str, id: &str) -> Result<Issue> {
     )
 }
 
+/// Permanently remove a posted image from both its request thread and Inklura Share.
+/// The server restricts this to the request owner or an internal staff account.
+pub fn delete_issue_attachment(
+    base_url: &str,
+    token: &str,
+    id: &str,
+    attachment_id: &str,
+) -> Result<Issue> {
+    post_issue(
+        base_url,
+        token,
+        serde_json::json!({
+            "action": "attachment-delete",
+            "id": id,
+            "attachment_id": attachment_id,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,6 +953,26 @@ mod tests {
         assert_eq!(comment["attachment_receipts"][0], "receipt-a");
     }
 
+    // SDTEST-1421
+    #[test]
+    fn posted_attachment_delete_body_matches_manage_contract() {
+        let m = start_mock();
+        let (b, t) = cfg(&m);
+        delete_issue_attachment(&b, &t, "iss_1", "attachment_42").expect("attachment delete");
+
+        let posts = m.posts.lock().unwrap();
+        let body: serde_json::Value = serde_json::from_str(
+            posts
+                .iter()
+                .find(|post| post.contains("attachment-delete"))
+                .expect("delete body"),
+        )
+        .unwrap();
+        assert_eq!(body["action"], "attachment-delete");
+        assert_eq!(body["id"], "iss_1");
+        assert_eq!(body["attachment_id"], "attachment_42");
+    }
+
     #[test]
     fn attachment_upload_rejects_spoofed_image_bytes() {
         let upload = IssueAttachmentUpload {
@@ -996,7 +1035,8 @@ mod tests {
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response_body.len(), response_body
+                    response_body.len(),
+                    response_body
                 );
                 stream.write_all(response.as_bytes()).unwrap();
             }

@@ -2,9 +2,7 @@ use crate::scale::px;
 use adabraka_ui::components::combobox::Combobox;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
-use adabraka_ui::prelude::{
-    AnimatedCollapsible, Button, ButtonSize, ButtonVariant, Spinner, SpinnerSize, SpinnerVariant,
-};
+use adabraka_ui::prelude::{AnimatedCollapsible, Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -17,6 +15,7 @@ use crate::editor_buffer::EditorBuffer;
 use crate::icons::{
     ai_provider_badge, lucide_icon, lucide_path, script_category_chip, script_language_chip,
 };
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -1107,12 +1106,15 @@ impl Render for ScriptForm {
                         .gap(px(8.0))
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(
-                            Spinner::new()
-                                .size(SpinnerSize::Xs)
-                                .variant(SpinnerVariant::Primary),
-                        )
-                        .child(t!("script_form.ai.generating").to_string()),
+                        .child(animated_monolith(
+                            "script-ai-thinking",
+                            28.0,
+                            MonolithMotion::Thinking,
+                        ))
+                        .child(animated_loading_text(
+                            "script-ai-thinking-text",
+                            t!("script_form.ai.generating").to_string(),
+                        )),
                 );
             }
             if let Some(error) = &self.ai_error {

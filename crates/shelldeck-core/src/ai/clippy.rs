@@ -636,7 +636,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1421
+    // SDTEST-1460
     #[test]
     fn defaults_are_safe_and_unknown_character_falls_back() {
         let config: ClippyConfig = toml::from_str("").unwrap();
@@ -653,7 +653,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1422
+    // SDTEST-1461
     #[test]
     fn context_rejects_blank_oversized_and_password_roles() {
         assert!(context("   ").validate().is_err());
@@ -665,7 +665,7 @@ mod tests {
             .is_err());
     }
 
-    // SDTEST-1423
+    // SDTEST-1462
     #[test]
     fn prompt_delimits_and_redacts_untrusted_context() {
         let prompt = clippy_prompt(
@@ -678,7 +678,7 @@ mod tests {
         assert!(!prompt.contains("abcdefghijklmnop"));
     }
 
-    // SDTEST-1424
+    // SDTEST-1463
     #[test]
     fn ai_context_omits_screenshot_bytes_and_delimits_titles() {
         let mut ctx = context("hello");
@@ -696,7 +696,7 @@ mod tests {
         assert!(!text.contains("API_KEY=secret"));
     }
 
-    // SDTEST-1425
+    // SDTEST-1464
     #[test]
     fn proposal_and_replace_payload_are_bounded() {
         assert!(ClippyProposal {
@@ -728,7 +728,7 @@ mod tests {
         .is_ok());
     }
 
-    // SDTEST-1426
+    // SDTEST-1465
     #[test]
     fn stale_selection_identity_is_detected() {
         let selection = DesktopSelection {
@@ -745,7 +745,7 @@ mod tests {
         assert!(!selection.still_matches(&changed));
     }
 
-    // SDTEST-1427
+    // SDTEST-1466
     #[test]
     fn audit_metadata_excludes_source_and_result_content() {
         let ctx = context("private source phrase");
@@ -760,7 +760,7 @@ mod tests {
         assert!(!audit.contains("private result phrase"));
     }
 
-    // SDTEST-1443
+    // SDTEST-1482
     #[test]
     fn fake_adapter_preserves_copy_fallback_and_rejects_stale_replacement() {
         let expected = DesktopSelection {

@@ -153,7 +153,7 @@ mod tests {
         }
     }
 
-    // SDTEST-1430
+    // SDTEST-1469
     #[test]
     fn shared_edge_route_prefers_overlap() {
         let route = route_between(&display("a", 0.0, 0.0, 1.0), &display("b", 100.0, 0.0, 2.0));
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(route.entry.x, 100.0);
     }
 
-    // SDTEST-1431
+    // SDTEST-1470
     #[test]
     fn disconnected_displays_use_portal_route() {
         let route = route_between(
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(route.kind, DisplayRouteKind::Portal);
     }
 
-    // SDTEST-1432
+    // SDTEST-1471
     #[test]
     fn removed_monitor_recovers_to_primary_work_area() {
         let displays = vec![display("a", 0.0, 0.0, 1.0)];

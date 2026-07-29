@@ -202,7 +202,7 @@ mod tests {
     use super::*;
     use crate::companion::geometry::{LineSegment, Vector2, WalkableSurfaceKind};
 
-    // SDTEST-1433
+    // SDTEST-1472
     #[test]
     fn movement_stays_inside_work_area_and_catch_up_is_capped() {
         let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -213,7 +213,7 @@ mod tests {
         assert!(bounds.contains(sim.position));
     }
 
-    // SDTEST-1434
+    // SDTEST-1473
     #[test]
     fn reduced_motion_and_sleeping_request_no_frames() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));
@@ -229,7 +229,7 @@ mod tests {
         );
     }
 
-    // SDTEST-1435
+    // SDTEST-1474
     #[test]
     fn stale_surface_moves_to_recovering() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(sim.state, CharacterSimulationState::Recovering);
     }
 
-    // SDTEST-1436
+    // SDTEST-1475
     #[test]
     fn seeded_random_source_is_deterministic_and_cooldowns_work() {
         let mut a = DeterministicRng::seeded(42);
@@ -264,7 +264,7 @@ mod tests {
         assert!(sim.action_on_cooldown("sleep"));
     }
 
-    // SDTEST-1437
+    // SDTEST-1476
     #[test]
     fn duty_cycle_blocks_excessive_movement() {
         let mut sim = CharacterSimulation::new("a", Point2::new(0.0, 0.0));

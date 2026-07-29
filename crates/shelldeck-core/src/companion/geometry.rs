@@ -247,7 +247,7 @@ pub fn filter_windows(
 mod tests {
     use super::*;
 
-    // SDTEST-1428
+    // SDTEST-1467
     #[test]
     fn window_filter_rejects_fullscreen_and_invalid_windows() {
         let display = DesktopDisplay {
@@ -289,7 +289,7 @@ mod tests {
         assert!(filter_windows(&[hidden, fullscreen], &[display], false).is_empty());
     }
 
-    // SDTEST-1429
+    // SDTEST-1468
     #[test]
     fn work_area_clamps_points() {
         let area = Rect::new(10.0, 10.0, 100.0, 50.0);

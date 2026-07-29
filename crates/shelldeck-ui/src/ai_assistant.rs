@@ -17,6 +17,7 @@ use shelldeck_core::ai::{
 use uuid::Uuid;
 
 use crate::icons::{ai_provider_badge, lucide_icon};
+use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -991,12 +992,15 @@ impl AiAssistantView {
                         .bg(ShellDeckColors::bg_surface())
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(
-                            Spinner::new()
-                                .size(SpinnerSize::Xs)
-                                .variant(SpinnerVariant::Primary),
-                        )
-                        .child(t!("ai.assistant.generating").to_string()),
+                        .child(animated_monolith(
+                            "ai-assistant-thinking",
+                            32.0,
+                            MonolithMotion::Thinking,
+                        ))
+                        .child(animated_loading_text(
+                            "ai-assistant-thinking-text",
+                            t!("ai.assistant.generating").to_string(),
+                        )),
                 ),
             );
         }
@@ -1569,7 +1573,7 @@ mod tests {
         assert!(gate.accepts(current_request));
     }
 
-    // SDTEST-1448
+    // SDTEST-1487
     #[test]
     fn automatic_clipboard_import_requires_opt_in_and_an_empty_draft() {
         assert!(!should_auto_import_clippy(false, ""));
@@ -1577,7 +1581,7 @@ mod tests {
         assert!(!should_auto_import_clippy(true, "keep my draft"));
     }
 
-    // SDTEST-1449
+    // SDTEST-1488
     #[test]
     fn backend_result_must_satisfy_clippy_proposal_bounds_before_display() {
         assert_eq!(
