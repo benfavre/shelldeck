@@ -510,6 +510,386 @@ The first character milestone is complete when selection persists, unknown IDs s
 fall back, static assets render without layout shift, reduced/off motion works, and a
 running AI task maps deterministically to the same semantic state for every character.
 
+## Desktop character runtime
+
+The animated desktop pet is an optional presentation layer separate from the AI Dock.
+It may walk, hover, perch on window edges, climb window sides, and move between
+screens, but it must not inspect application content or affect AI behavior. Users must
+be able to select **Dock only**, **Desktop character**, or **No character**.
+
+### Platform reality and capability tiers
+
+A roaming top-level overlay is not equally possible on every desktop environment.
+ShellDeck must expose detected capabilities instead of pretending that all platforms
+support the same behavior.
+
+| Tier | Behavior | Expected platforms |
+|---|---|---|
+| A | Small transparent always-on-top overlay, native repositioning, external-window geometry, multi-monitor roaming | Windows, macOS, Linux/X11 |
+| B | Transparent overlay and screen-edge movement, but no reliable external-window climbing | compositor-dependent environments |
+| C | Character remains inside the AI Dock or main ShellDeck window | stock Wayland with the current GPUI backend |
+
+The current GPUI fork explicitly warns that `WindowKind::Overlay` is not truly
+always-on-top on Wayland, and `xdg_toplevel` does not let a normal client choose its
+absolute screen position. Stock GNOME Wayland also does not provide global external
+window geometry. Therefore, arbitrary desktop roaming and climbing must be disabled
+there unless a reviewed compositor protocol is added. Do not fake support with XWayland
+or continuous screenshot analysis.
+
+A future `wlr-layer-shell` implementation may improve support on wlroots compositors,
+but it will not solve GNOME or KDE universally and must remain a capability-specific
+backend rather than a product-wide assumption.
+
+### Native overlay model
+
+Use one small transparent `WindowKind::Overlay` window for the active character, not a
+full-screen transparent window per monitor. A small surface limits swapchain memory,
+damage area, input interception risk, and compositor work.
+
+Suggested properties:
+
+- logical canvas between 192x192 and 320x320 depending on selected scale
+- transparent background and no titlebar or decorations
+- non-resizable and absent from taskbar/dock
+- always-on-top where the platform supports it
+- mouse passthrough while roaming
+- no focus on creation or movement
+- one overlay window reused across movements and monitor transitions
+
+The existing GPUI fork already provides transparent overlays,
+`Window::request_animation_frame`, display enumeration, scale factors, and runtime
+mouse passthrough. It does **not** currently expose a cross-platform public API for
+moving an existing top-level window. Add a narrowly-scoped GPUI fork patch before the
+desktop runtime:
+
+```rust
+impl Window {
+    pub fn set_window_origin(&self, origin: Point<Pixels>) -> anyhow::Result<()>;
+}
+```
+
+The platform implementation should use:
+
+- Windows: `SetWindowPos` with `SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOOWNERZORDER`
+- macOS: `NSWindow::setFrameOrigin`, preserving non-activating panel behavior
+- X11: `xcb_configure_window` or the existing X11 window bounds machinery
+- Wayland: return an explicit unsupported result rather than silently ignoring it
+
+Record this fork change in `patches/adabraka-gpui/PATCHES.md` using a
+`// ShellDeck patch:` marker at every modified code site, as required by
+`.agents/patches.md`. The API must run on GPUI's foreground thread and must not
+recreate the window on every frame.
+
+### Runtime components
+
+Keep the simulation independent from GPUI rendering so it can be tested without a
+window server.
+
+```text
+DesktopCharacterController
+├── CharacterSimulation       # deterministic state, physics, route following
+├── DesktopTopologyProvider   # displays, work areas, scale factors
+├── WindowGeometryProvider    # external window rectangles and change events
+├── CharacterNavigator        # chooses perches and monitor routes
+├── CharacterOverlayView      # draws one current sprite frame
+└── CharacterAssetCache       # decoded atlases and GPU-ready images
+```
+
+Recommended ownership:
+
+```text
+crates/shelldeck-core/src/companion/
+├── simulation.rs             # pure fixed-step movement and state transitions
+├── navigation.rs             # surfaces, routes, monitor adjacency
+└── geometry.rs               # platform-neutral rectangles and capabilities
+
+crates/shelldeck/src/companion_desktop/
+├── mod.rs                    # controller and GPUI window lifecycle
+├── windows.rs                # WinEvent + DWM geometry backend
+├── macos.rs                  # AX/CGWindow geometry backend
+├── x11.rs                    # EWMH/XCB geometry backend
+└── wayland.rs                # capability reporting and safe fallback
+
+crates/shelldeck-ui/src/
+└── character_overlay.rs      # sprite rendering only
+```
+
+Do not put physics, native window enumeration, or route selection in
+`workspace/mod.rs` or the paint method.
+
+### Coordinate system and multiple monitors
+
+Represent motion in a virtual-desktop logical coordinate space. Each `DesktopDisplay`
+contains:
+
+- stable display ID
+- physical bounds
+- work area excluding taskbars, docks, and panels
+- scale factor
+- refresh rate when available
+- rotation/orientation
+
+Convert to platform physical coordinates only at the native window boundary. Retain a
+logical position plus display ID so a scale-factor change does not make the character
+jump.
+
+Build a monitor adjacency graph from touching or near-touching display edges. Route
+between monitors as follows:
+
+1. Prefer a shared edge and walk or fly through the overlapping segment.
+2. For offset monitors, route to the nearest valid edge point.
+3. For physically disconnected coordinate islands, play a short portal/fade transition
+   and recreate or reposition the overlay on the target display.
+4. If a monitor disappears, clamp to the nearest remaining work area immediately.
+5. If scale changes during a crossing, finish the transition using normalized progress
+   and recalculate the destination in the target display's logical scale.
+
+Persist only a normalized resting anchor and preferred display ID, not raw pixel
+coordinates. On startup, resolve missing displays to the primary display.
+
+### External window geometry
+
+Window climbing is a visual navigation feature. It requires only rectangles, stacking,
+visibility, minimization state, and fullscreen state. Do not collect window text,
+document content, accessibility values, or screenshots for movement.
+
+Platform backends:
+
+- Windows: `EnumWindows`, `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`,
+  `IsWindowVisible`, cloaking state, and `SetWinEventHook` for move/show/hide events
+- macOS: `CGWindowListCopyWindowInfo` for visible bounds and `AXObserver` where
+  permission allows event-driven updates
+- Linux/X11: `_NET_CLIENT_LIST_STACKING`, `_NET_ACTIVE_WINDOW`,
+  `_NET_WM_STATE`, frame extents, and XCB configure/property events
+- Wayland: unsupported for arbitrary other applications under standard protocols
+
+Filter out:
+
+- ShellDeck's own character and Dock windows
+- invisible, minimized, cloaked, zero-area, desktop, panel, tooltip, menu, and transient
+  windows
+- rectangles outside active work areas
+- fullscreen/presentation windows unless the user explicitly allows the character over
+  fullscreen applications
+- unstable geometry that changed repeatedly within the debounce interval
+
+Normalize accepted rectangles into walkable surfaces:
+
+```rust
+pub enum WalkableSurfaceKind {
+    WindowTop,
+    WindowLeftEdge,
+    WindowRightEdge,
+    ScreenFloor,
+    ScreenEdge,
+}
+
+pub struct WalkableSurface {
+    pub id: SurfaceId,
+    pub kind: WalkableSurfaceKind,
+    pub segment: LineSegment,
+    pub normal: Vector2,
+    pub source_generation: u64,
+}
+```
+
+A source generation invalidates routes when a window moves, minimizes, closes, or
+changes stacking. The character must abandon a stale surface safely and fall toward a
+screen-floor target or transition to hover. It must never follow a cached rectangle
+blindly.
+
+### Climbing and play behavior
+
+Use a small deterministic state machine rather than general rigid-body physics:
+
+```text
+Resting -> ChoosingTarget -> Walking -> Climbing -> Perched
+                       \-> Jumping/Flying -> Landing
+Any moving state -> Recovering -> ScreenFloor
+Any state -> Summoned -> ReturningToDock
+```
+
+Behaviors are short authored actions with bounded duration and clear interruption
+points:
+
+- walk along the top edge of a stable window
+- climb a left or right edge using a character-specific animation
+- hop between nearby overlapping windows
+- sit or sleep on a window corner
+- fly or portal between monitors when no continuous route exists
+- react to a window being moved, minimized, or closed
+- return to a safe screen corner when the user opens the AI Dock
+
+The navigator chooses only from currently valid surfaces and uses weighted randomness
+with cooldowns. Repeated behavior is avoided by keeping the last few action IDs. The
+character should spend most of its time resting. Default movement duty cycle should be
+below 20 percent over a five-minute idle period.
+
+Do not model collisions against arbitrary pixels or screenshot content. Rectangles and
+line segments are sufficient, deterministic, private, and inexpensive.
+
+### Render and simulation loop
+
+Use separate rates for simulation, sprites, native window movement, and desktop
+geometry:
+
+| Work | Active target | Idle target |
+|---|---:|---:|
+| Simulation | fixed 30 Hz | 4-8 Hz or stopped |
+| Sprite animation | 24-30 fps | 2-8 fps |
+| Native overlay reposition | at most 30 Hz | only on position change |
+| Window geometry updates | event-driven, debounced to 10 Hz | event-driven |
+| Display topology refresh | display event or 1 Hz recovery check | no periodic refresh when stable |
+
+The simulation uses a fixed timestep and monotonic time. Limit catch-up to two steps
+per rendered frame so a resumed or stalled app does not execute a long burst of
+physics. Interpolate only the visual pose between simulation states.
+
+Call `Window::request_animation_frame()` only while the visible character is moving or
+its current sprite is animated. Sleeping, hidden, off, and static reduced-motion states
+must schedule no animation frames. Low-rate idle changes should use one cancellable
+timer that notifies the entity, not a permanent frame loop.
+
+Move the native overlay only when the rounded logical origin changes. Batch sprite
+state and position updates into one foreground-thread transaction. Never spawn a new
+async task per frame.
+
+### Sprite rendering path
+
+The overlay paint path should draw one textured quad from a predecoded atlas:
+
+1. Decode the selected character atlas once on a background executor.
+2. Upload/cache the image through GPUI's image cache.
+3. Store frame rectangles and pivots from the typed manifest.
+4. Select the frame using elapsed state time without copying image bytes.
+5. Draw only the current frame at the stable character anchor.
+
+Avoid SVG parsing, PNG decoding, filesystem access, allocation-heavy path construction,
+and manifest lookup in `render`. Keep atlases bounded and unload non-selected
+characters after a short cache grace period.
+
+Initial budgets:
+
+- selected character decoded assets: under 16 MiB at 2x
+- all static previews in Settings: under 12 MiB total
+- overlay logical surface: at most 320x320
+- render-thread allocations after warm-up: zero per frame in the animation path
+- character-only CPU use: below 1 percent average on the reference Linux machine while
+  walking, and effectively zero while sleeping
+- no sustained GPU work while the character is static
+- package-size increase for all characters: target under 15 MiB compressed
+
+If measurements exceed budget, reduce frame count, atlas dimensions, and frame rate
+before introducing a more complex renderer.
+
+### Input, focus, and click-through behavior
+
+A playful character must not steal clicks from the user's applications.
+
+- Roaming mode uses `mouse_passthrough = true`.
+- The overlay never activates or receives keyboard focus while moving.
+- A global shortcut, tray command, or AI Dock action enters **Interact mode** for a
+  short visible interval and temporarily disables mouse passthrough.
+- Leaving Interact mode restores passthrough even if the action is cancelled or an
+  error occurs.
+- Dragging the character is optional and must move only the character, never the
+  underlying application window.
+- Transparent padding must not become a large click-blocking rectangle.
+
+Per-pixel native hit testing can be evaluated later, but it is not required for the
+first roaming release. An explicit Interact mode is more predictable across platforms.
+
+### Power, fullscreen, and user controls
+
+Settings should include:
+
+```toml
+[clippy.appearance.desktop]
+enabled = false
+movement = "occasional" # still | occasional | playful
+allow_window_climbing = true
+allow_multi_monitor = true
+show_over_fullscreen = false
+pause_on_battery = true
+preferred_display = "auto"
+```
+
+Behavior requirements:
+
+- desktop roaming is off by default until the platform capability check succeeds
+- pause movement during screen lock, suspend, remote desktop transitions, and system
+  sleep
+- hide or sleep during fullscreen games, presentations, and video unless opted in
+- pause on battery according to the setting while retaining the static character
+- respect reduced motion globally
+- “still” keeps a static pet at a chosen screen corner with no simulation loop
+- provide immediate **Pause character** and **Return to Dock** tray actions
+
+### Failure recovery
+
+The controller must always have a safe fallback:
+
+- geometry provider unavailable: use screen-floor and screen-edge surfaces only
+- topmost overlay unavailable: fall back to Dock-only mode and explain the limitation
+- monitor removed: clamp or portal to the primary display
+- target window disappears: enter recovering/flying state, never leave the overlay
+  stranded off-screen
+- invalid asset: use the character's static fallback, then the generic bot icon
+- frame-time overload: lower sprite and movement rate automatically
+- native movement error: stop movement, keep the last visible safe position, and
+  surface a diagnostic status in Settings
+
+### Performance instrumentation and tests
+
+Add lightweight counters behind tracing/debug UI:
+
+- simulation steps per second
+- rendered character frames per second
+- native window moves per second
+- geometry snapshots/events per second
+- current asset memory estimate
+- average and 95th-percentile simulation/update duration
+- dropped or coalesced geometry generations
+
+Pure core tests must cover:
+
+- movement stays inside display work areas
+- monitor adjacency and disconnected-monitor portal routing
+- mixed scale-factor crossings
+- monitor removal recovery
+- stale surface invalidation after window movement or closure
+- no route through filtered/fullscreen windows
+- deterministic behavior under a seeded random source
+- fixed-step catch-up cap
+- reduced-motion and sleeping states request no continuous frames
+- duty-cycle and behavior cooldown limits
+
+Use fake topology and window-geometry providers for integration tests. Platform tests
+should validate native rectangle conversion and filtering without opening or moving
+real third-party windows in CI.
+
+Manual release validation should run for at least 30 minutes on one single-monitor and
+one mixed-DPI multi-monitor setup per supported Tier A platform. Record CPU, GPU,
+memory, missed clicks, focus changes, monitor crossings, window minimize/close
+recovery, fullscreen suppression, and suspend/resume behavior.
+
+### Desktop runtime delivery sequence
+
+1. Add pure simulation, topology, fake providers, and performance counters.
+2. Add static small overlay creation and safe passthrough on Windows, macOS, and X11.
+3. Add the GPUI runtime window-origin patch with platform tests and patch inventory.
+4. Add walking on screen-floor/work-area edges without external window discovery.
+5. Add event-driven external window geometry per Tier A platform.
+6. Add climbing, perching, recovery, and multi-monitor routing.
+7. Add Interact mode, tray controls, fullscreen/power suppression, and diagnostics.
+8. Optimize assets and rates against the stated budgets before enabling the feature by
+   default on any platform.
+
+The roaming milestone is complete only when the character crosses monitors without
+focus theft, climbs and recovers from changing windows using geometry-only data,
+consumes no continuous frames while static, remains below the performance budgets, and
+falls back honestly on unsupported Wayland sessions.
+
 ## Configuration
 
 Extend the current configuration instead of introducing a database:
