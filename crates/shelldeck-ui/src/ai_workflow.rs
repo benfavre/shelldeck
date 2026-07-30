@@ -439,6 +439,7 @@ pub struct AiWorkflowInit {
     pub backend: AiBackend,
     pub model: String,
     pub pending: Option<AiDraft>,
+    pub initial_instructions: Option<String>,
     pub comparison_original: Option<String>,
     pub issue_triage_current: Option<(String, String)>,
     pub action_policy: AiAutonomyLevel,
@@ -451,14 +452,17 @@ impl AiWorkflowView {
             backend,
             model,
             pending,
+            initial_instructions,
             comparison_original,
             issue_triage_current,
             action_policy,
         } = init;
-        let pending_instructions = pending
-            .as_ref()
-            .map(|draft| draft.instructions.clone())
-            .unwrap_or_default();
+        let pending_instructions = initial_instructions.unwrap_or_else(|| {
+            pending
+                .as_ref()
+                .map(|draft| draft.instructions.clone())
+                .unwrap_or_default()
+        });
         let pending_result = pending
             .as_ref()
             .map(|draft| draft.result.clone())

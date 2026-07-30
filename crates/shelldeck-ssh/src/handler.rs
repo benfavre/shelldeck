@@ -1,8 +1,6 @@
-use async_trait::async_trait;
 use russh::client::{self, DisconnectReason, Msg, Session};
+use russh::keys::{PublicKey, PublicKeyBase64};
 use russh::{Channel, ChannelId};
-use russh_keys::key::PublicKey;
-use russh_keys::PublicKeyBase64;
 use tokio::sync::mpsc;
 
 use crate::known_hosts::{self, KnownHostResult};
@@ -67,7 +65,6 @@ impl ClientHandler {
     }
 }
 
-#[async_trait]
 impl client::Handler for ClientHandler {
     type Error = anyhow::Error;
 
@@ -75,10 +72,10 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        let key_type = server_public_key.name();
+        let key_type = server_public_key.algorithm().as_str().to_owned();
         let key_base64 = server_public_key.public_key_base64();
 
-        match known_hosts::check_known_host(&self.hostname, self.port, key_type, &key_base64) {
+        match known_hosts::check_known_host(&self.hostname, self.port, &key_type, &key_base64) {
             KnownHostResult::Match => {
                 tracing::debug!("Server key verified for {}", self.hostname);
                 Ok(true)
@@ -99,7 +96,7 @@ impl client::Handler for ClientHandler {
                     self.hostname,
                     key_type
                 );
-                known_hosts::add_known_host(&self.hostname, self.port, key_type, &key_base64);
+                known_hosts::add_known_host(&self.hostname, self.port, &key_type, &key_base64);
                 self.send_event(SshEvent::Banner(format!(
                     "Warning: Automatically trusted new host key for {} (TOFU)\r\n",
                     self.hostname

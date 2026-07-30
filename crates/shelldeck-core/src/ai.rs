@@ -25,9 +25,14 @@ const ASSISTANT_ROUTE_PROMPT: &str = r#"Classify only the latest user message su
 
 Return exactly one valid JSON object without Markdown:
 - {"action":"chat"} when the user is asking for an answer, explanation, wording, analysis, code, or advice.
-- {"action":"create_request","title":"short precise title","description":"structured description","priority":"low|normal|high|urgent"} only when the user explicitly asks ShellDeck to create, open, or prepare a customer request, issue, or ticket as an application action.
+- {"action":"create_request","title":"short precise title","description":"structured description","priority":"low|normal|high|urgent"} only when the user explicitly asks ShellDeck to create or prepare a new customer request, issue, or ticket as an application action.
+- {"action":"create_script","instructions":"what the new script must do"} only when the user explicitly asks ShellDeck to create or generate a new saved script draft.
+- {"action":"terminal_command","instructions":"what the command must check or do"} only when the user explicitly asks ShellDeck to propose or prepare a command for the active terminal.
+- {"action":"support_reply","instructions":"reply goal or constraints"} only when the user explicitly asks ShellDeck to draft or prepare a reply to the currently selected support ticket.
+- {"action":"jean_dispatch","prompt":"problem or task to send"} only when the user explicitly asks ShellDeck to send, dispatch, or file something with Jean.
+- {"action":"open_request","issue_id":"known id or null","query":"id, title, or words identifying the request"} only when the user explicitly asks ShellDeck to open or navigate to an existing request.
 
-Questions about how to create a request, quoted instructions, and mentions of requests are chat. For create_request, use only facts from the latest message and relevant source_context, choose the priority conservatively, and never invent missing details. This route only prepares a reviewable form and never submits it."#;
+Questions about how to perform an action, quoted instructions, and mere mentions of actions are chat. Use only facts from the latest message and relevant source_context. Never invent a target. For create_request, choose the priority conservatively. These routes only prepare a reviewable draft, open a target, or stage an existing confirmation workflow; they never submit, send, execute, or save anything."#;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -460,9 +465,30 @@ pub struct AiGeneratedIssueDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiAssistantAction {
+    CreateRequest(AiGeneratedIssueDraft),
+    CreateScript {
+        instructions: String,
+    },
+    TerminalCommand {
+        instructions: String,
+    },
+    SupportReply {
+        instructions: String,
+    },
+    JeanDispatch {
+        prompt: String,
+    },
+    OpenRequest {
+        issue_id: Option<String>,
+        query: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiAssistantCompletion {
     Message(String),
-    RequestDraft(AiGeneratedIssueDraft),
+    Action(AiAssistantAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -574,14 +600,68 @@ pub fn parse_generated_issue_draft(raw: &str) -> Result<AiGeneratedIssueDraft> {
     })
 }
 
-fn parse_assistant_route(raw: &str) -> Result<Option<AiGeneratedIssueDraft>> {
+fn parse_assistant_route(raw: &str) -> Result<Option<AiAssistantAction>> {
     let json_text = strip_markdown_fence(raw);
     let value: Value = serde_json::from_str(json_text).map_err(|error| {
         ShellDeckError::Serialization(format!("invalid assistant route JSON: {error}"))
     })?;
+    let required_text = |name: &str| -> Result<String> {
+        let text = value
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if text.is_empty() || text.chars().count() > 4_000 {
+            return Err(ShellDeckError::Serialization(format!(
+                "assistant route {name} must contain 1 to 4000 characters"
+            )));
+        }
+        Ok(text.to_string())
+    };
     match value.get("action").and_then(Value::as_str) {
         Some("chat") => Ok(None),
-        Some("create_request") => parse_generated_issue_draft(json_text).map(Some),
+        Some("create_request") => parse_generated_issue_draft(json_text)
+            .map(AiAssistantAction::CreateRequest)
+            .map(Some),
+        Some("create_script") => Ok(Some(AiAssistantAction::CreateScript {
+            instructions: required_text("instructions")?,
+        })),
+        Some("terminal_command") => Ok(Some(AiAssistantAction::TerminalCommand {
+            instructions: required_text("instructions")?,
+        })),
+        Some("support_reply") => Ok(Some(AiAssistantAction::SupportReply {
+            instructions: required_text("instructions")?,
+        })),
+        Some("jean_dispatch") => Ok(Some(AiAssistantAction::JeanDispatch {
+            prompt: required_text("prompt")?,
+        })),
+        Some("open_request") => {
+            let issue_id = value
+                .get("issue_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            let query = value
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if issue_id.is_none() && query.is_empty() {
+                return Err(ShellDeckError::Serialization(
+                    "assistant open_request route requires an issue_id or query".to_string(),
+                ));
+            }
+            if issue_id.as_ref().is_some_and(|id| id.chars().count() > 200)
+                || query.chars().count() > 500
+            {
+                return Err(ShellDeckError::Serialization(
+                    "assistant open_request target is too long".to_string(),
+                ));
+            }
+            Ok(Some(AiAssistantAction::OpenRequest { issue_id, query }))
+        }
         Some(action) => Err(ShellDeckError::Serialization(format!(
             "unsupported assistant action: {action}"
         ))),
@@ -1295,7 +1375,7 @@ pub fn complete_assistant_turn(
     );
     match client.complete(ASSISTANT_ROUTE_PROMPT, route_context) {
         Ok(response) => match parse_assistant_route(&response.text) {
-            Ok(Some(draft)) => return Ok(AiAssistantCompletion::RequestDraft(draft)),
+            Ok(Some(action)) => return Ok(AiAssistantCompletion::Action(action)),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, "AI assistant route was malformed; falling back to chat");
@@ -2264,7 +2344,7 @@ mod tests {
             AiContext::new(AiSurface::Global, "Assistant", json!({})),
         )
         .unwrap();
-        let AiAssistantCompletion::RequestDraft(draft) = request else {
+        let AiAssistantCompletion::Action(AiAssistantAction::CreateRequest(draft)) = request else {
             panic!("explicit create_request route must produce a request draft");
         };
         assert_eq!(draft.title, "Chargement des produits clients");
@@ -2307,6 +2387,58 @@ mod tests {
             fallback,
             AiAssistantCompletion::Message("Réponse normale conservée.".to_string())
         );
+    }
+
+    // SDTEST-1430
+    #[test]
+    fn assistant_action_router_accepts_only_bounded_typed_workflow_payloads() {
+        let cases = [
+            (
+                r#"{"action":"create_script","instructions":"Sauvegarder PostgreSQL chaque nuit"}"#,
+                AiAssistantAction::CreateScript {
+                    instructions: "Sauvegarder PostgreSQL chaque nuit".to_string(),
+                },
+            ),
+            (
+                r#"{"action":"terminal_command","instructions":"Vérifier la configuration nginx"}"#,
+                AiAssistantAction::TerminalCommand {
+                    instructions: "Vérifier la configuration nginx".to_string(),
+                },
+            ),
+            (
+                r#"{"action":"support_reply","instructions":"Expliquer que le correctif est déployé"}"#,
+                AiAssistantAction::SupportReply {
+                    instructions: "Expliquer que le correctif est déployé".to_string(),
+                },
+            ),
+            (
+                r#"{"action":"jean_dispatch","prompt":"Le catalogue client ne charge plus"}"#,
+                AiAssistantAction::JeanDispatch {
+                    prompt: "Le catalogue client ne charge plus".to_string(),
+                },
+            ),
+            (
+                r#"{"action":"open_request","issue_id":"req-42","query":"catalogue client"}"#,
+                AiAssistantAction::OpenRequest {
+                    issue_id: Some("req-42".to_string()),
+                    query: "catalogue client".to_string(),
+                },
+            ),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(parse_assistant_route(raw).unwrap(), Some(expected));
+        }
+        assert!(parse_assistant_route(r#"{"action":"create_script","instructions":""}"#).is_err());
+        assert!(
+            parse_assistant_route(r#"{"action":"open_request","issue_id":null,"query":""}"#)
+                .is_err()
+        );
+        assert!(parse_assistant_route(&format!(
+            r#"{{"action":"jean_dispatch","prompt":"{}"}}"#,
+            "x".repeat(4_001)
+        ))
+        .is_err());
     }
 
     // SDTEST-1362

@@ -2,7 +2,7 @@ use crate::handler::{ClientHandler, ForwardedTcpIpEvent, SshEvent};
 use crate::SshError;
 use chrono::{DateTime, Utc};
 use russh::client;
-use russh::{Channel, ChannelMsg};
+use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelWriteHalf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
@@ -337,29 +337,31 @@ impl SshChannel {
 
     /// Split the channel for concurrent reading, writing, and resizing.
     ///
-    /// Returns a `SshChannelReader` (for `wait()` and `window_change()`)
-    /// and an `AsyncWrite` handle. The writer is independent and can be
-    /// moved to another task while the reader retains the channel for
-    /// reading and resize operations.
-    pub fn split(self) -> (SshChannelReader, impl tokio::io::AsyncWrite + Send) {
-        let writer = self.channel.make_writer();
+    /// Returns independent read and write/control halves that can be moved to
+    /// separate tasks.
+    pub fn split(self) -> (SshChannelReader, SshChannelWriter) {
+        let (read_half, write_half) = self.channel.split();
         (
             SshChannelReader {
-                channel: self.channel,
+                channel: read_half,
                 saw_exit: false,
             },
-            writer,
+            SshChannelWriter {
+                channel: write_half,
+            },
         )
     }
 }
 
-/// Read/resize handle for an SSH channel.
-///
-/// Owns the underlying russh channel for `wait()` (which needs `&mut`)
-/// while also providing `resize()` (which only needs `&self`).
+/// Read handle for an SSH channel.
 pub struct SshChannelReader {
-    channel: Channel<client::Msg>,
+    channel: ChannelReadHalf,
     saw_exit: bool,
+}
+
+/// Write and terminal-control handle for an SSH channel.
+pub struct SshChannelWriter {
+    channel: ChannelWriteHalf<client::Msg>,
 }
 
 /// Result from reading the SSH channel.
@@ -405,6 +407,16 @@ impl SshChannelReader {
                 return data;
             }
         }
+    }
+}
+
+impl SshChannelWriter {
+    /// Write all data to the SSH channel.
+    pub async fn write_all(&self, data: &[u8]) -> crate::Result<()> {
+        self.channel
+            .data(std::io::Cursor::new(data.to_vec()))
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))
     }
 
     /// Request terminal window size change.

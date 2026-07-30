@@ -1040,7 +1040,11 @@ No half-installed state on failure.
 ### SDUC-285 — Auto-update disabled respects setting
 
 `set_enabled(false)` cancels the poll task and future manual
-`check_for_update` no-ops until re-enabled.
+`check_for_update` no-ops until re-enabled. A development build compiled
+without `SHELLDECK_UPDATE_PUBLIC_KEY_BASE64` behaves as disabled even when the
+persisted setting is on: it performs no request and shows no misleading
+verification error. Official tagged builds still require the key at build time
+and verify every manifest signature.
 
 ### SDUC-286 — Install scripts serve both platform pairs
 
@@ -1771,8 +1775,8 @@ window to open is seeded from the live registration state.
 
 ### SDUC-445 — The assistant can prepare a real request form
 
-When the latest chat message explicitly asks ShellDeck to create, open, or
-prepare a customer request, the provider returns a strict routed request draft.
+When the latest chat message explicitly asks ShellDeck to create or prepare a
+new customer request, the provider returns a strict routed request draft.
 The main Assistant sheet and the standalone Dock both open the existing New
 Request sheet with title, description, and priority prefilled. The conversation
 records a clear acknowledgement, while the existing Create button remains the
@@ -1795,6 +1799,17 @@ click. Immediate-submit shortcuts use the colored AI button variant; prefill
 shortcuts retain the neutral outline variant, giving the two behaviors a stable
 visual code.
 
+### SDUC-447 — Natural-language actions reuse typed ShellDeck workflows
+
+An explicit conversational instruction can open the existing unsaved Script
+form and generate its draft, prepare a command for the currently active
+Terminal workflow, draft a reply for the selected Support ticket, stage a Jean
+dispatch behind its existing confirmation, or navigate to one visible hosted
+request by exact ID/title or an unambiguous partial match. The assistant never
+executes a command, saves a script, sends a reply, or dispatches to Jean by
+itself. Missing, stale, unauthorized, or ambiguous targets stop at a localized
+warning instead of being guessed.
+
 ---
 
 ## Change log
@@ -1802,8 +1817,14 @@ visual code.
 - **2026-07-29** — Hardened SDUC-228 and added SDTEST-1433: User-mode request
   polling now forces owner scope, while the dashboard independently filters
   counters and recent titles to the signed-in requester.
+- **2026-07-29** — Added SDUC-447 and SDTEST-1430..1432 for typed
+  natural-language workflow routing, exact target revalidation, and the
+  existing review/confirmation boundaries.
 - **2026-07-29** — Added SDUC-446 and SDTEST-1429 for typed Assistant shortcut
   behavior: immediate contextual submissions versus editable composer prefill.
+- **2026-07-29** — Extended SDUC-285 and added SDTEST-1225: development
+  builds without the embedded update-verification key now keep the updater
+  silently disabled, while signed release builds retain strict verification.
 - **2026-07-29** — Added SDUC-445 and SDTEST-1427/1428 for explicit
   conversational request preparation from both Assistant surfaces, with strict
   routing, normal-chat fallback, and the existing unsent review boundary.

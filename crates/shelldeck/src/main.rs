@@ -478,15 +478,15 @@ impl CompanionRoot {
 
     fn route_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut gpui::Context<Self>) {
         let main_window = self.runtime.main_window;
-        let opens_request = matches!(event, AiCompanionEvent::OpenRequestDraft(_));
+        let opens_workspace = matches!(event, AiCompanionEvent::ApplyAction(_));
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let _ = main_window.update(cx, |_, window, cx| {
-                if opens_request {
+                if opens_workspace {
                     window.show_window();
                     window.activate_window();
                 }
                 let _ = this.update(cx, |root, cx| {
-                    if opens_request {
+                    if opens_workspace {
                         if let Some(dock) = root.runtime.ai_dock_window.take() {
                             let _ = dock.update(cx, |_, window, _| window.remove_window());
                         }

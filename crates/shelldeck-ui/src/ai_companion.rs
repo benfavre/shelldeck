@@ -1,7 +1,7 @@
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Subscription};
 use shelldeck_core::ai::{
-    complete_assistant_turn, configured_cli_available, create_client, AiAssistantCompletion,
-    AiConfig, AiContext, AiGeneratedIssueDraft, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    complete_assistant_turn, configured_cli_available, create_client, AiAssistantAction,
+    AiAssistantCompletion, AiConfig, AiContext, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use crate::t;
 
 #[derive(Debug, Clone)]
 pub enum AiCompanionEvent {
-    OpenRequestDraft(AiGeneratedIssueDraft),
+    ApplyAction(AiAssistantAction),
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -102,17 +102,17 @@ impl AiCompanionController {
                                         );
                                     });
                                 }
-                                Ok(AiAssistantCompletion::RequestDraft(draft)) => {
+                                Ok(AiAssistantCompletion::Action(action)) => {
                                     let accepted = source.update(cx, |assistant, cx| {
                                         assistant.set_result(
                                             request_id,
                                             conversation_id,
-                                            Ok(t!("ai.assistant.request_draft_ready").to_string()),
+                                            Ok(assistant_action_acknowledgement(&action)),
                                             cx,
                                         )
                                     });
                                     if accepted {
-                                        cx.emit(AiCompanionEvent::OpenRequestDraft(draft));
+                                        cx.emit(AiCompanionEvent::ApplyAction(action));
                                     }
                                 }
                                 Err(error) => {
@@ -202,5 +202,22 @@ impl AiCompanionController {
             assistant.set_backend(config.backend, config.model, cx);
             assistant.set_available(available, cx);
         });
+    }
+}
+
+pub(crate) fn assistant_action_acknowledgement(action: &AiAssistantAction) -> String {
+    match action {
+        AiAssistantAction::CreateRequest(_) => t!("ai.assistant.request_draft_ready").to_string(),
+        AiAssistantAction::CreateScript { .. } => t!("ai.assistant.script_draft_ready").to_string(),
+        AiAssistantAction::TerminalCommand { .. } => {
+            t!("ai.assistant.terminal_command_ready").to_string()
+        }
+        AiAssistantAction::SupportReply { .. } => {
+            t!("ai.assistant.support_reply_ready").to_string()
+        }
+        AiAssistantAction::JeanDispatch { .. } => {
+            t!("ai.assistant.jean_dispatch_ready").to_string()
+        }
+        AiAssistantAction::OpenRequest { .. } => t!("ai.assistant.request_opening").to_string(),
     }
 }
