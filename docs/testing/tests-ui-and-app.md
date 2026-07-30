@@ -155,6 +155,7 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 | SDTEST-1222 | `shelldeck-update::tests::release_info_parses_signed_worker_contract` | SDUC-282 | Green | Pins the platform, digest, size, publication date and Ed25519 signature returned by the Worker. |
 | SDTEST-1223 | *to write* — ReleaseInfo Errs on a missing per-platform URL | SDUC-282 | **Red / P1** | |
 | SDTEST-1224 | *to write* — AutoUpdateEvent stream fires the expected transitions | SDUC-281 | **Red / P1** | State machine — Idle → Checking → Available/UpToDate → Downloading → Ready → Installed. |
+| SDTEST-1225 | `lib.rs::tests::update_checks_require_both_user_opt_in_and_a_verification_key` | SDUC-285 | Green | A local build without an embedded public key stays silently disabled; a signed build polls only when the persisted setting is enabled. |
 
 ### `installer.rs`
 

@@ -1040,7 +1040,11 @@ No half-installed state on failure.
 ### SDUC-285 — Auto-update disabled respects setting
 
 `set_enabled(false)` cancels the poll task and future manual
-`check_for_update` no-ops until re-enabled.
+`check_for_update` no-ops until re-enabled. A development build compiled
+without `SHELLDECK_UPDATE_PUBLIC_KEY_BASE64` behaves as disabled even when the
+persisted setting is on: it performs no request and shows no misleading
+verification error. Official tagged builds still require the key at build time
+and verify every manifest signature.
 
 ### SDUC-286 — Install scripts serve both platform pairs
 
@@ -1804,6 +1808,9 @@ visual code.
   counters and recent titles to the signed-in requester.
 - **2026-07-29** — Added SDUC-446 and SDTEST-1429 for typed Assistant shortcut
   behavior: immediate contextual submissions versus editable composer prefill.
+- **2026-07-29** — Extended SDUC-285 and added SDTEST-1225: development
+  builds without the embedded update-verification key now keep the updater
+  silently disabled, while signed release builds retain strict verification.
 - **2026-07-29** — Added SDUC-445 and SDTEST-1427/1428 for explicit
   conversational request preparation from both Assistant surfaces, with strict
   routing, normal-chat fallback, and the existing unsent review boundary.
