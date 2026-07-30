@@ -19,7 +19,7 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
-| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable, work areas par écran sur Windows/macOS et EWMH root sur X11, reduced motion OS et physique AABB déterministe livrés | SDUC-445..451, SDTEST-1460..1570 |
+| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable, work areas par écran sur Windows/macOS et EWMH root sur X11, reduced motion OS et physique AABB déterministe livrés | SDUC-445..451, SDTEST-1460..1571 |
 
 ## Next
 

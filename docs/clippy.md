@@ -19,7 +19,7 @@
 | Screenshot context | Deferred Phase 3 | No continuous capture exists. Explicit previewable capture remains intentionally outside the portable baseline |
 
 The code and regression inventory are mapped by SDUC-445..451 and
-SDTEST-1460..1570 in `docs/testing/`. Native attachment capture/deletion remains
+SDTEST-1460..1571 in `docs/testing/`. Native attachment capture/deletion remains
 tracked separately under SDUC-432 and SDTEST-1421..1423.
 
 ## Objective

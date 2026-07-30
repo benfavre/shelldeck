@@ -1209,7 +1209,10 @@ impl DesktopCharacterRuntime {
     }
 
     fn refresh_physics_platforms(&mut self, cx: &App, now: Instant) {
-        if self.physics_windows.is_empty()
+        if !self
+            .simulation
+            .as_ref()
+            .is_some_and(RuntimeSimulation::physics_dynamic)
             || !self.config.appearance.desktop.allow_window_climbing
             || !drag_snapshot_refresh_due(
                 self.physics_snapshot_at,
@@ -1220,12 +1223,7 @@ impl DesktopCharacterRuntime {
             return;
         }
         let displays = desktop_displays(cx);
-        let refreshed: Vec<_> = self
-            .physics_windows
-            .iter()
-            .filter_map(|window| cx.external_window(window.id))
-            .collect();
-        self.physics_windows = refreshed;
+        self.physics_windows = cx.visible_external_windows();
         self.physics_platforms = physics_platforms(&self.physics_windows, &displays);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
@@ -1240,7 +1238,10 @@ impl DesktopCharacterRuntime {
         displays: &[DesktopDisplay],
         now: Instant,
     ) {
-        if self.physics_windows.is_empty()
+        if !self
+            .simulation
+            .as_ref()
+            .is_some_and(RuntimeSimulation::physics_dynamic)
             || !self.config.appearance.desktop.allow_window_climbing
             || !drag_snapshot_refresh_due(
                 self.physics_snapshot_at,
@@ -1250,16 +1251,7 @@ impl DesktopCharacterRuntime {
         {
             return;
         }
-        self.physics_windows = self
-            .physics_windows
-            .iter()
-            .filter_map(|cached| {
-                current_windows
-                    .iter()
-                    .find(|current| current.id == cached.id)
-                    .cloned()
-            })
-            .collect();
+        self.physics_windows = current_windows.to_vec();
         self.physics_platforms = physics_platforms(&self.physics_windows, displays);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
@@ -4580,11 +4572,16 @@ mod tests {
 
     // SDTEST-1553
     #[test]
-    fn targeted_physics_refresh_drops_closed_windows_and_tracks_moved_windows_on_cadence() {
+    fn dynamic_physics_refresh_tracks_full_visible_window_set_on_cadence() {
         let started = Instant::now();
         let original = external_window(1553, bounds(200.0, 300.0, 260.0, 180.0));
         let moved = external_window(1553, bounds(200.0, 360.0, 260.0, 180.0));
         let mut runtime = runtime_with_sim();
+        runtime
+            .simulation
+            .as_mut()
+            .unwrap()
+            .release_dynamic(Point2::new(0.0, 0.0));
         runtime.physics_windows = vec![original.clone()];
         runtime.physics_platforms =
             physics_platforms(std::slice::from_ref(&original), &[display()]);
@@ -4612,6 +4609,45 @@ mod tests {
         );
         assert!(runtime.physics_windows.is_empty());
         assert!(runtime.physics_platforms.is_empty());
+    }
+
+    // SDTEST-1571
+    #[test]
+    fn gravity_fall_discovers_window_platforms_after_starting_with_an_empty_snapshot() {
+        let started = Instant::now();
+        let window = external_window(1571, bounds(200.0, 300.0, 260.0, 180.0));
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.simulation.position = Point2::new(220.0, 40.0);
+        sim.release_dynamic(Point2::new(0.0, 0.0));
+        assert!(runtime.physics_windows.is_empty());
+        assert!(runtime.physics_platforms.is_empty());
+
+        runtime.refresh_physics_platforms_for_test(
+            std::slice::from_ref(&window),
+            &[display()],
+            started,
+        );
+        assert_eq!(runtime.physics_windows, vec![window.clone()]);
+        assert_eq!(runtime.physics_platforms.len(), 1);
+
+        let sim = runtime.simulation.as_mut().unwrap();
+        let mut contact = None;
+        for _ in 0..60 {
+            let outcome =
+                sim.step_physics_capped(Duration::from_millis(33), &runtime.physics_platforms);
+            if outcome.landed {
+                contact = outcome.contact;
+                break;
+            }
+        }
+        let contact = contact.expect("fall should land on the newly discovered window top");
+        assert_eq!(contact.kind, WalkableSurfaceKind::WindowTop);
+        assert_eq!(
+            window_id_for_contact(&contact, &runtime.physics_windows),
+            Some(window.id)
+        );
+        assert_eq!(sim.simulation.position.y, 300.0 - sim.extent);
     }
 
     // SDTEST-1554

@@ -1882,7 +1882,10 @@ clears cached window platforms so the character continues to the screen floor.
 Subthreshold pointer jitter must preserve click delivery and avoid native overlay
 moves. Pause, reduced-motion transitions, clicks, and new drags clear stale
 dynamic velocity/contact immediately; native movement is gated by rounded
-platform origins. Per-pixel native hit testing remains a platform-hardening
+platform origins. While gravity is active, the runtime refreshes the full current
+visible-window set at a bounded cadence, so a fall that began without cached
+geometry can still land on newly relevant window-manager chrome. Per-pixel native
+hit testing remains a platform-hardening
 follow-up, so the transparent overlay is still bounded by its configured mascot
 viewport rather than its exact alpha silhouette.
 
@@ -1890,6 +1893,11 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-07-30** — Extended SDUC-448/451 and added SDTEST-1571 so gravity
+  refreshes the full current visible-window platform set, discovers windows after
+  a fall starts, and lands on the visible top chrome instead of falling directly
+  to the display floor. X11 external snapshots now include EWMH
+  `_NET_FRAME_EXTENTS` when available.
 - **2026-07-29** — Hardened SDUC-448/449/451 and added SDTEST-1547..1562 plus
   SDTEST-1570 for impact-time diagonal collision, deterministic platform ties,
   changed work-area floors, preserved catch-up landings, fractional frame time,
