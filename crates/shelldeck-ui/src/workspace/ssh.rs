@@ -440,15 +440,11 @@ impl Workspace {
 
                     let read_task = tokio::spawn(async move {
                         use shelldeck_ssh::session::SshChannelData;
-                        loop {
-                            match channel_reader.read().await {
-                                SshChannelData::Data(data) => {
-                                    if data_tx.send(data).is_err() {
-                                        break;
-                                    }
-                                }
-                                SshChannelData::CleanEnd
-                                | SshChannelData::ConnectionLost => break,
+                        // CleanEnd and ConnectionLost both end the loop, so the
+                        // `Data` arm is the only one that continues it.
+                        while let SshChannelData::Data(data) = channel_reader.read().await {
+                            if data_tx.send(data).is_err() {
+                                break;
                             }
                         }
                         tracing::info!("SSH split read loop ended");

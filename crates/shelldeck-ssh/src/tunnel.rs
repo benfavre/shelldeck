@@ -183,9 +183,9 @@ impl TunnelManager {
         local_port: u16,
         mut forwarded_rx: mpsc::UnboundedReceiver<ForwardedTcpIpEvent>,
     ) -> crate::Result<Uuid> {
-        // Request remote forwarding from the server (requires &mut self on Handle)
+        // Request remote forwarding from the server.
         {
-            let mut h = handle.lock().await;
+            let h = handle.lock().await;
             h.tcpip_forward("0.0.0.0", remote_port as u32)
                 .await
                 .map_err(|e| SshError::Tunnel(format!("Remote forward request failed: {}", e)))?;

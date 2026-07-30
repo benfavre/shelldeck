@@ -524,8 +524,8 @@ impl AiAssistantView {
         keys.iter()
             .map(|(label, prompt, icon, mode)| AiQuickAction {
                 label: t!(*label).to_string(),
-                prompt_key: *prompt,
-                icon: *icon,
+                prompt_key: prompt,
+                icon,
                 mode: *mode,
             })
             .collect()
