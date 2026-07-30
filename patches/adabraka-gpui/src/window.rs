@@ -1785,6 +1785,12 @@ impl Window {
         self.platform_window.set_title(title);
     }
 
+    /// Moves the platform window to `origin` in logical pixels without resizing it.
+    // ShellDeck patch: expose cross-platform window positioning for ShellDeck's clippy tooling.
+    pub fn set_window_origin(&mut self, origin: Point<Pixels>) -> anyhow::Result<()> {
+        self.platform_window.set_window_origin(origin)
+    }
+
     /// Sets the application identifier.
     pub fn set_app_id(&mut self, app_id: &str) {
         self.platform_window.set_app_id(app_id);

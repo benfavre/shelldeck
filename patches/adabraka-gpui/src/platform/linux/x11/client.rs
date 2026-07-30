@@ -60,10 +60,12 @@ use crate::platform::{
     },
 };
 use crate::{
-    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
-    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
-    PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RequestFrameOptions,
-    ScrollDelta, Size, TouchPhase, WindowParams, X11Window, modifiers_from_xinput_info, point, px,
+    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId,
+    // ShellDeck patch: import external-window snapshot types for X11 native IDs.
+    ExternalWindow, ExternalWindowId, FileDropEvent, Keystroke, LinuxKeyboardLayout, Modifiers,
+    ModifiersChangedEvent, MouseButton, Pixels, Platform, PlatformDisplay, PlatformInput,
+    PlatformKeyboardLayout, Point, RequestFrameOptions, ScrollDelta, Size, TouchPhase, WindowParams,
+    X11Window, modifiers_from_xinput_info, point, px,
 };
 
 /// Value for DeviceId parameters which selects all devices.
@@ -1436,6 +1438,178 @@ impl X11Client {
     }
 }
 
+// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.
+fn x11_window_atoms(
+    xcb: &XCBConnection,
+    x_window: xproto::Window,
+    property: xproto::Atom,
+) -> Vec<xproto::Atom> {
+    xcb.get_property(false, x_window, property, xproto::AtomEnum::ATOM, 0, u32::MAX)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| {
+            reply
+                .value
+                .chunks_exact(4)
+                .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ShellDeck patch: expand client geometry to the EWMH outer frame used as companion collision chrome.
+fn x11_frame_extents(
+    xcb: &XCBConnection,
+    x_window: xproto::Window,
+    frame_extents_atom: xproto::Atom,
+) -> [u32; 4] {
+    let Some(reply) = xcb
+        .get_property(
+            false,
+            x_window,
+            frame_extents_atom,
+            xproto::AtomEnum::CARDINAL,
+            0,
+            4,
+        )
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return [0; 4];
+    };
+    decode_x11_frame_extents(reply.type_, reply.format, &reply.value)
+}
+
+fn decode_x11_frame_extents(type_: xproto::Atom, format: u8, value: &[u8]) -> [u32; 4] {
+    if type_ != u32::from(xproto::AtomEnum::CARDINAL) || format != 32 || value.len() != 16 {
+        return [0; 4];
+    }
+    let extents = value
+        .chunks_exact(4)
+        .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+        .collect::<Vec<_>>();
+    let [left, right, top, bottom] = extents.as_slice() else {
+        return [0; 4];
+    };
+    const MAX_REASONABLE_FRAME_EXTENT: u32 = 512;
+    if [*left, *right, *top, *bottom]
+        .into_iter()
+        .any(|extent| extent > MAX_REASONABLE_FRAME_EXTENT)
+    {
+        return [0; 4];
+    }
+    [*left, *right, *top, *bottom]
+}
+
+#[cfg(test)]
+mod companion_external_window_tests {
+    use super::decode_x11_frame_extents;
+    use x11rb::protocol::xproto;
+
+    // SDTEST-1573
+    #[test]
+    fn x11_frame_extents_require_cardinal_32_and_bounded_exact_values() {
+        let values = [8_u32, 9, 31, 10]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        let cardinal = u32::from(xproto::AtomEnum::CARDINAL);
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &values),
+            [8, 9, 31, 10]
+        );
+        assert_eq!(decode_x11_frame_extents(cardinal, 8, &values), [0; 4]);
+        assert_eq!(decode_x11_frame_extents(0, 32, &values), [0; 4]);
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &values[..12]),
+            [0; 4]
+        );
+
+        let oversized = [513_u32, 0, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &oversized),
+            [0; 4]
+        );
+    }
+}
+
+fn x11_window_bounds(
+    xcb: &XCBConnection,
+    root: xproto::Window,
+    x_window: xproto::Window,
+    scale_factor: f32,
+    frame_extents_atom: xproto::Atom,
+) -> Option<Bounds<Pixels>> {
+    let scale_factor = scale_factor.max(1.0);
+    let geometry = xcb.get_geometry(x_window).ok()?.reply().ok()?;
+    let translated = xcb
+        .translate_coordinates(x_window, root, 0, 0)
+        .ok()?
+        .reply()
+        .ok()?;
+    let [left, right, top, bottom] =
+        x11_frame_extents(xcb, x_window, frame_extents_atom);
+    let width = u32::from(geometry.width)
+        .checked_add(left)?
+        .checked_add(right)?;
+    let height = u32::from(geometry.height)
+        .checked_add(top)?
+        .checked_add(bottom)?;
+    Some(Bounds {
+        origin: point(
+            px((f32::from(translated.dst_x) - left as f32) / scale_factor),
+            px((f32::from(translated.dst_y) - top as f32) / scale_factor),
+        ),
+        size: Size {
+            width: px(width as f32 / scale_factor),
+            height: px(height as f32 / scale_factor),
+        },
+    })
+}
+
+fn x11_external_window_snapshot(
+    xcb: &XCBConnection,
+    root: xproto::Window,
+    x_window: xproto::Window,
+    scale_factor: f32,
+    frame_extents_atom: xproto::Atom,
+) -> Option<ExternalWindow> {
+    let bounds = x11_window_bounds(xcb, root, x_window, scale_factor, frame_extents_atom)?;
+    (f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0).then_some(
+        ExternalWindow {
+            id: ExternalWindowId::from_raw(x_window as u64),
+            bounds,
+        },
+    )
+}
+
+fn is_visible_external_x11_window(
+    xcb: &XCBConnection,
+    state: &X11ClientState,
+    x_window: xproto::Window,
+) -> bool {
+    !state.windows.contains_key(&x_window)
+        && xcb
+            .get_window_attributes(x_window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|attrs| {
+                attrs.class == xproto::WindowClass::INPUT_OUTPUT
+                    && attrs.map_state == xproto::MapState::VIEWABLE
+            })
+        && !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_STATE)
+            .iter()
+            .any(|atom| {
+                *atom == state.atoms._NET_WM_STATE_HIDDEN
+                    || *atom == state.atoms._NET_WM_STATE_FULLSCREEN
+            })
+        && !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
+            .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
+}
+
 impl LinuxClient for X11Client {
     fn compositor_name(&self) -> &'static str {
         "X11"
@@ -1803,6 +1977,60 @@ impl LinuxClient for X11Client {
             bundle_id: None,
             pid,
         })
+    }
+
+    // ShellDeck patch: enumerate eligible visible X11 windows with native XID snapshots for companion climbing.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        let state = self.0.borrow();
+        let xcb = &state.xcb_connection;
+        let root = xcb.setup().roots[state.x_root_index].root;
+        let scale_factor = state.scale_factor;
+        let Ok(client_list) = xcb.get_property(
+            false,
+            root,
+            state.atoms._NET_CLIENT_LIST_STACKING,
+            xproto::AtomEnum::WINDOW,
+            0,
+            u32::MAX,
+        ) else {
+            return Vec::new();
+        };
+        let Ok(client_list) = client_list.reply() else {
+            return Vec::new();
+        };
+        client_list
+            .value
+            .chunks_exact(4)
+            .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+            .filter(|&x_window| is_visible_external_x11_window(xcb, &state, x_window))
+            .filter_map(|x_window| {
+                x11_external_window_snapshot(
+                    xcb,
+                    root,
+                    x_window,
+                    scale_factor,
+                    state.atoms._NET_FRAME_EXTENTS,
+                )
+            })
+            .collect()
+    }
+
+    // ShellDeck patch: target one X11 XID directly for attached companion following.
+    fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        let state = self.0.borrow();
+        let xcb = &state.xcb_connection;
+        let root = xcb.setup().roots[state.x_root_index].root;
+        let x_window = u32::try_from(id.raw()).ok()?;
+        is_visible_external_x11_window(xcb, &state, x_window)
+            .then(|| {
+                x11_external_window_snapshot(
+                    xcb,
+                    root,
+                    x_window,
+                    state.scale_factor,
+                    state.atoms._NET_FRAME_EXTENTS,
+                )
+            })?
     }
 
     fn set_tray_icon(&self, icon: Option<&[u8]>) {

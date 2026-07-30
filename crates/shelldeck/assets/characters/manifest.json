@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "strategy": "static_svg_placeholder",
+  "canvas": { "width": 192, "height": 192 },
+  "states": ["idle", "listening", "thinking", "success", "warning", "error", "sleeping"],
+  "characters": [
+    { "id": "clippy", "name": "Clippy", "file": "clippy/idle.svg", "anchor": { "x": 96, "y": 168 } },
+    { "id": "shelly", "name": "Shelly", "file": "shelly/idle.svg", "anchor": { "x": 96, "y": 168 } },
+    { "id": "spark", "name": "Spark", "file": "spark/idle.svg", "anchor": { "x": 96, "y": 168 } },
+    { "id": "byte", "name": "Byte", "file": "byte/idle.svg", "anchor": { "x": 96, "y": 168 } },
+    { "id": "orbit", "name": "Orbit", "file": "orbit/idle.svg", "anchor": { "x": 96, "y": 168 } },
+    { "id": "nox", "name": "Nox", "file": "nox/idle.svg", "anchor": { "x": 96, "y": 168 } }
+  ]
+}

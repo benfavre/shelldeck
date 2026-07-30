@@ -376,6 +376,45 @@ Existing: **0 tests**.
 
 ---
 
+## 23. `ai/clippy.rs` + `companion/` + `[clippy]` config
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1460 | `ai/clippy.rs::defaults_are_safe_and_unknown_character_falls_back` | SDUC-447 | Green | Clippy and desktop roaming default off; unknown roster IDs safely resolve to Clippy. |
+| SDTEST-1461 | `ai/clippy.rs::context_rejects_blank_oversized_and_password_roles` | SDUC-446 | Green | Blank/oversized input and password-role accessibility context cannot reach a provider. |
+| SDTEST-1462 | `ai/clippy.rs::prompt_delimits_and_redacts_untrusted_context` | SDUC-445, SDUC-446 | Green | Provider input carries explicit trust boundaries and removes common bearer-token material. |
+| SDTEST-1463 | `ai/clippy.rs::ai_context_omits_screenshot_bytes_and_delimits_titles` | SDUC-446 | Green | Context metadata never serializes screenshot bytes and treats titles as untrusted data. |
+| SDTEST-1464 | `ai/clippy.rs::proposal_and_replace_payload_are_bounded` | SDUC-446 | Green | Result and replacement payloads reject blank or excessive content. |
+| SDTEST-1465 | `ai/clippy.rs::stale_selection_identity_is_detected` | SDUC-446 | Green | Window/range identity and selected text must still match before replacement. |
+| SDTEST-1466 | `ai/clippy.rs::audit_metadata_excludes_source_and_result_content` | SDUC-446 | Green | Durable audit copy records operation and counts, never private text. |
+| SDTEST-1467 | `companion/geometry.rs::window_filter_rejects_fullscreen_and_invalid_windows` | SDUC-449 | Green | Invalid, minimized, fullscreen and desktop surfaces are not walkable. |
+| SDTEST-1468 | `companion/geometry.rs::work_area_clamps_points` | SDUC-448 | Green | Recovery cannot strand the overlay beyond a display work area. |
+| SDTEST-1469 | `companion/navigation.rs::shared_edge_route_prefers_overlap` | SDUC-448 | Green | Adjacent monitors route through their real overlapping edge. |
+| SDTEST-1470 | `companion/navigation.rs::disconnected_displays_use_portal_route` | SDUC-448 | Green | Gapped monitor layouts use an explicit portal transition rather than an invalid walk. |
+| SDTEST-1471 | `companion/navigation.rs::removed_monitor_recovers_to_primary_work_area` | SDUC-448, SDUC-449 | Green | Hot-unplug recovers to a valid remaining display. |
+| SDTEST-1472 | `companion/simulation.rs::movement_stays_inside_work_area_and_catch_up_is_capped` | SDUC-448 | Green | Fixed-step movement clamps coordinates and limits resume catch-up work. |
+| SDTEST-1473 | `companion/simulation.rs::reduced_motion_and_sleeping_request_no_frames` | SDUC-448, SDUC-449 | Green | Static states do not keep the GPU animation loop awake. |
+| SDTEST-1474 | `companion/simulation.rs::stale_surface_moves_to_recovering` | SDUC-449 | Green | Invalidated external surfaces cancel the action and enter recovery. |
+| SDTEST-1475 | `companion/simulation.rs::seeded_random_source_is_deterministic_and_cooldowns_work` | SDUC-448 | Green | Behavior selection is reproducible and avoids immediate repetition. |
+| SDTEST-1476 | `companion/simulation.rs::duty_cycle_blocks_excessive_movement` | SDUC-448 | Green | The simulation enforces its movement duty-cycle budget. |
+| SDTEST-1477 | `app_config.rs::clippy_config_defaults_and_surface_opt_in_round_trip` | SDUC-445, SDUC-447 | Green | Old configs parse safely and selected character/desktop preferences persist without enabling AI implicitly. |
+| SDTEST-1482 | `ai/clippy.rs::fake_adapter_preserves_copy_fallback_and_rejects_stale_replacement` | SDUC-446 | Green | One fake-adapter workflow covers apply, unsupported, closed target, stale focus/text, password role, and permission-denied replacement while retaining the reviewed draft. |
+| SDTEST-1505 | `companion/physics.rs::gravity_accelerates_dynamic_body_and_clamps_terminal_velocity` | SDUC-451 | Green | The dedicated single-body AABB solver applies gravity to a Dynamic companion and clamps falling speed at the configured terminal velocity. |
+| SDTEST-1506 | `companion/physics.rs::swept_descending_collision_does_not_tunnel_through_window_top` | SDUC-451 | Green | Descending swept collision catches a window top crossed in one fixed step instead of tunneling through it. |
+| SDTEST-1507 | `companion/physics.rs::descending_collision_selects_nearest_crossed_platform` | SDUC-451 | Green | When multiple one-way tops are crossed, the solver lands on the nearest upper platform deterministically. |
+| SDTEST-1508 | `companion/physics.rs::platforms_without_horizontal_overlap_are_rejected` | SDUC-451 | Green | A window top is eligible only when the falling AABB overlaps it horizontally. |
+| SDTEST-1509 | `companion/physics.rs::display_work_area_floor_is_used_when_no_platform_matches` | SDUC-451 | Green | With no valid platform, the display work-area floor becomes the fallback contact and landing surface. |
+| SDTEST-1510 | `companion/physics.rs::release_from_drag_bounds_velocity_and_clears_contact` | SDUC-451 | Green | Drag release switches to Dynamic, clears the previous stable contact, and clamps the sampled release velocity. |
+| SDTEST-1511 | `companion/physics.rs::repeated_steps_are_deterministic_and_stale_contacts_invalidate` | SDUC-451 | Green | Equal fixed-step inputs produce equal results, and source-generation changes invalidate stale surface contacts before falling resumes. |
+| SDTEST-1532 | `companion/physics.rs::side_wall_collision_clamps_and_reflects_horizontal_velocity` | SDUC-451 | Green | The single-body AABB solver cannot leave the display horizontally; wall impacts reflect with bounded restitution and tiny residual velocities settle to zero. |
+| SDTEST-1533 | `companion/physics.rs::ceiling_collision_clamps_and_reflects_upward_velocity_downward` | SDUC-451 | Green | Upward movement clamps at the work-area ceiling and reflects downward without creating a false landing contact. |
+| SDTEST-1547 | `companion/physics.rs::diagonal_sweep_does_not_land_on_platform_only_overlapped_by_union_corridor` | SDUC-451 | Green | Descending diagonal collision evaluates horizontal overlap at vertical time-of-impact, preventing false landings on platforms crossed only by the broad movement corridor. |
+| SDTEST-1548 | `companion/physics.rs::equal_height_platform_selection_is_stable_when_input_order_is_reversed` | SDUC-451 | Green | Equal-height overlapping platforms use a stable identity/generation/geometry tie-break rather than native enumeration order. |
+| SDTEST-1549 | `companion/physics.rs::expanded_work_area_floor_wakes_sleeping_body_instead_of_leaving_it_suspended` | SDUC-448, SDUC-451 | Green | A changed work-area floor invalidates an old sleeping floor contact and resumes falling instead of leaving the mascot suspended. |
+| SDTEST-1550 | `companion/physics.rs::zero_vertical_span_collision_check_is_safe_and_uses_current_horizontal_interval` | SDUC-451 | Green | Zero-span collision checks avoid division errors and use the current horizontal interval deterministically. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

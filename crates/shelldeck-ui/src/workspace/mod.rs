@@ -23,7 +23,7 @@ use shelldeck_core::ai::{
     parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
     parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
     AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiConfig,
-    AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    AiContext, AiIssueTriageProposal, AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -395,6 +395,7 @@ pub struct Workspace {
     ai_assistant: Entity<AiAssistantView>,
     ai_dock_assistant: Entity<AiAssistantView>,
     ai_companion_config: Rc<RefCell<AiConfig>>,
+    clippy_companion_config: Rc<RefCell<ClippyConfig>>,
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
@@ -627,7 +628,7 @@ pub struct Workspace {
     tray_notifier: Option<Box<dyn Fn(TrayNotification) + Send + Sync>>,
     /// Publishes Settings-owned companion changes back to the binary-level
     /// runtime, which owns the platform global-hotkey registrations.
-    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig) + Send + Sync>>,
+    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig, ClippyConfig) + Send + Sync>>,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -720,16 +721,27 @@ impl TrayNotification {
     }
 }
 
+pub struct WorkspaceAiBindings {
+    pub assistant: Entity<AiAssistantView>,
+    pub tasks: Vec<AiTask>,
+    pub config: Rc<RefCell<AiConfig>>,
+    pub clippy_config: Rc<RefCell<ClippyConfig>>,
+}
+
 impl Workspace {
     pub fn new(
         cx: &mut Context<Self>,
         config: AppConfig,
         connections: Vec<Connection>,
         store: ConnectionStore,
-        ai_dock_assistant: Entity<AiAssistantView>,
-        ai_tasks: Vec<AiTask>,
-        ai_companion_config: Rc<RefCell<AiConfig>>,
+        ai: WorkspaceAiBindings,
     ) -> Self {
+        let WorkspaceAiBindings {
+            assistant: ai_dock_assistant,
+            tasks: ai_tasks,
+            config: ai_companion_config,
+            clippy_config: clippy_companion_config,
+        } = ai;
         crate::i18n::apply_ui_language(&config.general.ui_language);
         let issue_site_select = Self::build_issue_site_select(&[], None, cx);
 
@@ -1075,6 +1087,7 @@ impl Workspace {
             ai_assistant,
             ai_dock_assistant,
             ai_companion_config,
+            clippy_companion_config,
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,

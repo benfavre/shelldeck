@@ -853,6 +853,11 @@ impl PlatformWindow for WaylandWindow {
         self.borrow().bounds.size
     }
 
+    // ShellDeck patch: Wayland does not allow clients to set top-level window coordinates.
+    fn set_window_origin(&self, _origin: Point<Pixels>) -> anyhow::Result<()> {
+        anyhow::bail!("setting window origin is unsupported on Wayland")
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let state = self.borrow();
         let state_ptr = self.0.clone();

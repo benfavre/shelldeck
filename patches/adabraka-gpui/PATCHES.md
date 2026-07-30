@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **31**
+Total markers in code: **107**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -203,6 +203,196 @@ only, out of the src/-scoped marker convention.)
   set stays non-fatal and leaves ShellDeck's tray fallback available.
 - **Upstream status**: not filed yet — generic GPUI capability suitable for an
   upstream PR after live validation on GNOME and KDE portal backends.
+
+### SDPATCH-110 — Cross-platform `Window::set_window_origin`
+
+- **Sticky**: required by `docs/clippy.md`; keep this API across GPUI fork syncs.
+- **Files / symbols**:
+  - `src/window.rs` — `Window::set_window_origin` public API
+  - `src/platform.rs` — `PlatformWindow::set_window_origin` routing hook
+  - `src/platform/windows/window.rs` — `WindowsWindow::set_window_origin`
+  - `src/platform/mac/window.rs` — `MacWindow::set_window_origin`
+  - `src/platform/linux/x11/window.rs` — `X11Window::set_window_origin`
+  - `src/platform/linux/wayland/window.rs` — explicit unsupported Wayland backend
+  - `src/platform/test/window.rs` — explicit unsupported test backend
+- **Markers**:
+  - `src/platform.rs` — `// ShellDeck patch: route public window-origin changes through each platform backend.`
+  - `src/window.rs` — `// ShellDeck patch: expose cross-platform window positioning for ShellDeck's clippy tooling.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: move windows without resizing, changing Z-order, or activating them.`
+  - `src/platform/mac/window.rs` — `// ShellDeck patch: map global GPUI top-left coordinates onto AppKit's global bottom-left space.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: move X11 windows through ConfigureWindow without changing their size.`
+  - `src/platform/linux/wayland/window.rs` — `// ShellDeck patch: Wayland does not allow clients to set top-level window coordinates.`
+  - `src/platform/test/window.rs` — `// ShellDeck patch: test windows have no real platform surface to reposition.`
+- **Why**: ShellDeck's clippy helper needs to place auxiliary GPUI windows without
+  resizing or activating them. The public `Window` method delegates through
+  `PlatformWindow`; Windows uses native global desktop coordinates with
+  `SetWindowPos`, `SWP_NOACTIVATE`, `SWP_NOSIZE`, and `SWP_NOZORDER`, macOS
+  converting GPUI's top-left logical coordinates to AppKit's bottom-left frame
+  coordinates, and X11 issues `ConfigureWindow` with only `x`/`y`. Wayland,
+  headless/default, and test windows return explicit unsupported errors because
+  those environments have no client-controlled top-level origin to set. X11
+  relies on the resulting `ConfigureNotify` to dispatch the moved callback
+  rather than re-borrowing platform callbacks synchronously during frame work.
+- **Upstream status**: not filed yet — generally useful platform API, but the
+  Wayland semantics need to be clearly documented before upstreaming.
+
+### SDPATCH-111 — Read-only external top-level window snapshots
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::{global_display_bounds,global_display_metrics,visible_external_window_bounds,visible_external_windows,external_window}`
+  - `src/platform.rs` — `ExternalWindowId`, `ExternalWindow`, `Platform::{global_display_bounds,visible_external_windows,external_window,visible_external_window_bounds}` and `PlatformDisplay::scale_factor`
+  - `src/platform/linux/platform.rs` — `LinuxClient` and `Platform for P`
+  - `src/platform/linux/x11/client.rs` — X11 property/geometry helpers and
+    `LinuxClient::{visible_external_windows,external_window,visible_external_window_bounds}`
+  - `src/platform/linux/x11/window.rs` — `_NET_WM_WINDOW_TYPE_DESKTOP` atom
+  - `src/platform/windows/display.rs` — per-monitor DPI scale exposure
+  - `src/platform/windows/platform.rs` — Win32 enumeration/filtering helpers and
+    `Platform::{visible_external_windows,external_window}`
+  - `src/platform/mac.rs` — `external_windows` module wiring
+  - `src/platform/mac/display.rs` — `MacDisplay::global_bounds`
+  - `src/platform/mac/platform.rs` — `Platform::{visible_external_windows,external_window}`
+  - `src/platform/mac/external_windows.rs` — CoreGraphics window-list and targeted lookup helpers
+- **Markers**:
+  - `src/app.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: import public desktop-companion snapshot and metrics types for App APIs.`
+  - `src/app.rs` — `// ShellDeck patch: expose scale-aware global display metrics for desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: expose read-only external window geometry for desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: expose stable read-only external window snapshots for desktop companions.`
+  - `src/app.rs` — `// ShellDeck patch: expose targeted external-window lookup for attached companions.`
+  - `src/platform.rs` — `// ShellDeck patch: document the optional diagnostic raw external-window ID accessor.`
+  - `src/platform.rs` — `// ShellDeck patch: document the public external-window bounds field.`
+  - `src/platform.rs` — `// ShellDeck patch: document the public native external-window ID field.`
+  - `src/platform.rs` — `// ShellDeck patch: expose documented external-window snapshots with native IDs and bounds.`
+  - `src/platform.rs` — `// ShellDeck patch: expose typed external-window IDs without making raw IDs structural API.`
+  - `src/platform.rs` — `// ShellDeck patch: let backends and tests construct typed IDs from native lifetime values.`
+  - `src/platform.rs` — `// ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.`
+  - `src/platform.rs` — `// ShellDeck patch: expose global display geometry for cross-monitor desktop companions.`
+  - `src/platform.rs` — `// ShellDeck patch: platform backends may expose safe read-only external window snapshots.`
+  - `src/platform.rs` — `// ShellDeck patch: allow targeted native-ID lookup without forcing callers to rescan all windows.`
+  - `src/platform.rs` — `// ShellDeck patch: preserve the legacy bounds-only external window API.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: import external-window snapshot types for the Linux platform trait.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides this while Wayland retains the safe empty snapshot fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: X11 overrides targeted lookup while Wayland keeps the safe None fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: preserve the legacy bounds-only external window API.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route external desktop snapshots through the active Linux backend.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route targeted external desktop lookup through the active Linux backend.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: route legacy external desktop geometry through the active Linux backend.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: expand client geometry to the EWMH outer frame used as companion collision chrome.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: import external-window snapshot types for X11 native IDs.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: enumerate eligible visible X11 windows with native XID snapshots for companion climbing.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: target one X11 XID directly for attached companion following.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: external geometry excludes desktop-background windows.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: include window-manager chrome in external companion geometry.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: report the monitor DPI scale alongside global display geometry.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: enumerate visible external top-level Win32 windows with native HWND snapshots.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: expose visible external top-level Win32 window snapshots.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: target one Win32 HWND directly for attached companion following.`
+  - `src/platform/mac.rs` — `// ShellDeck patch: wire the read-only external window geometry helper.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: retain CoreGraphics global origins for desktop companion routing.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: enumerate visible external top-level macOS windows with CoreGraphics IDs.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: import external-window snapshot types for CoreGraphics window IDs.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: include kCGWindowNumber in each external-window snapshot.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: preserve the legacy bounds-only macOS helper for App compatibility.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: target one CoreGraphics window ID directly for attached companion following.`
+  - `src/platform/mac/external_windows.rs` — `// ShellDeck patch: read CoreGraphics' native per-window lifetime ID.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: return CoreGraphics global display origins instead of local NSScreen coordinates.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose visible external top-level macOS window snapshots.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose targeted CoreGraphics external-window lookup.`
+- **Why**: The desktop companion can climb only geometry that is current and
+  safe to observe. The App-facing APIs return global bounds plus per-display DPI
+  scale and stable external-window snapshots without mutating platform state.
+  `visible_external_window_bounds` remains as a compatibility wrapper over
+  `visible_external_windows`, while `external_window` lets attached followers
+  refresh one known native ID without rescanning every top-level window.
+  `ExternalWindowId` stores the raw native lifetime
+  ID privately, exposes typed equality/hash/copy, and provides `from_raw` for
+  backends/tests plus a documented diagnostic `raw()` accessor. ShellDeck uses
+  those metrics to build a coherent native Windows desktop coordinate space for
+  mixed-DPI monitor routing.
+  X11 uses the EWMH stacking list and returns
+  mapped external input/output windows with their native XIDs after excluding
+  ShellDeck-owned, hidden, fullscreen, desktop-background, and zero-size
+  surfaces. When `_NET_FRAME_EXTENTS` is available with an exact CARDINAL/32
+  four-value payload inside the defensive extent bound, X11 expands client
+  geometry to the outer window-manager frame so collision and perching use the
+  visible top chrome, and can re-check one XID directly with the same filters.
+  Windows uses Win32 `EnumWindows` plus
+  visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen filters, excluding
+  ShellDeck-owned HWNDs and returning the raw HWND pointer value; its companion
+  geometry uses native global desktop coordinates so per-window DPI scaling
+  cannot overlap monitors, and can re-check one HWND directly. macOS uses CoreGraphics'
+  on-screen window list with desktop elements excluded, keeps only normal layer-0
+  windows, returns `kCGWindowNumber`, and drops fullscreen-like display-covering
+  windows; targeted lookup uses `kCGWindowListOptionIncludingWindow` with the
+  same filtering. Wayland, test, headless/default backends intentionally return
+  an empty vector or `None` because they do not expose other clients' top-level
+  geometry safely.
+- **Upstream status**: not filed yet — useful as an opt-in desktop integration
+  API, but platform privacy and capability semantics need upstream discussion.
+
+### SDPATCH-112 — Platform companion hardening, work areas, and reduced motion
+
+- **Files / symbols**:
+  - `src/app.rs` — `App::{desktop_display_metrics,prefers_reduced_motion}`
+  - `src/platform.rs` — `DesktopDisplayMetrics`, `Platform::desktop_display_metrics`,
+    `Platform::prefers_reduced_motion`, and `PlatformDisplay::work_area`
+  - `src/platform/windows/window.rs` — non-activating `WindowKind::Overlay` style,
+    first show, and explicit activation path
+  - `src/platform/windows/display.rs` — `WindowsDisplay::{all,desktop_metrics}`
+    and `rcWork` work-area conversion
+  - `src/platform/windows/platform.rs` — physical desktop display metrics and
+    `SPI_GETCLIENTAREAANIMATION`
+  - `src/platform/mac/display.rs` — `MacDisplay::{global_work_area,scale_factor}`
+    using `NSScreen.visibleFrame`
+  - `src/platform/mac/platform.rs` — desktop display metrics and
+    accessibility reduce-motion preference
+  - `src/platform/linux/x11/display.rs` — `_NET_WORKAREA` work-area fallback and
+    scale reporting
+  - `src/platform/linux/platform.rs` — cheap GTK animation preference fallback
+- **Markers** (23 net-new markers; the App import marker is renamed in SDPATCH-111):
+  - `src/app.rs` — `// ShellDeck patch: expose coherent desktop metrics with per-display work area.`
+  - `src/app.rs` — `// ShellDeck patch: expose reduced-motion platform preference for animation policy.`
+  - `src/platform.rs` — `// ShellDeck patch: expose desktop display metrics in the same coordinate space as window routing.`
+  - `src/platform.rs` — `// ShellDeck patch: cheap platform preference hook for reducing non-essential animation.`
+  - `src/platform.rs` — `// ShellDeck patch: add a coherent desktop metrics API for companion placement.`
+  - `src/platform.rs` — `// ShellDeck patch: expose per-display usable work area with a safe full-bounds fallback.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: cheap Linux fallback for GTK's gtk-enable-animations setting.`
+  - `src/platform/linux/platform.rs` — `// ShellDeck patch: honor cheap Linux animation settings fallbacks.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: use EWMH _NET_WORKAREA when the window manager exposes it.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: report X11 scale alongside display metrics.`
+  - `src/platform/linux/x11/display.rs` — `// ShellDeck patch: read the first EWMH work area entry and keep it root-bounds-relative.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: expose AppKit's true visible work area in GPUI's global top-left coordinates.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: expose NSScreen.visibleFrame as the per-display usable work area.`
+  - `src/platform/mac/display.rs` — `// ShellDeck patch: report the backing scale for display metrics.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: expose CoreGraphics global display metrics with AppKit visible work areas.`
+  - `src/platform/mac/platform.rs` — `// ShellDeck patch: query macOS Accessibility reduce-motion preference cheaply.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: keep concrete monitor metrics so Windows can expose physical desktop coordinates.`
+  - `src/platform/windows/display.rs` — `// ShellDeck patch: Windows rcWork gives the true taskbar-aware per-monitor work area.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: Windows desktop companion placement uses native physical pixels.`
+  - `src/platform/windows/platform.rs` — `// ShellDeck patch: map Windows client-area animation preference to reduced motion.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: overlays are interactive but must never activate or steal foreground focus.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: opening an overlay must be non-activating even when first shown.`
+  - `src/platform/windows/window.rs` — `// ShellDeck patch: explicit activation requests keep overlays visible without focus theft.`
+- **Why**: ShellDeck's desktop companions need a single explicit placement
+  contract that separates native desktop routing coordinates from normal GPUI
+  window-creation coordinates. `DesktopDisplayMetrics::global_bounds` and
+  `global_work_area` are in the coordinate space accepted by
+  `Window::set_window_origin`; on Windows this is native physical desktop pixels
+  to avoid mixed-DPI virtual monitor overlap. `logical_work_area` remains in
+  normal GPUI logical coordinates for `WindowOptions::window_bounds` and other
+  creation-time APIs. Per-display work areas use Win32 `rcWork`, macOS
+  `NSScreen.visibleFrame` converted to GPUI's global top-left space, and X11
+  EWMH `_NET_WORKAREA` intersected with the root/display bounds; Wayland,
+  headless, and test backends inherit the safe full-bounds fallback.
+  Windows overlay windows also gain `WS_EX_NOACTIVATE` and non-activating show
+  paths so interactive mouse input remains available without stealing foreground
+  focus. Reduced-motion is a cheap best-effort platform query: Windows uses
+  `SPI_GETCLIENTAREAANIMATION`, macOS uses the accessibility reduce-motion flag,
+  Linux uses GTK animation settings from environment/config files, and other
+  platforms default to `false`.
+- **Upstream status**: not filed yet — should be split into smaller upstreamable
+  platform capability PRs after native Windows/macOS validation.
 
 ## Preserved files (do not overwrite on sync)
 

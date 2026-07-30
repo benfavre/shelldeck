@@ -976,6 +976,7 @@ impl Workspace {
             AiActionKind::SupportSend => ActivityKind::Support,
             AiActionKind::JeanDispatch => ActivityKind::Jean,
             AiActionKind::FleetDispatch => ActivityKind::Fleet,
+            AiActionKind::ClippyReplaceSelection => ActivityKind::Script,
         };
         let actor = self
             .app_config
@@ -1204,6 +1205,14 @@ impl Workspace {
                 instance_id,
             } => {
                 self.execute_ai_fleet_dispatch(plan, issue_id, instance_id, cx);
+            }
+            AiActionPayload::ClippyReplaceSelection { .. } => {
+                self.audit_ai_action(&plan, "unsupported", cx);
+                self.show_toast(
+                    t!("toast.ai.action_clippy_replace_unsupported").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -1991,7 +2000,7 @@ impl Workspace {
                     }
                 }
             }
-            AiSurface::Recent | AiSurface::Global => {}
+            AiSurface::Recent | AiSurface::Global | AiSurface::Clippy => {}
         }
         cx.notify();
     }

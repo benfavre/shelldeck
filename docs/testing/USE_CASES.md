@@ -1761,8 +1761,196 @@ window to open is seeded from the live registration state.
 
 ---
 
+## 29. Clippy assistant and desktop characters
+
+### SDUC-445 — Clippy transforms explicitly supplied clipboard text
+
+The AI Dock and native tray can open a dedicated Clippy surface. Clipboard text
+enters ShellDeck only after the user presses **Use clipboard** or pastes it into
+the source field. Rewrite, translate, shorten, summarize, explain, draft reply,
+and custom operations use the configured AI backend. The response remains a
+reviewable draft with a line diff and explicit Edit, Regenerate, Copy, and
+Cancel controls. Clippy is an opt-in AI surface and is disabled by default.
+
+### SDUC-446 — Desktop context is bounded, untrusted, and replacement-safe
+
+Clippy delimits application text from trusted instructions, redacts common
+credential forms, blocks password-role selections, and bounds source, result,
+instruction, and screenshot metadata. Logs and durable audit details retain
+only operation and size metadata, never source or generated text. A native
+selection replacement can proceed only when the adapter still reports the same
+window, identity, and text that produced the reviewed result. Unsupported,
+closed, permission-denied, and stale targets preserve Copy as the fallback.
+
+### SDUC-447 — The selected companion character persists everywhere
+
+Appearance settings offer no character plus Clippy, Shelly, Spark, Byte, Orbit,
+and Nox with real embedded previews. Character, motion preference, scale,
+desktop enablement, roaming level, window-climbing preference, and multi-screen
+preference persist in `[clippy]`. Unknown future character IDs fall back safely
+to Clippy. The selected mascot appears as an independent desktop character
+without being embedded in the AI Dock, and updates without requiring a restart.
+
+### SDUC-448 — Desktop roaming is transparent, interactive, and event-driven
+
+On X11, Windows, and macOS, an enabled desktop character uses one transparent,
+no-focus pointer-enabled overlay and native top-level window movement. A
+fixed-step simulation caps catch-up, clamps positions to available platform work areas,
+preserves fractional refresh time and landing events across catch-up steps,
+stops animation-frame requests at rest, and wakes from one-shot timers for
+occasional or playful actions rather than polling continuously. When enabled,
+multi-display routing cycles through connected displays and recovers after
+monitor changes. Windows and macOS use per-display taskbar/dock-aware work areas;
+X11 currently applies the root EWMH `_NET_WORKAREA`. Active GPUI drag
+delivery and inside/outside release handling keep interaction alive even when a
+magnetic preview moves the native overlay away from the pointer. Tray actions
+pause/resume movement and return the character to a safe screen corner.
+
+### SDUC-449 — Unsupported desktop capabilities degrade honestly and safely
+
+Wayland does not permit reliable arbitrary top-level positioning, so ShellDeck
+does not fake roaming there: it keeps the desktop character disabled and reports
+the platform limitation in Appearance. System motion honors the OS reduced-
+motion preference; Reduced/Off motion and Still roaming request no continuous
+frames. Overlay creation or native movement failures pause the character
+without stealing keyboard focus, and Windows overlays use non-activating native
+styles and show paths. External-window climbing is used
+only when the platform geometry provider can supply eligible visible window
+edges; invalid, minimized, fullscreen, and desktop surfaces are excluded. An
+X11 backend can observe X11 and XWayland clients only. Native Wayland windows,
+including browsers or messaging apps using their Wayland backend, are not
+presented as climbable because GNOME and other compositors do not expose a
+standard permitted global window-geometry API.
+
+### SDUC-450 — Character selection is discoverable and immediately visible
+
+Authenticated users can open the character cards directly from the File menu,
+command palette, or native tray instead of finding them below unrelated theme
+controls. The targeted route opens Appearance with the six mascot previews at
+the top. Choosing any mascot enables its desktop runtime immediately; choosing
+None disables it. The separate motion, size, roaming, window-climbing, and
+multi-monitor controls remain available directly below the cards.
+
+### SDUC-451 — The desktop character responds directly to the user
+
+The selected mascot is rendered only in its transparent desktop window, never
+inside the AI Dock. Pressing and dragging the character preserves the exact grab
+offset, pauses autonomous movement, follows the pointer across monitor bounds,
+and clamps the dropped position to the selected display. Approaching the outer
+top edge of an eligible unmaximized window shows a live magnetic preview with a
+larger acquisition band and stable-ID hysteresis, so small pointer movements do
+not flicker between targets. Releasing revalidates that exact preview ID against
+a fresh native snapshot; it never silently switches to a competing window if the
+preview moved, minimized, or disappeared. Once a preview ID is invalidated, that
+drag remains unsnapped until release instead of acquiring a different cached
+window. A click triggers a short hop;
+a double-click triggers a larger bounded dash and no keyboard focus theft. Each
+mascot keeps its production PNG artwork while procedural poses provide distinct
+walking, flying, dragging, reaction, and landing motion. Character-specific
+speeds, bounce, tilt, and target choices make their movement visibly different.
+Static idle periods use no continuous runtime frames; an occasional one-shot
+flourish adds life without turning the overlay into a permanent render loop.
+Motion preference changes apply immediately, and the tray can pause/resume the
+character or return it to a safe screen corner. When window climbing is enabled,
+the character chooses an eligible external top-level window by its stable native
+lifetime ID, climbs or snaps from drag release to its outer top edge, and treats
+window tops as one-way floors for falling only from above. Snap and autonomous-
+climb candidates exclude maximized/taskbar-inset windows and are ranked
+deterministically by vertical gap, horizontal distance, then stable native ID
+with target-display DPI-scaled bands, overlap, extent, and size thresholds.
+Preview, release commit, and follow all use the same perch-origin calculation,
+including windows narrower than the mascot, so mouse-up and the first follow
+refresh cannot jump, including when the preview remains locked only through the
+wider hysteresis exit band. Autonomous climbing obeys the multi-monitor setting:
+when cross-monitor movement is disabled, only windows on the current display are
+eligible. The attached character
+preserves its horizontal perch offset as the window moves between displays or
+resizes; a snap also adopts the supporting window's display so later
+screen-floor recovery uses that monitor instead of an old display or virtual
+layout gap. If no eligible top is reached, the display work-area floor is the
+safe fallback landing surface. The single-body deterministic AABB solver also
+clamps and reflects against display side walls and the ceiling, settles tiny
+post-impact horizontal velocities, and prevents fast descending motion from
+tunnelling through one-way window tops. Cached platform snapshots feed the
+runtime instead of native enumeration on every animation frame: one initial
+full list seeds the fall, then each 100 ms refresh simulates the next fixed-step
+trajectory and revalidates at most the first reachable stable ID. If that target
+moves or closes, only its fresh geometry may become the active collision
+surface; no unvalidated cached fallback is promoted, and the remaining cached
+windows are reconsidered on a later refresh. Closing, minimizing, or otherwise
+losing the target window detaches safely, restarts falling only when full motion
+is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
+landings resume the one-shot roaming schedule only when the character is not
+attached or being dragged. Dragging, clicking, pausing, returning to a corner,
+disabling climbing, or closing the overlay cancels the attachment and its
+generation-guarded refresh timer immediately; disabling climbing during a fall
+clears cached window platforms so the character continues to the screen floor.
+Subthreshold pointer jitter must preserve click delivery and avoid native overlay
+moves. Pause, reduced-motion transitions, clicks, and new drags clear stale
+dynamic velocity/contact immediately; native movement is gated by rounded
+platform origins. When gravity starts without cached geometry, the runtime
+performs one full visible-window discovery, then simulates the next fixed-step
+trajectory and refreshes at most the first reachable collision candidate's
+stable native ID per 100 ms tick. This bounds synchronous native lookup work
+independently of the total visible-window count and prevents a closed target
+from activating an older unvalidated cache entry. Per-pixel native hit testing
+remains a platform-hardening
+follow-up, so the transparent overlay is still bounded by its configured mascot
+viewport rather than its exact alpha silhouette.
+
+---
+
 ## Change log
 
+- **2026-07-30** — Extended SDUC-448/449/451 and added SDTEST-1571..1577 so
+  gravity discovers windows after a fall starts, applies the actual drag-release
+  velocity before prediction, trajectory-ranks the first reachable top by exact
+  projected time of impact, and lands on visible chrome instead of falling directly to the
+  display floor. Subsequent updates revalidate one captured stable ID and never
+  promote an older unvalidated fallback, avoiding repeated synchronous full X11
+  scans. X11 snapshots include validated EWMH `_NET_FRAME_EXTENTS` when
+  available; native Wayland clients remain outside the X11 geometry provider.
+- **2026-07-29** — Hardened SDUC-448/449/451 and added SDTEST-1547..1562 plus
+  SDTEST-1570 for impact-time diagonal collision, deterministic platform ties,
+  changed work-area floors, preserved catch-up landings, fractional frame time,
+  bounded live fall-platform refresh, safe attachment/config cancellation,
+  active-drag outside release, stale throw suppression, rounded native moves,
+  OS reduced motion, a bounded idle-flourish duty cycle, true platform work
+  areas, Windows no-focus overlays, and a localized native-Wayland capability
+  warning.
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1529..1546 for live
+  magnetic preview, stable-ID hysteresis and release validation, shared
+  preview/commit/follow perch geometry, target-display DPI scaling, throttled
+  full-list plus targeted locked-window refresh, exact screen-floor bounds,
+  autonomous unmaximized-window filtering, and deterministic wall/ceiling
+  collision response.
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1505..1528 for the
+  standalone deterministic AABB companion physics/runtime: drag-release outer
+  top-edge snapping, one-way window-top floors, screen-floor fallback, stable-ID
+  attachment/follow after snapping or landing, disappearance-to-fall recovery,
+  reduced/off/still suppression, cached event-driven snapshots, snap-display
+  adoption before disappearance floor recovery, subthreshold-jitter click
+  preservation, and mid-fall climbing-disable platform clearing.
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1500..1504 for stable
+  external-window identities, top-edge attachment, movement and resize following,
+  redundant-move suppression, disappearance recovery, and generation-cancelled
+  low-rate monitoring only while a character is attached.
+- **2026-07-29** — Extended SDUC-451 and added SDTEST-1494..1499 for production
+  PNG-backed procedural poses, distinct mascot personalities, bounded varied
+  roam targets, one-shot idle flourishes, real-time frame pacing, DPI-aware drag
+  thresholds, and suppression of redundant native window movement.
+- **2026-07-29** — Added SDUC-451 and SDTEST-1491/1492 after clarifying that
+  companions are standalone interactive desktop characters, not AI Dock art.
+  The overlay now accepts direct dragging across displays, bounded click and
+  double-click reactions, and resumes event-driven roaming after interaction.
+- **2026-07-29** — Added SDUC-450 and SDTEST-1489/1490 after live launch showed
+  the character picker was technically present but hidden below theme controls
+  and required a second enable toggle. File, palette, and tray routes now land
+  directly on visible cards, and selection applies immediately.
+- **2026-07-29** — Added SDUC-445..449 and SDTEST-1460..1488 for the native
+  Clippy clipboard assistant, privacy and stale-selection contracts, selectable
+  character persistence, deterministic desktop simulation, multi-display
+  routing, pointer-interactive overlays, and honest Wayland fallback.
 - **2026-07-29** — Extended SDUC-438 and added SDTEST-1424 for the contextual
   Monolith motions used by AI generation, terminal startup, and site discovery.
 - **2026-07-27** — Extended SDUC-432 and added SDTEST-1421..1423 for native

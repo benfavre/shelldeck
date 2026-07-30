@@ -20,7 +20,11 @@ pub fn dock_tray_label() -> String {
 pub struct TrayLabels {
     pub show: String,
     pub assistant: String,
+    pub clippy: String,
     pub palette: String,
+    pub choose_character: String,
+    pub pause_character: String,
+    pub return_character: String,
     pub quit: String,
     pub pinned: String,
     pub no_pinned: String,
@@ -31,7 +35,11 @@ impl TrayLabels {
         Self {
             show: t!("tray.show").to_string(),
             assistant: dock_tray_label(),
+            clippy: t!("tray.clippy").to_string(),
             palette: t!("tray.palette").to_string(),
+            choose_character: t!("tray.character.choose").to_string(),
+            pause_character: t!("tray.character.pause").to_string(),
+            return_character: t!("tray.character.return_to_dock").to_string(),
             quit: t!("tray.quit").to_string(),
             pinned: t!("tray.pinned").to_string(),
             no_pinned: t!("tray.no_pinned").to_string(),

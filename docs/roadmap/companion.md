@@ -7,7 +7,7 @@
 > techniques détaillés restent dans les documents spécialisés et les preuves de
 > tests dans [`docs/testing/`](../testing/).
 
-## État au 2026-07-24
+## État au 2026-07-29
 
 | Bloc | État | Preuve principale |
 |---|---|---|
@@ -19,10 +19,15 @@
 | Onboarding | Livré | `OnboardingView`, `general.onboarding_completed` |
 | IA transversale | Livrée dans le périmètre de sécurité actuel | [`ai-companion.md`](ai-companion.md) |
 | AI Dock Companion | Phases A–E livrées | [`ai-dock-companion.md`](ai-dock-companion.md) |
+| Personnage desktop autonome | Snap magnétique DPI-aware, suivi par ID stable, work areas par écran sur Windows/macOS et EWMH root sur X11, reduced motion OS et physique AABB déterministe livrés | SDUC-445..451, SDTEST-1460..1577 |
 
 ## Next
 
-Aucun bloc fonctionnel Companion V1 ne reste ouvert.
+Aucun bloc fonctionnel Companion V1 identifié dans cette roadmap ne reste
+ouvert. Les travaux restants sont des durcissements de plateforme : work areas
+X11 réellement par moniteur, observation live du reduced motion OS, hit testing
+natif par pixel, suppression au-dessus du plein écran, politique batterie,
+lock/suspend et télémétrie de performance visible.
 
 La recette sur de vraies sessions Linux/X11, Wayland, macOS et Windows reste
 une vérification de release, pas une fonctionnalité produit à maintenir dans
@@ -30,7 +35,7 @@ la roadmap.
 
 ## Audit des éléments livrés
 
-Vérification effectuée le 2026-07-24 contre le code et les inventaires :
+Vérification effectuée le 2026-07-29 contre le code et les inventaires :
 
 - le démarrage caché conserve un `CompanionRoot` léger et diffère
   `Workspace`, le parsing SSH, le store et ses pollers ;
@@ -56,7 +61,16 @@ Vérification effectuée le 2026-07-24 contre le code et les inventaires :
   connexion et met à jour son état ;
 - l'IA transversale possède tâches durables, notifications, policies par
   capacité, plans d'action typés, audit expurgé, triage Support et diagnostics
-  Terminal séquentiels bornés.
+  Terminal séquentiels bornés ;
+- le personnage desktop possède un solveur AABB déterministe dédié, pas un moteur
+  de jeu général : gravité, vélocité terminale, drag horizontal, collision
+  descendante one-way avec les tops de fenêtre, collisions bornées contre les
+  murs latéraux et le plafond, fallback au sol d'écran, aperçu magnétique live
+  avec hystérésis et seuils DPI du display cible, validation du même ID natif au
+  relâchement, origine de perch partagée entre aperçu/commit/suivi, adoption du
+  display porteur, suivi par ID stable, chute à la disparition, nettoyage des
+  plateformes si le climbing est désactivé en chute et suppression des boucles
+  sous mouvement réduit/off/still.
 
 Les détails exhaustifs de comportement restent dans
 [`USE_CASES.md`](../testing/USE_CASES.md). Cette roadmap ne les duplique pas.

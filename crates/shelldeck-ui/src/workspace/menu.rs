@@ -101,6 +101,7 @@ impl Workspace {
             Cmd::NewScript => self.execute_palette_action(&NewScript, cx),
             Cmd::NewRequest => self.execute_palette_action(&NewRequest, cx),
             Cmd::SyncNow => self.execute_palette_action(&CloudSyncNow, cx),
+            Cmd::OpenCompanionSettings => self.open_companion_settings(cx),
             Cmd::OpenSettings => self.open_settings(cx),
             Cmd::Quit => {
                 if self.confirm_window_close(cx) {

@@ -73,11 +73,15 @@ x11rb::atom_manager! {
         _NET_WM_BYPASS_COMPOSITOR,
         _NET_WM_MOVERESIZE,
         _NET_WM_WINDOW_TYPE,
+        // ShellDeck patch: external geometry excludes desktop-background windows.
+        _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WM_WINDOW_TYPE_NOTIFICATION,
         _NET_WM_WINDOW_TYPE_DIALOG,
         // ShellDeck patch: interactive overlays need a focusable EWMH type.
         _NET_WM_WINDOW_TYPE_UTILITY,
         _NET_WM_WINDOW_TYPE_DOCK,
+        // ShellDeck patch: include window-manager chrome in external companion geometry.
+        _NET_FRAME_EXTENTS,
         _NET_WM_SYNC,
         _NET_WM_STATE_DEMANDS_ATTENTION,
         _NET_SUPPORTED,
@@ -1245,6 +1249,29 @@ impl PlatformWindow for X11Window {
         state
             .content_size()
             .map(|size| size.div(state.scale_factor))
+    }
+
+    // ShellDeck patch: move X11 windows through ConfigureWindow without changing their size.
+    fn set_window_origin(&self, origin: Point<Pixels>) -> anyhow::Result<()> {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        let x = (origin.x.0 * scale_factor).round() as i32;
+        let y = (origin.y.0 * scale_factor).round() as i32;
+
+        check_reply(
+            || format!("X11 ConfigureWindow failed. x: {}, y: {}", x, y),
+            self.0.xcb.configure_window(
+                self.0.x_window,
+                &xproto::ConfigureWindowAux::new().x(x).y(y),
+            ),
+        )?;
+        xcb_flush(&self.0.xcb);
+        self.0.state.borrow_mut().bounds.origin = origin;
+
+        // ConfigureNotify will deliver the moved callback through set_bounds.
+        // Calling it synchronously here can re-borrow the callback RefCell when
+        // movement is requested from a GPUI next-frame callback.
+
+        Ok(())
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
