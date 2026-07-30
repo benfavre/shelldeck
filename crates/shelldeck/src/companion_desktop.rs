@@ -866,7 +866,7 @@ impl DesktopCharacterRuntime {
             } else {
                 Vec::new()
             };
-            self.physics_snapshot_at = None;
+            self.physics_snapshot_at = Some(Instant::now());
             sim.release_dynamic(release_velocity);
             ReleaseLifecycle::RequestPhysicsFrame
         } else {
@@ -1223,7 +1223,14 @@ impl DesktopCharacterRuntime {
             return;
         }
         let displays = desktop_displays(cx);
-        self.physics_windows = cx.visible_external_windows();
+        self.physics_windows = if self.physics_snapshot_at.is_none() {
+            cx.visible_external_windows()
+        } else {
+            self.physics_windows
+                .iter()
+                .filter_map(|window| cx.external_window(window.id))
+                .collect()
+        };
         self.physics_platforms = physics_platforms(&self.physics_windows, &displays);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
@@ -1251,7 +1258,19 @@ impl DesktopCharacterRuntime {
         {
             return;
         }
-        self.physics_windows = current_windows.to_vec();
+        self.physics_windows = if self.physics_snapshot_at.is_none() {
+            current_windows.to_vec()
+        } else {
+            self.physics_windows
+                .iter()
+                .filter_map(|cached| {
+                    current_windows
+                        .iter()
+                        .find(|current| current.id == cached.id)
+                        .cloned()
+                })
+                .collect()
+        };
         self.physics_platforms = physics_platforms(&self.physics_windows, displays);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
@@ -4572,7 +4591,7 @@ mod tests {
 
     // SDTEST-1553
     #[test]
-    fn dynamic_physics_refresh_tracks_full_visible_window_set_on_cadence() {
+    fn dynamic_physics_refresh_tracks_captured_windows_on_cadence() {
         let started = Instant::now();
         let original = external_window(1553, bounds(200.0, 300.0, 260.0, 180.0));
         let moved = external_window(1553, bounds(200.0, 360.0, 260.0, 180.0));
@@ -4648,6 +4667,33 @@ mod tests {
             Some(window.id)
         );
         assert_eq!(sim.simulation.position.y, 300.0 - sim.extent);
+    }
+
+    // SDTEST-1572
+    #[test]
+    fn dynamic_physics_refresh_switches_to_stable_id_updates_after_initial_scan() {
+        let started = Instant::now();
+        let first = external_window(1572, bounds(200.0, 300.0, 260.0, 180.0));
+        let second = external_window(1573, bounds(600.0, 500.0, 260.0, 180.0));
+        let moved_first = external_window(1572, bounds(200.0, 360.0, 260.0, 180.0));
+        let newly_visible = external_window(1574, bounds(900.0, 700.0, 260.0, 180.0));
+        let mut runtime = runtime_with_sim();
+        runtime
+            .simulation
+            .as_mut()
+            .unwrap()
+            .release_dynamic(Point2::new(0.0, 0.0));
+
+        runtime.refresh_physics_platforms_for_test(&[first.clone(), second], &[display()], started);
+        assert_eq!(runtime.physics_windows.len(), 2);
+
+        runtime.refresh_physics_platforms_for_test(
+            &[moved_first.clone(), newly_visible],
+            &[display()],
+            started + PHYSICS_WINDOW_REFRESH_INTERVAL,
+        );
+        assert_eq!(runtime.physics_windows, vec![moved_first]);
+        assert_eq!(runtime.physics_platforms.len(), 1);
     }
 
     // SDTEST-1554

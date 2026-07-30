@@ -1882,10 +1882,10 @@ clears cached window platforms so the character continues to the screen floor.
 Subthreshold pointer jitter must preserve click delivery and avoid native overlay
 moves. Pause, reduced-motion transitions, clicks, and new drags clear stale
 dynamic velocity/contact immediately; native movement is gated by rounded
-platform origins. While gravity is active, the runtime refreshes the full current
-visible-window set at a bounded cadence, so a fall that began without cached
-geometry can still land on newly relevant window-manager chrome. Per-pixel native
-hit testing remains a platform-hardening
+platform origins. When gravity starts without cached geometry, the runtime performs
+one full visible-window discovery, then refreshes only those stable native IDs at a
+bounded cadence so moved or closed platforms stay current without repeating a full
+X11 scan every 100 ms. Per-pixel native hit testing remains a platform-hardening
 follow-up, so the transparent overlay is still bounded by its configured mascot
 viewport rather than its exact alpha silhouette.
 
@@ -1893,11 +1893,12 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
-- **2026-07-30** — Extended SDUC-448/451 and added SDTEST-1571 so gravity
+- **2026-07-30** — Extended SDUC-448/451 and added SDTEST-1571..1573 so gravity
   refreshes the full current visible-window platform set, discovers windows after
   a fall starts, and lands on the visible top chrome instead of falling directly
-  to the display floor. X11 external snapshots now include EWMH
-  `_NET_FRAME_EXTENTS` when available.
+  to the display floor. Subsequent fall updates target only captured stable IDs to
+  avoid repeated synchronous full X11 scans. X11 external snapshots now include
+  validated EWMH `_NET_FRAME_EXTENTS` when available.
 - **2026-07-29** — Hardened SDUC-448/449/451 and added SDTEST-1547..1562 plus
   SDTEST-1570 for impact-time diagonal collision, deterministic platform ties,
   changed work-area floors, preserved catch-up landings, fractional frame time,
