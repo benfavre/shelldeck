@@ -177,6 +177,15 @@ pub struct CommandPalette {
     recent_visible_count: usize,
     pub selected_index: usize,
     pub focus_handle: FocusHandle,
+    /// Whatever held focus when the palette opened.
+    ///
+    /// Opening moves focus onto the palette `Input`. That element stops being
+    /// rendered as soon as the palette closes, so unless focus is handed back
+    /// the window keeps pointing at a dead node: the dispatch path collapses
+    /// and `ToggleCommandPalette` is never dispatched again until a click
+    /// focuses something alive. `dismiss` has no `&mut Window`, so the restore
+    /// happens in `render`.
+    return_focus: Option<FocusHandle>,
 }
 
 impl CommandPalette {
@@ -192,6 +201,7 @@ impl CommandPalette {
             recent_visible_count: 0,
             selected_index: 0,
             focus_handle: cx.focus_handle(),
+            return_focus: None,
         }
     }
 
@@ -211,6 +221,7 @@ impl CommandPalette {
             self.query.clear();
             self.selected_index = 0;
             self.update_filter();
+            self.return_focus = window.focused(cx);
             // Focus the `Input` widget so typing goes straight into it;
             // navigation keys are intercepted by the palette root capture.
             let input_focus = self.query_state.read(cx).focus_handle(cx);
@@ -223,11 +234,15 @@ impl CommandPalette {
     }
 
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_visible = self.visible;
         self.visible = true;
         self.reset_input(cx);
         self.query.clear();
         self.selected_index = 0;
         self.update_filter();
+        if !was_visible {
+            self.return_focus = window.focused(cx);
+        }
         self.query_state.read(cx).focus_handle(cx).focus(window);
         cx.notify();
     }
@@ -448,8 +463,28 @@ fn palette_icon_for(action: &PaletteAction) -> &'static str {
 }
 
 impl Render for CommandPalette {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
+            // Every close path lands here — Escape, Enter, a clicked row, the
+            // backdrop, a second toggle — and this is the only one of them
+            // holding a `&mut Window`. Only reclaim focus while the palette
+            // input still owns it, so an action that opened a form and focused
+            // its own field keeps it. Falling back to `blur` is correct: with
+            // no focus at all the dispatch path is the window root, which
+            // still carries the workspace action handlers.
+            if self
+                .query_state
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            {
+                match self.return_focus.take() {
+                    Some(previous) => window.focus(&previous),
+                    None => window.blur(),
+                }
+            } else {
+                self.return_focus = None;
+            }
             return div().id("palette-hidden");
         }
 
@@ -541,10 +576,13 @@ impl Render for CommandPalette {
                                 .child(lucide_icon(icon, 14.0, icon_color)),
                         )
                         .child(
+                            // Row-flex label: it needs flex_1 to receive a definite
+                            // width. With min_w(0) alone the text collapses to zero
+                            // and nothing is painted (see .agents/overflow.md).
                             div()
+                                .flex_1()
                                 .min_w(px(0.0))
-                                .overflow_hidden()
-                                .line_clamp(1)
+                                .truncate()
                                 .text_color(label_color)
                                 .child(name),
                         ),
@@ -629,7 +667,12 @@ impl Render for CommandPalette {
                 .w(px(520.0))
                 .max_h(px(460.0))
                 .rounded(px(10.0))
-                .shadow_xl();
+                .shadow_xl()
+                // Keep clicks inside the panel from reaching the backdrop,
+                // which dismisses.
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation();
+                });
         }
 
         let root = div()
@@ -644,12 +687,21 @@ impl Render for CommandPalette {
                 .bg(ShellDeckColors::bg_surface())
                 .child(panel)
         } else {
-            root.absolute()
+            root.occlude()
+                .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
                 .right(px(0.0))
                 .bottom(px(0.0))
                 .bg(ShellDeckColors::backdrop())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _window, cx| {
+                        cx.emit(CommandPaletteEvent::Dismissed);
+                        this.dismiss(cx);
+                        cx.notify();
+                    }),
+                )
                 .flex()
                 .justify_center()
                 .pt(px(80.0))
