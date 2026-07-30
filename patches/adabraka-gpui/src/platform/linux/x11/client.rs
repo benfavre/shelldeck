@@ -1457,11 +1457,53 @@ fn x11_window_atoms(
         .unwrap_or_default()
 }
 
+// ShellDeck patch: expand client geometry to the EWMH outer frame used as companion collision chrome.
+fn x11_frame_extents(
+    xcb: &XCBConnection,
+    x_window: xproto::Window,
+    frame_extents_atom: xproto::Atom,
+) -> [u32; 4] {
+    let Some(extents) = xcb
+        .get_property(
+            false,
+            x_window,
+            frame_extents_atom,
+            xproto::AtomEnum::CARDINAL,
+            0,
+            4,
+        )
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| {
+            reply
+                .value
+                .chunks_exact(4)
+                .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+                .take(4)
+                .collect::<Vec<_>>()
+        })
+    else {
+        return [0; 4];
+    };
+    let [left, right, top, bottom] = extents.as_slice() else {
+        return [0; 4];
+    };
+    const MAX_REASONABLE_FRAME_EXTENT: u32 = 4_096;
+    if [*left, *right, *top, *bottom]
+        .into_iter()
+        .any(|extent| extent > MAX_REASONABLE_FRAME_EXTENT)
+    {
+        return [0; 4];
+    }
+    [*left, *right, *top, *bottom]
+}
+
 fn x11_window_bounds(
     xcb: &XCBConnection,
     root: xproto::Window,
     x_window: xproto::Window,
     scale_factor: f32,
+    frame_extents_atom: xproto::Atom,
 ) -> Option<Bounds<Pixels>> {
     let scale_factor = scale_factor.max(1.0);
     let geometry = xcb.get_geometry(x_window).ok()?.reply().ok()?;
@@ -1470,14 +1512,22 @@ fn x11_window_bounds(
         .ok()?
         .reply()
         .ok()?;
+    let [left, right, top, bottom] =
+        x11_frame_extents(xcb, x_window, frame_extents_atom);
+    let width = u32::from(geometry.width)
+        .checked_add(left)?
+        .checked_add(right)?;
+    let height = u32::from(geometry.height)
+        .checked_add(top)?
+        .checked_add(bottom)?;
     Some(Bounds {
         origin: point(
-            px(translated.dst_x as f32 / scale_factor),
-            px(translated.dst_y as f32 / scale_factor),
+            px((f32::from(translated.dst_x) - left as f32) / scale_factor),
+            px((f32::from(translated.dst_y) - top as f32) / scale_factor),
         ),
         size: Size {
-            width: px(geometry.width as f32 / scale_factor),
-            height: px(geometry.height as f32 / scale_factor),
+            width: px(width as f32 / scale_factor),
+            height: px(height as f32 / scale_factor),
         },
     })
 }
@@ -1487,8 +1537,9 @@ fn x11_external_window_snapshot(
     root: xproto::Window,
     x_window: xproto::Window,
     scale_factor: f32,
+    frame_extents_atom: xproto::Atom,
 ) -> Option<ExternalWindow> {
-    let bounds = x11_window_bounds(xcb, root, x_window, scale_factor)?;
+    let bounds = x11_window_bounds(xcb, root, x_window, scale_factor, frame_extents_atom)?;
     (f32::from(bounds.size.width) > 0.0 && f32::from(bounds.size.height) > 0.0).then_some(
         ExternalWindow {
             id: ExternalWindowId::from_raw(x_window as u64),
@@ -1914,7 +1965,15 @@ impl LinuxClient for X11Client {
             .chunks_exact(4)
             .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
             .filter(|&x_window| is_visible_external_x11_window(xcb, &state, x_window))
-            .filter_map(|x_window| x11_external_window_snapshot(xcb, root, x_window, scale_factor))
+            .filter_map(|x_window| {
+                x11_external_window_snapshot(
+                    xcb,
+                    root,
+                    x_window,
+                    scale_factor,
+                    state.atoms._NET_FRAME_EXTENTS,
+                )
+            })
             .collect()
     }
 
@@ -1925,7 +1984,15 @@ impl LinuxClient for X11Client {
         let root = xcb.setup().roots[state.x_root_index].root;
         let x_window = u32::try_from(id.raw()).ok()?;
         is_visible_external_x11_window(xcb, &state, x_window)
-            .then(|| x11_external_window_snapshot(xcb, root, x_window, state.scale_factor))?
+            .then(|| {
+                x11_external_window_snapshot(
+                    xcb,
+                    root,
+                    x_window,
+                    state.scale_factor,
+                    state.atoms._NET_FRAME_EXTENTS,
+                )
+            })?
     }
 
     fn set_tray_icon(&self, icon: Option<&[u8]>) {

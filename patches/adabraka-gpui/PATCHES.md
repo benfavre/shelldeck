@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **105**
+Total markers in code: **107**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -278,10 +278,12 @@ only, out of the src/-scoped marker convention.)
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: route targeted external desktop lookup through the active Linux backend.`
   - `src/platform/linux/platform.rs` — `// ShellDeck patch: route legacy external desktop geometry through the active Linux backend.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: convert visible external X11 top-level windows to global logical bounds.`
+  - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: expand client geometry to the EWMH outer frame used as companion collision chrome.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: import external-window snapshot types for X11 native IDs.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: enumerate eligible visible X11 windows with native XID snapshots for companion climbing.`
   - `src/platform/linux/x11/client.rs` — `// ShellDeck patch: target one X11 XID directly for attached companion following.`
   - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: external geometry excludes desktop-background windows.`
+  - `src/platform/linux/x11/window.rs` — `// ShellDeck patch: include window-manager chrome in external companion geometry.`
   - `src/platform/windows/display.rs` — `// ShellDeck patch: report the monitor DPI scale alongside global display geometry.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: enumerate visible external top-level Win32 windows with native HWND snapshots.`
   - `src/platform/windows/platform.rs` — `// ShellDeck patch: expose visible external top-level Win32 window snapshots.`
@@ -311,7 +313,9 @@ only, out of the src/-scoped marker convention.)
   X11 uses the EWMH stacking list and returns
   mapped external input/output windows with their native XIDs after excluding
   ShellDeck-owned, hidden, fullscreen, desktop-background, and zero-size
-  surfaces, and can re-check one XID directly with the same filters. Windows uses Win32 `EnumWindows` plus
+  surfaces. When `_NET_FRAME_EXTENTS` is available, X11 expands client geometry
+  to the outer window-manager frame so collision and perching use the visible
+  top chrome, and can re-check one XID directly with the same filters. Windows uses Win32 `EnumWindows` plus
   visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen filters, excluding
   ShellDeck-owned HWNDs and returning the raw HWND pointer value; its companion
   geometry uses native global desktop coordinates so per-window DPI scaling

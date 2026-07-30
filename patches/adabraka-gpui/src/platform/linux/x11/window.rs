@@ -80,6 +80,8 @@ x11rb::atom_manager! {
         // ShellDeck patch: interactive overlays need a focusable EWMH type.
         _NET_WM_WINDOW_TYPE_UTILITY,
         _NET_WM_WINDOW_TYPE_DOCK,
+        // ShellDeck patch: include window-manager chrome in external companion geometry.
+        _NET_FRAME_EXTENTS,
         _NET_WM_SYNC,
         _NET_WM_STATE_DEMANDS_ATTENTION,
         _NET_SUPPORTED,
