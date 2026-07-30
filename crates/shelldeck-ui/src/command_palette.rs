@@ -541,10 +541,13 @@ impl Render for CommandPalette {
                                 .child(lucide_icon(icon, 14.0, icon_color)),
                         )
                         .child(
+                            // Row-flex label: it needs flex_1 to receive a definite
+                            // width. With min_w(0) alone the text collapses to zero
+                            // and nothing is painted (see .agents/overflow.md).
                             div()
+                                .flex_1()
                                 .min_w(px(0.0))
-                                .overflow_hidden()
-                                .line_clamp(1)
+                                .truncate()
                                 .text_color(label_color)
                                 .child(name),
                         ),
