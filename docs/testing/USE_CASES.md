@@ -1775,8 +1775,8 @@ window to open is seeded from the live registration state.
 
 ### SDUC-445 — The assistant can prepare a real request form
 
-When the latest chat message explicitly asks ShellDeck to create, open, or
-prepare a customer request, the provider returns a strict routed request draft.
+When the latest chat message explicitly asks ShellDeck to create or prepare a
+new customer request, the provider returns a strict routed request draft.
 The main Assistant sheet and the standalone Dock both open the existing New
 Request sheet with title, description, and priority prefilled. The conversation
 records a clear acknowledgement, while the existing Create button remains the
@@ -1799,6 +1799,17 @@ click. Immediate-submit shortcuts use the colored AI button variant; prefill
 shortcuts retain the neutral outline variant, giving the two behaviors a stable
 visual code.
 
+### SDUC-447 — Natural-language actions reuse typed ShellDeck workflows
+
+An explicit conversational instruction can open the existing unsaved Script
+form and generate its draft, prepare a command for the currently active
+Terminal workflow, draft a reply for the selected Support ticket, stage a Jean
+dispatch behind its existing confirmation, or navigate to one visible hosted
+request by exact ID/title or an unambiguous partial match. The assistant never
+executes a command, saves a script, sends a reply, or dispatches to Jean by
+itself. Missing, stale, unauthorized, or ambiguous targets stop at a localized
+warning instead of being guessed.
+
 ---
 
 ## Change log
@@ -1806,6 +1817,9 @@ visual code.
 - **2026-07-29** — Hardened SDUC-228 and added SDTEST-1433: User-mode request
   polling now forces owner scope, while the dashboard independently filters
   counters and recent titles to the signed-in requester.
+- **2026-07-29** — Added SDUC-447 and SDTEST-1430..1432 for typed
+  natural-language workflow routing, exact target revalidation, and the
+  existing review/confirmation boundaries.
 - **2026-07-29** — Added SDUC-446 and SDTEST-1429 for typed Assistant shortcut
   behavior: immediate contextual submissions versus editable composer prefill.
 - **2026-07-29** — Extended SDUC-285 and added SDTEST-1225: development

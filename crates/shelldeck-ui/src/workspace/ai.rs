@@ -1,5 +1,61 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueTargetResolution<'a> {
+    Found(&'a str),
+    Ambiguous,
+    NotFound,
+}
+
+fn resolve_issue_target<'a>(
+    issues: &'a [Issue],
+    issue_id: Option<&str>,
+    query: &str,
+) -> IssueTargetResolution<'a> {
+    if let Some(issue_id) = issue_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if let Some(issue) = issues
+            .iter()
+            .find(|issue| issue.id.eq_ignore_ascii_case(issue_id))
+        {
+            return IssueTargetResolution::Found(&issue.id);
+        }
+    }
+
+    let query = query.trim();
+    if query.is_empty() {
+        return IssueTargetResolution::NotFound;
+    }
+    if let Some(issue) = issues
+        .iter()
+        .find(|issue| issue.id.eq_ignore_ascii_case(query))
+    {
+        return IssueTargetResolution::Found(&issue.id);
+    }
+
+    let exact_titles = issues
+        .iter()
+        .filter(|issue| issue.title.trim().eq_ignore_ascii_case(query))
+        .collect::<Vec<_>>();
+    match exact_titles.as_slice() {
+        [issue] => return IssueTargetResolution::Found(&issue.id),
+        [_, ..] => return IssueTargetResolution::Ambiguous,
+        [] => {}
+    }
+
+    let query = query.to_lowercase();
+    let partial = issues
+        .iter()
+        .filter(|issue| {
+            issue.title.to_lowercase().contains(&query) || issue.id.to_lowercase().contains(&query)
+        })
+        .collect::<Vec<_>>();
+    match partial.as_slice() {
+        [issue] => IssueTargetResolution::Found(&issue.id),
+        [_, ..] => IssueTargetResolution::Ambiguous,
+        [] => IssueTargetResolution::NotFound,
+    }
+}
+
 impl Workspace {
     pub(super) fn update_ai_api_key(
         &mut self,
@@ -436,34 +492,48 @@ impl Workspace {
     }
 
     pub(super) fn open_ai_workflow(&mut self, target: AiWorkflowTarget, cx: &mut Context<Self>) {
+        self.open_ai_workflow_with_instructions(target, None, false, cx);
+    }
+
+    fn open_ai_workflow_with_instructions(
+        &mut self,
+        target: AiWorkflowTarget,
+        initial_instructions: Option<String>,
+        generate_immediately: bool,
+        cx: &mut Context<Self>,
+    ) {
         let surface = target.surface();
         if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
             return;
         }
-        let pending = self
-            .ai_tasks
-            .iter()
-            .rev()
-            .find(|draft| {
-                draft.capability == target.capability()
-                    && draft.target_id == target.target_id()
-                    && matches!(draft.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
-            })
-            .cloned();
-        let should_generate = matches!(
-            &target,
-            AiWorkflowTarget::EntityNaming { .. }
-                | AiWorkflowTarget::SupportReply { .. }
-                | AiWorkflowTarget::SupportSummary { .. }
-                | AiWorkflowTarget::SupportTriage { .. }
-                | AiWorkflowTarget::IssueReply { .. }
-                | AiWorkflowTarget::IssueSummary { .. }
-                | AiWorkflowTarget::IssueTriage { .. }
-                | AiWorkflowTarget::ScriptExplain { .. }
-                | AiWorkflowTarget::ScriptReview { .. }
-                | AiWorkflowTarget::ScriptFix { .. }
-                | AiWorkflowTarget::TerminalDiagnose { .. }
-        ) && pending.is_none();
+        let pending = if initial_instructions.is_some() {
+            None
+        } else {
+            self.ai_tasks
+                .iter()
+                .rev()
+                .find(|draft| {
+                    draft.capability == target.capability()
+                        && draft.target_id == target.target_id()
+                        && matches!(draft.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
+                })
+                .cloned()
+        };
+        let should_generate = generate_immediately
+            || (matches!(
+                &target,
+                AiWorkflowTarget::EntityNaming { .. }
+                    | AiWorkflowTarget::SupportReply { .. }
+                    | AiWorkflowTarget::SupportSummary { .. }
+                    | AiWorkflowTarget::SupportTriage { .. }
+                    | AiWorkflowTarget::IssueReply { .. }
+                    | AiWorkflowTarget::IssueSummary { .. }
+                    | AiWorkflowTarget::IssueTriage { .. }
+                    | AiWorkflowTarget::ScriptExplain { .. }
+                    | AiWorkflowTarget::ScriptReview { .. }
+                    | AiWorkflowTarget::ScriptFix { .. }
+                    | AiWorkflowTarget::TerminalDiagnose { .. }
+            ) && pending.is_none());
         let title = match &target {
             AiWorkflowTarget::EntityNaming { .. } => t!("ai.naming.title").to_string(),
             AiWorkflowTarget::SupportReply { .. } => t!("ai.workflow.support_title").to_string(),
@@ -521,6 +591,7 @@ impl Workspace {
                     backend: self.app_config.ai.backend,
                     model: self.app_config.ai.model.clone(),
                     pending,
+                    initial_instructions,
                     comparison_original,
                     issue_triage_current,
                     action_policy,
@@ -1859,18 +1930,17 @@ impl Workspace {
                                 assistant.set_result(request_id, conversation_id, Ok(message), cx);
                             });
                         }
-                        Ok(AiAssistantCompletion::RequestDraft(draft)) => {
+                        Ok(AiAssistantCompletion::Action(action)) => {
                             let accepted = source.update(cx, |assistant, cx| {
                                 assistant.set_result(
                                     request_id,
                                     conversation_id,
-                                    Ok(t!("ai.assistant.request_draft_ready").to_string()),
+                                    Ok(assistant_action_acknowledgement(&action)),
                                     cx,
                                 )
                             });
                             if accepted {
-                                workspace.ai_sheet = None;
-                                workspace.open_ai_request_draft(draft, cx);
+                                workspace.apply_ai_assistant_action(action, cx);
                             }
                         }
                         Err(error) => {
@@ -1921,8 +1991,8 @@ impl Workspace {
 
     pub fn handle_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut Context<Self>) {
         match event {
-            AiCompanionEvent::OpenRequestDraft(draft) => {
-                self.open_ai_request_draft(draft, cx);
+            AiCompanionEvent::ApplyAction(action) => {
+                self.apply_ai_assistant_action(action, cx);
             }
             AiCompanionEvent::ResumeTask(task_id) => {
                 let target = self
@@ -1959,6 +2029,146 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    fn apply_ai_assistant_action(&mut self, action: AiAssistantAction, cx: &mut Context<Self>) {
+        self.ai_sheet = None;
+        match action {
+            AiAssistantAction::CreateRequest(draft) => self.open_ai_request_draft(draft, cx),
+            AiAssistantAction::CreateScript { instructions } => {
+                if !self.can_access_mode(AppMode::Dev)
+                    || !self.ai_backend_available()
+                    || !self.app_config.ai.allows(AiSurface::Script)
+                {
+                    self.show_toast(
+                        t!("toast.ai.surface_unavailable").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                self.open_ai_script_draft(instructions, cx);
+            }
+            AiAssistantAction::TerminalCommand { instructions } => {
+                if !self.ai_backend_available() || !self.app_config.ai.allows(AiSurface::Terminal) {
+                    self.show_toast(
+                        t!("toast.ai.surface_unavailable").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                let session_id = (self.effective_mode() == AppMode::Dev
+                    && self.active_view == ActiveView::Terminal)
+                    .then(|| self.terminal.read(cx).ai_context_data())
+                    .and_then(|data| {
+                        data.get("session_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    });
+                let Some(session_id) = session_id else {
+                    self.show_toast(
+                        t!("toast.ai.no_active_terminal").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                };
+                self.open_ai_workflow_with_instructions(
+                    AiWorkflowTarget::TerminalCommand { session_id },
+                    Some(instructions),
+                    true,
+                    cx,
+                );
+            }
+            AiAssistantAction::SupportReply { instructions } => {
+                if !self.ai_backend_available() || !self.app_config.ai.allows(AiSurface::Support) {
+                    self.show_toast(
+                        t!("toast.ai.surface_unavailable").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                if self.effective_mode() != AppMode::Support {
+                    self.show_toast(
+                        t!("toast.ai.no_selected_support_ticket").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                let Some((ticket_id, _)) = self.support.read(cx).selected_ticket_identity() else {
+                    self.show_toast(
+                        t!("toast.ai.no_selected_support_ticket").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                };
+                self.open_ai_workflow_with_instructions(
+                    AiWorkflowTarget::SupportReply { ticket_id },
+                    Some(instructions),
+                    true,
+                    cx,
+                );
+            }
+            AiAssistantAction::JeanDispatch { prompt } => {
+                if self.effective_jean_config().is_none() {
+                    self.show_toast(
+                        t!("toast.jean.not_configured").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                self.prepare_jean_dispatch(prompt, cx);
+            }
+            AiAssistantAction::OpenRequest { issue_id, query } => {
+                if !self.app_config.cloud_sync.is_configured() {
+                    self.show_toast(
+                        t!("toast.issue.login_required_list").to_string(),
+                        ToastLevel::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                let resolution =
+                    resolve_issue_target(&self.issues_list, issue_id.as_deref(), &query);
+                let issue_id = match resolution {
+                    IssueTargetResolution::Found(id) => id.to_string(),
+                    IssueTargetResolution::Ambiguous => {
+                        self.show_toast(
+                            t!("toast.ai.request_target_ambiguous").to_string(),
+                            ToastLevel::Warning,
+                            cx,
+                        );
+                        return;
+                    }
+                    IssueTargetResolution::NotFound => {
+                        self.show_toast(
+                            t!("toast.ai.request_target_not_found").to_string(),
+                            ToastLevel::Warning,
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                if self.effective_mode() == AppMode::Support {
+                    self.support.update(cx, |view, cx| {
+                        view.set_section(crate::support_view::SupportSection::Requests);
+                        cx.notify();
+                    });
+                } else {
+                    if self.can_switch_mode() {
+                        self.set_mode(AppMode::User, cx);
+                    }
+                    self.user_home_tab = UserHomeTab::Requests;
+                }
+                self.select_issue(issue_id, cx);
+            }
+        }
+        cx.notify();
     }
 
     pub(super) fn open_ai_task_target(&mut self, task_id: Uuid, cx: &mut Context<Self>) {
@@ -2061,6 +2271,47 @@ impl Workspace {
             t!("toast.ai.task_stop_unavailable").to_string(),
             ToastLevel::Warning,
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_issue_target, IssueTargetResolution};
+    use shelldeck_core::config::issues::Issue;
+
+    fn issue(id: &str, title: &str) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: title.to_string(),
+            ..Issue::default()
+        }
+    }
+
+    // SDTEST-1431
+    #[test]
+    fn assistant_request_target_resolution_rejects_stale_and_ambiguous_matches() {
+        let issues = vec![
+            issue("req-42", "Chargement des produits clients"),
+            issue("req-43", "Chargement des produits fournisseurs"),
+            issue("req-99", "Certificat nginx expiré"),
+        ];
+
+        assert_eq!(
+            resolve_issue_target(&issues, Some("REQ-42"), "texte ignoré"),
+            IssueTargetResolution::Found("req-42")
+        );
+        assert_eq!(
+            resolve_issue_target(&issues, None, "Certificat nginx expiré"),
+            IssueTargetResolution::Found("req-99")
+        );
+        assert_eq!(
+            resolve_issue_target(&issues, None, "produits"),
+            IssueTargetResolution::Ambiguous
+        );
+        assert_eq!(
+            resolve_issue_target(&issues, Some("req-stale"), "absente"),
+            IssueTargetResolution::NotFound
         );
     }
 }

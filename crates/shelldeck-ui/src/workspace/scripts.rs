@@ -1221,6 +1221,13 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(super) fn open_ai_script_draft(&mut self, instructions: String, cx: &mut Context<Self>) {
+        self.show_script_form(cx);
+        if self.script_form.is_some() {
+            self.generate_script_form_with_ai(instructions, cx);
+        }
+    }
+
     pub(super) fn show_script_form_edit(
         &mut self,
         script: &shelldeck_core::models::script::Script,
