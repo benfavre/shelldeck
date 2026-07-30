@@ -632,7 +632,12 @@ impl Render for CommandPalette {
                 .w(px(520.0))
                 .max_h(px(460.0))
                 .rounded(px(10.0))
-                .shadow_xl();
+                .shadow_xl()
+                // Keep clicks inside the panel from reaching the backdrop,
+                // which dismisses.
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation();
+                });
         }
 
         let root = div()
@@ -647,12 +652,21 @@ impl Render for CommandPalette {
                 .bg(ShellDeckColors::bg_surface())
                 .child(panel)
         } else {
-            root.absolute()
+            root.occlude()
+                .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
                 .right(px(0.0))
                 .bottom(px(0.0))
                 .bg(ShellDeckColors::backdrop())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _window, cx| {
+                        cx.emit(CommandPaletteEvent::Dismissed);
+                        this.dismiss(cx);
+                        cx.notify();
+                    }),
+                )
                 .flex()
                 .justify_center()
                 .pt(px(80.0))
