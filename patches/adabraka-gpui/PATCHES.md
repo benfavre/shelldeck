@@ -313,9 +313,11 @@ only, out of the src/-scoped marker convention.)
   X11 uses the EWMH stacking list and returns
   mapped external input/output windows with their native XIDs after excluding
   ShellDeck-owned, hidden, fullscreen, desktop-background, and zero-size
-  surfaces. When `_NET_FRAME_EXTENTS` is available, X11 expands client geometry
-  to the outer window-manager frame so collision and perching use the visible
-  top chrome, and can re-check one XID directly with the same filters. Windows uses Win32 `EnumWindows` plus
+  surfaces. When `_NET_FRAME_EXTENTS` is available with an exact CARDINAL/32
+  four-value payload inside the defensive extent bound, X11 expands client
+  geometry to the outer window-manager frame so collision and perching use the
+  visible top chrome, and can re-check one XID directly with the same filters.
+  Windows uses Win32 `EnumWindows` plus
   visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen filters, excluding
   ShellDeck-owned HWNDs and returning the raw HWND pointer value; its companion
   geometry uses native global desktop coordinates so per-window DPI scaling

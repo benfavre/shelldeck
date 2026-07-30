@@ -1463,7 +1463,7 @@ fn x11_frame_extents(
     x_window: xproto::Window,
     frame_extents_atom: xproto::Atom,
 ) -> [u32; 4] {
-    let Some(extents) = xcb
+    let Some(reply) = xcb
         .get_property(
             false,
             x_window,
@@ -1474,21 +1474,24 @@ fn x11_frame_extents(
         )
         .ok()
         .and_then(|cookie| cookie.reply().ok())
-        .map(|reply| {
-            reply
-                .value
-                .chunks_exact(4)
-                .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
-                .take(4)
-                .collect::<Vec<_>>()
-        })
     else {
         return [0; 4];
     };
+    decode_x11_frame_extents(reply.type_, reply.format, &reply.value)
+}
+
+fn decode_x11_frame_extents(type_: xproto::Atom, format: u8, value: &[u8]) -> [u32; 4] {
+    if type_ != u32::from(xproto::AtomEnum::CARDINAL) || format != 32 || value.len() != 16 {
+        return [0; 4];
+    }
+    let extents = value
+        .chunks_exact(4)
+        .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
+        .collect::<Vec<_>>();
     let [left, right, top, bottom] = extents.as_slice() else {
         return [0; 4];
     };
-    const MAX_REASONABLE_FRAME_EXTENT: u32 = 4_096;
+    const MAX_REASONABLE_FRAME_EXTENT: u32 = 512;
     if [*left, *right, *top, *bottom]
         .into_iter()
         .any(|extent| extent > MAX_REASONABLE_FRAME_EXTENT)
@@ -1496,6 +1499,41 @@ fn x11_frame_extents(
         return [0; 4];
     }
     [*left, *right, *top, *bottom]
+}
+
+#[cfg(test)]
+mod companion_external_window_tests {
+    use super::decode_x11_frame_extents;
+    use x11rb::protocol::xproto;
+
+    // SDTEST-1573
+    #[test]
+    fn x11_frame_extents_require_cardinal_32_and_bounded_exact_values() {
+        let values = [8_u32, 9, 31, 10]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        let cardinal = u32::from(xproto::AtomEnum::CARDINAL);
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &values),
+            [8, 9, 31, 10]
+        );
+        assert_eq!(decode_x11_frame_extents(cardinal, 8, &values), [0; 4]);
+        assert_eq!(decode_x11_frame_extents(0, 32, &values), [0; 4]);
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &values[..12]),
+            [0; 4]
+        );
+
+        let oversized = [513_u32, 0, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_x11_frame_extents(cardinal, 32, &oversized),
+            [0; 4]
+        );
+    }
 }
 
 fn x11_window_bounds(
