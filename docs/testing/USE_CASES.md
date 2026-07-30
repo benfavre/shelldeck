@@ -1816,7 +1816,11 @@ frames. Overlay creation or native movement failures pause the character
 without stealing keyboard focus, and Windows overlays use non-activating native
 styles and show paths. External-window climbing is used
 only when the platform geometry provider can supply eligible visible window
-edges; invalid, minimized, fullscreen, and desktop surfaces are excluded.
+edges; invalid, minimized, fullscreen, and desktop surfaces are excluded. An
+X11 backend can observe X11 and XWayland clients only. Native Wayland windows,
+including browsers or messaging apps using their Wayland backend, are not
+presented as climbable because GNOME and other compositors do not expose a
+standard permitted global window-geometry API.
 
 ### SDUC-450 — Character selection is discoverable and immediately visible
 
@@ -1868,10 +1872,12 @@ safe fallback landing surface. The single-body deterministic AABB solver also
 clamps and reflects against display side walls and the ceiling, settles tiny
 post-impact horizontal velocities, and prevents fast descending motion from
 tunnelling through one-way window tops. Cached platform snapshots feed the
-runtime instead of native enumeration on every animation frame: full lists
-refresh at a low rate while a locked preview and dynamic fall use bounded
-targeted stable-ID lookup. Moving or closing a platform during a fall updates or
-removes that collision surface before impact. Closing, minimizing, or otherwise
+runtime instead of native enumeration on every animation frame: one initial
+full list seeds the fall, then each 100 ms refresh simulates the next fixed-step
+trajectory and revalidates at most the first reachable stable ID. If that target
+moves or closes, only its fresh geometry may become the active collision
+surface; no unvalidated cached fallback is promoted, and the remaining cached
+windows are reconsidered on a later refresh. Closing, minimizing, or otherwise
 losing the target window detaches safely, restarts falling only when full motion
 is allowed, and otherwise returns to still/reduced-motion behavior. Screen-floor
 landings resume the one-shot roaming schedule only when the character is not
@@ -1882,10 +1888,13 @@ clears cached window platforms so the character continues to the screen floor.
 Subthreshold pointer jitter must preserve click delivery and avoid native overlay
 moves. Pause, reduced-motion transitions, clicks, and new drags clear stale
 dynamic velocity/contact immediately; native movement is gated by rounded
-platform origins. When gravity starts without cached geometry, the runtime performs
-one full visible-window discovery, then refreshes only those stable native IDs at a
-bounded cadence so moved or closed platforms stay current without repeating a full
-X11 scan every 100 ms. Per-pixel native hit testing remains a platform-hardening
+platform origins. When gravity starts without cached geometry, the runtime
+performs one full visible-window discovery, then simulates the next fixed-step
+trajectory and refreshes at most the first reachable collision candidate's
+stable native ID per 100 ms tick. This bounds synchronous native lookup work
+independently of the total visible-window count and prevents a closed target
+from activating an older unvalidated cache entry. Per-pixel native hit testing
+remains a platform-hardening
 follow-up, so the transparent overlay is still bounded by its configured mascot
 viewport rather than its exact alpha silhouette.
 
@@ -1893,12 +1902,14 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
-- **2026-07-30** — Extended SDUC-448/451 and added SDTEST-1571..1573 so gravity
-  refreshes the full current visible-window platform set, discovers windows after
-  a fall starts, and lands on the visible top chrome instead of falling directly
-  to the display floor. Subsequent fall updates target only captured stable IDs to
-  avoid repeated synchronous full X11 scans. X11 external snapshots now include
-  validated EWMH `_NET_FRAME_EXTENTS` when available.
+- **2026-07-30** — Extended SDUC-448/449/451 and added SDTEST-1571..1577 so
+  gravity discovers windows after a fall starts, applies the actual drag-release
+  velocity before prediction, trajectory-ranks the first reachable top by exact
+  projected time of impact, and lands on visible chrome instead of falling directly to the
+  display floor. Subsequent updates revalidate one captured stable ID and never
+  promote an older unvalidated fallback, avoiding repeated synchronous full X11
+  scans. X11 snapshots include validated EWMH `_NET_FRAME_EXTENTS` when
+  available; native Wayland clients remain outside the X11 geometry provider.
 - **2026-07-29** — Hardened SDUC-448/449/451 and added SDTEST-1547..1562 plus
   SDTEST-1570 for impact-time diagonal collision, deterministic platform ties,
   changed work-area floors, preserved catch-up landings, fractional frame time,

@@ -13,13 +13,13 @@
 | Native selection replacement | Contract delivered, adapters pending | Copy remains the universal fallback. Windows UI Automation, macOS Accessibility, and Linux AT-SPI adapters are not enabled yet |
 | Character roster | Delivered | No character plus Clippy, Shelly, Spark, Byte, Orbit, and Nox with embedded transparent PNG assets and persisted appearance settings |
 | Desktop overlay | Delivered where absolute positioning is supported | One transparent, no-focus, pointer-enabled overlay with native origin movement, active drag/outside-release handling, pause/return tray controls, and no continuous frames while static |
-| Window geometry and climbing | Delivered by capability | X11, macOS, and Windows expose stable-ID filtered external top-level rectangles; magnetic drag preview, release, collision, attachment, and low-rate follow use platform work areas. Windows and macOS expose per-display work areas; X11 currently uses the root EWMH `_NET_WORKAREA`. Native Wayland is unavailable and explained in Appearance |
+| Window geometry and climbing | Delivered by capability | X11, macOS, and Windows expose stable-ID filtered external top-level rectangles; magnetic drag preview, release, collision, attachment, and low-rate follow use platform work areas. Windows and macOS expose per-display work areas; X11 currently uses the root EWMH `_NET_WORKAREA` and can observe X11/XWayland clients only. Native Wayland roaming and native Wayland client geometry in mixed sessions are unavailable and explained in Appearance |
 | Multi-display roaming | Delivered | One-shot occasional/playful timers, duration-based capped fixed-step simulation, work-area-aware routing where the platform exposes it, live display routing, monitor-removal recovery, and movement duty-cycle control |
 | Animation and OS lifecycle | Partially delivered | PNG-backed procedural walking, flying, reaction, landing, dragging, collision, sampled OS reduced-motion, and Windows no-focus behavior are delivered. Live OS preference observation, per-monitor X11 work areas, per-pixel native hit testing, fullscreen suppression, battery policy, lock/suspend hooks, and performance telemetry UI remain follow-up work |
 | Screenshot context | Deferred Phase 3 | No continuous capture exists. Explicit previewable capture remains intentionally outside the portable baseline |
 
 The code and regression inventory are mapped by SDUC-445..451 and
-SDTEST-1460..1573 in `docs/testing/`. Native attachment capture/deletion remains
+SDTEST-1460..1577 in `docs/testing/`. Native attachment capture/deletion remains
 tracked separately under SDUC-432 and SDTEST-1421..1423.
 
 ## Objective

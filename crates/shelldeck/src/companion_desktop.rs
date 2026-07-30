@@ -33,6 +33,7 @@ const DRAG_VELOCITY_SAMPLE_LIMIT: Duration = Duration::from_millis(120);
 const DRAG_WINDOW_LIST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const DRAG_LOCKED_WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const PHYSICS_WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK: usize = 1;
 const SNAP_VERTICAL_GAP: f32 = 42.0;
 const SNAP_MIN_HORIZONTAL_OVERLAP: f32 = 36.0;
 const SNAP_PREVIEW_VERTICAL_GAP: f32 = 72.0;
@@ -861,13 +862,13 @@ impl DesktopCharacterRuntime {
         }
         if full_motion {
             self.physics_windows = windows.to_vec();
+            sim.release_dynamic(release_velocity);
             self.physics_platforms = if self.config.appearance.desktop.allow_window_climbing {
-                physics_platforms(&self.physics_windows, displays)
+                physics_platforms_for_dynamic_body(&self.physics_windows, displays, sim)
             } else {
                 Vec::new()
             };
             self.physics_snapshot_at = Some(Instant::now());
-            sim.release_dynamic(release_velocity);
             ReleaseLifecycle::RequestPhysicsFrame
         } else {
             let origin = from_point2(sim.simulation.position);
@@ -1223,15 +1224,48 @@ impl DesktopCharacterRuntime {
             return;
         }
         let displays = desktop_displays(cx);
-        self.physics_windows = if self.physics_snapshot_at.is_none() {
-            cx.visible_external_windows()
+        let initial_discovery = self.physics_snapshot_at.is_none();
+        let refresh_ids = if initial_discovery {
+            self.physics_windows = cx.visible_external_windows();
+            self.simulation
+                .as_ref()
+                .map(|sim| {
+                    physics_refresh_window_ids(
+                        &self.physics_windows,
+                        &displays,
+                        sim,
+                        MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+                    )
+                })
+                .unwrap_or_default()
         } else {
-            self.physics_windows
+            let refresh_ids = self
+                .simulation
+                .as_ref()
+                .map(|sim| {
+                    physics_refresh_window_ids(
+                        &self.physics_windows,
+                        &displays,
+                        sim,
+                        MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+                    )
+                })
+                .unwrap_or_default();
+            self.physics_windows = self
+                .physics_windows
                 .iter()
-                .filter_map(|window| cx.external_window(window.id))
-                .collect()
+                .filter_map(|window| {
+                    if refresh_ids.contains(&window.id) {
+                        cx.external_window(window.id)
+                    } else {
+                        Some(window.clone())
+                    }
+                })
+                .collect();
+            refresh_ids
         };
-        self.physics_platforms = physics_platforms(&self.physics_windows, &displays);
+        self.physics_platforms =
+            physics_platforms_for_ids(&self.physics_windows, &displays, &refresh_ids);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
@@ -1258,20 +1292,51 @@ impl DesktopCharacterRuntime {
         {
             return;
         }
-        self.physics_windows = if self.physics_snapshot_at.is_none() {
-            current_windows.to_vec()
+        let initial_discovery = self.physics_snapshot_at.is_none();
+        let refresh_ids = if initial_discovery {
+            self.physics_windows = current_windows.to_vec();
+            self.simulation
+                .as_ref()
+                .map(|sim| {
+                    physics_refresh_window_ids(
+                        &self.physics_windows,
+                        displays,
+                        sim,
+                        MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+                    )
+                })
+                .unwrap_or_default()
         } else {
-            self.physics_windows
+            let refresh_ids = self
+                .simulation
+                .as_ref()
+                .map(|sim| {
+                    physics_refresh_window_ids(
+                        &self.physics_windows,
+                        displays,
+                        sim,
+                        MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+                    )
+                })
+                .unwrap_or_default();
+            self.physics_windows = self
+                .physics_windows
                 .iter()
                 .filter_map(|cached| {
-                    current_windows
-                        .iter()
-                        .find(|current| current.id == cached.id)
-                        .cloned()
+                    if refresh_ids.contains(&cached.id) {
+                        current_windows
+                            .iter()
+                            .find(|current| current.id == cached.id)
+                            .cloned()
+                    } else {
+                        Some(cached.clone())
+                    }
                 })
-                .collect()
+                .collect();
+            refresh_ids
         };
-        self.physics_platforms = physics_platforms(&self.physics_windows, displays);
+        self.physics_platforms =
+            physics_platforms_for_ids(&self.physics_windows, displays, &refresh_ids);
         self.physics_snapshot_at = Some(now);
         self.diagnostics.geometry_snapshot_count =
             self.diagnostics.geometry_snapshot_count.saturating_add(1);
@@ -2935,6 +3000,7 @@ fn window_top_surface(window: &ExternalWindow, generation: u64) -> WalkableSurfa
     }
 }
 
+#[cfg(test)]
 fn physics_platforms(
     windows: &[ExternalWindow],
     displays: &[DesktopDisplay],
@@ -2944,6 +3010,135 @@ fn physics_platforms(
         .filter(|window| valid_physics_window(window.bounds, displays))
         .map(|window| window_top_surface(window, window.id.raw()))
         .collect()
+}
+
+fn physics_refresh_window_ids(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    sim: &RuntimeSimulation,
+    limit: usize,
+) -> Vec<ExternalWindowId> {
+    let body_left = sim.simulation.position.x;
+    let body_right = body_left + sim.extent;
+    let body_bottom = sim.simulation.position.y + sim.extent;
+    let mut candidates = windows
+        .iter()
+        .filter(|window| valid_physics_window(window.bounds, displays))
+        .filter_map(|window| {
+            let top = f32::from(window.bounds.origin.y);
+            if top + f32::EPSILON < body_bottom {
+                return None;
+            }
+            let left = f32::from(window.bounds.origin.x);
+            let right = f32::from(window.bounds.right());
+            let horizontal_gap = if body_right < left {
+                left - body_right
+            } else if body_left > right {
+                body_left - right
+            } else {
+                0.0
+            };
+            Some((
+                window.id,
+                projected_window_collision_time(window, sim, PHYSICS_WINDOW_REFRESH_INTERVAL),
+                horizontal_gap > 0.0,
+                top - body_bottom,
+                horizontal_gap,
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.1
+            .is_none()
+            .cmp(&right.1.is_none())
+            .then_with(|| {
+                left.1
+                    .unwrap_or(f32::INFINITY)
+                    .total_cmp(&right.1.unwrap_or(f32::INFINITY))
+            })
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.total_cmp(&right.3))
+            .then_with(|| left.4.total_cmp(&right.4))
+            .then_with(|| left.0.raw().cmp(&right.0.raw()))
+    });
+    candidates
+        .into_iter()
+        .take(limit)
+        .map(|candidate| candidate.0)
+        .collect()
+}
+
+fn projected_window_collision_time(
+    window: &ExternalWindow,
+    sim: &RuntimeSimulation,
+    horizon: Duration,
+) -> Option<f32> {
+    let surface = window_top_surface(window, window.id.raw());
+    let mut body = sim.body.clone();
+    let fixed_step = Duration::from_millis(sim.simulation.config.fixed_timestep_ms.max(1));
+    let mut remaining = horizon;
+    let mut elapsed_total = Duration::ZERO;
+    while !remaining.is_zero() && body.mode == BodyMode::Dynamic {
+        let elapsed = remaining.min(fixed_step);
+        let previous_bottom = body.position.y + body.size.y;
+        let mut free_body = body.clone();
+        let free_result = free_body.step(
+            elapsed.as_secs_f32(),
+            PhysicsConfig::default(),
+            &[],
+            sim.physics_bounds(),
+        );
+        let desired_bottom = free_result.position.y + free_body.size.y;
+        let result = body.step(
+            elapsed.as_secs_f32(),
+            PhysicsConfig::default(),
+            std::slice::from_ref(&surface),
+            sim.physics_bounds(),
+        );
+        if result
+            .contact
+            .as_ref()
+            .is_some_and(|contact| contact.id == surface.id)
+        {
+            let vertical_span = desired_bottom - previous_bottom;
+            let fraction = if vertical_span.abs() <= f32::EPSILON {
+                0.0
+            } else {
+                ((surface.segment.start.y - previous_bottom) / vertical_span).clamp(0.0, 1.0)
+            };
+            return Some(elapsed_total.as_secs_f32() + elapsed.as_secs_f32() * fraction);
+        }
+        remaining = remaining.saturating_sub(elapsed);
+        elapsed_total = elapsed_total.saturating_add(elapsed);
+    }
+    None
+}
+
+fn physics_platforms_for_ids(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    ids: &[ExternalWindowId],
+) -> Vec<WalkableSurface> {
+    windows
+        .iter()
+        .filter(|window| ids.contains(&window.id))
+        .filter(|window| valid_physics_window(window.bounds, displays))
+        .map(|window| window_top_surface(window, window.id.raw()))
+        .collect()
+}
+
+fn physics_platforms_for_dynamic_body(
+    windows: &[ExternalWindow],
+    displays: &[DesktopDisplay],
+    sim: &RuntimeSimulation,
+) -> Vec<WalkableSurface> {
+    let refresh_ids = physics_refresh_window_ids(
+        windows,
+        displays,
+        sim,
+        MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+    );
+    physics_platforms_for_ids(windows, displays, &refresh_ids)
 }
 
 fn window_id_for_contact(
@@ -4596,6 +4791,7 @@ mod tests {
         let original = external_window(1553, bounds(200.0, 300.0, 260.0, 180.0));
         let moved = external_window(1553, bounds(200.0, 360.0, 260.0, 180.0));
         let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 40.0);
         runtime
             .simulation
             .as_mut()
@@ -4678,13 +4874,18 @@ mod tests {
         let moved_first = external_window(1572, bounds(200.0, 360.0, 260.0, 180.0));
         let newly_visible = external_window(1574, bounds(900.0, 700.0, 260.0, 180.0));
         let mut runtime = runtime_with_sim();
+        runtime.simulation.as_mut().unwrap().simulation.position = Point2::new(220.0, 40.0);
         runtime
             .simulation
             .as_mut()
             .unwrap()
             .release_dynamic(Point2::new(0.0, 0.0));
 
-        runtime.refresh_physics_platforms_for_test(&[first.clone(), second], &[display()], started);
+        runtime.refresh_physics_platforms_for_test(
+            &[first.clone(), second.clone()],
+            &[display()],
+            started,
+        );
         assert_eq!(runtime.physics_windows.len(), 2);
 
         runtime.refresh_physics_platforms_for_test(
@@ -4692,8 +4893,120 @@ mod tests {
             &[display()],
             started + PHYSICS_WINDOW_REFRESH_INTERVAL,
         );
-        assert_eq!(runtime.physics_windows, vec![moved_first]);
+        assert_eq!(runtime.physics_windows, vec![moved_first, second]);
         assert_eq!(runtime.physics_platforms.len(), 1);
+    }
+
+    // SDTEST-1574
+    #[test]
+    fn dynamic_physics_refresh_budget_prefers_a_reachable_diagonal_collision() {
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.simulation.position = Point2::new(40.0, 40.0);
+        sim.body.position = sim.simulation.position;
+        sim.release_dynamic(Point2::new(1_600.0, 2_400.0));
+        let windows = vec![
+            // This lower platform overlaps the body at refresh time, but the
+            // body cannot reach it during the next refresh interval.
+            external_window(1, bounds(20.0, 620.0, 260.0, 180.0)),
+            // The fast diagonal trajectory reaches this platform first even
+            // though there is no horizontal overlap at refresh time.
+            external_window(2, bounds(290.0, 350.0, 260.0, 180.0)),
+        ];
+
+        assert_eq!(
+            physics_refresh_window_ids(
+                &windows,
+                &[display()],
+                sim,
+                MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+            ),
+            vec![ExternalWindowId::from_raw(2)]
+        );
+    }
+
+    // SDTEST-1575
+    #[test]
+    fn targeted_refresh_does_not_promote_an_unvalidated_cached_fallback() {
+        let started = Instant::now();
+        let selected = external_window(1575, bounds(220.0, 300.0, 260.0, 180.0));
+        let cached_fallback = external_window(1576, bounds(220.0, 520.0, 260.0, 180.0));
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.simulation.position = Point2::new(220.0, 40.0);
+        sim.body.position = sim.simulation.position;
+        sim.release_dynamic(Point2::new(0.0, 2_400.0));
+
+        runtime.refresh_physics_platforms_for_test(
+            &[selected.clone(), cached_fallback.clone()],
+            &[display()],
+            started,
+        );
+        assert_eq!(runtime.physics_platforms.len(), 1);
+
+        runtime.refresh_physics_platforms_for_test(
+            std::slice::from_ref(&cached_fallback),
+            &[display()],
+            started + PHYSICS_WINDOW_REFRESH_INTERVAL,
+        );
+        assert_eq!(runtime.physics_windows, vec![cached_fallback]);
+        assert!(runtime.physics_platforms.is_empty());
+    }
+
+    // SDTEST-1576
+    #[test]
+    fn trajectory_refresh_orders_collisions_within_the_same_fixed_step() {
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.simulation.position = Point2::new(40.0, 40.0);
+        sim.body.position = sim.simulation.position;
+        sim.release_dynamic(Point2::new(1_600.0, 2_400.0));
+        let windows = vec![
+            // Current overlap would have won the old step-number tie even
+            // though this lower platform is crossed second.
+            external_window(1, bounds(20.0, 320.0, 260.0, 180.0)),
+            // The body reaches this higher platform first during the same
+            // 33 ms fixed step after moving diagonally into horizontal range.
+            external_window(9, bounds(260.0, 300.0, 260.0, 180.0)),
+        ];
+
+        assert_eq!(
+            physics_refresh_window_ids(
+                &windows,
+                &[display()],
+                sim,
+                MAX_PHYSICS_WINDOW_REFRESHES_PER_TICK,
+            ),
+            vec![ExternalWindowId::from_raw(9)]
+        );
+    }
+
+    // SDTEST-1577
+    #[test]
+    fn drag_release_predicts_first_interval_platforms_from_release_velocity() {
+        let mut runtime = runtime_with_sim();
+        let sim = runtime.simulation.as_mut().unwrap();
+        sim.simulation.position = Point2::new(40.0, 40.0);
+        sim.body.position = sim.simulation.position;
+        runtime.drag_free_position = Some(sim.simulation.position);
+        let windows = vec![
+            external_window(1, bounds(20.0, 620.0, 260.0, 180.0)),
+            external_window(2, bounds(290.0, 350.0, 260.0, 180.0)),
+        ];
+
+        assert_eq!(
+            runtime.finish_user_drag_snapshot(
+                Point2::new(1_600.0, 2_400.0),
+                &windows,
+                &[display()],
+            ),
+            ReleaseLifecycle::RequestPhysicsFrame
+        );
+        assert_eq!(runtime.physics_platforms.len(), 1);
+        assert_eq!(
+            runtime.physics_platforms[0].id,
+            window_top_surface(&windows[1], windows[1].id.raw()).id
+        );
     }
 
     // SDTEST-1554
