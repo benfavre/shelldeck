@@ -52,6 +52,7 @@ lucide_assets!(
     "archive-restore",
     "arrow-down",
     "arrow-up",
+    "at-sign",
     "arrow-left-right",
     "arrow-right",
     "bot",
@@ -528,9 +529,42 @@ impl CompanionRoot {
 
     fn route_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut gpui::Context<Self>) {
         let main_window = self.runtime.main_window;
+        // The palette is a window of its own, so it must not drag the whole
+        // workspace forward with it.
+        //
+        // Deferred through `spawn` on purpose: this handler already runs inside
+        // a `CompanionRoot` update, and `toggle_companion_command_palette`
+        // re-enters the same entity to read its window handle. Calling it
+        // synchronously panics with "cannot update CompanionRoot while it is
+        // already being updated".
+        if matches!(event, AiCompanionEvent::OpenPalette) {
+            let root = cx.entity().downgrade();
+            cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
+                let _ = cx.update(|cx| {
+                    toggle_companion_command_palette(root, main_window, cx);
+                });
+            })
+            .detach();
+            return;
+        }
+        let opens_workspace = matches!(
+            event,
+            AiCompanionEvent::ApplyAction(_)
+                | AiCompanionEvent::OpenSettings
+                | AiCompanionEvent::OpenMainWindow
+        );
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let _ = main_window.update(cx, |_, window, cx| {
+                if opens_workspace {
+                    window.show_window();
+                    window.activate_window();
+                }
                 let _ = this.update(cx, |root, cx| {
+                    if opens_workspace {
+                        if let Some(dock) = root.runtime.ai_dock_window.take() {
+                            let _ = dock.update(cx, |_, window, _| window.remove_window());
+                        }
+                    }
                     let workspace = root.ensure_workspace(window, cx);
                     workspace.update(cx, |workspace, cx| {
                         workspace.handle_ai_companion_event(event, cx);

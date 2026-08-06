@@ -436,10 +436,17 @@ impl Workspace {
             .as_ref()
             .map(|payload| payload.sites.len())
             .unwrap_or(0);
-        let open_requests = self
+        // Keep the User dashboard personal even if an older Manage build or a
+        // stale staff-scoped cache hands us a broader list.
+        let my_requests = self
             .issues_list
             .iter()
-            .filter(|issue| !matches!(issue.status.as_str(), "closed" | "resolved"))
+            .filter(|issue| self.is_my_issue(issue))
+            .cloned()
+            .collect::<Vec<_>>();
+        let open_requests = my_requests
+            .iter()
+            .filter(|issue| !issue.is_closed())
             .count();
 
         let stat = |icon: &'static str, value: usize, label: String| {
@@ -512,7 +519,7 @@ impl Workspace {
                 entity.update(cx, |this, cx| this.open_new_request(cx));
             });
 
-        let recent_requests = if self.issues_list.is_empty() {
+        let recent_requests = if my_requests.is_empty() {
             div()
                 .flex()
                 .flex_col()
@@ -529,8 +536,7 @@ impl Workspace {
                 )
                 .into_any_element()
         } else {
-            let rows = self
-                .issues_list
+            let rows = my_requests
                 .iter()
                 .take(3)
                 .cloned()

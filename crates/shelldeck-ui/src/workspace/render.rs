@@ -602,7 +602,7 @@ impl Render for Workspace {
 
         // Titlebar account dropdown overlay
         if self.account_menu_open {
-            root = root.child(self.render_account_menu(_cx));
+            root = root.child(self.render_account_menu(_window, _cx));
         }
 
         // Titlebar site-switcher dropdown overlay

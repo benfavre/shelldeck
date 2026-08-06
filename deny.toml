@@ -1,0 +1,62 @@
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+unmaintained = "workspace"
+unsound = "all"
+ignore = [
+    { id = "RUSTSEC-2021-0145", reason = "atty is transitive through the Linux tray stack and only unsound with a custom Windows allocator" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa is transitive through russh and RustSec has no patched release; retained temporarily for RSA SSH key compatibility" },
+    { id = "RUSTSEC-2024-0415", reason = "GTK3 is required by the current Linux tray integration; migration requires replacing that desktop backend" },
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 is transitive through the Linux GTK tray stack; ShellDeck does not use VariantStrIter" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 is a build dependency pinned by the latest xcb release and parses only trusted protocol XML" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 is a build dependency pinned by the latest xcb release and parses only trusted protocol XML" },
+]
+
+[bans]
+multiple-versions = "warn"
+# Cargo-deny classifies versionless local workspace path dependencies as
+# wildcards. ShellDeck intentionally uses those for its private crates.
+wildcards = "allow"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = []
+skip = []
+skip-tree = []
+
+[licenses]
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/benfavre/font-kit-fix"]

@@ -910,7 +910,10 @@ Workspace polls issues every 15s while User or Support is visible.
 `render_user_requests` shows the caller's own issues with expand-to-comment
 and create composer. The composer exposes a searchable site picker backed by
 the signed-in account's Manage directory, defaults to the active site when
-available, and offers an explicit no-specific-site choice.
+available, and offers an explicit no-specific-site choice. User-mode polling
+requests `mine=1`, and both the overview counter and recent-request card apply
+the same owner filter defensively. A broader Support cache or an older server
+must never surface another requester's title in the User dashboard.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1037,7 +1040,11 @@ No half-installed state on failure.
 ### SDUC-285 — Auto-update disabled respects setting
 
 `set_enabled(false)` cancels the poll task and future manual
-`check_for_update` no-ops until re-enabled.
+`check_for_update` no-ops until re-enabled. A development build compiled
+without `SHELLDECK_UPDATE_PUBLIC_KEY_BASE64` behaves as disabled even when the
+persisted setting is on: it performs no request and shows no misleading
+verification error. Official tagged builds still require the key at build time
+and verify every manifest signature.
 
 ### SDUC-286 — Install scripts serve both platform pairs
 
@@ -1322,7 +1329,10 @@ The shared AI sheet receives bounded structured context from Support,
 requests, scripts, terminal, Jean, naming, or recent activity. Every call is
 explicit and every result remains a draft: ShellDeck never sends a reply,
 executes a terminal command, mutates a request, or overwrites a script from an
-AI response.
+AI response. In the durable assistant conversation, both user and assistant
+message bodies render Markdown structure—including headings, emphasis, lists,
+links, code blocks, and tables—while the assistant copy action preserves the
+original source text.
 
 ### SDUC-415 — AI context and API privacy boundaries
 
@@ -1362,6 +1372,10 @@ offers a compact AI instruction field. Its provider response must validate
 against the structured name/description/language/category/body contract before
 all five unsaved fields are populated; one corrective regeneration is attempted
 for invalid JSON. The selected target and host are never changed implicitly. A
+free-form read-only analysis (Support/request summary, script explanation, or
+script review) renders as Markdown in both its workflow and task preview.
+Structured JSON keeps its dedicated typed presentation, while editable replies,
+commands, and script bodies remain raw so formatting cannot alter the payload. A
 failed latest execution exposes a contextual correction action using its exact
 exit code and output log; accepting opens the corrected body in the unsaved
 inline editor and never reruns it automatically. A draft put on hold is
@@ -1761,7 +1775,48 @@ window to open is seeded from the live registration state.
 
 ---
 
-## 29. Clippy assistant and desktop characters
+## 29. Assistant routing and typed workflows
+
+### SDUC-452 — The assistant can prepare a real request form
+
+When the latest chat message explicitly asks ShellDeck to create or prepare a
+new customer request, the provider returns a strict routed request draft.
+The main Assistant sheet and the standalone Dock both open the existing New
+Request sheet with title, description, and priority prefilled. The conversation
+records a clear acknowledgement, while the existing Create button remains the
+only operation that submits the request. Questions, explanations, quoted
+instructions, malformed routing output, and ordinary chat continue through the
+normal Markdown response path.
+
+### SDUC-453 — Assistant shortcuts declare whether they send or prefill
+
+Every contextual Assistant shortcut has an explicit interaction mode. Actions
+that are complete from the current context submit immediately into the
+conversation. Actions that require the user to provide an objective — Script
+Generate, Script Convert, Terminal Command, and Create Request on Issue or
+Terminal — insert a localized, editable fill-in template and focus the composer,
+without creating a conversation message or starting an AI request.
+Context-complete analyses such as Summary submit immediately. Chat Triage uses
+a readable analysis prompt; the strict JSON prompt remains reserved for the
+typed triage workflow. A localized tooltip announces the behavior before the
+click. Immediate-submit shortcuts use the colored AI button variant; prefill
+shortcuts retain the neutral outline variant, giving the two behaviors a stable
+visual code.
+
+### SDUC-454 — Natural-language actions reuse typed ShellDeck workflows
+
+An explicit conversational instruction can open the existing unsaved Script
+form and generate its draft, prepare a command for the currently active
+Terminal workflow, draft a reply for the selected Support ticket, stage a Jean
+dispatch behind its existing confirmation, or navigate to one visible hosted
+request by exact ID/title or an unambiguous partial match. The assistant never
+executes a command, saves a script, sends a reply, or dispatches to Jean by
+itself. Missing, stale, unauthorized, or ambiguous targets stop at a localized
+warning instead of being guessed.
+
+---
+
+## 30. Clippy assistant and desktop characters
 
 ### SDUC-445 — Clippy transforms explicitly supplied clipboard text
 
@@ -1902,6 +1957,17 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-06** — Renumbered the assistant-routing use cases to SDUC-452..454
+  (formerly SDUC-445..447 on `feat/composer-partage`): the Clippy / desktop
+  companion work merged first and holds SDUC-445..451. IDs are sticky, so the
+  collision is resolved by giving the later allocation fresh numbers; the
+  affected SDTEST rows (1427..1432) now reference the new IDs.
+- **2026-08-06** — Reconciled SDUC-445 with SDUC-454 at merge time: Clippy
+  transforms share the assistant Submit path but carry no user message, and
+  `complete_assistant_turn` now skips the action router entirely for such
+  turns, so untrusted clipboard content can never surface a typed action
+  (extends SDTEST-1427). Clippy also became an `AiActivity` reachable from the
+  Dock rail and both hosts of the redesigned assistant.
 - **2026-07-30** — Extended SDUC-448/449/451 and added SDTEST-1571..1577 so
   gravity discovers windows after a fall starts, applies the actual drag-release
   velocity before prediction, trajectory-ranks the first reachable top by exact
@@ -1951,6 +2017,24 @@ viewport rather than its exact alpha silhouette.
   Clippy clipboard assistant, privacy and stale-selection contracts, selectable
   character persistence, deterministic desktop simulation, multi-display
   routing, pointer-interactive overlays, and honest Wayland fallback.
+- **2026-07-29** — Hardened SDUC-228 and added SDTEST-1433: User-mode request
+  polling now forces owner scope, while the dashboard independently filters
+  counters and recent titles to the signed-in requester.
+- **2026-07-29** — Added SDUC-454 and SDTEST-1430..1432 for typed
+  natural-language workflow routing, exact target revalidation, and the
+  existing review/confirmation boundaries.
+- **2026-07-29** — Added SDUC-453 and SDTEST-1429 for typed Assistant shortcut
+  behavior: immediate contextual submissions versus editable composer prefill.
+- **2026-07-29** — Extended SDUC-285 and added SDTEST-1225: development
+  builds without the embedded update-verification key now keep the updater
+  silently disabled, while signed release builds retain strict verification.
+- **2026-07-29** — Added SDUC-452 and SDTEST-1427/1428 for explicit
+  conversational request preparation from both Assistant surfaces, with strict
+  routing, normal-chat fallback, and the existing unsent review boundary.
+- **2026-07-29** — Extended SDUC-414/418 and added SDTEST-1425/1426 for
+  Markdown rendering of durable conversations and free-form read-only analyses,
+  while structured and executable/editable outputs retain their typed/raw
+  presentation.
 - **2026-07-29** — Extended SDUC-438 and added SDTEST-1424 for the contextual
   Monolith motions used by AI generation, terminal startup, and site discovery.
 - **2026-07-27** — Extended SDUC-432 and added SDTEST-1421..1423 for native

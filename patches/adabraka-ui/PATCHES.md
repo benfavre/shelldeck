@@ -515,6 +515,57 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — generic menu geometry fix suitable for
   upstreaming.
 
+### SDPATCH-027 — Markdown list and table text wraps inside narrow containers
+
+- **Files / symbols**:
+  - `src/display/rich_text.rs` — `render_list_items`, `render_table`
+- **Markers**:
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — list text must be the flex child`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — table headers need a`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-027 — body cells follow the same`
+- **Why**: Markdown paragraphs wrapped in constrained assistant bubbles, but
+  list bodies and table cells were non-shrinkable flex children. GPUI therefore
+  measured them at their intrinsic width and the bubble's overflow guard cut
+  off the remaining text. Giving those children `min-width: 0` and normal
+  whitespace supplies a definite wrap width without weakening the outer cap.
+- **Upstream status**: not filed yet — generic Markdown overflow fix suitable
+  for upstreaming.
+
+### SDPATCH-028 — Chrome-free `InputVariant::Bare` and the shared `Composer`
+
+- **Files / symbols**:
+  - `src/components/input.rs` — `InputVariant`, `Input::render`
+  - `src/components/textarea.rs` — `Textarea::render` *(shares `InputVariant`,
+    so it must answer for the new arm)*
+  - `src/components/composer.rs` — new file, `Composer` / `ComposerCommit`
+  - `src/components/mod.rs` — module declaration
+  - `src/prelude.rs` — re-export
+- **Markers**:
+  - `src/components/input.rs:88` — `// ShellDeck patch: SDPATCH-028 — \`Ghost\` still paints a border, a shadow,`
+  - `src/components/input.rs:653` — `// ShellDeck patch: SDPATCH-028 — the host container signals the`
+  - `src/components/input.rs:678` — `// ShellDeck patch: SDPATCH-028 — no background, no border; the`
+  - `src/components/input.rs:688` — `// ShellDeck patch: SDPATCH-028 — suppresses every chrome affordance`
+  - `src/components/input.rs:831` — `// ShellDeck patch: SDPATCH-028 — prose typed into a`
+  - `src/components/input.rs:840` — `// ShellDeck patch: SDPATCH-028 — the host container`
+  - `src/components/textarea.rs:154` — `// ShellDeck patch: SDPATCH-028 — Textarea shares InputVariant,`
+  - `src/components/textarea.rs:180` — `// ShellDeck patch: SDPATCH-028 — see above.`
+  - `src/components/composer.rs:1` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
+  - `src/prelude.rs:45` — `// ShellDeck patch: SDPATCH-028 — shared message composer.`
+- **Why**: Five ShellDeck surfaces ask the user to write a message and send it,
+  and each had assembled that idea differently — the field was an `Input` in one
+  place and a hand-painted bordered `div` in another, the send control sat beside
+  the field here and below it there, and the AI entry point floated above the
+  field in a third. `.agents/ui-components.md` treats that as a fork rather than
+  a preference. `Composer` is the one shape; the surfaces vary only by what they
+  put in its two slot rows. It needs a field that draws no chrome of its own,
+  because the frame already owns the border, the focus ring and the padding —
+  and `Ghost`, the closest existing variant, still paints a border, a shadow, a
+  hover border and a focus ring, so nesting it produced a frame inside a frame.
+  `Bare` also drops the `font_mono` face every other variant hardcodes: prose
+  typed into a composer is not code.
+- **Upstream status**: not filed yet. `InputVariant::Bare` is generic and worth
+  upstreaming on its own; `Composer` is closer to ShellDeck's own vocabulary.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -595,6 +646,11 @@ carries no marker of its own — see its entry).
   `last_layouts: Vec<ShapedLine>` with `Vec<WrappedLine>` + a
   `wrapped_line_count` for the request_layout feedback loop). Net
   marker count 29 → 30.
+- **2026-07-29** — added SDPATCH-027: Markdown list and table flex children
+  now shrink to their constrained parent and wrap instead of being clipped.
+- **2026-08-06** — added SDPATCH-028: `InputVariant::Bare` plus the shared
+  `Composer` component. 10 new markers (6 in `input.rs`, 2 in `textarea.rs`,
+  1 in `composer.rs`, 1 in `prelude.rs`). Marker count 30 → 40.
 
 ## Retired patches
 

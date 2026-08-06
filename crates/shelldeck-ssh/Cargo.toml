@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 shelldeck-core = { path = "../shelldeck-core" }
 russh = { workspace = true }
-russh-keys = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }

@@ -39,7 +39,7 @@ tree-sitter-yaml = "0.7"
 tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 tree-sitter-md = "0.5"
-lopdf = "0.34"
+lopdf = "0.42"
 
 [dev-dependencies]
 toml = { workspace = true }

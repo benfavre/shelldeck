@@ -154,11 +154,12 @@ impl Workspace {
 
                     let _ = lifecycle_tx.send(SshLifecycleEvent::Connected);
 
-                    let (mut channel_reader, mut channel_writer) = channel.split();
+                    let (mut channel_reader, channel_writer) = channel.split();
 
                     let mut input_rx = input_rx;
+                    let mut resize_rx = resize_rx;
                     let write_task = tokio::spawn(async move {
-                        use tokio::io::AsyncWriteExt;
+                        let mut resize_open = true;
                         // Auto-attach (or create) a tmux session at session start
                         // when enabled. Runs exactly once before the input loop.
                         if attach_tmux
@@ -170,41 +171,42 @@ impl Workspace {
                             return SshSessionEnd::UnexpectedDisconnect;
                         }
                         loop {
-                            match input_rx.recv().await {
-                                Some(data) if channel_writer.write_all(&data).await.is_err() => {
-                                    return SshSessionEnd::UnexpectedDisconnect;
+                            tokio::select! {
+                                data = input_rx.recv() => {
+                                    let Some(data) = data else {
+                                        return SshSessionEnd::UserClosed;
+                                    };
+                                    if channel_writer.write_all(&data).await.is_err() {
+                                        return SshSessionEnd::UnexpectedDisconnect;
+                                    }
                                 }
-                                Some(_) => {}
-                                None => return SshSessionEnd::UserClosed,
+                                resize = resize_rx.recv(), if resize_open => {
+                                    if let Some((r, c)) = resize {
+                                        if let Err(e) = channel_writer.resize(r as u32, c as u32).await {
+                                            tracing::warn!("SSH resize failed: {}", e);
+                                        }
+                                    } else {
+                                        resize_open = false;
+                                    }
+                                }
                             }
                         }
                     });
 
-                    let mut resize_rx = resize_rx;
                     let read_task = tokio::spawn(async move {
                         use shelldeck_ssh::session::SshChannelData;
                         loop {
-                            tokio::select! {
-                                biased;
-                                Some((r, c)) = resize_rx.recv() => {
-                                    if let Err(e) = channel_reader.resize(r as u32, c as u32).await {
-                                        tracing::warn!("SSH resize failed: {}", e);
+                            match channel_reader.read().await {
+                                SshChannelData::Data(data) => {
+                                    if data_tx.send(data).is_err() {
+                                        return SshSessionEnd::UserClosed;
                                     }
                                 }
-                                msg = channel_reader.read() => {
-                                    match msg {
-                                        SshChannelData::Data(data) => {
-                                            if data_tx.send(data).is_err() {
-                                                return SshSessionEnd::UserClosed;
-                                            }
-                                        }
-                                        SshChannelData::CleanEnd => {
-                                            return SshSessionEnd::CleanRemoteExit;
-                                        }
-                                        SshChannelData::ConnectionLost => {
-                                            return SshSessionEnd::UnexpectedDisconnect;
-                                        }
-                                    }
+                                SshChannelData::CleanEnd => {
+                                    return SshSessionEnd::CleanRemoteExit;
+                                }
+                                SshChannelData::ConnectionLost => {
+                                    return SshSessionEnd::UnexpectedDisconnect;
                                 }
                             }
                         }
@@ -399,11 +401,12 @@ impl Workspace {
                     };
                     tracing::info!("SSH split shell opened for {}", conn.display_name());
 
-                    let (mut channel_reader, mut channel_writer) = channel.split();
+                    let (mut channel_reader, channel_writer) = channel.split();
 
                     let mut input_rx = input_rx;
+                    let mut resize_rx = resize_rx;
                     let write_task = tokio::spawn(async move {
-                        use tokio::io::AsyncWriteExt;
+                        let mut resize_open = true;
                         // Auto-attach (or create) a tmux session at session start
                         // when enabled. Runs exactly once before the input loop.
                         if attach_tmux {
@@ -411,36 +414,37 @@ impl Workspace {
                                 .write_all(b"tmux new-session -A -s main\n")
                                 .await;
                         }
-                        while let Some(data) = input_rx.recv().await {
-                            if channel_writer.write_all(&data).await.is_err() {
-                                break;
+                        loop {
+                            tokio::select! {
+                                data = input_rx.recv() => {
+                                    let Some(data) = data else {
+                                        break;
+                                    };
+                                    if channel_writer.write_all(&data).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                resize = resize_rx.recv(), if resize_open => {
+                                    if let Some((r, c)) = resize {
+                                        if let Err(e) = channel_writer.resize(r as u32, c as u32).await {
+                                            tracing::warn!("SSH split resize failed: {}", e);
+                                        }
+                                    } else {
+                                        resize_open = false;
+                                    }
+                                }
                             }
                         }
                         tracing::info!("SSH split write loop ended");
                     });
 
-                    let mut resize_rx = resize_rx;
                     let read_task = tokio::spawn(async move {
                         use shelldeck_ssh::session::SshChannelData;
-                        loop {
-                            tokio::select! {
-                                biased;
-                                Some((r, c)) = resize_rx.recv() => {
-                                    if let Err(e) = channel_reader.resize(r as u32, c as u32).await {
-                                        tracing::warn!("SSH split resize failed: {}", e);
-                                    }
-                                }
-                                msg = channel_reader.read() => {
-                                    match msg {
-                                        SshChannelData::Data(data) => {
-                                            if data_tx.send(data).is_err() {
-                                                break;
-                                            }
-                                        }
-                                        SshChannelData::CleanEnd
-                                        | SshChannelData::ConnectionLost => break,
-                                    }
-                                }
+                        // CleanEnd and ConnectionLost both end the loop, so the
+                        // `Data` arm is the only one that continues it.
+                        while let SshChannelData::Data(data) = channel_reader.read().await {
+                            if data_tx.send(data).is_err() {
+                                break;
                             }
                         }
                         tracing::info!("SSH split read loop ended");

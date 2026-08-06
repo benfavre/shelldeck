@@ -87,14 +87,24 @@ pub fn release_signing_message(release: &ReleaseInfo) -> String {
     )
 }
 
+fn embedded_verification_key() -> Option<&'static str> {
+    option_env!("SHELLDECK_UPDATE_PUBLIC_KEY_BASE64").filter(|value| !value.trim().is_empty())
+}
+
+fn update_checks_enabled(requested: bool, verification_key: Option<&str>) -> bool {
+    requested
+        && verification_key
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty())
+}
+
 /// Verify that release metadata was produced by ShellDeck's offline update key.
 ///
-/// Development builds may compile without a key, but then update checks fail
-/// closed. Tagged release builds are prevented from compiling without the key
-/// by `.github/workflows/release.yml`.
+/// Development builds may compile without a key; their updater stays disabled.
+/// Tagged release builds are prevented from compiling without the key by
+/// `.github/workflows/release.yml`.
 pub fn verify_release_signature(release: &ReleaseInfo) -> anyhow::Result<()> {
-    let encoded_key = option_env!("SHELLDECK_UPDATE_PUBLIC_KEY_BASE64")
-        .filter(|value| !value.trim().is_empty())
+    let encoded_key = embedded_verification_key()
         .ok_or_else(|| anyhow::anyhow!("Update verification key is not configured"))?;
     verify_release_signature_with_key(release, encoded_key)
 }
@@ -185,6 +195,10 @@ impl AutoUpdater {
 
     /// Perform a single update check right now.
     pub fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+
         self.set_status(AutoUpdateStatus::Checking, cx);
 
         let platform = platform::current_platform();
@@ -344,9 +358,15 @@ impl AutoUpdater {
     }
 
     /// Enable or disable auto-update polling.
-    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.enabled = enabled;
-        if enabled {
+    pub fn set_enabled(&mut self, requested: bool, cx: &mut Context<Self>) {
+        self.enabled = update_checks_enabled(requested, embedded_verification_key());
+        if requested && !self.enabled {
+            tracing::debug!(
+                "Auto-update disabled because this build has no embedded verification key"
+            );
+        }
+
+        if self.enabled {
             if self._poll_task.is_none() {
                 self.start_polling(cx);
             }
@@ -364,7 +384,10 @@ impl AutoUpdater {
 
 #[cfg(test)]
 mod tests {
-    use super::{release_signing_message, verify_release_signature_with_key, ReleaseInfo};
+    use super::{
+        release_signing_message, update_checks_enabled, verify_release_signature_with_key,
+        ReleaseInfo,
+    };
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -407,6 +430,18 @@ mod tests {
 
         release.url.push_str("?mirror=attacker");
         assert!(verify_release_signature_with_key(&release, &public_key).is_err());
+    }
+
+    // SDTEST-1225 — local builds without an embedded public key must never
+    // start an update check, while signed release builds still honour the
+    // persisted auto-update setting.
+    #[test]
+    fn update_checks_require_both_user_opt_in_and_a_verification_key() {
+        assert!(!update_checks_enabled(false, None));
+        assert!(!update_checks_enabled(true, None));
+        assert!(!update_checks_enabled(true, Some("  ")));
+        assert!(!update_checks_enabled(false, Some("public-key")));
+        assert!(update_checks_enabled(true, Some("public-key")));
     }
 }
 

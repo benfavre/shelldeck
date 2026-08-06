@@ -357,6 +357,8 @@ Existing: **0 tests**.
 | SDTEST-1369 | `ai.rs::ai_action_policies_default_to_confirmation_and_map_exact_capabilities` | SDUC-430 | Green | Pins safe defaults, exact capability mapping, moderate automatic execution, and forced confirmation for every high-risk plan. |
 | SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
 | SDTEST-1407 | `ai.rs::ai_running_status_excludes_drafts_and_confirmation_waits` | SDUC-429 | Green | The tray-running contract includes only `Generating` and `Executing`; ready/pending drafts, confirmation waits, and terminal states remain excluded. |
+| SDTEST-1427 | `ai.rs::assistant_turn_routes_request_drafts_and_preserves_normal_chat` | SDUC-452, SDUC-445 | Green | A strict `create_request` route yields one validated draft without a chat completion; `chat` preserves Markdown through the normal completion, and malformed routing safely falls back to chat. The latest message is isolated in bounded untrusted context, and a turn with no user message (Clippy clipboard transform) never calls the action router at all. |
+| SDTEST-1430 | `ai.rs::assistant_action_router_accepts_only_bounded_typed_workflow_payloads` | SDUC-454 | Green | Script, Terminal, Support, Jean, and existing-request navigation routes parse into distinct typed actions; empty targets and oversized dispatch content are rejected before Workspace orchestration. |
 
 ---
 

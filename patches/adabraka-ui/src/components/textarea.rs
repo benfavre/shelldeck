@@ -151,6 +151,14 @@ impl RenderOnce for Textarea {
                     theme.tokens.destructive.opacity(0.3),
                     theme.tokens.foreground,
                 ),
+                // ShellDeck patch: SDPATCH-028 — Textarea shares InputVariant,
+                // so it must answer for `Bare` too: no fill, no border, the
+                // hosting container carries any error signal.
+                InputVariant::Bare => (
+                    gpui::transparent_black(),
+                    gpui::transparent_black(),
+                    theme.tokens.foreground,
+                ),
             }
         } else {
             match self.variant {
@@ -167,6 +175,12 @@ impl RenderOnce for Textarea {
                 InputVariant::Ghost => (
                     gpui::transparent_black(),
                     theme.tokens.border.opacity(0.3),
+                    theme.tokens.foreground,
+                ),
+                // ShellDeck patch: SDPATCH-028 — see above.
+                InputVariant::Bare => (
+                    gpui::transparent_black(),
+                    gpui::transparent_black(),
                     theme.tokens.foreground,
                 ),
             }

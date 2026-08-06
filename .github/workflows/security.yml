@@ -1,0 +1,59 @@
+name: Dependency security
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - "deny.toml"
+      - ".github/workflows/security.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - "deny.toml"
+      - ".github/workflows/security.yml"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  issues: write
+
+concurrency:
+  group: dependency-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustsec:
+    name: RustSec vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Audit Cargo.lock
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: "RUSTSEC-2023-0071,RUSTSEC-2026-0194,RUSTSEC-2026-0195"
+
+  dependency-policy:
+    name: Licenses, bans and sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: nightly-2026-03-06
+          command: check bans licenses sources
+          arguments: --locked

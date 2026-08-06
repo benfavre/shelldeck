@@ -103,6 +103,54 @@ pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
         )
 }
 
+/// The same provider signal, sized for a composer footer: no border, no fill,
+/// muted text. `ai_provider_badge` is a 30px bordered box, which re-introduces a
+/// frame inside a 26px control row — fine as a standalone header badge, wrong
+/// next to the attach and send controls.
+pub fn ai_provider_inline(backend: AiBackend, model: &str) -> impl IntoElement {
+    let icon = match backend {
+        AiBackend::ClaudeCli => {
+            simple_icon("claudecode", 12.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+        AiBackend::CodexCli | AiBackend::OpenAi => {
+            simple_icon("openai", 12.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+        AiBackend::Anthropic => {
+            simple_icon("anthropic", 12.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+        AiBackend::AiderCli => {
+            lucide_icon("terminal", 12.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+        AiBackend::Disabled => {
+            lucide_icon("sparkles", 12.0, ShellDeckColors::text_muted()).into_any_element()
+        }
+    };
+    let model = model.trim().to_string();
+
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap(px(5.0))
+        .h(px(26.0))
+        .max_w(px(200.0))
+        .px(px(6.0))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_muted())
+        .child(icon)
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(if model.is_empty() {
+                    backend.display_name().to_string()
+                } else {
+                    model
+                }),
+        )
+}
+
 /// Chip row: brand SVG icon + label (icon keeps embedded fill).
 pub fn script_language_chip(lang: ScriptLanguage, label_color: Hsla) -> impl IntoElement {
     div()

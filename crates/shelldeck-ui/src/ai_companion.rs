@@ -1,7 +1,8 @@
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Subscription};
 use shelldeck_core::ai::{
-    configured_cli_available, create_client, AiConfig, AiContext, AiSurface, AiTask, AiTaskStatus,
-    AiTaskStore, ClippyConfig,
+    complete_assistant_turn, configured_cli_available, create_client, AiAssistantAction,
+    AiAssistantCompletion, AiConfig, AiContext, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    ClippyConfig,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,6 +13,14 @@ use crate::t;
 
 #[derive(Debug, Clone)]
 pub enum AiCompanionEvent {
+    ApplyAction(AiAssistantAction),
+    /// Raised from the Dock's rail toolbox; the app root must show the main
+    /// window before the workspace can honour it.
+    OpenSettings,
+    /// Bring the main window forward and close the Dock.
+    OpenMainWindow,
+    /// The command palette is its own window, owned by the app root.
+    OpenPalette,
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -59,6 +68,7 @@ impl AiCompanionController {
                 ),
                 cx,
             );
+            view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(tasks.clone(), cx);
             view
@@ -69,29 +79,89 @@ impl AiCompanionController {
             cx.subscribe(
                 &assistant,
                 |this, view, event: &AiAssistantEvent, cx| match event.clone() {
+                    // The Dock has its own close control in `AiDockView`; the
+                    // in-view one only exists for the Sheet.
+                    AiAssistantEvent::Close => {}
+                    // The Dock cannot open Settings itself — it is a separate
+                    // window with no workspace. Forwarded to the app root,
+                    // which raises the main window and routes it.
+                    AiAssistantEvent::OpenSettings => {
+                        cx.emit(AiCompanionEvent::OpenSettings);
+                    }
+                    AiAssistantEvent::OpenMainWindow => {
+                        cx.emit(AiCompanionEvent::OpenMainWindow);
+                    }
+                    AiAssistantEvent::OpenPalette => {
+                        cx.emit(AiCompanionEvent::OpenPalette);
+                    }
+                    // Applied to the shared `AiConfig` the Workspace also
+                    // holds, so the change is live in both hosts immediately.
+                    // Durable persistence is the Workspace's job via Settings.
+                    AiAssistantEvent::SelectBackend(backend) => {
+                        {
+                            let mut config = this.config.borrow_mut();
+                            config.backend = backend;
+                            config.model.clear();
+                        }
+                        this.refresh(cx);
+                    }
                     AiAssistantEvent::Submit {
                         request_id,
                         conversation_id,
                         prompt,
+                        latest_user_message,
                         context,
                     } => {
                         let config = this.config.borrow().clone();
                         let source = view.clone();
-                        cx.spawn(async move |_this, cx: &mut AsyncApp| {
+                        cx.spawn(async move |this, cx: &mut AsyncApp| {
                             let result = cx
                                 .background_executor()
                                 .spawn(async move {
                                     let client = create_client(&config)?;
-                                    client
-                                        .complete(&prompt, context)
-                                        .map(|response| response.text)
+                                    complete_assistant_turn(
+                                        client.as_ref(),
+                                        &prompt,
+                                        &latest_user_message,
+                                        context,
+                                    )
                                 })
                                 .await
                                 .map_err(|error| error.to_string());
-                            let _ = cx.update(|cx| {
-                                source.update(cx, |assistant, cx| {
-                                    assistant.set_result(request_id, conversation_id, result, cx);
-                                });
+                            let _ = this.update(cx, |_controller, cx| match result {
+                                Ok(AiAssistantCompletion::Message(message)) => {
+                                    source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Ok(message),
+                                            cx,
+                                        );
+                                    });
+                                }
+                                Ok(AiAssistantCompletion::Action(action)) => {
+                                    let accepted = source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Ok(assistant_action_acknowledgement(&action)),
+                                            cx,
+                                        )
+                                    });
+                                    if accepted {
+                                        cx.emit(AiCompanionEvent::ApplyAction(action));
+                                    }
+                                }
+                                Err(error) => {
+                                    source.update(cx, |assistant, cx| {
+                                        assistant.set_result(
+                                            request_id,
+                                            conversation_id,
+                                            Err(error),
+                                            cx,
+                                        );
+                                    });
+                                }
                             });
                         })
                         .detach();
@@ -194,5 +264,22 @@ impl AiCompanionController {
                 cx,
             );
         });
+    }
+}
+
+pub(crate) fn assistant_action_acknowledgement(action: &AiAssistantAction) -> String {
+    match action {
+        AiAssistantAction::CreateRequest(_) => t!("ai.assistant.request_draft_ready").to_string(),
+        AiAssistantAction::CreateScript { .. } => t!("ai.assistant.script_draft_ready").to_string(),
+        AiAssistantAction::TerminalCommand { .. } => {
+            t!("ai.assistant.terminal_command_ready").to_string()
+        }
+        AiAssistantAction::SupportReply { .. } => {
+            t!("ai.assistant.support_reply_ready").to_string()
+        }
+        AiAssistantAction::JeanDispatch { .. } => {
+            t!("ai.assistant.jean_dispatch_ready").to_string()
+        }
+        AiAssistantAction::OpenRequest { .. } => t!("ai.assistant.request_opening").to_string(),
     }
 }

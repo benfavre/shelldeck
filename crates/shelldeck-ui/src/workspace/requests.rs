@@ -1,5 +1,19 @@
 use super::*;
 
+fn issue_list_filter_for_mode(
+    mode: AppMode,
+    support_filter: &issues::IssueListFilter,
+) -> issues::IssueListFilter {
+    if mode == AppMode::User {
+        issues::IssueListFilter {
+            mine: true,
+            ..Default::default()
+        }
+    } else {
+        support_filter.clone()
+    }
+}
+
 impl Workspace {
     // --- Hosted issue management (requests) ---
 
@@ -50,6 +64,29 @@ impl Workspace {
         }
         self.user_new_request_sheet_open = true;
         self.sync_issues_poll(cx);
+        cx.notify();
+    }
+
+    pub(super) fn open_ai_request_draft(
+        &mut self,
+        draft: AiGeneratedIssueDraft,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.app_config.cloud_sync.is_configured() {
+            self.show_toast(
+                t!("toast.issue.login_required_create").to_string(),
+                ToastLevel::Warning,
+                cx,
+            );
+            return;
+        }
+        self.open_prefilled_request(draft.title, draft.description, "user", cx);
+        self.issue_new_priority = draft.priority;
+        self.show_toast(
+            t!("toast.ai.request_draft_opened").to_string(),
+            ToastLevel::Success,
+            cx,
+        );
         cx.notify();
     }
 
@@ -435,7 +472,10 @@ impl Workspace {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
-        let filter = self.issues_filter.clone();
+        // User mode is a personal surface, including when an internal staff
+        // account switches down to it. Ask Manage for owned requests only;
+        // Support mode retains its triage filters and broader staff scope.
+        let filter = issue_list_filter_for_mode(self.effective_mode(), &self.issues_filter);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1409,5 +1449,40 @@ impl Workspace {
             return;
         }
         self.comment_issue_with_images(id, body, attachments, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{issue_list_filter_for_mode, issues, AppMode};
+
+    // SDTEST-1433
+    #[test]
+    fn user_issue_refresh_forces_owner_scope_while_support_keeps_triage_filters() {
+        let support = issues::IssueListFilter {
+            status: "open".to_string(),
+            q: "database".to_string(),
+            priority: "urgent".to_string(),
+            source: "support".to_string(),
+            assignee: "me".to_string(),
+            mine: false,
+            tenant_id: "tenant-2".to_string(),
+            has_github: Some(true),
+            since: "2026-07-01T00:00:00Z".to_string(),
+        };
+
+        let user = issue_list_filter_for_mode(AppMode::User, &support);
+        assert!(user.mine);
+        assert!(user.status.is_empty());
+        assert!(user.q.is_empty());
+        assert!(user.tenant_id.is_empty());
+        assert_eq!(user.has_github, None);
+
+        let retained = issue_list_filter_for_mode(AppMode::Support, &support);
+        assert!(!retained.mine);
+        assert_eq!(retained.status, "open");
+        assert_eq!(retained.q, "database");
+        assert_eq!(retained.tenant_id, "tenant-2");
+        assert_eq!(retained.has_github, Some(true));
     }
 }
