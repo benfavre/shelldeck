@@ -493,6 +493,22 @@ impl SettingsView {
         self.config.general.ui_font_size
     }
 
+    /// Change the AI backend from outside the Settings surface (the assistant
+    /// composer picker). Routed through here on purpose: `ai.*` is owned by
+    /// Settings, so writing `Workspace::app_config` directly would leave this
+    /// snapshot stale — see `.agents/session-state.md`.
+    pub fn set_ai_backend(&mut self, backend: AiBackend, cx: &mut Context<Self>) {
+        if self.config.ai.backend == backend {
+            return;
+        }
+        self.config.ai.backend = backend;
+        // The model string belongs to the previous provider; clearing it makes
+        // the new backend fall back to its own default.
+        self.config.ai.model.clear();
+        self.ai_backend_select = build_ai_backend_select(&self.config, cx);
+        self.save_config(cx);
+    }
+
     fn save_config(&mut self, cx: &mut Context<Self>) {
         // Emits the full snapshot — workspace must merge slices only and keep
         // this copy fresh after login/logout (see `.agents/session-state.md`).

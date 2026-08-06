@@ -501,6 +501,10 @@ pub struct Workspace {
     /// Kebab menu open state for a sidebar host row: which connection and where
     /// (window-relative click position). `None` = closed.
     sidebar_kebab_menu: Option<(Uuid, Point<Pixels>)>,
+    /// Where the account chip was clicked. The chip sits in the middle of the
+    /// titlebar, so a panel pinned to the window's right edge lands under the
+    /// window controls instead of under the chip.
+    account_menu_pos: Option<Point<Pixels>>,
     /// The native Support-mode console.
     support: Entity<SupportView>,
     _support_sub: Subscription,
@@ -869,9 +873,37 @@ impl Workspace {
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
+        // The Dock window has no titlebar, so its only account signal is the
+        // one the rail draws — push it from here, where the account lives.
+        let account_label = app_config.account.as_ref().map(|account| {
+            if account.name.trim().is_empty() {
+                account.email.clone()
+            } else {
+                account.name.clone()
+            }
+        });
+        // Second line: which site the assistant's context is scoped to. In the
+        // Dock this is the only place that information exists at all.
+        let account_detail = app_config
+            .cloud_sync
+            .active_site_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+            .or_else(|| {
+                app_config
+                    .account
+                    .as_ref()
+                    .map(|account| account.email.clone())
+                    .filter(|email| !email.trim().is_empty())
+            });
+        ai_assistant.update(cx, |view, cx| {
+            view.set_account_label(account_label.clone(), account_detail.clone(), cx)
+        });
         ai_dock_assistant.update(cx, |view, cx| {
+            view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(ai_tasks.clone(), cx);
+            view.set_account_label(account_label.clone(), account_detail.clone(), cx);
         });
         let ai_backend_ready = app_config.ai.is_configured()
             && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
@@ -1146,6 +1178,7 @@ impl Workspace {
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,
+            account_menu_pos: None,
             support,
             _support_sub: support_sub,
             _support_poll_task: None,

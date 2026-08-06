@@ -27,6 +27,20 @@ When the icon must **inherit the parent `text_color`** (e.g. hover on a
 wrapping div), prefer `svg().path(lucide_path("minus"))` instead of
 `lucide_icon` with a hard-coded color.
 
+> **But the `svg()` node still needs its own `text_color`.** GPUI's `svg.rs`
+> **skips painting entirely** when `style.text.color` is `None` on the svg
+> element itself — a colour set on an ancestor `div` is not enough, and the
+> icon renders as nothing at all (no error, no warning, just an empty box).
+> So `svg().path(lucide_path("x")).size(px(16.0)).text_color(some_color)` is
+> the minimum; "inherits the parent" means you can *recompute* the colour to
+> match the parent's hover state, not that you can omit it.
+>
+> **Incident (2026-08-06):** the assistant's activity rail shipped with
+> `svg().path(lucide_path(icon)).size(…)` and the colour on the wrapping
+> `div`. Every rail glyph was invisible — labels showed, icons did not. The
+> warning was already written in `icons.rs` next to `script_language_icon`;
+> this file did not repeat it.
+
 ## Where to use what
 
 | Zone | Source | Notes |
@@ -56,3 +70,8 @@ or titlebar chrome. Do **not** import the full Lucide repo into git.
 - Migrating titlebar controls to Lucide — user preference is legacy glyphs.
 - Using `lucide_icon` with a fixed color inside a hover-sensitive button —
   use `lucide_path` + `svg()` so `currentColor` tracks the parent.
+- **Omitting `.text_color()` on a raw `svg()` node.** It does not fall back to
+  the parent — it does not paint at all. See the callout above.
+- Assuming adabraka's `Icon` inherits the parent colour: it does not either.
+  `Icon::render` falls back to `theme.tokens.primary`, so an uncoloured `Icon`
+  on a primary-filled button paints primary-on-primary and vanishes.

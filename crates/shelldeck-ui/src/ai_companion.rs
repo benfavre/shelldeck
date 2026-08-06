@@ -13,6 +13,13 @@ use crate::t;
 #[derive(Debug, Clone)]
 pub enum AiCompanionEvent {
     ApplyAction(AiAssistantAction),
+    /// Raised from the Dock's rail toolbox; the app root must show the main
+    /// window before the workspace can honour it.
+    OpenSettings,
+    /// Bring the main window forward and close the Dock.
+    OpenMainWindow,
+    /// The command palette is its own window, owned by the app root.
+    OpenPalette,
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -59,6 +66,7 @@ impl AiCompanionController {
                 ),
                 cx,
             );
+            view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(tasks.clone(), cx);
             view
@@ -68,6 +76,32 @@ impl AiCompanionController {
             cx.subscribe(
                 &assistant,
                 |this, view, event: &AiAssistantEvent, cx| match event.clone() {
+                    // The Dock has its own close control in `AiDockView`; the
+                    // in-view one only exists for the Sheet.
+                    AiAssistantEvent::Close => {}
+                    // The Dock cannot open Settings itself — it is a separate
+                    // window with no workspace. Forwarded to the app root,
+                    // which raises the main window and routes it.
+                    AiAssistantEvent::OpenSettings => {
+                        cx.emit(AiCompanionEvent::OpenSettings);
+                    }
+                    AiAssistantEvent::OpenMainWindow => {
+                        cx.emit(AiCompanionEvent::OpenMainWindow);
+                    }
+                    AiAssistantEvent::OpenPalette => {
+                        cx.emit(AiCompanionEvent::OpenPalette);
+                    }
+                    // Applied to the shared `AiConfig` the Workspace also
+                    // holds, so the change is live in both hosts immediately.
+                    // Durable persistence is the Workspace's job via Settings.
+                    AiAssistantEvent::SelectBackend(backend) => {
+                        {
+                            let mut config = this.config.borrow_mut();
+                            config.backend = backend;
+                            config.model.clear();
+                        }
+                        this.refresh(cx);
+                    }
                     AiAssistantEvent::Submit {
                         request_id,
                         conversation_id,

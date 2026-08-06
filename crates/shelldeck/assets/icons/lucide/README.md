@@ -90,6 +90,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `arrow-left-right` | infra | port forwards |
 | `arrow-right` | navigation | AI proposal transitions and next actions |
 | `arrow-up` | navigation | scroll / sort up |
+| `at-sign` | chrome | AI composer: target a connection / script / ticket |
 | `bot` | AI | Jean dispatch action |
 | `calendar` | time | date pickers, due dates |
 | `check` | action | confirm, done |

@@ -42,6 +42,8 @@ pub use crate::components::code_block::CodeBlock;
 pub use crate::components::collapsible::Collapsible;
 pub use crate::components::color_picker::{ColorMode, ColorPicker, ColorPickerState};
 pub use crate::components::combobox::{Combobox, ComboboxEvent, ComboboxState};
+// ShellDeck patch: SDPATCH-028 — shared message composer.
+pub use crate::components::composer::{Composer, ComposerCommit};
 pub use crate::components::countdown::{
     Countdown, CountdownFormat, CountdownSeparator, CountdownSize, CountdownState, TimeUnits,
 };

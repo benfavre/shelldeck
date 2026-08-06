@@ -1877,10 +1877,15 @@ impl Workspace {
         let sheet_assistant = self.ai_assistant.clone();
         let workspace = cx.entity().downgrade();
         self.ai_sheet = Some(cx.new(move |sheet_cx| {
+            // No title and no close button => adabraka's `has_header` is
+            // false and the Sheet draws no chrome of its own. The single 44px
+            // row now lives inside the view, which is what the mockup calls
+            // "the host provides one row" — here the host's contribution is to
+            // get out of the way.
             Sheet::new(sheet_cx)
                 .width(gpui::px(780.0))
                 .variant(SheetVariant::Assistant)
-                .title(t!("ai.assistant.title").to_string())
+                .show_close_button(false)
                 .dynamic_content(move || sheet_assistant.clone())
                 .on_close(move |_window, cx| {
                     if let Some(workspace) = workspace.upgrade() {
@@ -1901,6 +1906,25 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
+            // Routed through the Settings entity, which owns `ai.*`. Writing
+            // `app_config` here would leave the Settings snapshot stale and
+            // resurrect the old backend on the next settings save
+            // (`.agents/session-state.md`).
+            AiAssistantEvent::OpenSettings => self.open_settings(cx),
+            // Only the Dock's rail raises these — in the Sheet the main window
+            // is already in front and the palette has its own shortcut.
+            AiAssistantEvent::OpenMainWindow | AiAssistantEvent::OpenPalette => {}
+            AiAssistantEvent::SelectBackend(backend) => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_ai_backend(backend, cx);
+                });
+            }
+            // The Sheet no longer draws its own chrome, so its close button
+            // lives in the view and asks us to dismiss.
+            AiAssistantEvent::Close => {
+                self.ai_sheet = None;
+                cx.notify();
+            }
             AiAssistantEvent::Submit {
                 request_id,
                 conversation_id,
@@ -1994,6 +2018,9 @@ impl Workspace {
             AiCompanionEvent::ApplyAction(action) => {
                 self.apply_ai_assistant_action(action, cx);
             }
+            AiCompanionEvent::OpenSettings => self.open_settings(cx),
+            // The app root already raised the main window on its way here.
+            AiCompanionEvent::OpenMainWindow | AiCompanionEvent::OpenPalette => {}
             AiCompanionEvent::ResumeTask(task_id) => {
                 let target = self
                     .ai_tasks
