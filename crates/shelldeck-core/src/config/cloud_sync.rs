@@ -493,9 +493,11 @@ sync_on_startup = false
         assert_eq!(cfg.mode, crate::config::cloud_account::AppMode::Dev);
 
         // Round-trip with an active site set.
-        let mut with_site = CloudSyncConfig::default();
-        with_site.active_site_id = Some("site-uuid".to_string());
-        with_site.active_site_label = Some("Inklura".to_string());
+        let with_site = CloudSyncConfig {
+            active_site_id: Some("site-uuid".to_string()),
+            active_site_label: Some("Inklura".to_string()),
+            ..Default::default()
+        };
         let s = toml::to_string(&with_site).unwrap();
         let back: CloudSyncConfig = toml::from_str(&s).unwrap();
         assert_eq!(back.active_site_id.as_deref(), Some("site-uuid"));

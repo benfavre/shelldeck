@@ -613,7 +613,7 @@ impl X11WindowState {
             }
 
             if params.mouse_passthrough {
-                use x11rb::protocol::shape::{self, ConnectionExt as _};
+                use x11rb::protocol::shape;
                 check_reply(
                     || "X11 shape::rectangles for mouse passthrough failed.",
                     shape::rectangles(
@@ -1759,7 +1759,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn set_mouse_passthrough(&self, passthrough: bool) {
-        use x11rb::protocol::shape::{self, ConnectionExt as _};
+        use x11rb::protocol::shape;
         if passthrough {
             shape::rectangles(
                 self.0.xcb.as_ref(),

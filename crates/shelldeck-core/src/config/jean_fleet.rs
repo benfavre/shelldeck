@@ -1412,7 +1412,7 @@ mod tests {
                 let resp = format!(
                     "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
-                    out.as_bytes().len(),
+                    out.len(),
                     out
                 );
                 let _ = stream.write_all(resp.as_bytes());

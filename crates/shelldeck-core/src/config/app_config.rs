@@ -503,8 +503,10 @@ mod tests {
     fn round_trip_non_default() {
         let path = temp_path("config.toml");
 
-        let mut config = AppConfig::default();
-        config.theme = ThemePreference::Light;
+        let mut config = AppConfig {
+            theme: ThemePreference::Light,
+            ..Default::default()
+        };
         config.terminal.font_family = "Fira Code".to_string();
         config.terminal.font_size = 17.5;
         config.terminal.scrollback_lines = 42;
@@ -655,15 +657,17 @@ global_palette_shortcut_enabled = true
         assert!(loaded.account.is_none());
 
         // Logged in: round-trips the identity.
-        let mut logged_in = AppConfig::default();
-        logged_in.account = Some(AccountInfo {
-            email: "ben@webdesign29.net".to_string(),
-            name: "Ben Favre".to_string(),
-            is_superadmin: true,
-            is_admin: true,
-            is_inklura_support: true,
-            roles: vec!["superadmin".to_string()],
-        });
+        let logged_in = AppConfig {
+            account: Some(AccountInfo {
+                email: "ben@webdesign29.net".to_string(),
+                name: "Ben Favre".to_string(),
+                is_superadmin: true,
+                is_admin: true,
+                is_inklura_support: true,
+                roles: vec!["superadmin".to_string()],
+            }),
+            ..Default::default()
+        };
         logged_in.save_to(&path).expect("save_to");
         let loaded = AppConfig::load_from(&path).expect("load_from");
         let acct = loaded.account.expect("account present");
@@ -686,12 +690,14 @@ global_palette_shortcut_enabled = true
         assert!(AppConfig::load_from(&path).unwrap().jeanclaude.is_none());
 
         // Set: round-trips the local override.
-        let mut cfg = AppConfig::default();
-        cfg.jeanclaude = Some(JeanConfig {
-            url: "http://127.0.0.1:3100".into(),
-            user: "jean".into(),
-            pass: "x".into(),
-        });
+        let cfg = AppConfig {
+            jeanclaude: Some(JeanConfig {
+                url: "http://127.0.0.1:3100".into(),
+                user: "jean".into(),
+                pass: "x".into(),
+            }),
+            ..Default::default()
+        };
         cfg.save_to(&path).expect("save");
         let loaded = AppConfig::load_from(&path)
             .unwrap()

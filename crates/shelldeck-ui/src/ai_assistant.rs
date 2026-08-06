@@ -2107,96 +2107,6 @@ impl AiAssistantView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        should_auto_import_clippy, validated_clippy_result, AiAssistantView, AiQuickActionMode,
-        AiRequestGate,
-    };
-    use shelldeck_core::ai::{AiSurface, CLIPPY_MAX_RESULT_CHARS};
-
-    // SDTEST-1341
-    #[test]
-    fn stale_ai_response_is_rejected_after_context_invalidation() {
-        let mut gate = AiRequestGate::default();
-        let old_request = gate.begin();
-        assert!(gate.accepts(old_request));
-
-        gate.invalidate();
-        assert!(!gate.accepts(old_request));
-
-        let current_request = gate.begin();
-        assert!(gate.accepts(current_request));
-    }
-
-    // SDTEST-1487
-    #[test]
-    fn automatic_clipboard_import_requires_opt_in_and_an_empty_draft() {
-        assert!(!should_auto_import_clippy(false, ""));
-        assert!(should_auto_import_clippy(true, "  \n"));
-        assert!(!should_auto_import_clippy(true, "keep my draft"));
-    }
-
-    // SDTEST-1488
-    #[test]
-    fn backend_result_must_satisfy_clippy_proposal_bounds_before_display() {
-        assert_eq!(
-            validated_clippy_result("  reviewed result  ".to_string()).unwrap(),
-            "reviewed result"
-        );
-        assert!(validated_clippy_result("  ".to_string()).is_err());
-        assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
-    }
-
-    // SDTEST-1429
-    #[test]
-    fn quick_actions_distinguish_immediate_submit_from_composer_prefill() {
-        // The two modes used to be told apart by their adabraka button variant.
-        // The empty screen now renders them as tiles, so the visual difference
-        // is gone — but the behavioural one is the point of this test and is
-        // unchanged: `Submit` sends straight away, `Prefill` only fills the
-        // composer. The assertions below pin that mapping per surface.
-        let script = AiAssistantView::quick_actions(AiSurface::Script);
-        assert_eq!(script[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(script[0].prompt_key, "ai.prefill.script_generate");
-        assert_eq!(script[1].mode, AiQuickActionMode::Submit);
-        assert_eq!(script[2].mode, AiQuickActionMode::Prefill);
-        assert_eq!(script[2].prompt_key, "ai.prefill.script_convert");
-        assert!(script[3..]
-            .iter()
-            .all(|action| action.mode == AiQuickActionMode::Submit));
-
-        let terminal = AiAssistantView::quick_actions(AiSurface::Terminal);
-        assert_eq!(terminal[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(terminal[0].prompt_key, "ai.prefill.terminal_command");
-        assert_eq!(terminal[1].mode, AiQuickActionMode::Submit);
-        assert_eq!(terminal[2].mode, AiQuickActionMode::Prefill);
-        assert_eq!(terminal[2].prompt_key, "ai.prefill.terminal_issue");
-
-        let issue = AiAssistantView::quick_actions(AiSurface::Issue);
-        assert_eq!(issue[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(issue[0].prompt_key, "ai.prefill.issue_draft");
-        assert!(issue[1..]
-            .iter()
-            .all(|action| action.mode == AiQuickActionMode::Submit));
-
-        let support = AiAssistantView::quick_actions(AiSurface::Support);
-        assert_eq!(support[2].prompt_key, "ai.prompt.support_triage_chat");
-
-        for surface in [
-            AiSurface::Support,
-            AiSurface::Jean,
-            AiSurface::Naming,
-            AiSurface::Recent,
-            AiSurface::Global,
-        ] {
-            assert!(AiAssistantView::quick_actions(surface)
-                .iter()
-                .all(|action| action.mode == AiQuickActionMode::Submit));
-        }
-    }
-}
-
 impl Render for AiAssistantView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // One closure for the round button and for Enter — `Composer` takes a
@@ -3004,5 +2914,95 @@ impl Render for AiAssistantView {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_auto_import_clippy, validated_clippy_result, AiAssistantView, AiQuickActionMode,
+        AiRequestGate,
+    };
+    use shelldeck_core::ai::{AiSurface, CLIPPY_MAX_RESULT_CHARS};
+
+    // SDTEST-1341
+    #[test]
+    fn stale_ai_response_is_rejected_after_context_invalidation() {
+        let mut gate = AiRequestGate::default();
+        let old_request = gate.begin();
+        assert!(gate.accepts(old_request));
+
+        gate.invalidate();
+        assert!(!gate.accepts(old_request));
+
+        let current_request = gate.begin();
+        assert!(gate.accepts(current_request));
+    }
+
+    // SDTEST-1487
+    #[test]
+    fn automatic_clipboard_import_requires_opt_in_and_an_empty_draft() {
+        assert!(!should_auto_import_clippy(false, ""));
+        assert!(should_auto_import_clippy(true, "  \n"));
+        assert!(!should_auto_import_clippy(true, "keep my draft"));
+    }
+
+    // SDTEST-1488
+    #[test]
+    fn backend_result_must_satisfy_clippy_proposal_bounds_before_display() {
+        assert_eq!(
+            validated_clippy_result("  reviewed result  ".to_string()).unwrap(),
+            "reviewed result"
+        );
+        assert!(validated_clippy_result("  ".to_string()).is_err());
+        assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
+    }
+
+    // SDTEST-1429
+    #[test]
+    fn quick_actions_distinguish_immediate_submit_from_composer_prefill() {
+        // The two modes used to be told apart by their adabraka button variant.
+        // The empty screen now renders them as tiles, so the visual difference
+        // is gone — but the behavioural one is the point of this test and is
+        // unchanged: `Submit` sends straight away, `Prefill` only fills the
+        // composer. The assertions below pin that mapping per surface.
+        let script = AiAssistantView::quick_actions(AiSurface::Script);
+        assert_eq!(script[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[0].prompt_key, "ai.prefill.script_generate");
+        assert_eq!(script[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(script[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[2].prompt_key, "ai.prefill.script_convert");
+        assert!(script[3..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let terminal = AiAssistantView::quick_actions(AiSurface::Terminal);
+        assert_eq!(terminal[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[0].prompt_key, "ai.prefill.terminal_command");
+        assert_eq!(terminal[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(terminal[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[2].prompt_key, "ai.prefill.terminal_issue");
+
+        let issue = AiAssistantView::quick_actions(AiSurface::Issue);
+        assert_eq!(issue[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(issue[0].prompt_key, "ai.prefill.issue_draft");
+        assert!(issue[1..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let support = AiAssistantView::quick_actions(AiSurface::Support);
+        assert_eq!(support[2].prompt_key, "ai.prompt.support_triage_chat");
+
+        for surface in [
+            AiSurface::Support,
+            AiSurface::Jean,
+            AiSurface::Naming,
+            AiSurface::Recent,
+            AiSurface::Global,
+        ] {
+            assert!(AiAssistantView::quick_actions(surface)
+                .iter()
+                .all(|action| action.mode == AiQuickActionMode::Submit));
+        }
     }
 }

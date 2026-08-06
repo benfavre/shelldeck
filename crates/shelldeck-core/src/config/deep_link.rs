@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn scheme_is_case_insensitive_but_id_is_not() {
         assert_eq!(
-            DeepLink::parse(&format!("ShellDeck://ISSUE/Iss_MixedCase")),
+            DeepLink::parse("ShellDeck://ISSUE/Iss_MixedCase"),
             Some(DeepLink::OpenIssue("Iss_MixedCase".to_string()))
         );
     }

@@ -783,8 +783,10 @@ mod tests {
 
     #[test]
     fn channel_glyphs_have_a_fallback() {
-        let mut t = SupportTicket::default();
-        t.channel = "unknown".into();
+        let mut t = SupportTicket {
+            channel: "unknown".into(),
+            ..Default::default()
+        };
         assert_eq!(t.channel_glyph(), "\u{2022}");
         t.channel = "livechat".into();
         assert_eq!(t.channel_glyph(), "\u{1F4AC}");
@@ -792,8 +794,10 @@ mod tests {
 
     #[test]
     fn channel_lucide_maps_known_channels() {
-        let mut t = SupportTicket::default();
-        t.channel = "email".into();
+        let mut t = SupportTicket {
+            channel: "email".into(),
+            ..Default::default()
+        };
         assert_eq!(t.channel_lucide(), "mail");
         t.channel = "livechat".into();
         assert_eq!(t.channel_lucide(), "reply");
@@ -892,7 +896,7 @@ mod tests {
                 let resp = format!(
                     "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status_line,
-                    out.as_bytes().len(),
+                    out.len(),
                     out,
                 );
                 let _ = stream.write_all(resp.as_bytes());
