@@ -21,7 +21,7 @@ use shelldeck_ui::{
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
 
-use crate::companion_desktop::{CompanionRuntimeCommand, DesktopCharacterRuntime};
+use crate::companion_desktop::{is_x11_session, CompanionRuntimeCommand, DesktopCharacterRuntime};
 
 /// Embed Lucide SVGs at `icons/lucide/{name}.svg`. Add new slugs here when
 /// copying icons into `assets/icons/lucide/` (see that folder's README).
@@ -1020,19 +1020,6 @@ fn companion_pointer(
 struct CompanionDisplay {
     bounds: gpui::Bounds<gpui::Pixels>,
     id: gpui::DisplayId,
-}
-
-#[cfg(target_os = "linux")]
-fn is_x11_session() -> bool {
-    std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("x11"))
-        || (std::env::var_os("XDG_SESSION_TYPE").is_none()
-            && std::env::var_os("DISPLAY").is_some()
-            && std::env::var_os("WAYLAND_DISPLAY").is_none())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn is_x11_session() -> bool {
-    false
 }
 
 #[cfg(target_os = "linux")]

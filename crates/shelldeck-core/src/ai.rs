@@ -1502,24 +1502,12 @@ pub fn test_connection(config: &AiConfig) -> Result<AiResponse> {
     Ok(response)
 }
 
+/// True when `command` resolves to an executable on `PATH`.
+///
+/// Delegates to [`crate::util::executable_on_path`], which honors `PATHEXT`
+/// on Windows instead of a hardcoded extension list.
 pub fn command_available(command: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(command);
-        if is_executable_file(&candidate) {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            ["exe", "cmd", "bat", "com"]
-                .iter()
-                .any(|ext| is_executable_file(&dir.join(format!("{command}.{ext}"))))
-        }
-        #[cfg(not(windows))]
-        false
-    })
+    crate::util::executable_on_path(command)
 }
 
 pub fn configured_cli_available(config: &AiConfig) -> bool {

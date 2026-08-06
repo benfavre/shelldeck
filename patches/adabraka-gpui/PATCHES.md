@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total markers in code: **107**
+Total markers in code: **114**
 (sum of the per-entry `Markers` lists below; SDPATCH-103 is Cargo.toml
 only, out of the src/-scoped marker convention.)
 
@@ -393,6 +393,40 @@ only, out of the src/-scoped marker convention.)
   platforms default to `false`.
 - **Upstream status**: not filed yet — should be split into smaller upstreamable
   platform capability PRs after native Windows/macOS validation.
+
+### SDPATCH-113 — Companion external-window filter parity on X11
+
+- **Files / symbols**:
+  - `src/platform/linux/x11/client.rs` — `X11ClientState` (new
+    `companion_excluded_window_types` field, interned in `X11Client::new`),
+    `companion_excluded_window_types()`, `x11_window_has_transient_for()`,
+    `is_visible_external_x11_window`
+- **Markers** (7 markers, one per site):
+  - `src/platform/linux/x11/client.rs:193` — `// ShellDeck patch: EWMH window types the companion external-window filter excludes, interned once at startup.`
+  - `src/platform/linux/x11/client.rs:368` — `// ShellDeck patch: intern the extra EWMH window types the companion filter excludes beyond the XcbAtoms bundle.`
+  - `src/platform/linux/x11/client.rs:513` — `// ShellDeck patch: companion external-window filter exclusion list interned above.`
+  - `src/platform/linux/x11/client.rs:1596` — `// ShellDeck patch: EWMH window types the desktop companion must never treat as`
+  - `src/platform/linux/x11/client.rs:1634` — `// ShellDeck patch: WM_TRANSIENT_FOR marks a window as owned by another window`
+  - `src/platform/linux/x11/client.rs:1671` — `// ShellDeck patch: parity with the Windows/macOS companion filters —`
+  - `src/platform/linux/x11/client.rs:1677` — `// ShellDeck patch: transient windows are owned popups/dialogs — parity`
+- **Why**: SDPATCH-111's X11 filter only excluded ShellDeck-owned, hidden,
+  fullscreen, desktop-background, and zero-size windows, so the desktop
+  companion treated docks, panels, menus, tooltips and other window-manager
+  chrome as climbable platforms — unlike the Windows backend (which filters
+  `WS_EX_TOOLWINDOW` and owned windows) and the macOS backend (which keeps
+  only layer-0 windows). The filter now also excludes the EWMH types
+  `_NET_WM_WINDOW_TYPE_{DOCK,MENU,TOOLBAR,TOOLTIP,POPUP_MENU,DROPDOWN_MENU,
+  SPLASH,NOTIFICATION,UTILITY}` (DESKTOP stays excluded as before) and any
+  window with `WM_TRANSIENT_FOR` set (owned dialogs/popups; the property is a
+  predefined core atom, read via `AtomEnum::WM_TRANSIENT_FOR`). The six types
+  `XcbAtoms` does not already intern are interned once in `X11Client::new` —
+  batched cookies, same failure handling as `XcbAtoms::new` — and cached on
+  `X11ClientState`, keeping the companion-only exclusion list next to its
+  single consumer instead of widening the shared `XcbAtoms` bundle in
+  `window.rs`. Folding them into `XcbAtoms` later is a fine simplification;
+  the markers above are the sites to touch.
+- **Upstream status**: not filed yet — extends SDPATCH-111; batch with it if
+  that API is ever upstreamed.
 
 ## Preserved files (do not overwrite on sync)
 

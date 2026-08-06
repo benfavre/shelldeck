@@ -3321,13 +3321,18 @@ fn is_wayland_session() -> bool {
     false
 }
 
+/// Single source of truth for X11-vs-Wayland detection, shared with `main.rs`:
+/// GPUI's own compositor guess (`WAYLAND_DISPLAY` / `DISPLAY`), never
+/// `XDG_SESSION_TYPE`. The session type can claim "x11" while GPUI actually
+/// connects over Wayland, and the pointer coordinate-space math must agree
+/// with the backend GPUI really picked.
 #[cfg(target_os = "linux")]
-fn is_x11_session() -> bool {
+pub(crate) fn is_x11_session() -> bool {
     gpui::guess_compositor() == "X11"
 }
 
 #[cfg(not(target_os = "linux"))]
-fn is_x11_session() -> bool {
+pub(crate) fn is_x11_session() -> bool {
     false
 }
 

@@ -11,7 +11,7 @@ entries, `git grep <fn>` lands on the code.
 
 ---
 
-## 1. `util.rs` — atomic write
+## 1. `util.rs` — atomic write + cross-platform env helpers
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -20,6 +20,8 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-003 | `util.rs::atomic_write_leaves_no_tmp_files` | SDUC-091 | Green | |
 | SDTEST-004 | *to write* — atomic_write preserves prior file when write fails mid-way | SDUC-091 | **Red / P1** | Simulate a fake writer that Errs after N bytes; assert the target path is either the *prior* content or absent, never partial. |
 | SDTEST-005 | *to write* — atomic_write fsync semantics on Windows | SDUC-091 | **Red / P2** | Windows rename semantics are different; add a Windows-gated regression once the pattern hits a real bug. |
+| SDTEST-1590 | `util.rs::{home_dir_prefers_home_then_userprofile_and_rejects_blanks, username_prefers_user_then_logname_then_username, hostname_env_prefers_hostname_then_computername_and_trims, hostname_is_never_empty}` | SDUC-330 | Green | 4 tests, added 2026-08-06. Injectable env-precedence contracts behind `home_dir()` / `current_username()` / `hostname()` — the helpers the Windows-portability wave rewired PTY cwd, SSH known_hosts/key discovery, fleet workdir, and cloud device names onto. Blank values are rejected; the hostname terminal fallback is `"ShellDeck"`. |
+| SDTEST-1591 | `util.rs::{path_extensions_windows_parses_pathext_and_defaults, executable_lookup_searches_all_path_dirs_with_extensions, executable_lookup_rejects_directories_and_non_executables}` | SDUC-330, SDUC-413 | Green | 3 tests. PATHEXT-aware `executable_on_path_in`: every `PATH` entry searched, Windows extension candidates honored, directories and non-executables rejected. `ai::command_available` now delegates here — its coverage moved with the logic. (Behavior note: the old Windows path also probed the bare extension-less name; PATHEXT-only is correct cmd.exe semantics and no caller passes a name with its own extension.) |
 
 ---
 
@@ -38,6 +40,10 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-018 | `discovery.rs::parse_nginx_configs_takes_first_server_name_when_multiple_listed` | SDUC-072 | Green | Added 2026-07-09. **Pins current limitation** — the parser calls `split_whitespace().next()`, so only the first host wins. Future TODO is to emit all names; this test locks the shape so a well-meaning refactor doesn't regress to picking the last. |
 | SDTEST-019 | `server_sync.rs::percent_is_none_when_total_unknown` + `percent_zero_total_returns_100` + `percent_clamps_to_100_even_if_transferred_exceeds_total` + `percent_normal_case` + `overall_percent_is_size_weighted_not_count_weighted` + `overall_percent_empty_operation_is_none` + `overall_percent_none_when_no_item_knows_its_total` | SDUC-076 | Green | 7 tests, added 2026-07-09. **Contract correction** — `percent()` is a percentage (0..=100), not a ratio (0..=1). Size-weighting test uses a 1 GB@50% + 10× 1 KB@100% fixture: naive count-weighting would report ~95%, correct size-weighting reports ~50%. |
 | SDTEST-020 | `discovery.rs::rsync_command_includes_delete_and_ignore_existing_switches` + `rsync_command_shell_escapes_source_and_dest_paths` + `rsync_command_emits_one_exclude_per_pattern` | SDUC-075 | Green | 3 tests, added 2026-07-09. Extends the existing `test_rsync_command` (SDTEST-015) with the untouched switches (`delete_extra`, `skip_existing`), verifies `shell_escape` wraps paths containing spaces, and asserts one `--exclude=` emitted per pattern. |
+| SDTEST-1585 | `discovery.rs::join_child_path_matches_unix_expectations` | SDUC-457 | Green | Added 2026-08-06. `join_child_path` matches the old string concatenation on Unix (root and trailing-slash cases pinned) while being drive-letter-correct on Windows via `std::path`. |
+| SDTEST-1586 | `discovery.rs::format_readonly_permissions_never_fabricates_mode_bits` | SDUC-457 | Green | Added 2026-08-06. The non-Unix local listing derives `drw`/`dr-`/`-rw`/`-r-` from the readonly flag only — never the fabricated `drwxr-xr-x` it used to report. |
+| SDTEST-1587 | `discovery.rs::read_local_nginx_configs_feeds_parse_nginx_configs` | SDUC-457, SDUC-072 | Green | Added 2026-08-06. Local vhost files read via `std::fs` produce the same `---FILE:` wire format the SSH command emits (symlinks followed, dotfiles skipped, name order) and flow through the existing nginx parser unchanged. |
+| SDTEST-1588 | `discovery.rs::discover_argv_forms_match_shell_commands` | SDUC-457, SDUC-073, SDUC-074 | Green | Added 2026-08-06. `mysql_discover_argv`/`pg_discover_argv` carry the same SQL as the remote shell command strings (shared consts; real tab instead of the `$'\t'` bash-ism, no empty arg on empty credentials) — and the remote shell strings themselves are pinned byte-identical to HEAD. |
 
 ---
 
@@ -275,6 +281,18 @@ Existing: **0 tests**.
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
 | SDTEST-272 | *to write* — runtime_tick with enabled=false is a no-op | SDUC-206 | **Red / P0** | Safety guarantee per AGENTS.md. |
+| SDTEST-1584 | `jean_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Yellow | Added 2026-08-06. Windows twin of the JSON-output parse test through a `.cmd` batch fake (std launches it via `cmd.exe`), covering the real `JcodeExecutor` spawn→parse path on the one platform where process launch differs. **Yellow: no CI target compiles or runs it today** — `ci.yml` tests on ubuntu only and the release Windows job only builds. Per `.agents/testing.md` item 5, closing the gap needs a windows-latest `cargo test -p shelldeck-core` (or at least `cargo check --tests --target x86_64-pc-windows-msvc`). |
+
+> ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
+> `c5dd9c2`/`148b975` (`jcode_executor_uses_run_ndjson_flags_and_prompt_arg`,
+> `jcode_executor_parses_json_output`, `jcode_acp_probe_is_explicitly_disabled_by_contract`,
+> `jcode_acp_transport_falls_back_to_process_run`,
+> `jcode_executor_rejects_relative_or_missing_workdir_before_spawn`,
+> `jcode_executor_kills_child_on_timeout`,
+> `jcode_acp_fallback_preserves_process_timeout_cancellation`,
+> `configured_executor_falls_back_to_legacy_claude_only_when_jcode_cannot_start`)
+> are Green in code but have no SDTEST rows yet. SDUC-458 now exists to map
+> them to — back-fill pending.
 
 ---
 

@@ -350,6 +350,7 @@ actions!(
         OpenBextCloud,
         ConnectBextCloud,
         OpenAiAssistant,
+        OpenClippy,
     ]
 );
 
@@ -840,6 +841,7 @@ impl Workspace {
             let theme = TerminalTheme::by_name(&config.terminal.theme);
             let cfg = &config.terminal;
             let font_family = cfg.font_family.clone();
+            let default_shell = cfg.default_shell.clone();
             let font_size = cfg.font_size;
             let cursor_style = cfg.cursor_style.clone();
             let cursor_blink = cfg.cursor_blink;
@@ -850,6 +852,7 @@ impl Workspace {
                 t.set_terminal_theme(&theme);
                 t.set_font_size(font_size);
                 t.set_font_family(font_family);
+                t.set_default_shell(default_shell);
                 t.set_cursor_style(&cursor_style);
                 t.set_cursor_blink(cursor_blink);
                 t.set_scrollback_lines(scrollback);
@@ -908,17 +911,29 @@ impl Workspace {
                     .map(|account| account.email.clone())
                     .filter(|email| !email.trim().is_empty())
             });
-        ai_assistant.update(cx, |view, cx| {
-            view.set_account_label(account_label.clone(), account_detail.clone(), cx)
-        });
+        // Only the Dock renders the account rail — the Sheet host never reads
+        // `account_label`, so it is not pushed to `ai_assistant`.
         ai_dock_assistant.update(cx, |view, cx| {
             view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(ai_tasks.clone(), cx);
-            view.set_account_label(account_label.clone(), account_detail.clone(), cx);
+            view.set_account_label(account_label, account_detail, cx);
         });
         let ai_backend_ready = app_config.ai.is_configured()
             && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
+        // Clippy is opt-in and the view defaults to unavailable: push the real
+        // capability to BOTH assistant entities (the Sheet used to keep its
+        // constructor default forever, silently ignoring `ai.surfaces.clippy`).
+        let clippy_ready = ai_backend_ready && app_config.ai.allows(AiSurface::Clippy);
+        let clippy_auto_import = app_config.clippy.auto_import_clipboard_on_shortcut;
+        ai_assistant.update(cx, |view, cx| {
+            view.set_clippy_available(clippy_ready, cx);
+            view.set_clippy_auto_import_clipboard(clippy_auto_import, cx);
+        });
+        ai_dock_assistant.update(cx, |view, cx| {
+            view.set_clippy_available(clippy_ready, cx);
+            view.set_clippy_auto_import_clipboard(clippy_auto_import, cx);
+        });
         support.update(cx, |view, cx| {
             view.set_ai_reply_enabled(
                 ai_backend_ready && app_config.ai.allows(AiSurface::Support),
@@ -962,13 +977,13 @@ impl Workspace {
             // Initial palette build — no account state yet, so no mode
             // switcher. `refresh_command_palette` will rebuild with the
             // right gating on login / whoami.
-            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false, false));
             palette
         });
         let companion_command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
             palette.set_standalone(true);
-            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false, false));
             palette
         });
 

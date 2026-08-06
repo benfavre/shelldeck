@@ -7472,6 +7472,7 @@ dependencies = [
  "chrono",
  "directories",
  "keyring",
+ "libc",
  "notify",
  "parking_lot",
  "reqwest",

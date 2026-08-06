@@ -167,6 +167,7 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 | SDTEST-1242 | `installer::tests::linux_binary_replacement_is_atomic_and_keeps_backup` | SDUC-284 | Green | Verifies the same-filesystem rename and retained rollback copy on Linux. |
 | SDTEST-1243 | *to write* — install uses pending-replace pattern on Windows | SDUC-284 | **Red / P0** | Windows CI. |
 | SDTEST-1244 | *to write* — install fails cleanly if archive is corrupt (no partial writes) | SDUC-284 | **Red / P1** | |
+| SDTEST-1592 | *to write* — Windows `Expand-Archive` command builder doubles single quotes in paths | SDUC-284 | **Red / P2** | Extract the PowerShell command string into a pure builder fn and pin the `''`-doubling for both the archive and staging paths (an apostrophe in an install path must neither break nor inject the command — fixed 2026-08-06). `install_windows` is `cfg(windows)`, so the builder must live outside the cfg gate to be testable and type-checked on Linux. |
 
 ### Cross-repo smoke
 
@@ -209,8 +210,8 @@ parallel `cargo test`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1333 | `terminal_view.rs::command_discovery_searches_every_path_entry` | SDUC-410 | Green | Uses isolated temporary PATH entries; never depends on the developer machine's installed CLIs. |
-| SDTEST-1334 | `terminal_view.rs::command_discovery_honors_executable_extensions` | SDUC-410 | Green | Pins PATHEXT-style suffix lookup used by Windows npm-installed CLIs. |
+| SDTEST-1333 | *retired — see § Retired tests* | SDUC-410 | Retired | 2026-08-06: coverage moved to SDTEST-1591 (`shelldeck-core` util). |
+| SDTEST-1334 | *retired — see § Retired tests* | SDUC-410 | Retired | 2026-08-06: coverage moved to SDTEST-1591 (`shelldeck-core` util). |
 
 ## 8b. `shelldeck/src/tray/mod.rs` — pinned menu routing
 
@@ -226,10 +227,11 @@ parallel `cargo test`.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1341 | `ai_assistant.rs::stale_ai_response_is_rejected_after_context_invalidation` | SDUC-414 | Green | Pure request-generation gate extracted from the GPUI view; a response from a closed/previous context cannot overwrite the current draft. |
+| SDTEST-1578 | `ai_assistant.rs::reopening_the_same_context_preserves_the_in_flight_request` | SDUC-414, SDUC-434 | Green | Added 2026-08-06. Reopening the Dock (same surface + title, payload may differ) re-prepares the Global context *without* invalidating the request gate, so a pending reply still lands with its loading state; a genuine surface/title switch still invalidates and drops the stale reply. Guards the Dock-reopen bug where the reply vanished without spinner or error. |
 | SDTEST-1425 | *to write* — durable AI conversation renders Markdown for both roles | SDUC-414 | **Red / P1** | GPUI rendering: user and assistant messages interpret headings, emphasis, lists, links, fenced code, and tables without collapsing auto-width bubbles to their narrowest header; assistant Copy retains the exact Markdown source. |
 | SDTEST-1426 | `ai_workflow.rs::only_read_only_free_form_ai_capabilities_render_as_markdown` | SDUC-418 | Green | Exhaustive capability classification renders Support/request summaries and Script explain/review as Markdown, while structured triage/diagnostic/naming and raw replies/scripts/commands/dispatch payloads cannot enter the Markdown path. |
 | SDTEST-1428 | *to write* — both Assistant surfaces open the routed unsent request form | SDUC-452 | **Red / P0** | GPUI wiring: the main sheet closes into a prefilled New Request sheet; the standalone Dock reveals the main window and does the same; priority is preserved, normal chat stays in-place, logged-out routing only warns, and neither path calls the create API before the existing Create action. |
-| SDTEST-1429 | `ai_assistant.rs::quick_actions_distinguish_immediate_submit_from_composer_prefill` | SDUC-453 | Green | Script Generate/Convert, Terminal Command, and Create Request on Issue/Terminal use dedicated editable-template keys; context-complete analyses such as Summary submit immediately, while chat Triage uses readable prose rather than the workflow-only JSON prompt. Submit maps to the colored AI variant, prefill to neutral Outline. |
+| SDTEST-1429 | `ai_assistant.rs::quick_actions_distinguish_immediate_submit_from_composer_prefill` | SDUC-453 | Green | Script Generate/Convert, Terminal Command, and Create Request on Issue/Terminal use dedicated editable-template keys; context-complete analyses such as Summary submit immediately, while chat Triage uses readable prose rather than the workflow-only JSON prompt. Since the 2026-08 tile redesign the two modes are no longer visually distinguished (no tooltips, no button-variant coding) — the pinned contract is purely behavioral: Submit sends immediately, Prefill only fills the composer. |
 | SDTEST-1431 | `workspace::ai::tests::assistant_request_target_resolution_rejects_stale_and_ambiguous_matches` | SDUC-454 | Green | Exact case-insensitive ID/title and unique partial matches resolve; stale model-proposed IDs, missing targets, and ambiguous partial titles cannot navigate. |
 | SDTEST-1432 | *to write* — both Assistant surfaces reuse typed workflows without finalizing actions | SDUC-454 | **Red / P0** | GPUI wiring: Script opens an unsaved generated form; Terminal and Support open the exact active target with routed instructions; Jean stages the existing confirmation; request navigation opens the resolved detail; missing/stale targets warn; no save, execute, send, or dispatch occurs before the existing explicit action. |
 | SDTEST-1433 | `workspace::requests::tests::user_issue_refresh_forces_owner_scope_while_support_keeps_triage_filters` | SDUC-228 | Green | User polling always emits `mine=1` with no stale Support filters; Support retains the active triage query. The User overview also applies `is_my_issue` defensively before counting or rendering recent titles. |
@@ -253,6 +255,7 @@ parallel `cargo test`.
 | SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each step revalidates the active session and opens high-risk confirmation, full-plan execution advances only after matching OSC 133 completion, stops on failure, and Ctrl+C remains available. |
 | SDTEST-1374 | `issue_attachments.rs::rejects_extension_spoofing` + `recognizes_png_magic` | SDUC-432 | Green | Pure local intake guard: accepted formats are identified by bytes, never filename alone. |
 | SDTEST-1375 | *to write* — attachment picker routes URL/paste/drop/file/capture drafts to the exact composer | SDUC-432 | **Red / P0** | GPUI integration: each source adds one removable preview to the active New Request, request comment, Support request comment, ticket reply, or internal note; changing target clears drafts; submission uploads once and preserves drafts on failure. |
+| SDTEST-1593 | *to write* — Linux area capture distinguishes tool-missing from user cancellation | SDUC-432 | **Red / P2** | `issue_attachments.rs::capture_region` filters `gnome-screenshot`/`spectacle`/`import` through `util::executable_on_path` and must return the dedicated `attachments.capture.tool_missing` error when none is installed, and the cancelled message otherwise. Extract the installed-tools decision into a pure helper to test without spawning anything. |
 | SDTEST-1423 | `attachment_annotator.rs::empty_export_preserves_original_draft` + `annotation_export_is_a_valid_changed_png` | SDUC-432 | Green | Pins cancel/no-op preservation and proves a real annotation exports a distinct valid PNG without touching the original capture. |
 | SDTEST-1376 | *to write* — shared multi-line Input follows native wrapped-line editing semantics | SDUC-433 | **Red / P0** | GPUI integration: Up/Down retain visual X, Shift selection paints across hard/soft lines, Home/End stay on the visual row, mouse placement matches the glyph, wheel input scrolls a capped field, and `max_rows` keeps the caret visible. |
 | SDTEST-1377 | *to write* — role boundaries cover palette, shortcuts, deep links, and Settings | SDUC-152, SDUC-310 | **Red / P0** | GPUI integration: regular users cannot spawn Dev work; Support never sees Dev; super-admin can enter all modes; Settings opens/closes from every authenticated mode and hides Terminal/Editor for non-Dev accounts. |
@@ -378,6 +381,16 @@ parallel `cargo test`.
 | SDTEST-1575 | `companion_desktop.rs::targeted_refresh_does_not_promote_an_unvalidated_cached_fallback` | SDUC-448, SDUC-449, SDUC-451 | Green | If the one revalidated target closes or disappears, no older unrefreshed cached window is promoted into the active collision set and no phantom landing can occur. |
 | SDTEST-1576 | `companion_desktop.rs::trajectory_refresh_orders_collisions_within_the_same_fixed_step` | SDUC-448, SDUC-451 | Green | Two reachable tops crossed in one fixed step are ordered by exact projected vertical time of impact, not current overlap or coarse step number. |
 | SDTEST-1577 | `companion_desktop.rs::drag_release_predicts_first_interval_platforms_from_release_velocity` | SDUC-448, SDUC-451 | Green | The production drag-release path enters Dynamic mode with the bounded throw velocity before selecting its first 100 ms collision platform. |
+| SDTEST-1594 | `main.rs::x11_pointer_coordinates_are_not_offset_twice` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. X11 pointer math applies the display origin exactly once. The coordinate-space decision feeding it now comes from `companion_desktop::is_x11_session` (`gpui::guess_compositor()`), never `XDG_SESSION_TYPE` — fixing the `XDG_SESSION_TYPE=x11` + `WAYLAND_DISPLAY` disagreement. |
+| SDTEST-1595 | `main.rs::xrandr_geometry_preserves_each_monitor_origin` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `xrandr`-parsed monitor bounds keep every monitor's true origin. `xrandr`/`xprop` are optional runtime soft deps: spawn errors, non-zero exits and unparseable output warn and fall back to GPUI display bounds. |
+| SDTEST-1596 | `main.rs::x11_workarea_excludes_the_system_toolbar` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `_NET_WORKAREA` (via `xprop`) excludes panels/taskbars from the roaming area; absence degrades to full display bounds. |
+| SDTEST-1597 | SDPATCH-113 X11 external-window filter — compile-check only (`cargo check -p adabraka-gpui`) | SDUC-449 | Yellow | The EWMH dock/menu/toolbar/tooltip/popup-menu/dropdown-menu/splash/notification/utility + `WM_TRANSIENT_FOR` exclusions in the vendored fork have no runnable test: a live X server would be required, and the fork's own tests are not executed by the workspace test command (same limitation as SDTEST-1573). |
+
+### `shelldeck-ui/server_sync_view.rs` — file-browser breadcrumbs
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1589 | `server_sync_view.rs::breadcrumb_segments_remote_is_unix_regardless_of_host` + `server_sync_view.rs::breadcrumb_segments_local_matches_remote_shape_on_unix` | SDUC-457 | Green | 2 tests, added 2026-08-06. Remote panes keep pure Unix string math on every host platform (a Windows host never receives backslash paths from a Linux server); the local pane's `std::path`-components breadcrumbs are byte-identical to the remote flavor on Unix, while Windows locals get `C:\` round-trip and a `..` row that disappears at filesystem roots. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
@@ -408,10 +421,15 @@ checklist:
 
 - SDTEST-121, SDTEST-122 (keychain macOS/Windows)
 - SDTEST-960..968 (PTY spawn on all three)
+- SDTEST-1579..1581 (shell resolution — pure fn asserts both platform
+  branches from any target, no cfg gate)
 - SDTEST-1201, SDTEST-1202 (platform key mapping)
 - SDTEST-1242, SDTEST-1243 (installer replace on Unix / Windows)
 - SDTEST-1260, SDTEST-1261 (install-script + manifest parity)
 - SDTEST-1483 (desktop overlay native movement, work-area, reduced-motion, and no-focus platform APIs)
+- SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
+  compiles or runs it today**; needs a windows-latest test or
+  `cargo check --tests --target x86_64-pc-windows-msvc` job)
 
 The release-day rule: **all P0 cross-platform tests must be green on
 the matching CI runner before the tag goes out.** This maps directly
@@ -422,4 +440,8 @@ builds fails, the release + manifest jobs are skipped entirely".
 
 ## Retired tests
 
-*(none yet)*
+- **SDTEST-1333 / SDTEST-1334** (2026-08-06) — `terminal_view.rs` command
+  discovery tests. `command_available` now delegates to
+  `shelldeck_core::util::executable_on_path`, whose contracts (multi-dir PATH
+  walk, PATHEXT extensions, unix `+x` check — a stricter superset) are pinned
+  by SDTEST-1591 in `tests-core.md`. IDs stay reserved per the sticky-ID rule.

@@ -63,6 +63,10 @@ cargo run --example hello_world
 - **OpenSSL dev** (`libssl-dev` on Ubuntu, `openssl-devel` on Fedora)
 - **pkg-config**
 - On Linux: `libxkbcommon-dev`, `libwayland-dev` (for GPUI)
+- Optional on Linux/X11 (runtime, not build): `xrandr` and `xprop` — the
+  desktop companion uses them for multi-monitor bounds and `_NET_WORKAREA`
+  window placement; without them it logs a warning and falls back to GPUI
+  display bounds (see `.agents/cross-platform.md`)
 
 ## Crate Dependencies
 

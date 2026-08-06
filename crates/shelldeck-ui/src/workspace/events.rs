@@ -477,12 +477,33 @@ impl Workspace {
                         cx,
                     );
                 });
+                // The Sheet entity holds the same Clippy state and used to be
+                // skipped here, so `ai.surfaces.clippy` was silently ignored
+                // in the main window. Its `available` flag is deliberately
+                // NOT pushed: unlike the Dock (always Global surface), the
+                // Sheet's availability is per-context and validated at open
+                // time by `open_ai_assistant_with_context` — pushing the
+                // Global-surface value would wrongly disable e.g. a
+                // Terminal-context sheet.
+                self.ai_assistant.update(cx, |assistant, cx| {
+                    assistant.set_backend(
+                        self.app_config.ai.backend,
+                        self.app_config.ai.model.clone(),
+                        cx,
+                    );
+                    assistant.set_clippy_available(clippy_available, cx);
+                    assistant.set_clippy_auto_import_clipboard(
+                        self.app_config.clippy.auto_import_clipboard_on_shortcut,
+                        cx,
+                    );
+                });
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
                 let terminal_theme = TerminalTheme::by_name(&self.app_config.terminal.theme);
                 self.terminal.update(cx, |terminal, cx| {
                     terminal.set_font_size(self.app_config.terminal.font_size);
                     terminal.set_font_family(self.app_config.terminal.font_family.clone());
+                    terminal.set_default_shell(self.app_config.terminal.default_shell.clone());
                     terminal.set_cursor_style(&self.app_config.terminal.cursor_style);
                     terminal.set_cursor_blink(self.app_config.terminal.cursor_blink);
                     terminal.set_scrollback_lines(self.app_config.terminal.scrollback_lines);

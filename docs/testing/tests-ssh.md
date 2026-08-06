@@ -39,6 +39,7 @@ If a test genuinely needs a real SSH server, it is an
 | SDTEST-507 | `client.rs::test_parse_jump_spec_identity_file_is_none` | SDUC-041 | Green | |
 | SDTEST-508 | *to write* — parse_jump_spec rejects invalid ports (e.g. `host:0`, `host:99999`) | SDUC-041 | **Red / P1** | Boundary. |
 | SDTEST-509 | *to write* — parse_jump_spec rejects `user@:22` (empty host after user) | SDUC-041 | **Red / P2** | |
+| SDTEST-1583 | `client.rs::default_key_candidates_are_under_home_ssh_in_probe_order` + `client.rs::default_key_candidates_empty_without_home_never_root_level` | SDUC-456 | Green | 2 tests, added 2026-08-06. Pure `default_key_candidates(Option<PathBuf>)`: `~/.ssh/{id_ed25519,id_rsa,id_ecdsa}` built with `PathBuf` joins in probe order; no resolvable home ⇒ empty list, never fabricated root-level `/.ssh/*` probes. |
 
 ---
 
@@ -110,6 +111,7 @@ Existing: **0 tests.**
 | SDTEST-585 | `known_hosts.rs::add_known_host_to_appends_never_overwrites` + `add_known_host_to_creates_parent_directory` + `build_line_uses_bare_hostname_for_port_22` + `build_line_brackets_hostname_for_non_default_port` | SDUC-043 | Green | 4 tests. Extracted `add_known_host_to(path, ...)` + `build_known_host_line(...)` as pure fns so append-vs-truncate semantics are testable without `$HOME`. Load-bearing "trust never silently vanishes" property: two consecutive appends preserve both prior + new entries; parent `.ssh` dir auto-created on first-run. |
 | SDTEST-586 | *to write* — add_known_host writes atomically | SDUC-043, SDUC-091 | **Red / P1** | Deferred — append semantics + no truncation on partial write is verified by SDTEST-585; full atomic rename-into-place is a nice-to-have for power-loss safety but not blocking today. |
 | SDTEST-587bonus | `known_hosts.rs::multi_host_alias_line_matches_each_alias` + `non_default_port_uses_bracketed_pattern` + `comments_and_blank_lines_are_ignored` + `ragged_lines_do_not_panic_or_false_match` | SDUC-043 | Green | 4 bonus tests: comma-alias matching, bracketed non-22 pattern isolation (port 22 lookup on a `[host]:2222` file returns NotFound, not Match), tolerance for comments/blank/ragged lines (never panics, never false Match). |
+| SDTEST-1582 | `known_hosts.rs::known_hosts_path_is_built_under_resolved_home` + `known_hosts.rs::known_hosts_path_is_none_without_home_never_fabricated` | SDUC-043 | Green | 2 tests, added 2026-08-06. Pure `known_hosts_path_in(Option<PathBuf>)`: the path is built under the resolved cross-platform home; no home ⇒ `None`, so `check_known_host` degrades to `NotFound` and `add_known_host` skips the write with one warning per process — instead of silently targeting `/root/.ssh/known_hosts`. |
 
 ---
 

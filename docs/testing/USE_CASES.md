@@ -143,6 +143,18 @@ including paths that contain colons.
 with a writable stdin, readable stdout, correct initial size, and
 `is_alive()` transitions to `false` after the child exits.
 
+### SDUC-455 — Local terminals honor the configured default shell with platform-correct fallbacks
+
+`[terminal] default_shell` in `shelldeck.toml`, when set and non-blank, is the
+shell spawned for every new local terminal and local split (previously a dead
+config field). Without it, the fallback chain is platform-correct: Unix
+resolves `$SHELL` then `/bin/bash`; Windows resolves `powershell.exe` when on
+`PATH`, then `%COMSPEC%`, then `cmd.exe` — `$SHELL` is deliberately ignored on
+Windows (MSYS/Git-Bash leakage). Blank candidates fall through to the next.
+The PTY working directory falls back to the cross-platform home directory,
+then `"."` — never a hardcoded `/`. `ShellFlavor` detection derives from the
+same resolved shell the PTY actually spawns (one source of truth).
+
 ### SDUC-023 — Terminal session ties PTY to grid via async pipe
 
 `TerminalSession::spawn_local` boots the PTY, forwards output into the
@@ -198,6 +210,23 @@ keyed on `key_path`.
 `ReadError` for `~/.ssh/known_hosts` and hashed hostname entries.
 `add_known_host` appends the new entry without truncating the file
 and never rewrites existing entries.
+
+The `known_hosts` path is resolved from the cross-platform home directory
+(never `$HOME`-else-`/root`). When no home resolves, host-key persistence
+degrades *explicitly*: `check_known_host` returns `NotFound` and
+`add_known_host` skips the write, with a single once-per-process warning —
+a non-persistent TOFU, never a write to a fabricated root-level path.
+
+### SDUC-456 — Default SSH key discovery is home-resolved cross-platform
+
+When a connection has no explicit identity file, the client probes
+`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, then `~/.ssh/id_ecdsa` — built with
+`PathBuf` joins off the resolved home directory on every platform, probe
+order preserved. When no home resolves, the candidate list is empty (never
+fabricated root-level `/.ssh/*` paths from an empty `$HOME`). The jump-spec
+username fallback resolves the current user from `USER` → `LOGNAME` →
+`USERNAME` (Windows covered), keeping `"root"` only as the explicit last
+resort.
 
 ### SDUC-044 — Open interactive shell channel
 
@@ -373,6 +402,30 @@ item-count-weighted: a 1 GB item at 50% dominates ten 1 KB items at
 100% (aggregate stays ~50%, not ~95%). Returns `None` for an empty
 operation OR when no item knows its total.
 
+### SDUC-457 — Local discovery and file browsing are shell-free and cross-platform
+
+Local service discovery never spawns `sh -c` (absent on Windows; GNU
+`timeout` is not stock on macOS — local discovery used to be silently empty
+on both): nginx vhosts are read via `std::fs` into the same `---FILE:` wire
+format the SSH command emits (symlinks followed, dotfiles skipped, name
+order), and `mysql`/`psql` run as direct argv commands (shared SQL consts, a
+real tab instead of the `$'\t'` bash-ism, no empty arg on empty credentials,
+nulled stdin, bounded 10 s poll-and-kill timeout). Missing binary, spawn
+failure, timeout, and non-zero exit are logged so "tool errored" is
+distinguishable from "nothing found"; results stay best-effort.
+
+Local file listing joins paths via `std::path` (drive-letter-correct); on
+non-Unix the permission string derives honestly from the readonly flag
+(`drw`/`dr-`/`-rw`/`-r-`) and owner/group are empty — never a fabricated
+`drwxr-xr-x`/`user`. The Server Sync local pane resolves home via the
+cross-platform helper and builds breadcrumbs from `std::path` components
+(`C:\Users\ben` round-trips, the root crumb shows the actual root, and the
+`..` row disappears at filesystem roots); remote panes keep pure Unix string
+math because remote servers are Unix. Remote discovery over SSH is unchanged
+(shell command strings verified byte-identical). Known limitation: Windows
+local nginx discovery only probes `C:\nginx\conf\sites-enabled` (no packaging
+convention exists); absence is logged and honestly reported as no sites.
+
 ---
 
 ## 5. App config (`shelldeck.toml`)
@@ -468,7 +521,11 @@ gets the intended first-run experience.
 ### SDUC-100 — Device check-in via POST, falling back to GET on 404/405
 
 `sync_now()` first tries `POST /api/manage/shelldeck/sync`; on 404 or
-405 falls back to `GET`. Any other error surfaces to the caller.
+405 falls back to `GET`. Any other error surfaces to the caller. The
+check-in reports the machine's real hostname on every platform (env
+`HOSTNAME`/`COMPUTERNAME`, then the platform lookup); the terminal
+fallback is `"ShellDeck"` (changed 2026-08-06 from `"unknown"` — Manage
+must not key on the literal `"unknown"`).
 
 ### SDUC-101 — Merge: adds new profiles
 
@@ -856,6 +913,21 @@ instance.
 
 Wrong Bearer token surfaces 401 without silently retrying forever.
 
+### SDUC-458 — Jcode is the fleet executor, with Claude as startup-only fallback
+
+Fleet jobs run through `jcode run --ndjson|--json --quiet --no-update
+--no-selfdev -C <workdir> [--provider …] [--model …] [--tool-profile …]
+<prompt>` (binary from `[jean_runtime]` config, `$JCODE_BIN`, or `jcode`).
+Both NDJSON stream events and a final JSON object parse to the job result;
+the workdir is validated before spawn and the child is killed on timeout.
+The ACP transport is explicitly disabled by contract today and falls back to
+the `jcode run` process transport. Legacy Claude remains available as an
+explicit mode and as a *startup-only* fallback when Jcode cannot launch —
+never after Jcode has started and returned output. Real subprocesses never
+run in unit tests (fake executables only, per `.agents/testing.md`).
+*(Back-filled 2026-08-06 — the contract shipped in `b864c32`/`148b975`
+without a use-case entry.)*
+
 ### SDUC-209 — Instance ID persistence
 
 The first successful `register()` persists `instance_id` into
@@ -1035,7 +1107,10 @@ installs an unverified binary).
 
 `installer::install` on Linux/macOS moves-with-rename; on Windows uses
 the pending-replace pattern (rename-old-then-rename-new post-exit).
-No half-installed state on failure.
+No half-installed state on failure. The Windows `Expand-Archive`
+PowerShell invocation doubles single quotes in the archive and staging
+paths before interpolation, so an install path containing `'` can
+neither break nor inject the command.
 
 ### SDUC-285 — Auto-update disabled respects setting
 
@@ -1513,7 +1588,12 @@ final executable action. Automatic skips the second dialog only for low or
 moderate risk; high-risk Terminal, Script, and Fleet plans always require the
 dialog. The exact effective policy is frozen into `AiActionPlan`, target and
 permissions are still revalidated, and redacted audit metadata records the
-autonomy used without recording executable content.
+autonomy used without recording executable content. A capability the current
+desktop cannot support (today `clippy_replace_selection`, until a production
+desktop context provider lands) shows a disabled, localized "not available on
+this desktop yet" row instead of autonomy level buttons — an unreachable
+capability must never offer an `Automatic` setting — while its config field
+stays parsed and persisted for forward-compat.
 
 ### SDUC-431 — Terminal diagnosis produces bounded executable steps
 
@@ -1536,6 +1616,9 @@ internal-note composers accept up to five PNG, JPEG, or WebP images (9 Mo each,
 leaving multipart headroom below Bext's 10 MiB request cap) from an image URL, the native file picker,
 Ctrl/Cmd+V, drag-and-drop, or the platform's interactive area capture. Local
 drafts show a removable preview and are not uploaded until submission.
+On Linux, an area capture with no capture tool installed (none of
+`gnome-screenshot`, `spectacle`, or ImageMagick `import` on `PATH`) reports a
+dedicated localized missing-tool error distinct from user cancellation.
 An area capture opens a native annotation editor before it becomes a draft,
 with freehand, arrow, rectangle, text, undo, clear, and color controls; saving
 exports a PNG while cancelling preserves the unedited capture.
@@ -1569,7 +1652,10 @@ making the main ShellDeck window visible. The 480 px Dock is anchored to the
 right edge for the display height, has no native titlebar, and
 cannot be moved, resized or minimized. Repeated invocations reuse the existing
 Dock rather than creating duplicates. Closing the Dock hides it and keeps an
-in-flight request alive. It inherits ShellDeck's UI font and scale, uses a
+in-flight request alive. Reopening it re-prepares the same Global context
+*without* invalidating the pending request gate — the reply still lands with
+its loading state intact — while a genuine surface/title switch still
+invalidates the gate and drops the stale reply. It inherits ShellDeck's UI font and scale, uses a
 bounded global context, shares durable conversations and tasks with the main
 assistant, exposes an explicit action to reopen ShellDeck, and disables
 submission with an explanation when no usable global AI backend is configured.
@@ -1798,10 +1884,10 @@ Terminal — insert a localized, editable fill-in template and focus the compose
 without creating a conversation message or starting an AI request.
 Context-complete analyses such as Summary submit immediately. Chat Triage uses
 a readable analysis prompt; the strict JSON prompt remains reserved for the
-typed triage workflow. A localized tooltip announces the behavior before the
-click. Immediate-submit shortcuts use the colored AI button variant; prefill
-shortcuts retain the neutral outline variant, giving the two behaviors a stable
-visual code.
+typed triage workflow. Since the 2026-08 empty-screen redesign the shortcuts
+render as uniform tiles: there is no per-mode tooltip and no button-variant
+visual code. The submit-versus-prefill distinction is behavioral only, pinned
+per surface by SDTEST-1429.
 
 ### SDUC-454 — Natural-language actions reuse typed ShellDeck workflows
 
@@ -1820,7 +1906,12 @@ warning instead of being guessed.
 
 ### SDUC-445 — Clippy transforms explicitly supplied clipboard text
 
-The AI Dock and native tray can open a dedicated Clippy surface. Clipboard text
+The AI Dock (tray → rail), the command palette ("Ouvrir Clippy" via the
+`OpenClippy` action, shown only when a usable backend is configured and the
+Clippy surface is enabled), and a Clippy header pill in the main assistant
+Sheet can all open the dedicated Clippy surface. The Sheet pill mirrors the
+tasks pill and toggles Chat↔Clippy; it stays visible while on Clippy even if
+the capability drops, so the route back never vanishes. Clipboard text
 enters ShellDeck only after the user presses **Use clipboard** or pastes it into
 the source field. Rewrite, translate, shorten, summarize, explain, draft reply,
 and custom operations use the configured AI backend. The response remains a
@@ -1871,7 +1962,16 @@ frames. Overlay creation or native movement failures pause the character
 without stealing keyboard focus, and Windows overlays use non-activating native
 styles and show paths. External-window climbing is used
 only when the platform geometry provider can supply eligible visible window
-edges; invalid, minimized, fullscreen, and desktop surfaces are excluded. An
+edges; invalid, minimized, fullscreen, and desktop surfaces are excluded. The
+X11 external-window filter is at parity with the Windows
+(`WS_EX_TOOLWINDOW`/owned) and macOS (layer-0) filters: EWMH
+`_NET_WM_WINDOW_TYPE_{DOCK,MENU,TOOLBAR,TOOLTIP,POPUP_MENU,DROPDOWN_MENU,
+SPLASH,NOTIFICATION,UTILITY}` windows and windows with `WM_TRANSIENT_FOR` set
+are never climbable (SDPATCH-113). The X11-vs-Wayland decision follows GPUI's
+own compositor detection (`companion_desktop::is_x11_session`, backed by
+`gpui::guess_compositor()`); `XDG_SESSION_TYPE` is no longer consulted
+anywhere in the `shelldeck` crate, so pointer coordinate-space math always
+agrees with the backend GPUI actually connected with. An
 X11 backend can observe X11 and XWayland clients only. Native Wayland windows,
 including browsers or messaging apps using their Wayland backend, are not
 presented as climbable because GNOME and other compositors do not expose a
@@ -1957,6 +2057,40 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-06** — Windows-portability wave: added SDUC-455 (the
+  `[terminal] default_shell` field is honored for new local terminals and
+  splits — it was dead — with the platform-correct shell fallback chain and a
+  home-then-`"."` PTY cwd, never `/`), SDUC-456 (SSH default key discovery is
+  home-resolved, empty without a home), and SDUC-457 (local discovery and the
+  Server Sync file browser are shell-free with honest Windows
+  permissions/owner and `std::path` breadcrumbs). Amended SDUC-043 (explicit
+  non-persistent TOFU with one warning when no home resolves, never
+  `/root/.ssh`), SDUC-100 (device check-in sends the real hostname; terminal
+  fallback is now `"ShellDeck"`, not `"unknown"`), and SDUC-284 (quote-safe
+  Windows `Expand-Archive` paths). New tests SDTEST-1579..1591;
+  SDTEST-1584 is `#[cfg(windows)]` and Yellow until a Windows CI test target
+  exists. Back-filled SDUC-458 for the Jcode fleet executor that shipped
+  without a use-case entry.
+- **2026-08-06** — Amended SDUC-434 and added SDTEST-1578: reopening the AI
+  Dock re-prepares the same Global context without invalidating the in-flight
+  request gate (the pending reply used to vanish without spinner or error);
+  only a genuine surface/title switch discards a stale reply.
+- **2026-08-06** — Amended SDUC-445 (Clippy is reachable from the Sheet host
+  via the new `OpenClippy` palette entry and a Sheet header pill, in addition
+  to the Dock rail and tray) and SDUC-430 (an unsupported
+  `clippy_replace_selection` capability renders a disabled localized row
+  instead of autonomy buttons). Amended SDUC-453 and the SDTEST-1429 row: the
+  quick-action tile redesign removed the tooltips and the button-variant
+  visual code the entry promised; the submit/prefill distinction is
+  behavioral only.
+- **2026-08-06** — Amended SDUC-449 for X11 external-window filter parity
+  (SDPATCH-113: EWMH dock/menu/toolbar/tooltip/popup-menu/dropdown-menu/
+  splash/notification/utility types and `WM_TRANSIENT_FOR` windows excluded,
+  matching Windows/macOS) and the compositor-detection contract
+  (`gpui::guess_compositor()` via `companion_desktop::is_x11_session`;
+  `XDG_SESSION_TYPE` retired); registered SDTEST-1594..1597. Amended
+  SDUC-432: Linux area capture reports a dedicated tool-missing error
+  distinct from cancellation (SDTEST-1593 Red).
 - **2026-08-06** — Renumbered the assistant-routing use cases to SDUC-452..454
   (formerly SDUC-445..447 on `feat/composer-partage`): the Clippy / desktop
   companion work merged first and holds SDUC-445..451. IDs are sticky, so the

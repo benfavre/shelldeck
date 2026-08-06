@@ -1553,6 +1553,10 @@ impl SettingsView {
             &entity,
             |this, value| this.config.ai.policies.fleet_dispatch = value,
         ))
+        .child(ai_clippy_replace_policy_row(
+            self.config.ai.policies.clippy_replace_selection,
+            &entity,
+        ))
     }
 
     pub fn set_ai_connection_result(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
@@ -3079,6 +3083,7 @@ fn ai_policy_row(
         "script_execute" => t!("settings.ai.policies.script_execute").to_string(),
         "jean_dispatch" => t!("settings.ai.policies.jean_dispatch").to_string(),
         "fleet_dispatch" => t!("settings.ai.policies.fleet_dispatch").to_string(),
+        "clippy_replace_selection" => t!("ai.tasks.capability.clippy_replace").to_string(),
         _ => name.to_string(),
     };
     let mut controls = div().flex().items_center().gap(px(6.0));
@@ -3118,6 +3123,45 @@ fn ai_policy_row(
         t!("settings.ai.policies.description").as_ref(),
         controls,
     )
+}
+
+/// `ClippyReplaceSelection` has no production `DesktopContextProvider` on any
+/// platform yet — the only impl is the test fake in `shelldeck-core::ai::clippy`,
+/// and `workspace/ai.rs` audits the action as "unsupported" and toasts. Per
+/// `.agents/ai.md`, an unreachable capability must not surface an autonomy
+/// control the user could set to `Automatic`. Flip this to a real capability
+/// probe once a production provider lands — the interactive branch below is
+/// already wired.
+const CLIPPY_REPLACE_SELECTION_SUPPORTED: bool = false;
+
+/// Autonomy row for `clippy_replace_selection`. While the capability is
+/// unsupported, the level buttons are replaced by a localized "unavailable on
+/// this desktop" hint; the config field stays parsed and persisted for
+/// forward-compat.
+fn ai_clippy_replace_policy_row(
+    current: AiAutonomyLevel,
+    entity: &Entity<SettingsView>,
+) -> AnyElement {
+    if CLIPPY_REPLACE_SELECTION_SUPPORTED {
+        return ai_policy_row(
+            "ai-policy-clippy-replace",
+            "clippy_replace_selection",
+            current,
+            entity,
+            |this, value| this.config.ai.policies.clippy_replace_selection = value,
+        )
+        .into_any_element();
+    }
+    SettingsView::render_setting_row(
+        t!("ai.tasks.capability.clippy_replace").as_ref(),
+        t!("settings.ai.policies.description").as_ref(),
+        div()
+            .flex_shrink_0()
+            .text_size(px(12.0))
+            .text_color(ShellDeckColors::text_muted())
+            .child(t!("settings.ai.policy.replace_unavailable").to_string()),
+    )
+    .into_any_element()
 }
 
 #[cfg(test)]

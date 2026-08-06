@@ -190,6 +190,8 @@ pub struct X11ClientState {
     pub(crate) x_root_index: usize,
     pub(crate) _resource_database: Database,
     pub(crate) atoms: XcbAtoms,
+    // ShellDeck patch: EWMH window types the companion external-window filter excludes, interned once at startup.
+    pub(crate) companion_excluded_window_types: Vec<xproto::Atom>,
     pub(crate) windows: HashMap<xproto::Window, WindowRef>,
     pub(crate) mouse_focused_window: Option<xproto::Window>,
     pub(crate) keyboard_focused_window: Option<xproto::Window>,
@@ -363,6 +365,9 @@ impl X11Client {
             .context("Failed to get XCB atoms")?
             .reply()
             .context("Failed to get XCB atoms")?;
+        // ShellDeck patch: intern the extra EWMH window types the companion filter excludes beyond the XcbAtoms bundle.
+        let companion_excluded_window_types =
+            companion_excluded_window_types(&xcb_connection, &atoms)?;
 
         let root = xcb_connection.setup().roots[0].root;
         let compositor_present = check_compositor_present(&xcb_connection, root);
@@ -505,6 +510,8 @@ impl X11Client {
             x_root_index,
             _resource_database: resource_database,
             atoms,
+            // ShellDeck patch: companion external-window filter exclusion list interned above.
+            companion_excluded_window_types,
             windows: HashMap::default(),
             mouse_focused_window: None,
             keyboard_focused_window: None,
@@ -1586,6 +1593,61 @@ fn x11_external_window_snapshot(
     )
 }
 
+// ShellDeck patch: EWMH window types the desktop companion must never treat as
+// climbable platforms — parity with the Windows WS_EX_TOOLWINDOW/owned-window
+// filter and the macOS non-zero kCGWindowLayer filter. XcbAtoms only bundles
+// the types the window module itself needs, so the remainder is interned here
+// once at client startup.
+fn companion_excluded_window_types(
+    xcb: &XCBConnection,
+    atoms: &XcbAtoms,
+) -> anyhow::Result<Vec<xproto::Atom>> {
+    const EXTRA_EXCLUDED_TYPES: [&str; 6] = [
+        "_NET_WM_WINDOW_TYPE_MENU",
+        "_NET_WM_WINDOW_TYPE_TOOLBAR",
+        "_NET_WM_WINDOW_TYPE_TOOLTIP",
+        "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+        "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+        "_NET_WM_WINDOW_TYPE_SPLASH",
+    ];
+    let cookies = EXTRA_EXCLUDED_TYPES.map(|name| {
+        xcb.intern_atom(false, name.as_bytes())
+            .with_context(|| format!("Failed to intern {name}"))
+    });
+    let mut excluded = vec![
+        atoms._NET_WM_WINDOW_TYPE_DESKTOP,
+        atoms._NET_WM_WINDOW_TYPE_DOCK,
+        atoms._NET_WM_WINDOW_TYPE_NOTIFICATION,
+        atoms._NET_WM_WINDOW_TYPE_UTILITY,
+    ];
+    for (name, cookie) in EXTRA_EXCLUDED_TYPES.iter().zip(cookies) {
+        excluded.push(
+            cookie?
+                .reply()
+                .with_context(|| format!("Failed to intern {name}"))?
+                .atom,
+        );
+    }
+    Ok(excluded)
+}
+
+// ShellDeck patch: WM_TRANSIENT_FOR marks a window as owned by another window
+// (dialogs, menus, popups) — parity with the owned-window (GW_OWNER) exclusion
+// in the Windows external-window filter.
+fn x11_window_has_transient_for(xcb: &XCBConnection, x_window: xproto::Window) -> bool {
+    xcb.get_property(
+        false,
+        x_window,
+        xproto::AtomEnum::WM_TRANSIENT_FOR,
+        xproto::AtomEnum::WINDOW,
+        0,
+        1,
+    )
+    .ok()
+    .and_then(|cookie| cookie.reply().ok())
+    .is_some_and(|reply| reply.format == 32 && !reply.value.is_empty())
+}
+
 fn is_visible_external_x11_window(
     xcb: &XCBConnection,
     state: &X11ClientState,
@@ -1606,8 +1668,15 @@ fn is_visible_external_x11_window(
                 *atom == state.atoms._NET_WM_STATE_HIDDEN
                     || *atom == state.atoms._NET_WM_STATE_FULLSCREEN
             })
+        // ShellDeck patch: parity with the Windows/macOS companion filters —
+        // docks, panels, menus, tooltips, splash screens and notifications are
+        // chrome, not climbable platforms.
         && !x11_window_atoms(xcb, x_window, state.atoms._NET_WM_WINDOW_TYPE)
-            .contains(&state.atoms._NET_WM_WINDOW_TYPE_DESKTOP)
+            .iter()
+            .any(|atom| state.companion_excluded_window_types.contains(atom))
+        // ShellDeck patch: transient windows are owned popups/dialogs — parity
+        // with the owned-window exclusion on Windows.
+        && !x11_window_has_transient_for(xcb, x_window)
 }
 
 impl LinuxClient for X11Client {

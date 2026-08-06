@@ -188,6 +188,14 @@ fn should_auto_import_clippy(enabled: bool, current_source: &str) -> bool {
     enabled && current_source.trim().is_empty()
 }
 
+/// Whether replacing the view's context with `next` is a real context switch
+/// (which must invalidate the request gate and reset transient state) rather
+/// than a host re-preparing the same surface (which must preserve any
+/// in-flight request). Pure so the reopen contract is unit-testable.
+fn context_switch_resets(current: &AiContext, next: &AiContext) -> bool {
+    current.surface != next.surface || current.title != next.title
+}
+
 fn validated_clippy_result(text: String) -> Result<String, String> {
     let proposal = ClippyProposal {
         result: text.trim().to_string(),
@@ -243,7 +251,9 @@ impl AiAssistantView {
             prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             context,
             available: true,
-            clippy_available: true,
+            // Clippy is opt-in (`ai.surfaces.clippy`): stay unavailable until a
+            // host pushes the real capability via `set_clippy_available`.
+            clippy_available: false,
             loading: false,
             error: None,
             request_gate: AiRequestGate::default(),
@@ -309,18 +319,21 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    /// Kept as the hosts' entry point (the Dock opens without history). It now
-    /// drives the rail's activity instead of a split-pane flag.
+    /// Kept as the hosts' entry point (the Dock opens without history).
+    /// `history_open` is Sheet-only state — it drives the side column and the
+    /// header toggle. The Dock never reads it (its rail renders on
+    /// `active_tab`), so a Dock host maps the call onto its activity instead
+    /// of writing dead state.
     pub fn set_history_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.history_open = open;
-        // Only the Dock turns history into an activity; in the Sheet it is a
-        // column that appears beside the conversation.
-        if self.host == AiHost::Dock {
-            self.active_tab = if open {
-                AiActivity::History
-            } else {
-                AiActivity::Chat
-            };
+        match self.host {
+            AiHost::Sheet => self.history_open = open,
+            AiHost::Dock => {
+                self.active_tab = if open {
+                    AiActivity::History
+                } else {
+                    AiActivity::Chat
+                };
+            }
         }
         cx.notify();
     }
@@ -367,18 +380,27 @@ impl AiAssistantView {
     }
 
     pub fn set_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
-        self.request_gate.invalidate();
-        let context_changed =
-            self.context.surface != context.surface || self.context.title != context.title;
+        // Re-preparing a host over the *same* context must not kill an
+        // in-flight request. The Dock removes its window on focus loss while
+        // the controller (and any pending completion) survives; reopening runs
+        // `prepare()` → `set_context()`, and unconditionally invalidating here
+        // meant the reply landed on a dead gate — the user saw their own
+        // message with no answer, no spinner, and no error, forever. Only a
+        // real context switch discards outstanding work.
+        let context_changed = context_switch_resets(&self.context, &context);
         self.context = context;
-        self.loading = false;
-        self.error = None;
-        if context_changed
-            && self
+        if context_changed {
+            self.request_gate.invalidate();
+            self.loading = false;
+            self.error = None;
+            // A pending Clippy id must not outlive the gate that issued it.
+            self.clippy_pending_request = None;
+            if self
                 .active_conversation()
                 .is_some_and(|conversation| !conversation.messages.is_empty())
-        {
-            self.active_conversation = None;
+            {
+                self.active_conversation = None;
+            }
         }
         cx.notify();
     }
@@ -489,7 +511,13 @@ impl AiAssistantView {
                 Err(error) => self.clippy_error = Some(error),
             }
             cx.notify();
-            return true;
+            // The returned bool gates routed `AiAssistantAction` application
+            // in both hosts (`Workspace::handle_ai_assistant_event`,
+            // `AiCompanionController`). A Clippy turn transforms untrusted
+            // clipboard content and must never apply actions — return false
+            // so an Action that ever slipped through for a Clippy request is
+            // dropped here, not one crate away.
+            return false;
         }
         match result {
             Ok(text) => {
@@ -1119,7 +1147,10 @@ impl AiAssistantView {
             },
             AiRailEntry {
                 activity: AiActivity::Clippy,
-                icon: "paperclip",
+                // `paperclip` is not in the bundled Lucide subset
+                // (.agents/icons.md) and silently painted nothing;
+                // `clipboard-paste` ships and matches the clipboard job.
+                icon: "clipboard-paste",
                 label: t!("ai.clippy.tab").to_string(),
                 badge: None,
             },
@@ -1270,8 +1301,9 @@ impl AiAssistantView {
                     .child(glyph)
                     .child(entry.label)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // `history_open` is Sheet-only state; the rail (Dock)
+                        // navigates purely on `active_tab`.
                         this.active_tab = activity;
-                        this.history_open = activity == AiActivity::History;
                         cx.notify();
                     })),
             );
@@ -2245,6 +2277,47 @@ impl Render for AiAssistantView {
                 .child(active_title),
         );
         if in_sheet {
+            // Without a rail, the Sheet needs its own way into — and back out
+            // of — the Clippy activity. Same pill pattern as the tasks pill
+            // below (.agents/ui-components.md harmonization). Hidden when the
+            // surface is disallowed (`ai.surfaces.clippy`), except while
+            // already showing Clippy so the route back to Chat never vanishes.
+            if self.clippy_available || self.active_tab == AiActivity::Clippy {
+                let showing_clippy = self.active_tab == AiActivity::Clippy;
+                conversation_header = conversation_header.child(
+                    div()
+                        .id("ai-clippy-pill")
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(5.0))
+                        .h(px(22.0))
+                        .px(px(8.0))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if showing_clippy {
+                            ShellDeckColors::selected_bg()
+                        } else {
+                            ShellDeckColors::bg_surface()
+                        })
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(lucide_icon(
+                            "clipboard-paste",
+                            12.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .child(t!("ai.clippy.tab").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.active_tab == AiActivity::Clippy {
+                                this.active_tab = AiActivity::Chat;
+                                cx.notify();
+                            } else {
+                                this.show_clippy(cx);
+                            }
+                        })),
+                );
+            }
             // Without a rail, the Sheet needs its own way into the task list.
             if active_tasks > 0 || self.active_tab == AiActivity::Tasks {
                 let showing_tasks = self.active_tab == AiActivity::Tasks;
@@ -2920,10 +2993,10 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_auto_import_clippy, validated_clippy_result, AiAssistantView, AiQuickActionMode,
-        AiRequestGate,
+        context_switch_resets, should_auto_import_clippy, validated_clippy_result, AiAssistantView,
+        AiQuickActionMode, AiRequestGate,
     };
-    use shelldeck_core::ai::{AiSurface, CLIPPY_MAX_RESULT_CHARS};
+    use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
 
     // SDTEST-1341
     #[test]
@@ -2937,6 +3010,43 @@ mod tests {
 
         let current_request = gate.begin();
         assert!(gate.accepts(current_request));
+    }
+
+    // SDTEST-1578 — the Dock removes its window on focus loss while the
+    // controller and any in-flight request survive; reopening re-prepares the
+    // same Global context. That re-preparation must NOT invalidate the gate
+    // (the pending reply would land on a dead gate and vanish without spinner
+    // or error), while a genuine surface/title switch still must.
+    #[test]
+    fn reopening_the_same_context_preserves_the_in_flight_request() {
+        let global = AiContext::new(
+            AiSurface::Global,
+            "Global".to_string(),
+            serde_json::json!({}),
+        );
+        // Same surface + title, different payload: a reopen, not a switch.
+        let global_reopened = AiContext::new(
+            AiSurface::Global,
+            "Global".to_string(),
+            serde_json::json!({ "active_view": "Dashboard" }),
+        );
+        let terminal = AiContext::new(
+            AiSurface::Terminal,
+            "Terminal".to_string(),
+            serde_json::json!({}),
+        );
+
+        let mut gate = AiRequestGate::default();
+        let in_flight = gate.begin();
+
+        // Reopen: `set_context` keeps the gate → the reply is still accepted.
+        assert!(!context_switch_resets(&global, &global_reopened));
+        assert!(gate.accepts(in_flight));
+
+        // Real switch: `set_context` invalidates → the stale reply is dropped.
+        assert!(context_switch_resets(&global_reopened, &terminal));
+        gate.invalidate();
+        assert!(!gate.accepts(in_flight));
     }
 
     // SDTEST-1487

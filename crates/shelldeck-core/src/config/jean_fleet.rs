@@ -818,6 +818,22 @@ impl JcodeTransportProbe {
     }
 }
 
+/// True for the transient `ETXTBSY` (errno 26) a Unix spawn can hit while a
+/// freshly replaced executable is still being closed by its writer.
+///
+/// Unix-only on purpose: on Windows `raw_os_error()` carries a Win32 error
+/// code, where 26 (`ERROR_NOT_DOS_DISK`) means something entirely unrelated —
+/// retrying on it would mask real launch failures.
+#[cfg(unix)]
+fn is_transient_spawn_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_transient_spawn_error(_err: &std::io::Error) -> bool {
+    false
+}
+
 impl JcodeTransport for ProcessJcodeTransport<'_> {
     fn probe(&self, _timeout: Duration) -> JcodeTransportProbe {
         JcodeTransportProbe {
@@ -875,14 +891,15 @@ impl JcodeTransport for ProcessJcodeTransport<'_> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Linux can briefly return ETXTBSY while a freshly replaced executable is still being
-        // closed by its writer. Retry only that transient condition; every other launch failure
-        // remains immediately fallbackable and the bounded retries do not affect cancellation.
+        // Unix can briefly return ETXTBSY while a freshly replaced executable is still being
+        // closed by its writer. Retry only that transient condition (never on Windows — see
+        // `is_transient_spawn_error`); every other launch failure remains immediately
+        // fallbackable and the bounded retries do not affect cancellation.
         let mut attempts = 0;
         let child = loop {
             match cmd.spawn() {
                 Ok(c) => break c,
-                Err(e) if e.raw_os_error() == Some(26) && attempts < 3 => {
+                Err(e) if is_transient_spawn_error(&e) && attempts < 3 => {
                     attempts += 1;
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -1547,6 +1564,31 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
         });
         let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(5));
         assert_eq!(outcome.result, "json done");
+        assert!(!outcome.is_error);
+    }
+
+    /// Windows twin of `jcode_executor_parses_json_output`: same executor code
+    /// path, but the fake binary is a `.cmd` batch script (which the standard
+    /// library launches through `cmd.exe`), so spawn + output parsing get real
+    /// coverage on the one platform where process launch differs.
+    #[cfg(windows)]
+    #[test]
+    fn jcode_executor_parses_json_output_from_cmd_fake() {
+        let dir = temp_dir("jcode-json-win");
+        let workdir = dir.join("work");
+        fs::create_dir_all(&workdir).unwrap();
+        let bin = fake_executable(
+            &dir,
+            "fake-jcode-json",
+            "@echo {\"response\":\"json done\",\"is_error\":false}\r\n",
+        );
+        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+            binary: Some(bin.display().to_string()),
+            output_format: JcodeOutputFormat::Json,
+            ..Default::default()
+        });
+        let outcome = exec.execute("fix", workdir.to_str().unwrap(), "", Duration::from_secs(5));
+        assert_eq!(outcome.result, "json done", "{:?}", outcome);
         assert!(!outcome.is_error);
     }
 

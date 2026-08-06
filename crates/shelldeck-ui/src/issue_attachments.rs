@@ -673,7 +673,18 @@ pub fn capture_region() -> Result<AttachmentDraft, String> {
             ("spectacle", &["-r", "-b", "-n", "-o"]),
             ("import", &[]),
         ];
-        attempts.iter().any(|(program, args)| {
+        // Only try tools that are actually installed: when none is, the
+        // failure is a missing dependency, not a user cancellation, and it
+        // deserves its own message instead of "capture cancelled".
+        let installed: Vec<(&str, &[&str])> = attempts
+            .iter()
+            .copied()
+            .filter(|(program, _)| shelldeck_core::util::executable_on_path(program))
+            .collect();
+        if installed.is_empty() {
+            return Err(t!("attachments.capture.tool_missing").to_string());
+        }
+        installed.iter().any(|(program, args)| {
             Command::new(program)
                 .args(*args)
                 .arg(&path)

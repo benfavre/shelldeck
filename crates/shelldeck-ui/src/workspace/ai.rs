@@ -1869,11 +1869,6 @@ impl Workspace {
         if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;
         }
-        for handle in cx.windows() {
-            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
-                let _ = dock.update(cx, |_dock, window, _cx| window.hide_window());
-            }
-        }
         self.ai_assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(
@@ -1883,6 +1878,41 @@ impl Workspace {
             );
             assistant.set_context(context, cx);
         });
+        self.present_ai_sheet(cx);
+    }
+
+    /// Open the assistant Sheet directly on the Clippy activity (palette
+    /// `OpenClippy`). Gated on the Clippy surface, not the current chat
+    /// surface: Clippy transforms clipboard text and is independent of what
+    /// the conversation context is about — so the chat context is left as-is
+    /// and no in-flight chat request is disturbed.
+    pub(super) fn open_ai_clippy(&mut self, cx: &mut Context<Self>) {
+        if !self.ai_backend_available() || !self.app_config.ai.allows(AiSurface::Clippy) {
+            return;
+        }
+        let backend = self.app_config.ai.backend;
+        let model = self.app_config.ai.model.clone();
+        let auto_import = self.app_config.clippy.auto_import_clipboard_on_shortcut;
+        self.ai_assistant.update(cx, |assistant, cx| {
+            assistant.reload_conversations(cx);
+            assistant.set_backend(backend, model, cx);
+            // The guard above just validated the Clippy surface.
+            assistant.set_clippy_available(true, cx);
+            assistant.set_clippy_auto_import_clipboard(auto_import, cx);
+            assistant.show_clippy(cx);
+        });
+        self.present_ai_sheet(cx);
+    }
+
+    /// Hide any Dock windows and (re)build the main-window assistant Sheet
+    /// around the shared `ai_assistant` entity. Callers gate access and
+    /// prepare the entity (context / activity) before presenting.
+    fn present_ai_sheet(&mut self, cx: &mut Context<Self>) {
+        for handle in cx.windows() {
+            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
+                let _ = dock.update(cx, |_dock, window, _cx| window.hide_window());
+            }
+        }
         let sheet_assistant = self.ai_assistant.clone();
         let workspace = cx.entity().downgrade();
         self.ai_sheet = Some(cx.new(move |sheet_cx| {

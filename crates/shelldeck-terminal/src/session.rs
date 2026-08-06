@@ -59,11 +59,9 @@ impl TerminalSession {
 impl TerminalSession {
     /// Spawn a new local terminal session.
     pub fn spawn_local(shell: Option<&str>, rows: u16, cols: u16) -> crate::Result<Self> {
-        let shell_name = shell
-            .map(str::to_string)
-            .or_else(|| std::env::var("SHELL").ok())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        // Detect the flavor from the shell the PTY will actually spawn (same
+        // resolution chain as `LocalPty::spawn`, incl. platform fallbacks).
+        let shell_name = crate::pty::resolve_shell(shell).to_ascii_lowercase();
         let shell_flavor = if shell_name.contains("fish") {
             ShellFlavor::Fish
         } else if cfg!(target_os = "windows")

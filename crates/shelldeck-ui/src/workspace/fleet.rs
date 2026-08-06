@@ -51,7 +51,14 @@ impl Workspace {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| self.app_config.jean_runtime.workdir.clone())
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+            .unwrap_or_else(|| {
+                // util::home_dir() also honors %USERPROFILE% / the platform
+                // lookup, so Windows and macOS don't silently fall back to
+                // "." the way the old $HOME-only read did.
+                shelldeck_core::util::home_dir()
+                    .map(|home| home.display().to_string())
+                    .unwrap_or_else(|| ".".to_string())
+            });
         let fleet_model = inst.map(|i| i.model.clone()).unwrap_or_default();
         let model = self.app_config.jean_runtime.job_model(&fleet_model);
         (workdir, model)
