@@ -53,6 +53,7 @@ lucide_assets!(
     "arrow-down",
     "arrow-up",
     "at-sign",
+    "git-branch",
     "arrow-left-right",
     "arrow-right",
     "bot",

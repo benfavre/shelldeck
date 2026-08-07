@@ -228,6 +228,9 @@ pub struct AiAssistantView {
     account_label: Option<String>,
     account_detail: Option<String>,
     account_menu_open: bool,
+    /// The context chip is removable: dropping it sends the question without
+    /// the current screen attached. Reset whenever the host sets a new context.
+    context_dropped: bool,
     active_tab: AiActivity,
     show_archived: bool,
     pending_delete: Option<Uuid>,
@@ -275,6 +278,7 @@ impl AiAssistantView {
             account_label: None,
             account_detail: None,
             account_menu_open: false,
+            context_dropped: false,
             active_tab: AiActivity::Chat,
             show_archived: false,
             pending_delete: None,
@@ -390,6 +394,9 @@ impl AiAssistantView {
         let context_changed = context_switch_resets(&self.context, &context);
         self.context = context;
         if context_changed {
+            // A genuine context switch re-arms the removable chip: the user
+            // dropped the *previous* screen, not this one.
+            self.context_dropped = false;
             self.request_gate.invalidate();
             self.loading = false;
             self.error = None;
@@ -697,7 +704,17 @@ impl AiAssistantView {
                 conversation_id,
                 prompt,
                 latest_user_message,
-                context: self.context.clone(),
+                // Dropping the chip is not cosmetic: the turn really goes out
+                // without the screen's context attached.
+                context: if self.context_dropped {
+                    AiContext::new(
+                        AiSurface::Global,
+                        t!("ai.context.global").to_string(),
+                        serde_json::json!({}),
+                    )
+                } else {
+                    self.context.clone()
+                },
             });
             cx.notify();
         }
@@ -2553,30 +2570,13 @@ impl Render for AiAssistantView {
         if self.host == AiHost::Sheet {
             composer = composer.max_w(px(624.0)).mx_auto().w_full();
         }
-        composer = composer.child(
-            Composer::new("ai-composer", &self.prompt_state)
+        let mut assistant_composer = Composer::new("ai-composer", &self.prompt_state)
                 .placeholder(t!("ai.assistant.placeholder").to_string())
                 .min_rows(2)
                 .max_rows(8)
                 .disabled(self.loading || !self.available)
                 // The context left the header: it now rides with the message,
                 // where it is visible next to what it will be sent with.
-                .context(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0))
-                        .max_w_full()
-                        .min_w(px(0.0))
-                        .h(px(21.0))
-                        .px(px(7.0))
-                        .rounded(px(6.0))
-                        .bg(ShellDeckColors::bg_surface())
-                        .text_size(px(10.5))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon("sparkles", 11.0, ShellDeckColors::text_muted()))
-                        .child(div().truncate().child(self.context.title.clone())),
-                )
                 // Placeholders, on purpose: the affordances are drawn now so
                 // the footer has its final shape, but attachments and targeting
                 // are not implemented yet. They carry no click handler and are
@@ -2641,8 +2641,83 @@ impl Render for AiAssistantView {
                         .gap(px(9.0))
                         .child(t!("ai.assistant.hint.send").to_string())
                         .child(t!("ai.assistant.hint.newline").to_string()),
-                ),
-        );
+                );
+        if !self.context_dropped {
+            assistant_composer = assistant_composer
+                // Removable, as the mockup asks: you can see what leaves with
+                // the question, and take it off. Dropping it does not clear the
+                // host's context — it sends the turn without it, and the chip
+                // comes back as soon as the host sets a new one.
+                .context(
+                    div()
+                        .id("ai-context-chip")
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .max_w_full()
+                        .min_w(px(0.0))
+                        .h(px(21.0))
+                        .pl(px(7.0))
+                        .pr(px(3.0))
+                        .rounded(px(6.0))
+                        .bg(ShellDeckColors::bg_surface())
+                        .text_size(px(10.5))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(lucide_icon(
+                            "sparkles",
+                            11.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .child(div().truncate().child(self.context.title.clone()))
+                        .child(
+                            div()
+                                .id("ai-context-drop")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .flex_shrink_0()
+                                .size(px(16.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                                .child(
+                                    svg()
+                                        .path(lucide_path("x"))
+                                        .size(px(10.0))
+                                        .text_color(ShellDeckColors::text_muted()),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.context_dropped = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                // Placeholders, on purpose: the affordances are drawn now so
+                // the footer has its final shape, but attachments and targeting
+                // are not implemented yet. They carry no click handler and are
+                // rendered `disabled`, so nothing pretends to work.
+                .action(
+                    Button::new("ai-composer-attach", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("plus"))
+                        .tooltip(t!("ai.composer.attach_soon").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
+                        })),
+                )
+                .action(
+                    Button::new("ai-composer-target", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("at-sign"))
+                        .tooltip(t!("ai.composer.target_soon").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
+                        })),
+                );
+        }
+        composer = composer.child(assistant_composer);
 
         // The header is hoisted to the root: it spans the history column too.
         let chat = div()
