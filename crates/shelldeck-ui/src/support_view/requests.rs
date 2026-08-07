@@ -419,9 +419,14 @@ impl SupportView {
             .flex_wrap()
             .gap(px(7.0))
             .child(
+                // BOLD (700), pas SEMIBOLD (600). Sur Inter chargé, les deux
+                // graisses existent, mais SEMIBOLD à 12 px sur du texte muet
+                // par-dessus a un contraste trop faible pour se lire comme du
+                // gras — le nom devient invisible dans la ligne. BOLD à 12.5
+                // rétablit le rôle de l'auteur en tant que titre du message.
                 div()
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::BOLD)
                     .text_color(if author_matches_me {
                         ShellDeckColors::primary()
                     } else {
@@ -552,11 +557,17 @@ impl SupportView {
     /// at raw font height and they overlap vertically — the exact defect the
     /// last release shipped).
     fn render_body_lines(body: &str, color: Hsla) -> impl IntoElement {
+        // `whitespace_normal` + `min_w(0)` + `overflow_hidden` per line: without
+        // this, long words (Slack meta URLs, GitHub links) render on a single
+        // unbounded line and paint OVER whatever the layout put beside them —
+        // which is what produced the earlier overlap where the request body
+        // ran through the system-note cards.
         let mut wrap = div()
             .flex()
             .flex_col()
             .w_full()
             .min_w(px(0.0))
+            .overflow_hidden()
             .text_size(px(12.5))
             .text_color(color);
         for line in body.split('\n') {
@@ -565,6 +576,8 @@ impl SupportView {
                 div()
                     .w_full()
                     .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_normal()
                     .line_height(relative(1.62))
                     .child(line.to_string()),
             );
@@ -1808,7 +1821,9 @@ impl SupportView {
             .track_scroll(&self.issues_scroll)
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            // 16px : à 8 la carte statut collait à la miniature du dessus
+            // et donnait l'impression d'une superposition.
+            .gap(px(16.0))
             .px(px(14.0))
             .pt(px(14.0))
             .pb(px(20.0))
@@ -1834,8 +1849,8 @@ impl SupportView {
                             .gap(px(7.0))
                             .child(
                                 div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::BOLD)
                                     .text_color(ShellDeckColors::text_primary())
                                     .child(if iss.requested_by.trim().is_empty() {
                                         t!("support.issue.description").to_string()
@@ -1852,9 +1867,6 @@ impl SupportView {
                             ),
                     )
                     .child({
-                        // 12.5px / 1.62 come from the proto's `.msg-ai` — a
-                        // reading measure, not a form field. `TextVariant::BodySmall`
-                        // is 13px / 1.5, a hair off both.
                         let mut body = div()
                             .flex()
                             .flex_col()
@@ -1873,6 +1885,12 @@ impl SupportView {
                             );
                         }
                         body
+                    })
+                    // Pièces jointes DANS le bloc du message : elles suivent
+                    // l'auteur au lieu de flotter entre l'ouverture et la note
+                    // statut qui vient après (où elles semblaient poser dessus).
+                    .when(!iss.attachments.is_empty(), |el| {
+                        el.child(self.render_issue_attachment_links(&iss.attachments, cx))
                     }),
             );
         } else if iss.comments.is_empty() && iss.attachments.is_empty() {
@@ -1882,8 +1900,8 @@ impl SupportView {
                     .text_color(ShellDeckColors::text_muted())
                     .child(t!("support.empty.comments").to_string()),
             );
-        }
-        if !iss.attachments.is_empty() {
+        } else if !iss.attachments.is_empty() {
+            // Pas de corps mais des pièces jointes : on garde le rendu séparé.
             thread = thread.child(self.render_issue_attachment_links(&iss.attachments, cx));
         }
         for c in &iss.comments {

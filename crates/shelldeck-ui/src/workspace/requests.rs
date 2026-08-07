@@ -468,6 +468,130 @@ impl Workspace {
             && matches!(self.effective_mode(), AppMode::User | AppMode::Support)
     }
 
+    /// Sentinel id of the staff-only thread showcase — used both to insert the
+    /// fixture and to short-circuit `select_issue` so we don't ask Manage for a
+    /// row it does not have (which would return a 404 toast).
+    const FAKE_SHOWCASE_ID: &'static str = "fake-thread-showcase";
+
+    /// Injects a fictional request into the list, ONLY when the account is
+    /// staff (super-admin or Inklura Support). Every real user has zero access
+    /// to it — Manage never returns it. It exists so we can look at the thread
+    /// design against a controlled body: 13 cases at once, exactly what the
+    /// mockup shows in `docs/design/assistant-refonte.html`.
+    ///
+    /// Called from `refresh_issues` after the real list comes back, so the
+    /// fixture is refreshed each poll and never persists to disk.
+    fn inject_thread_showcase(list: &mut Vec<Issue>, staff: bool) {
+        if !staff {
+            return;
+        }
+        use shelldeck_core::config::issues::{IssueAttachment, IssueComment, IssueGithub};
+        let now = chrono::Utc::now().timestamp_millis() as f64;
+        let m = |mins: f64| now - mins * 60_000.0;
+        let comment = |kind: &str, author: &str, body: &str, mins: f64| IssueComment {
+            id: format!("fake-{}-{}", kind, mins as i64),
+            author: author.to_string(),
+            body: body.to_string(),
+            kind: kind.to_string(),
+            at: m(mins),
+            attachments: Vec::new(),
+        };
+        let showcase = Issue {
+            id: Self::FAKE_SHOWCASE_ID.to_string(),
+            tenant_id: "shelldeck".to_string(),
+            tenant_name: "ShellDeck (démo)".to_string(),
+            site_id: None,
+            site_label: Some("Fil de démonstration".to_string()),
+            title: "[DÉMO] Fil de démonstration — TOUS les cas d'affichage".to_string(),
+            status: "in_progress".to_string(),
+            priority: "high".to_string(),
+            source: "slack".to_string(),
+            requested_by: "Bruno".to_string(),
+            assignee: "Karim".to_string(),
+            comment_count: 8,
+            attachment_count: 1,
+            github: Some(IssueGithub {
+                url: "https://github.com/shelldeck/demo/issues/1".to_string(),
+                number: 1,
+                state: "open".to_string(),
+            }),
+            job_count: 1,
+            created_at: m(180.0),
+            updated_at: m(0.5),
+            body: "Depuis hier, les vidéos uploadées sur WatchMe ne se lisent plus. L'upload aboutit, la miniature apparaît, mais le lecteur reste noir. Ça touche les trois comptes qu'on a testés — plus de détails dans le lien.".to_string(),
+            comments: vec![
+                // 1 · note statut
+                comment("status", "Karim", "Karim a fait passer la demande d'À traiter à En cours.", 168.0),
+                // 2 · réponse staff (moi) — courte
+                IssueComment {
+                    id: "fake-c-2".to_string(),
+                    author: "Karim".to_string(),
+                    body: "J'ai reproduit sur video-12. Le transcodage part mais s'arrête à 40 % — le disque de media-01 est plein. Voici l'écran df -h :".to_string(),
+                    kind: "comment".to_string(),
+                    at: m(150.0),
+                    attachments: vec![IssueAttachment {
+                        id: "fake-a-1".to_string(),
+                        share_id: "".to_string(),
+                        url: "".to_string(),
+                        viewer_url: "".to_string(),
+                        filename: "df-h-media-01.png".to_string(),
+                        content_type: "image/png".to_string(),
+                        bytes: 218_432,
+                        width: Some(640),
+                        height: Some(180),
+                        created_by: "Karim".to_string(),
+                        created_at: m(150.0),
+                    }],
+                },
+                // 3 · note GitHub
+                comment("github", "Karim", "Liée à webdesign29/activ#3007 — « Lecteur vidéo bloqué après transcodage »", 130.0),
+                // 4 · réponse client — corps long avec liens
+                comment(
+                    "comment",
+                    "Bruno",
+                    "Merci, c'est aligné avec ce qu'on voit côté prod. On a mis en place la rotation nocturne, le disque est redescendu à 62 %. Est-ce qu'on peut relancer la file ? Détails ici https://docs.activ-com.fr/ops/media/backfill",
+                    120.0,
+                ),
+                // 5 · réponse staff — corps avec sauts de ligne
+                comment(
+                    "comment",
+                    "Karim",
+                    "File relancée. Trois garde-fous posés :\n- Alerte disque à 80 %\n- Nettoyage nocturne des .tmp de transcodage\n- Reprise automatique après échec 5xx\n\nLe dernier est en cours de review.",
+                    90.0,
+                ),
+                // 6 · réponse client — un mot très long qui doit wrap
+                comment(
+                    "comment",
+                    "Bruno",
+                    "Super. J'ai aussi laissé un mémo interne : https://internal.activ-com.fr/wiki/pages/watchme-incident-2026-08-transcodage-file-disque-plein-postmortem",
+                    45.0,
+                ),
+                // 7 · note système : dispatché
+                comment("system", "Karim", "Dispatché vers fleet · media-01 — script backfill-video-queue", 30.0),
+                // 8 · réponse staff — vide / attente
+                comment("comment", "Karim", "Je vérifie le rattrapage et je reviens.", 5.0),
+            ],
+            attachments: vec![IssueAttachment {
+                id: "fake-a-issue".to_string(),
+                share_id: "".to_string(),
+                url: "".to_string(),
+                viewer_url: "".to_string(),
+                filename: "rapport-incident-2026-08.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                bytes: 219_136,
+                width: None,
+                height: None,
+                created_by: "Bruno".to_string(),
+                created_at: m(180.0),
+            }],
+            job_ids: vec!["fake-job-1".to_string()],
+        };
+        // En tête de liste : la démo saute aux yeux, et une fixture SANS body
+        // ne s'affiche jamais que dans la liste — ici on met tout, corps ET
+        // commentaires, pour que l'onglet aille droit au fil.
+        list.insert(0, showcase);
+    }
+
     pub(super) fn refresh_issues(&mut self, cx: &mut Context<Self>) {
         let Some((base, token)) = self.fleet_base_token() else {
             return;
@@ -486,6 +610,12 @@ impl Workspace {
                     ws.issues_list = list.issues.clone();
                     ws.issues_staff = list.staff;
                     ws.issues_instances = list.instances.clone();
+                    // Fixture staff-only : n'affecte que la liste EN MÉMOIRE,
+                    // rien n'est envoyé à Manage, rien n'est persisté.
+                    Self::inject_thread_showcase(
+                        &mut ws.issues_list,
+                        ws.issues_staff,
+                    );
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -569,6 +699,22 @@ impl Workspace {
     }
 
     pub fn select_issue(&mut self, id: String, cx: &mut Context<Self>) {
+        // La fixture n'existe pas côté Manage : demander son détail renvoie 404
+        // et un toast erroné. On prend la version qu'on a déjà en mémoire.
+        if id == Self::FAKE_SHOWCASE_ID {
+            self.issue_selected = Some(id.clone());
+            if let Some(iss) = self
+                .issues_list
+                .iter()
+                .find(|i| i.id == id)
+                .cloned()
+            {
+                self.issue_detail = Some(iss);
+            }
+            self.push_issues_to_support(cx);
+            cx.notify();
+            return;
+        }
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };
