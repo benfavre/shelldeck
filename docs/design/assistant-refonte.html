@@ -674,6 +674,191 @@ code.ref {
 .sup-msg .sup-time { font-weight: 400; color: var(--p-muted); font-size: 10.5px; margin-left: 7px; }
 .sup-msg.mine .sup-who { color: var(--p-accent); }
 
+/* ============================================================
+   Fil support — TOUS les cas
+   ============================================================ */
+.thr {
+  width: 100%; max-width: 620px; padding: 16px 18px 18px; display: flex;
+  flex-direction: column; gap: 20px;
+}
+.thr-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* 1 · en-tête de message : nom + heure + éventuel canal d'origine.
+   La couleur du nom marque MA voix. Le canal (slack/email/…) est un tag
+   discret, pas un badge — c'est là que le destinataire lit la réponse. */
+.thr-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.thr-who { font-size: 12px; font-weight: 600; color: var(--p-text); }
+.thr-who.mine { color: var(--p-accent); }
+.thr-time { font-size: 10.5px; color: var(--p-muted); }
+.thr-chan {
+  font-size: 10px; color: var(--p-muted); padding: 1px 6px;
+  border-radius: 999px; background: var(--p-surface);
+}
+
+/* 2 · corps prose */
+.thr-body {
+  font-size: 12.5px; line-height: 1.62; color: var(--p-text); max-width: 560px;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.thr-body p { margin: 0 0 8px; }
+.thr-body p:last-child { margin-bottom: 0; }
+.thr-body a { color: var(--p-accent); text-decoration: none; }
+.thr-body a:hover { text-decoration: underline; }
+.thr-body code {
+  font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+  background: var(--p-surface); padding: 1px 4px; border-radius: 3px;
+}
+.thr-body ul, .thr-body ol { margin: 0 0 8px; padding-left: 20px; }
+.thr-body li { margin-bottom: 2px; }
+.thr-body ul.tasks { list-style: none; padding-left: 0; }
+.thr-body ul.tasks li { display: flex; gap: 6px; align-items: baseline; }
+.thr-body ul.tasks input[type="checkbox"] { transform: translateY(1px); }
+.thr-body blockquote {
+  margin: 0 0 8px; padding: 3px 10px; border-left: 2px solid var(--p-border);
+  color: var(--p-muted);
+}
+.thr-body h2 { font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+.thr-body pre {
+  font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+  background: var(--p-surface); padding: 8px 10px; border-radius: 6px;
+  overflow-x: auto; margin: 0 0 8px;
+}
+
+/* 3 · citation attribuée : réponse à une question précise du fil */
+.thr-quote {
+  border-left: 2px solid var(--p-border); padding: 4px 10px; margin-bottom: 6px;
+  font-size: 11.5px; color: var(--p-muted);
+}
+.thr-quote b { color: var(--p-text); font-weight: 500; }
+
+/* 4 · pièces jointes : image, fichier, lien */
+.thr-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.thr-att-img {
+  width: 120px; height: 90px; border-radius: 6px; background: var(--p-surface);
+  background-image: linear-gradient(135deg, var(--p-selected) 0 50%, var(--p-surface) 50% 100%);
+  border: 1px solid var(--p-border);
+}
+.thr-att {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 9px;
+  border: 1px solid var(--p-border); border-radius: 7px; font-size: 11.5px;
+  background: var(--p-bg); max-width: 260px; min-width: 0;
+}
+.thr-att .g { width: 24px; height: 24px; flex: 0 0 auto; border-radius: 5px;
+  background: var(--p-surface); display: grid; place-items: center; color: var(--p-accent); }
+.thr-att .g svg { width: 13px; height: 13px; }
+.thr-att .m { min-width: 0; flex: 1 1 auto; }
+.thr-att .m b { display: block; font-weight: 500; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.thr-att .m i { display: block; font-style: normal; font-size: 10px;
+  color: var(--p-muted); font-variant-numeric: tabular-nums; }
+
+/* 5 · statut d'envoi sous MA réponse : livré / échec / brouillon */
+.thr-sent { display: flex; align-items: center; gap: 6px; font-size: 10px;
+  color: var(--p-muted); margin-top: 4px; }
+.thr-sent svg { width: 12px; height: 12px; }
+.thr-sent.ok svg { color: var(--p-success); }
+.thr-sent.err { color: var(--p-error); }
+.thr-sent.err svg { color: var(--p-error); }
+
+/* 6 · notes système : garde un cadre teinté selon le type.
+   Elles NE sont pas des réponses — elles décrivent ce qui est arrivé à la
+   demande. Icône + une ligne + acteur/heure. Compactes. */
+.thr-note {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px;
+  border-radius: 7px; font-size: 11.5px; line-height: 1.4;
+  border: 1px solid var(--p-border);
+}
+.thr-note.status { background: color-mix(in srgb, var(--p-primary, var(--p-accent)) 8%, transparent); border-color: color-mix(in srgb, var(--p-accent) 30%, transparent); }
+.thr-note.system { background: color-mix(in srgb, var(--p-warning) 10%, transparent); border-color: color-mix(in srgb, var(--p-warning) 30%, transparent); }
+.thr-note.github { background: var(--p-surface); border-color: var(--p-border); }
+.thr-note.dispatch { background: color-mix(in srgb, var(--p-success) 10%, transparent); border-color: color-mix(in srgb, var(--p-success) 30%, transparent); }
+.thr-note .n-g { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 5px;
+  display: grid; place-items: center; background: var(--p-bg); }
+.thr-note .n-g svg { width: 13px; height: 13px; color: var(--p-muted); }
+.thr-note .n-b { flex: 1 1 auto; min-width: 0; }
+.thr-note .n-b b { font-weight: 500; color: var(--p-text); }
+.thr-note .n-t {
+  font-size: 10px; color: var(--p-muted); margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 7 · séparateur temporel : quand deux messages sont espacés d'une journée
+   au moins, on marque la coupure — dans un fil de support long, la date de
+   la nouvelle salve compte plus que l'heure exacte. */
+.thr-day {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0 -6px;
+  font-size: 10px; color: var(--p-muted); text-transform: uppercase; letter-spacing: .1em;
+}
+.thr-day::before, .thr-day::after {
+  content: ""; flex: 1 1 auto; height: 1px; background: var(--p-border);
+}
+
+/* 8 · quelqu'un tape actuellement (côté staff, quand un autre agent est
+   sur la même demande — signal serveur ; à défaut, absent) */
+.thr-typing {
+  display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--p-muted);
+}
+.thr-typing .dots { display: inline-flex; gap: 3px; }
+.thr-typing .dots span {
+  width: 5px; height: 5px; border-radius: 999px; background: var(--p-muted);
+  animation: t 1.1s infinite; opacity: .35;
+}
+.thr-typing .dots span:nth-child(2) { animation-delay: .2s; }
+.thr-typing .dots span:nth-child(3) { animation-delay: .4s; }
+@keyframes t { 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .thr-typing .dots span { animation: none; opacity: .7; } }
+
+/* 9 · brouillon local : ce que TU as commencé à écrire et pas envoyé.
+   Distinct des messages : pointillé, muet. */
+.thr-draft {
+  align-self: flex-end; max-width: 100%;
+  padding: 8px 11px; border: 1px dashed var(--p-border); border-radius: 8px;
+  background: transparent; color: var(--p-muted); font-size: 12px;
+}
+.thr-draft b { color: var(--p-text); }
+
+/* 10 · brouillon IA prêt à revoir : primary, discret, avec deux actions */
+.thr-ai-draft {
+  align-self: flex-end; max-width: 100%;
+  padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--p-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--p-accent) 8%, transparent);
+  border-radius: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.thr-ai-draft .head {
+  display: flex; align-items: center; gap: 7px; font-size: 11px;
+  color: var(--p-accent);
+}
+.thr-ai-draft .head svg { width: 12px; height: 12px; }
+.thr-ai-draft .body { font-size: 12.5px; line-height: 1.55; color: var(--p-text); }
+.thr-ai-draft .row { display: flex; gap: 8px; align-items: center; }
+.thr-ai-draft .row .spacer { flex: 1 1 auto; }
+.thr-ai-draft .btn {
+  height: 24px; padding: 0 10px; border-radius: 6px; font-size: 11px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.thr-ai-draft .btn.p { background: var(--p-accent); color: #fff; }
+.thr-ai-draft .btn.g { color: var(--p-muted); }
+.thr-ai-draft .btn.g:hover { color: var(--p-text); background: var(--p-hover); }
+
+/* 11 · vide */
+.thr-empty {
+  text-align: center; padding: 26px 12px; font-size: 12px; color: var(--p-muted);
+}
+
+/* actions de survol sous une réponse (répondre / citer / IA / … ) */
+.thr-actions {
+  display: flex; gap: 4px; margin-top: 3px; opacity: 0;
+  transition: opacity 120ms;
+}
+.thr-item:hover .thr-actions { opacity: 1; }
+.thr-actions button {
+  height: 22px; padding: 0 7px; border-radius: 5px; font-size: 10px;
+  color: var(--p-muted); display: inline-flex; align-items: center; gap: 4px;
+}
+.thr-actions button:hover { background: var(--p-hover); color: var(--p-text); }
+.thr-actions svg { width: 11px; height: 11px; }
+
+
 :focus-visible { outline: 2px solid var(--page-accent); outline-offset: 2px; }
 </style>
 </head>
@@ -1427,6 +1612,193 @@ code.ref {
         <p>Seule divergence assumée avec l'assistant&nbsp;: envoyer un message et valider un formulaire ne
         sont pas le même acte. Le rond fléché reste réservé à l'envoi d'un message.</p></div></li>
     </ul>
+
+    <h3 class="sub-h">Le fil d'une demande — chaque cas</h3>
+    <p class="sub-p">Un fil support n'a pas <em>un</em> type de contenu. Il y a la prose des réponses,
+    les notes du système, les pièces jointes, les brouillons — et le proto n'avait qu'un cas d'exemple.
+    Avant tout code, chaque cas est rendu ici, à ses vraies dimensions.</p>
+    <p class="sub-p"><b>Ce que la source dit</b>&nbsp;: chaque commentaire porte un <code class="ref">kind</code>
+    parmi <code class="ref">"comment" | "status" | "system" | "github"</code>. Les trois derniers sont des
+    notes ; le premier est une réponse humaine. Chaque demande porte aussi une <code class="ref">source</code>
+    (<code class="ref">user, support, shelldeck, slack, manage</code>) et une liste de
+    <code class="ref">attachments</code> — images ou fichiers arbitraires — attachés à la demande ou à un
+    commentaire précis.</p>
+
+    <figure class="slot" style="margin-top:18px">
+      <figcaption><span class="tag">Support · fil complet</span>
+        <span class="cap">Onze cas dans un seul fil, aux dimensions du tiroir support.</span></figcaption>
+      <div class="dock" style="width:640px;height:auto">
+        <div class="thr">
+
+          <!-- 1 — message d'ouverture, prose brute, sans carte -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who">Bruno</span>
+              <span class="thr-time">il y a 2 h</span>
+              <span class="thr-chan">slack</span>
+            </div>
+            <div class="thr-body">Depuis hier, les vidéos uploadées sur WatchMe ne se lisent plus. L'upload aboutit, la miniature apparaît, mais le lecteur reste noir. Ça touche les trois comptes qu'on a testés — plus de détails dans le lien.</div>
+          </div>
+
+          <!-- 2 — note système : la demande est passée « En cours » -->
+          <div class="thr-note status">
+            <span class="n-g"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+            <div class="n-b">
+              <b>Karim</b> a fait passer la demande d'<b>À traiter</b> à <b>En cours</b>.
+              <div class="n-t">il y a 1 h 50</div>
+            </div>
+          </div>
+
+          <!-- 3 — réponse staff (moi) avec pièce jointe image et statut d'envoi -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who mine">Karim</span>
+              <span class="thr-time">il y a 1 h 40</span>
+              <span class="thr-chan">slack</span>
+            </div>
+            <div class="thr-body">J'ai reproduit sur <code>video-12</code>. Le transcodage part mais s'arrête à 40&nbsp;% — le disque de <code>media-01</code> est plein. Voici l'écran <code>df -h</code>&nbsp;:</div>
+            <div class="thr-atts">
+              <div class="thr-att-img" title="capture df -h"></div>
+            </div>
+            <div class="thr-sent ok">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Envoyé sur slack · lu il y a 32 min
+            </div>
+            <div class="thr-actions">
+              <button type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>Répondre</button>
+              <button type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copier</button>
+              <button type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.6 12 8l5.4 2.1L12 12.2 9.9 17.6 7.8 12.2 2.4 10.1 7.8 8z"/></svg>Reformuler avec l'IA</button>
+            </div>
+          </div>
+
+          <!-- 4 — note GitHub : lié à une issue -->
+          <div class="thr-note github">
+            <span class="n-g"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3A12 12 0 0 0 0 12.3c0 5.3 3.4 9.8 8.2 11.4.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-6a4.7 4.7 0 0 1 1.2-3.2c-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.7.2 2.9.1 3.2a4.7 4.7 0 0 1 1.2 3.2c0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 24 12.3 12 12 0 0 0 12 .3"/></svg></span>
+            <div class="n-b">
+              Liée à <b>webdesign29/activ#3007</b> — « Lecteur vidéo bloqué après transcodage »
+              <div class="n-t">il y a 1 h 30 · par Karim</div>
+            </div>
+          </div>
+
+          <!-- 5 — séparateur temporel -->
+          <div class="thr-day">Hier</div>
+
+          <!-- 6 — réponse client avec citation et lien -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who">Bruno</span>
+              <span class="thr-time">hier · 18:04</span>
+              <span class="thr-chan">slack</span>
+            </div>
+            <div class="thr-quote">
+              En réponse à <b>Karim</b>&nbsp;: <i>« Voici l'écran df -h »</i>
+            </div>
+            <div class="thr-body">Merci, c'est aligné avec ce qu'on voit côté prod. On a mis en place la rotation nocturne, le disque est redescendu à 62&nbsp;%. Est-ce qu'on peut relancer la file&nbsp;? Détails ici <a href="#">docs.activ-com.fr/ops/media/backfill</a>.</div>
+          </div>
+
+          <!-- 7 — réponse staff, corps riche : titre, liste à cases, code -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who mine">Karim</span>
+              <span class="thr-time">hier · 18:22</span>
+              <span class="thr-chan">slack</span>
+            </div>
+            <div class="thr-body">
+              <p>File relancée. J'ai posé trois garde-fous&nbsp;:</p>
+              <ul class="tasks">
+                <li><input type="checkbox" checked disabled>Alerte disque à 80&nbsp;%</li>
+                <li><input type="checkbox" checked disabled>Nettoyage nocturne des <code>.tmp</code> de transcodage</li>
+                <li><input type="checkbox" disabled>Reprise automatique après échec 5xx</li>
+              </ul>
+              <p>Le dernier est en cours de review, PR&nbsp;:</p>
+              <pre>git diff --stat HEAD~1
+ apps/media/src/queue.rs  | 44 +++++++++
+ apps/media/src/retry.rs  | 12 +--</pre>
+            </div>
+            <div class="thr-sent ok">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Envoyé sur slack
+            </div>
+          </div>
+
+          <!-- 8 — pièces jointes multiples sans corps : fichier + lien -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who">Bruno</span>
+              <span class="thr-time">hier · 19:10</span>
+              <span class="thr-chan">email</span>
+            </div>
+            <div class="thr-atts">
+              <div class="thr-att">
+                <span class="g"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+                <span class="m"><b>rapport-incident-2026-08.pdf</b><i>PDF · 214 Ko</i></span>
+              </div>
+              <div class="thr-att">
+                <span class="g"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 1 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg></span>
+                <span class="m"><b>watchme.video/status</b><i>Lien externe</i></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 9 — note système : dispatché vers un runtime -->
+          <div class="thr-note dispatch">
+            <span class="n-g"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/></svg></span>
+            <div class="n-b">
+              Dispatché vers <b>fleet · media-01</b> — script <code>backfill-video-queue</code>
+              <div class="n-t">hier · 19:32 · par Karim</div>
+            </div>
+          </div>
+
+          <!-- 10 — quelqu'un tape à l'instant, côté staff -->
+          <div class="thr-typing">
+            <span class="dots"><span></span><span></span><span></span></span>
+            Ludo est en train de rédiger une réponse
+          </div>
+
+          <!-- 11 — brouillon IA prêt à revoir (message plausible, pas envoyé) -->
+          <div class="thr-ai-draft">
+            <div class="head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.6 12 8l5.4 2.1L12 12.2 9.9 17.6 7.8 12.2 2.4 10.1 7.8 8z"/></svg>
+              Brouillon IA · Claude Sonnet · à ta relecture
+            </div>
+            <div class="body">Bonjour Bruno, la file est relancée, disque à 62&nbsp;% après rotation. Je surveille jusqu'à ce que le rattrapage soit fini — il devrait être bouclé d'ici deux heures. Je reviens vers vous à ce moment.</div>
+            <div class="row">
+              <button type="button" class="btn g">Régénérer</button>
+              <button type="button" class="btn g">Modifier</button>
+              <span class="spacer"></span>
+              <button type="button" class="btn g">Rejeter</button>
+              <button type="button" class="btn p">Publier</button>
+            </div>
+          </div>
+
+          <!-- 12 — MON brouillon local (en cours d'écriture, non envoyé) -->
+          <div class="thr-draft">Brouillon&nbsp;: <b>« Je vérifie le pipeline transcodage et je reviens vers toi… »</b></div>
+
+          <!-- 13 — envoi qui a échoué -->
+          <div class="thr-item">
+            <div class="thr-head">
+              <span class="thr-who mine">Karim</span>
+              <span class="thr-time">à l'instant</span>
+              <span class="thr-chan">slack</span>
+            </div>
+            <div class="thr-body">Je viens de relancer, laissez-moi 5 minutes.</div>
+            <div class="thr-sent err">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Échec d'envoi — <a href="#">Réessayer</a>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </figure>
+
+    <p class="note" style="margin-top:22px">
+      <b>Ce que ce banc décide.</b> Les <b>notes</b> gardent un cadre teinté par nature — <span style="color:var(--page-text)">changement de statut, note système, activité GitHub, dispatch fleet</span> — parce que ce sont des objets d'une autre nature qu'une réponse ; les déshabiller les rendait indistinguables. Les <b>réponses humaines</b> sont en prose, sans cadre. Le <b>canal</b> (slack, email, github) est un tag discret&nbsp;: le staff a besoin de savoir où la réponse est allée. Le <b>statut d'envoi</b> tient sur une ligne muette sous MA réponse — vert pour livré, rouge pour échoué, absent quand ce n'est pas moi. Les <b>brouillons</b> ne se confondent pas avec les messages&nbsp;: pointillé pour mon brouillon local, cadre primary pour un brouillon IA à relire.
+    </p>
+    <p class="note" style="margin-top:14px">
+      <b>Ce qu'on n'a PAS encore, côté serveur, et qui n'apparaîtra donc que dans le proto tant que la source ne le donne pas&nbsp;:</b>
+      les cases à cocher dans le corps (<code class="ref">- [ ]</code> non parsé aujourd'hui), le rendu Markdown riche des commentaires (traité comme du plain-text avec <code class="ref">\\n</code>), le canal d'origine par commentaire (nous n'avons que la source de la demande), le statut de lecture (« lu il y a 32 min ») et l'indicateur « en train de rédiger » (aucun événement live côté <code class="ref">bext</code>). Les cases 3-avec-lu, 7-avec-cases, 10-typing sont <em>ce que la refonte pourrait montrer</em> quand ces informations remonteront ; jusque-là elles ne s'afficheront pas.
+    </p>
 
     <h3 class="sub-h">Demandes et tickets — mode Support</h3>
     <p class="sub-p">Les deux onglets partagent la même structure. Dans la liste, le titre est écrasé

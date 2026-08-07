@@ -29,7 +29,6 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
 use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
-use adabraka_ui::components::text::{Text, TextVariant};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::display::card::Card;
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
@@ -217,6 +216,10 @@ pub enum SupportViewEvent {
     SummarizeTicket(String),
     TriageTicket(String),
     SuggestIssueReply(String),
+    /// The AI draft's Publier button — prepends the draft into the composer.
+    PublishIssueAiDraft,
+    /// The AI draft's Rejeter button.
+    DiscardIssueAiDraft,
     SummarizeIssue(String),
     TriageIssue(String),
     /// Send the composer text as a reply (note=false) or internal note (note=true).
@@ -332,6 +335,14 @@ pub struct SupportView {
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
     composer_state: Entity<EditorState>,
+    /// Pending AI reply (issue only, for now). Kept OUT of `composer_state` so
+    /// it does not shove aside what the user was writing — the mockup shows it
+    /// as a distinct card above the composer, with Publier / Modifier /
+    /// Régénérer / Rejeter.
+    issue_ai_draft: Option<AiDraft>,
+    /// Whether the last `SuggestIssueReply` is still running, so the ✦ button
+    /// stays honest — no spinner text, just disable.
+    issue_ai_pending: bool,
     attachment_url_state: Entity<InputState>,
     /// Reveals the optional URL importer only when explicitly requested.
     attachment_url_open: bool,
@@ -441,6 +452,8 @@ impl SupportView {
             adv_draft_assignee: None,
             adv_draft_sla_only: false,
             assignee_draft_select,
+            issue_ai_draft: None,
+            issue_ai_pending: false,
             composer_state: cx.new(|cx| {
                 let mut state = EditorState::new(cx);
                 state.show_line_numbers = false;
@@ -964,6 +977,51 @@ impl SupportView {
         cx.notify();
     }
 
+    /// Called by `Workspace::route_ai_workflow_result` when an issue reply
+    /// suggestion comes back — the AI writes into a distinct card so it never
+    /// clobbers the user's in-flight text.
+    pub fn set_issue_ai_draft(&mut self, text: String, cx: &mut Context<Self>) {
+        self.issue_ai_pending = false;
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.issue_ai_draft = None;
+        } else {
+            self.issue_ai_draft = Some(AiDraft { body: text });
+        }
+        cx.notify();
+    }
+
+    pub fn set_issue_ai_pending(&mut self, pending: bool, cx: &mut Context<Self>) {
+        self.issue_ai_pending = pending;
+        if pending {
+            self.issue_ai_draft = None;
+        }
+        cx.notify();
+    }
+
+    /// The user accepted the AI draft: promote it to the composer (respecting
+    /// what is already there — we prefix, we do not clobber).
+    pub fn publish_issue_ai_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.issue_ai_draft.take() else {
+            return;
+        };
+        let current = self.composer_state.read(cx).content().trim().to_string();
+        let merged = if current.is_empty() {
+            draft.body
+        } else {
+            format!("{}\n\n{}", current, draft.body)
+        };
+        self.composer_state.update(cx, |state, cx| {
+            state.set_content(&merged, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn discard_issue_ai_draft(&mut self, cx: &mut Context<Self>) {
+        self.issue_ai_draft = None;
+        cx.notify();
+    }
+
     pub fn set_composer_draft(&mut self, text: String, cx: &mut Context<Self>) {
         self.compose_note = false;
         self.composer_state
@@ -1410,6 +1468,11 @@ pub(crate) fn priority_badge(p: &str) -> Badge {
         _ => BadgeVariant::Secondary,
     };
     Badge::new(priority_label(p)).variant(variant)
+}
+
+#[derive(Debug, Clone)]
+pub struct AiDraft {
+    pub body: String,
 }
 
 pub(crate) fn issue_status_label(s: &str) -> String {

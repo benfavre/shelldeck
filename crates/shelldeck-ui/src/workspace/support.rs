@@ -139,7 +139,16 @@ impl Workspace {
                 self.open_ai_workflow(AiWorkflowTarget::SupportTriage { ticket_id }, cx)
             }
             SupportViewEvent::SuggestIssueReply(issue_id) => {
+                // Let the composer show a pending state on the ✦ button while
+                // the workflow runs — until the draft comes back.
+                self.support.update(cx, |view, cx| view.set_issue_ai_pending(true, cx));
                 self.open_ai_workflow(AiWorkflowTarget::IssueReply { issue_id }, cx)
+            }
+            SupportViewEvent::PublishIssueAiDraft => {
+                self.support.update(cx, |view, cx| view.publish_issue_ai_draft(cx));
+            }
+            SupportViewEvent::DiscardIssueAiDraft => {
+                self.support.update(cx, |view, cx| view.discard_issue_ai_draft(cx));
             }
             SupportViewEvent::SummarizeIssue(issue_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::IssueSummary { issue_id }, cx)

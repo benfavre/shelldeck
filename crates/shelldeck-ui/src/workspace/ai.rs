@@ -1730,8 +1730,10 @@ impl Workspace {
                         });
                     }
                     AiWorkflowTarget::IssueReply { .. } => {
+                        // Distinct card, not the composer: a suggestion is a
+                        // proposal to review, not a keystroke.
                         self.support.update(cx, |view, cx| {
-                            view.set_composer_draft(result, cx);
+                            view.set_issue_ai_draft(result, cx);
                         });
                     }
                     AiWorkflowTarget::SupportSummary { .. }

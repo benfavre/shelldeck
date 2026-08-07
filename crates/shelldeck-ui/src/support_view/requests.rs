@@ -393,114 +393,198 @@ impl SupportView {
         c: &shelldeck_core::config::issues::IssueComment,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_note = c.is_note();
+        // System notes are of a different nature than a reply: `kind` on the
+        // wire is one of "status" | "system" | "github". Each gets its own
+        // tinted frame — stripping them all the way down would make a status
+        // change indistinguishable from a message.
+        if c.is_note() {
+            return self.render_issue_note(c).into_any_element();
+        }
+        // Human reply: prose on the surface, no card, per the mockup's rule
+        // "reading measure, not a form field".
         let author_matches_me = !c.author.trim().is_empty() && {
             let a = c.author.trim().to_ascii_lowercase();
             (!self.account_name_lc.is_empty() && a == self.account_name_lc)
                 || (!self.account_email_lc.is_empty() && a == self.account_email_lc)
         };
-        let (bg, align_end, label) = if is_note {
-            (
-                ShellDeckColors::warning().opacity(0.12),
-                false,
-                if c.kind.is_empty() {
-                    t!("support.issue.system").to_string()
-                } else {
-                    c.kind.clone()
-                },
-            )
-        } else if author_matches_me {
-            (
-                ShellDeckColors::primary().opacity(0.12),
-                true,
-                if c.author.trim().is_empty() {
-                    t!("support.issue.comment").to_string()
-                } else {
-                    c.author.clone()
-                },
-            )
+        let label = if c.author.trim().is_empty() {
+            t!("support.issue.comment").to_string()
         } else {
-            (
-                ShellDeckColors::bg_surface(),
-                false,
-                if c.author.trim().is_empty() {
-                    t!("support.issue.comment").to_string()
-                } else {
-                    c.author.clone()
-                },
-            )
+            c.author.clone()
         };
-        // Per the mockup: a reply is prose on the surface, not a card with a
-        // framed author tag. The name in semibold and the time in muted text
-        // carry the same information the border and the label did — and the
-        // thread stops looking like a list of forms.
-        //
-        // System notes keep a tint, because they are genuinely a different kind
-        // of thing; a human reply does not need one.
-        let bubble = div()
-            .max_w(px(560.0))
+
+        let mut head = div()
             .flex()
-            .flex_col()
-            .gap(px(3.0))
-            .when(is_note, |el| {
-                el.rounded(px(8.0))
-                    .bg(bg)
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .border_1()
-                    .border_color(ShellDeckColors::warning().opacity(0.35))
-            })
+            .items_baseline()
+            .flex_wrap()
+            .gap(px(7.0))
             .child(
                 div()
-                    .flex()
-                    .items_baseline()
-                    .gap(px(7.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if author_matches_me {
-                                ShellDeckColors::primary()
-                            } else {
-                                ShellDeckColors::text_primary()
-                            })
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(rel_time(c.at)),
-                    ),
-            )
-            .child({
-                let mut body = div()
-                    .flex()
-                    .flex_col()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary());
-                for line in c.body.split('\n') {
-                    let display: SharedString = if line.is_empty() {
-                        " ".into()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if author_matches_me {
+                        ShellDeckColors::primary()
                     } else {
-                        line.to_string().into()
-                    };
-                    body = body.child(div().max_w(px(540.0)).child(display));
-                }
-                body
-            })
-            .when(!c.attachments.is_empty(), |el| {
-                el.child(self.render_issue_attachment_links(&c.attachments, cx))
-            });
-        let mut wrap = div().w_full().flex();
-        if align_end {
-            wrap = wrap.justify_end();
+                        ShellDeckColors::text_primary()
+                    })
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.5))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(rel_time(c.at)),
+            );
+        // The channel the request came in on — same value as `iss.source`. Not
+        // per-comment yet (the server does not split it that way), but the
+        // slot exists in the layout so it will not need re-shuffling later.
+        if let Some(chan) = self
+            .issue_detail
+            .as_ref()
+            .and_then(|iss| Self::source_chip_label(&iss.source))
+        {
+            head = head.child(
+                div()
+                    .flex_shrink_0()
+                    .h(px(18.0))
+                    .px(px(6.0))
+                    .rounded_full()
+                    .bg(ShellDeckColors::bg_surface())
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(chan.to_string()),
+            );
         }
-        wrap.child(bubble)
+
+        let mut bubble = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .max_w(px(560.0))
+            .min_w(px(0.0))
+            .child(head)
+            .child(Self::render_body_lines(&c.body, ShellDeckColors::text_primary()));
+        if !c.attachments.is_empty() {
+            bubble = bubble.child(self.render_issue_attachment_links(&c.attachments, cx));
+        }
+        bubble.into_any_element()
     }
 
-    pub(super) fn render_issue_attachment_links(
+    /// One system note (`status`, `system` or `github`), rendered as the
+    /// mockup's `.thr-note`: icon + one-line body + actor/time, in the frame
+    /// colour that matches the kind.
+    fn render_issue_note(
+        &self,
+        c: &shelldeck_core::config::issues::IssueComment,
+    ) -> impl IntoElement {
+        let (icon, border, bg) = match c.kind.as_str() {
+            "status" => (
+                "check",
+                ShellDeckColors::primary().opacity(0.30),
+                ShellDeckColors::primary().opacity(0.08),
+            ),
+            "github" => (
+                "git-branch",
+                ShellDeckColors::border(),
+                ShellDeckColors::bg_surface(),
+            ),
+            _ => (
+                "info",
+                ShellDeckColors::warning().opacity(0.30),
+                ShellDeckColors::warning().opacity(0.10),
+            ),
+        };
+        let actor = if c.author.trim().is_empty() {
+            None
+        } else {
+            Some(c.author.clone())
+        };
+        div()
+            .flex()
+            .items_start()
+            .gap(px(10.0))
+            .max_w(px(560.0))
+            .min_w(px(0.0))
+            .p(px(9.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(border)
+            .bg(bg)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .rounded(px(5.0))
+                    .bg(ShellDeckColors::bg_primary())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(lucide_icon(icon, 13.0, ShellDeckColors::text_muted())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(px(11.5))
+                    .line_height(relative(1.4))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(Self::render_body_lines(
+                        &c.body,
+                        ShellDeckColors::text_primary(),
+                    ))
+                    .child(
+                        div()
+                            .mt(px(2.0))
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(match actor {
+                                Some(a) => format!("{} · {}", rel_time(c.at), a),
+                                None => rel_time(c.at),
+                            }),
+                    ),
+            )
+    }
+
+    /// Split a plain-text body into lines and stack them. `line_height` MUST
+    /// sit on each child (a factor on the flex parent leaves the child boxes
+    /// at raw font height and they overlap vertically — the exact defect the
+    /// last release shipped).
+    fn render_body_lines(body: &str, color: Hsla) -> impl IntoElement {
+        let mut wrap = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w(px(0.0))
+            .text_size(px(12.5))
+            .text_color(color);
+        for line in body.split('\n') {
+            let line = if line.is_empty() { " " } else { line };
+            wrap = wrap.child(
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .line_height(relative(1.62))
+                    .child(line.to_string()),
+            );
+        }
+        wrap
+    }
+
+    /// Human-readable chip for `iss.source`. Returns `None` for values that do
+    /// not carry an origin story (or that are the app itself).
+    fn source_chip_label(source: &str) -> Option<&'static str> {
+        match source {
+            "slack" => Some("slack"),
+            "github" => Some("github"),
+            "manage" => Some("manage"),
+            "email" => Some("email"),
+            _ => None,
+        }
+    }
+
+        pub(super) fn render_issue_attachment_links(
         &self,
         attachments: &[IssueAttachment],
         cx: &mut Context<Self>,
@@ -1762,21 +1846,30 @@ impl SupportView {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .text_size(px(10.0))
+                                    .text_size(px(10.5))
                                     .text_color(ShellDeckColors::text_muted())
                                     .child(rel_time(iss.created_at)),
                             ),
                     )
                     .child({
-                        let mut body = div().flex().flex_col().w_full().min_w(px(0.0));
+                        // 12.5px / 1.62 come from the proto's `.msg-ai` — a
+                        // reading measure, not a form field. `TextVariant::BodySmall`
+                        // is 13px / 1.5, a hair off both.
+                        let mut body = div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .text_size(px(12.5))
+                            .text_color(ShellDeckColors::text_primary());
                         for line in iss.body.split('\n') {
                             let line = if line.is_empty() { " " } else { line };
                             body = body.child(
-                                Text::new(line.to_string())
-                                    .variant(TextVariant::BodySmall)
-                                    .color(ShellDeckColors::text_primary())
-                                    .line_height(1.35)
-                                    .w_full(),
+                                div()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .line_height(relative(1.62))
+                                    .child(line.to_string()),
                             );
                         }
                         body
@@ -1931,9 +2024,73 @@ impl SupportView {
         wrap
     }
 
+    /// The AI reply card as `.thr-ai-draft` in the mockup — a proposal to
+    /// review, not a keystroke. It sits above the composer so `Publier`
+    /// prepends into the user's current text (whatever they had is preserved).
+    fn render_issue_ai_draft_card(
+        &self,
+        body: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(11.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(ShellDeckColors::primary().opacity(0.40))
+            .bg(ShellDeckColors::primary().opacity(0.08))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::primary())
+                    .child(lucide_icon("sparkles", 12.0, ShellDeckColors::primary()))
+                    .child(t!("support.issue.ai_draft").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .line_height(relative(1.55))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(Self::render_body_lines(&body, ShellDeckColors::text_primary())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("issue-ai-discard", t!("support.issue.ai_discard").to_string())
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(SupportViewEvent::DiscardIssueAiDraft);
+                            })),
+                    )
+                    .child(
+                        Button::new("issue-ai-publish", t!("support.issue.ai_publish").to_string())
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("arrow-up"))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(SupportViewEvent::PublishIssueAiDraft);
+                            })),
+                    ),
+            )
+    }
+
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = adabraka_ui::theme::use_theme();
         let issue_id = self.issue_selected.clone();
+        let ai_draft_card = self
+            .issue_ai_draft
+            .as_ref()
+            .map(|draft| self.render_issue_ai_draft_card(draft.body.clone(), cx));
         div()
             .flex()
             .flex_col()
@@ -1949,6 +2106,7 @@ impl SupportView {
                     cx.propagate();
                 }
             }))
+            .children(ai_draft_card)
             .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
                 let issue_id = issue_id.clone().unwrap_or_default();
                 composer.child(div().h(px(0.0)).child(
