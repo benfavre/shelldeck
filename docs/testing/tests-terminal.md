@@ -154,7 +154,10 @@ must run on all three targets or be gated with a target-cfg reason.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-960 | `pty.rs::spawn_returns_alive_pty` (`#[cfg(all(test, unix))]`) | SDUC-022 | Green | Added 2026-07-09 (cluster K). Linux CI covers Unix path. macOS/Windows deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md). |
-| SDTEST-961 | *to write* — spawn honours explicit shell path | SDUC-022 | **Red / P1** | Partially covered — SDTEST-962 uses explicit `/bin/sh`. Standalone assert on `LocalPty::spawn(Some("/bin/dash"), …)` still Red. |
+| SDTEST-961 | *to write* — spawn honours explicit shell path | SDUC-022 | **Red / P1** | Partially covered — SDTEST-962 uses explicit `/bin/sh`, and SDTEST-1579..1581 pin the resolver-level precedence. Standalone assert on `LocalPty::spawn(Some("/bin/dash"), …)` still Red. |
+| SDTEST-1579 | `pty.rs::shell_fallback_tests::unix_prefers_explicit_then_shell_env_then_bin_bash` | SDUC-022, SDUC-455 | Green | Added 2026-08-06. Pure `resolve_shell_from` precedence on Unix: explicit → `$SHELL` → `/bin/bash`. No cfg gate — `cfg!()` keeps both platform branches type-checked and runnable from Linux. |
+| SDTEST-1580 | `pty.rs::shell_fallback_tests::windows_prefers_explicit_then_powershell_then_comspec_then_cmd` | SDUC-455 | Green | Added 2026-08-06. Windows chain: explicit → `powershell.exe` when on `PATH` → `%COMSPEC%` → `cmd.exe`; `$SHELL` deliberately ignored (MSYS/Git-Bash leakage). Pure fn, so the Windows branch is asserted from Linux CI. |
+| SDTEST-1581 | `pty.rs::shell_fallback_tests::blank_explicit_shell_falls_through_to_platform_default` | SDUC-455 | Green | Added 2026-08-06. Blank/whitespace candidates (explicit setting, env vars) fall through to the next candidate instead of spawning an empty shell. |
 | SDTEST-962 | `pty.rs::write_and_read_echo_round_trip` (`#[cfg(all(test, unix))]`) | SDUC-022, SDUC-023 | Green | Added 2026-07-09 (cluster K). Sentinel + `exit` + 3s timeout cap on the read loop. |
 | SDTEST-963 | `pty.rs::resize_returns_ok` (`#[cfg(all(test, unix))]`) | SDUC-024 | Green | Added 2026-07-09 (cluster K). |
 | SDTEST-964 | *to write* — resize triggers SIGWINCH on Unix (verify via `stty size`) | SDUC-024 | **Red / P2** | Portable_pty handles the syscall — verifying SIGWINCH delivery adds fragility for a low-value assertion. |

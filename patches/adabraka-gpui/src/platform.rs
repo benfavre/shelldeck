@@ -201,8 +201,43 @@ pub(crate) trait Platform: 'static {
     fn unhide_other_apps(&self);
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
+    // ShellDeck patch: expose global display geometry for cross-monitor desktop companions.
+    fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        self.displays()
+            .into_iter()
+            .map(|display| (display.id(), display.bounds()))
+            .collect()
+    }
+    // ShellDeck patch: expose desktop display metrics in the same coordinate space as window routing.
+    fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        self.displays()
+            .into_iter()
+            .map(|display| DesktopDisplayMetrics {
+                id: display.id(),
+                global_bounds: display.bounds(),
+                global_work_area: display.work_area(),
+                logical_work_area: display.work_area(),
+                scale_factor: display.scale_factor(),
+            })
+            .collect()
+    }
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
+    // ShellDeck patch: platform backends may expose safe read-only external window snapshots.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        Vec::new()
+    }
+    // ShellDeck patch: allow targeted native-ID lookup without forcing callers to rescan all windows.
+    fn external_window(&self, _id: ExternalWindowId) -> Option<ExternalWindow> {
+        None
+    }
+    // ShellDeck patch: preserve the legacy bounds-only external window API.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.visible_external_windows()
+            .into_iter()
+            .map(|window| window.bounds)
+            .collect()
+    }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
         None
     }
@@ -285,6 +320,11 @@ pub(crate) trait Platform: 'static {
 
     fn set_cursor_style(&self, style: CursorStyle);
     fn should_auto_hide_scrollbars(&self) -> bool;
+
+    // ShellDeck patch: cheap platform preference hook for reducing non-essential animation.
+    fn prefers_reduced_motion(&self) -> bool {
+        false
+    }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn write_to_primary(&self, item: ClipboardItem);
@@ -398,6 +438,79 @@ pub(crate) trait Platform: 'static {
     }
 }
 
+/// A stable native identifier for a visible top-level window owned by another app.
+///
+/// The value is valid only for the lifetime of the native window and may be
+/// recycled by the OS after that window closes. Platform backends derive it from
+/// the native lifetime identifier directly: X11 XID, Win32 HWND raw pointer
+/// value, and macOS `kCGWindowNumber`.
+// ShellDeck patch: expose typed external-window IDs without making raw IDs structural API.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExternalWindowId {
+    raw: u64,
+}
+
+impl ExternalWindowId {
+    /// Creates an external-window ID from a native platform lifetime identifier.
+    ///
+    /// This is primarily for platform backends and deterministic tests. The raw
+    /// value is platform-specific and may be recycled by the OS after the native
+    /// window closes.
+    // ShellDeck patch: let backends and tests construct typed IDs from native lifetime values.
+    pub const fn from_raw(raw: u64) -> Self {
+        Self { raw }
+    }
+
+    /// Returns the underlying platform lifetime identifier for diagnostics.
+    ///
+    /// This value is platform-specific and may be recycled by the OS after the
+    /// native window closes. Prefer storing and comparing [`ExternalWindowId`]
+    /// directly instead of relying on this raw value.
+    // ShellDeck patch: document the optional diagnostic raw external-window ID accessor.
+    pub fn raw(self) -> u64 {
+        self.raw
+    }
+}
+
+/// Read-only snapshot of a visible external top-level window.
+///
+/// `bounds` are reported in the same platform desktop coordinate space accepted
+/// by [`Window::set_window_origin`]. Wayland, headless, and test platforms
+/// intentionally return no snapshots because they cannot safely observe other
+/// clients' top-level windows.
+// ShellDeck patch: expose documented external-window snapshots with native IDs and bounds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalWindow {
+    /// Native lifetime identifier for the external top-level window.
+    // ShellDeck patch: document the public native external-window ID field.
+    pub id: ExternalWindowId,
+    /// Current global desktop bounds of the external top-level window.
+    // ShellDeck patch: document the public external-window bounds field.
+    pub bounds: Bounds<Pixels>,
+}
+
+/// Display metrics for desktop companions and other global-placement clients.
+///
+/// `global_bounds` and `global_work_area` are reported in the same platform
+/// desktop coordinate space accepted by [`Window::set_window_origin`]. On
+/// Windows this is the native physical desktop-pixel space. `logical_work_area`
+/// remains in normal GPUI logical pixels for APIs such as
+/// [`WindowOptions::window_bounds`].
+// ShellDeck patch: expose coherent desktop metrics without changing legacy display APIs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DesktopDisplayMetrics {
+    /// Stable GPUI display ID.
+    pub id: DisplayId,
+    /// Full display bounds in the desktop coordinate space accepted by window routing APIs.
+    pub global_bounds: Bounds<Pixels>,
+    /// Usable display work area in the desktop coordinate space accepted by window routing APIs.
+    pub global_work_area: Bounds<Pixels>,
+    /// Usable display work area in normal GPUI logical coordinates.
+    pub logical_work_area: Bounds<Pixels>,
+    /// Native scale factor for this display.
+    pub scale_factor: f32,
+}
+
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
 pub trait PlatformDisplay: Send + Sync + Debug {
     /// Get the ID for this display
@@ -409,6 +522,18 @@ pub trait PlatformDisplay: Send + Sync + Debug {
 
     /// Get the bounds for this display
     fn bounds(&self) -> Bounds<Pixels>;
+
+    // ShellDeck patch: expose true usable area while preserving bounds fallback for existing platforms.
+    /// Get the usable work area for this display, excluding OS-reserved areas when available.
+    fn work_area(&self) -> Bounds<Pixels> {
+        self.bounds()
+    }
+
+    // ShellDeck patch: expose per-display scale for coherent mixed-DPI desktop routing.
+    /// Returns the scale factor used to convert this display's logical pixels to native pixels.
+    fn scale_factor(&self) -> f32 {
+        1.0
+    }
 
     /// Get the default bounds for this display to place a window
     fn default_bounds(&self) -> Bounds<Pixels> {
@@ -581,6 +706,10 @@ pub(crate) struct RequestFrameOptions {
 
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
+    // ShellDeck patch: route public window-origin changes through each platform backend.
+    fn set_window_origin(&self, _origin: Point<Pixels>) -> anyhow::Result<()> {
+        anyhow::bail!("setting window origin is unsupported on this platform")
+    }
     fn is_maximized(&self) -> bool;
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;

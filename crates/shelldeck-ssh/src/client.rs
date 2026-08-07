@@ -4,7 +4,7 @@ use crate::SshError;
 use russh::client;
 use russh::keys::{Algorithm, PrivateKeyWithHashAlg};
 use shelldeck_core::models::{Connection, ConnectionSource, ConnectionStatus};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -201,10 +201,11 @@ impl SshClient {
             let rest = &spec[at_idx + 1..];
             (user.to_string(), rest)
         } else {
-            // No user specified, use current user
-            let user = std::env::var("USER")
-                .or_else(|_| std::env::var("LOGNAME"))
-                .unwrap_or_else(|_| "root".to_string());
+            // No user specified — use the OS user (USER / LOGNAME on Unix,
+            // USERNAME on Windows), with an explicit last-resort fallback
+            // only when no environment can name the current user at all.
+            let user =
+                shelldeck_core::util::current_username().unwrap_or_else(|| "root".to_string());
             (user, spec)
         };
 
@@ -267,20 +268,14 @@ impl SshClient {
                 }
             }
         } else {
-            // Try default key locations
-            let home = std::env::var("HOME").unwrap_or_default();
-            let default_keys = [
-                format!("{}/.ssh/id_ed25519", home),
-                format!("{}/.ssh/id_rsa", home),
-                format!("{}/.ssh/id_ecdsa", home),
-            ];
-
-            for key_path in &default_keys {
-                let path = Path::new(key_path);
+            // Try default key locations under the resolved home directory.
+            for path in default_key_candidates(shelldeck_core::util::home_dir()) {
                 if path.exists() {
-                    match self.auth_with_key(handle, &connection.user, path).await {
+                    match self.auth_with_key(handle, &connection.user, &path).await {
                         Ok(()) => return Ok(()),
-                        Err(e) => tracing::debug!("Key auth with {} failed: {}", key_path, e),
+                        Err(e) => {
+                            tracing::debug!("Key auth with {} failed: {}", path.display(), e)
+                        }
                     }
                 }
             }
@@ -425,6 +420,25 @@ impl SshClient {
     }
 }
 
+/// Default private-key candidates under `home`, in probe order
+/// (ed25519 first, matching OpenSSH's modern preference).
+///
+/// Returns an empty list when no home directory could be resolved: the old
+/// behavior built the paths off a raw `$HOME` string (empty on Windows),
+/// probing fabricated root-level paths like `/.ssh/id_ed25519`. No home →
+/// no default keys to try; explicit `identity_file` and the keychain
+/// password fallback still apply.
+fn default_key_candidates(home: Option<PathBuf>) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let ssh_dir = home.join(".ssh");
+    ["id_ed25519", "id_rsa", "id_ecdsa"]
+        .into_iter()
+        .map(|name| ssh_dir.join(name))
+        .collect()
+}
+
 impl Default for SshClient {
     fn default() -> Self {
         Self::new()
@@ -485,6 +499,31 @@ mod tests {
     fn test_parse_jump_spec_empty_hostname_fails() {
         let result = SshClient::parse_jump_spec("admin@");
         assert!(result.is_err());
+    }
+
+    // Default key discovery builds paths off the resolved home with
+    // platform-native joins, probing ed25519 → rsa → ecdsa in that order.
+    #[test]
+    fn default_key_candidates_are_under_home_ssh_in_probe_order() {
+        let home = PathBuf::from("home-dir");
+        let candidates = default_key_candidates(Some(home.clone()));
+        let ssh_dir = home.join(".ssh");
+        assert_eq!(
+            candidates,
+            vec![
+                ssh_dir.join("id_ed25519"),
+                ssh_dir.join("id_rsa"),
+                ssh_dir.join("id_ecdsa"),
+            ],
+        );
+    }
+
+    // No resolvable home → no candidates. The old behavior formatted
+    // `"{home}/.ssh/id_ed25519"` from a raw `$HOME` (empty on Windows) and
+    // probed root-level `/.ssh/*` paths.
+    #[test]
+    fn default_key_candidates_empty_without_home_never_root_level() {
+        assert!(default_key_candidates(None).is_empty());
     }
 
     #[test]

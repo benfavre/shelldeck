@@ -20,7 +20,11 @@ pub fn dock_tray_label() -> String {
 pub struct TrayLabels {
     pub show: String,
     pub assistant: String,
+    pub clippy: String,
     pub palette: String,
+    pub choose_character: String,
+    pub pause_character: String,
+    pub return_character: String,
     pub quit: String,
     pub pinned: String,
     pub no_pinned: String,
@@ -31,7 +35,11 @@ impl TrayLabels {
         Self {
             show: t!("tray.show").to_string(),
             assistant: dock_tray_label(),
+            clippy: t!("tray.clippy").to_string(),
             palette: t!("tray.palette").to_string(),
+            choose_character: t!("tray.character.choose").to_string(),
+            pause_character: t!("tray.character.pause").to_string(),
+            return_character: t!("tray.character.return_to_dock").to_string(),
             quit: t!("tray.quit").to_string(),
             pinned: t!("tray.pinned").to_string(),
             no_pinned: t!("tray.no_pinned").to_string(),
@@ -183,17 +191,17 @@ impl Render for AiDockView {
                             .tooltip(t!("ai.dock.open_shelldeck").to_string())
                             .icon(IconSource::from("external-link"))
                             .on_click(move |_, dock_window, cx| {
-                            if let Err(error) = main_window.update(cx, |_, main_window, _| {
-                                main_window.show_window();
-                                main_window.activate_window();
-                            }) {
-                                tracing::warn!(
-                                    error = %error,
-                                    "AI Dock could not activate the main window"
-                                );
-                            }
-                            dock_window.remove_window();
-                        }),
+                                if let Err(error) = main_window.update(cx, |_, main_window, _| {
+                                    main_window.show_window();
+                                    main_window.activate_window();
+                                }) {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "AI Dock could not activate the main window"
+                                    );
+                                }
+                                dock_window.remove_window();
+                            }),
                     )
                     .child(
                         Button::new("ai-dock-hide", "")

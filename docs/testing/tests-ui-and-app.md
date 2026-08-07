@@ -3,10 +3,11 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** These three crates have **12 tests** today
-(`shelldeck-ui/src/{i18n,command_palette,sidebar}.rs`) and huge gaps
-elsewhere. The low count is partly intentional (GPUI views are hard
-to unit-test, see `.agents/testing.md`) and partly a real gap.
+**Big picture.** These crates now have broad pure-helper and reducer coverage,
+including command routing, settings, tray behavior, desktop companion physics,
+drag/snap/follow lifecycle, and update helpers. Live GPUI/native integration is
+still the main gap because view and platform-window behavior requires real
+desktop sessions; see `.agents/testing.md`.
 
 The recipe is: **push logic out of `Render` blocks into pure helpers,
 then unit-test the helpers**. The two working models already in the
@@ -166,6 +167,7 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 | SDTEST-1242 | `installer::tests::linux_binary_replacement_is_atomic_and_keeps_backup` | SDUC-284 | Green | Verifies the same-filesystem rename and retained rollback copy on Linux. |
 | SDTEST-1243 | *to write* — install uses pending-replace pattern on Windows | SDUC-284 | **Red / P0** | Windows CI. |
 | SDTEST-1244 | *to write* — install fails cleanly if archive is corrupt (no partial writes) | SDUC-284 | **Red / P1** | |
+| SDTEST-1592 | *to write* — Windows `Expand-Archive` command builder doubles single quotes in paths | SDUC-284 | **Red / P2** | Extract the PowerShell command string into a pure builder fn and pin the `''`-doubling for both the archive and staging paths (an apostrophe in an install path must neither break nor inject the command — fixed 2026-08-06). `install_windows` is `cfg(windows)`, so the builder must live outside the cfg gate to be testable and type-checked on Linux. |
 
 ### Cross-repo smoke
 
@@ -208,8 +210,8 @@ parallel `cargo test`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-1333 | `terminal_view.rs::command_discovery_searches_every_path_entry` | SDUC-410 | Green | Uses isolated temporary PATH entries; never depends on the developer machine's installed CLIs. |
-| SDTEST-1334 | `terminal_view.rs::command_discovery_honors_executable_extensions` | SDUC-410 | Green | Pins PATHEXT-style suffix lookup used by Windows npm-installed CLIs. |
+| SDTEST-1333 | *retired — see § Retired tests* | SDUC-410 | Retired | 2026-08-06: coverage moved to SDTEST-1591 (`shelldeck-core` util). |
+| SDTEST-1334 | *retired — see § Retired tests* | SDUC-410 | Retired | 2026-08-06: coverage moved to SDTEST-1591 (`shelldeck-core` util). |
 
 ## 8b. `shelldeck/src/tray/mod.rs` — pinned menu routing
 
@@ -225,12 +227,13 @@ parallel `cargo test`.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1341 | `ai_assistant.rs::stale_ai_response_is_rejected_after_context_invalidation` | SDUC-414 | Green | Pure request-generation gate extracted from the GPUI view; a response from a closed/previous context cannot overwrite the current draft. |
+| SDTEST-1578 | `ai_assistant.rs::reopening_the_same_context_preserves_the_in_flight_request` | SDUC-414, SDUC-434 | Green | Added 2026-08-06. Reopening the Dock (same surface + title, payload may differ) re-prepares the Global context *without* invalidating the request gate, so a pending reply still lands with its loading state; a genuine surface/title switch still invalidates and drops the stale reply. Guards the Dock-reopen bug where the reply vanished without spinner or error. |
 | SDTEST-1425 | *to write* — durable AI conversation renders Markdown for both roles | SDUC-414 | **Red / P1** | GPUI rendering: user and assistant messages interpret headings, emphasis, lists, links, fenced code, and tables without collapsing auto-width bubbles to their narrowest header; assistant Copy retains the exact Markdown source. |
 | SDTEST-1426 | `ai_workflow.rs::only_read_only_free_form_ai_capabilities_render_as_markdown` | SDUC-418 | Green | Exhaustive capability classification renders Support/request summaries and Script explain/review as Markdown, while structured triage/diagnostic/naming and raw replies/scripts/commands/dispatch payloads cannot enter the Markdown path. |
-| SDTEST-1428 | *to write* — both Assistant surfaces open the routed unsent request form | SDUC-445 | **Red / P0** | GPUI wiring: the main sheet closes into a prefilled New Request sheet; the standalone Dock reveals the main window and does the same; priority is preserved, normal chat stays in-place, logged-out routing only warns, and neither path calls the create API before the existing Create action. |
-| SDTEST-1429 | `ai_assistant.rs::quick_actions_distinguish_immediate_submit_from_composer_prefill` | SDUC-446 | Green | Script Generate/Convert, Terminal Command, and Create Request on Issue/Terminal use dedicated editable-template keys; context-complete analyses such as Summary submit immediately, while chat Triage uses readable prose rather than the workflow-only JSON prompt. Submit maps to the colored AI variant, prefill to neutral Outline. |
-| SDTEST-1431 | `workspace::ai::tests::assistant_request_target_resolution_rejects_stale_and_ambiguous_matches` | SDUC-447 | Green | Exact case-insensitive ID/title and unique partial matches resolve; stale model-proposed IDs, missing targets, and ambiguous partial titles cannot navigate. |
-| SDTEST-1432 | *to write* — both Assistant surfaces reuse typed workflows without finalizing actions | SDUC-447 | **Red / P0** | GPUI wiring: Script opens an unsaved generated form; Terminal and Support open the exact active target with routed instructions; Jean stages the existing confirmation; request navigation opens the resolved detail; missing/stale targets warn; no save, execute, send, or dispatch occurs before the existing explicit action. |
+| SDTEST-1428 | *to write* — both Assistant surfaces open the routed unsent request form | SDUC-452 | **Red / P0** | GPUI wiring: the main sheet closes into a prefilled New Request sheet; the standalone Dock reveals the main window and does the same; priority is preserved, normal chat stays in-place, logged-out routing only warns, and neither path calls the create API before the existing Create action. |
+| SDTEST-1429 | `ai_assistant.rs::quick_actions_distinguish_immediate_submit_from_composer_prefill` | SDUC-453 | Green | Script Generate/Convert, Terminal Command, and Create Request on Issue/Terminal use dedicated editable-template keys; context-complete analyses such as Summary submit immediately, while chat Triage uses readable prose rather than the workflow-only JSON prompt. Since the 2026-08 tile redesign the two modes are no longer visually distinguished (no tooltips, no button-variant coding) — the pinned contract is purely behavioral: Submit sends immediately, Prefill only fills the composer. |
+| SDTEST-1431 | `workspace::ai::tests::assistant_request_target_resolution_rejects_stale_and_ambiguous_matches` | SDUC-454 | Green | Exact case-insensitive ID/title and unique partial matches resolve; stale model-proposed IDs, missing targets, and ambiguous partial titles cannot navigate. |
+| SDTEST-1432 | *to write* — both Assistant surfaces reuse typed workflows without finalizing actions | SDUC-454 | **Red / P0** | GPUI wiring: Script opens an unsaved generated form; Terminal and Support open the exact active target with routed instructions; Jean stages the existing confirmation; request navigation opens the resolved detail; missing/stale targets warn; no save, execute, send, or dispatch occurs before the existing explicit action. |
 | SDTEST-1433 | `workspace::requests::tests::user_issue_refresh_forces_owner_scope_while_support_keeps_triage_filters` | SDUC-228 | Green | User polling always emits `mine=1` with no stale Support filters; Support retains the active triage query. The User overview also applies `is_my_issue` defensively before counting or rendering recent titles. |
 | SDTEST-1345 | *to write* — integrated AI affordances follow backend and per-surface availability | SDUC-413, SDUC-418 | **Red / P1** | GPUI wiring: Support/Script buttons stay hidden when disabled and emit the exact selected target when enabled. |
 | SDTEST-1346 | *to write* — accepting an integrated draft prepares but never finalizes the action | SDUC-414, SDUC-418 | **Red / P0** | GPUI workflow: Support fills the reply composer without sending; Scripts fills the inline buffer without saving or executing. |
@@ -252,13 +255,14 @@ parallel `cargo test`.
 | SDTEST-1372 | *to write* — Terminal diagnostic steps remain explicit and target-safe | SDUC-431 | **Red / P0** | GPUI wiring: structured steps render without raw JSON, each step revalidates the active session and opens high-risk confirmation, full-plan execution advances only after matching OSC 133 completion, stops on failure, and Ctrl+C remains available. |
 | SDTEST-1374 | `issue_attachments.rs::rejects_extension_spoofing` + `recognizes_png_magic` | SDUC-432 | Green | Pure local intake guard: accepted formats are identified by bytes, never filename alone. |
 | SDTEST-1375 | *to write* — attachment picker routes URL/paste/drop/file/capture drafts to the exact composer | SDUC-432 | **Red / P0** | GPUI integration: each source adds one removable preview to the active New Request, request comment, Support request comment, ticket reply, or internal note; changing target clears drafts; submission uploads once and preserves drafts on failure. |
+| SDTEST-1593 | *to write* — Linux area capture distinguishes tool-missing from user cancellation | SDUC-432 | **Red / P2** | `issue_attachments.rs::capture_region` filters `gnome-screenshot`/`spectacle`/`import` through `util::executable_on_path` and must return the dedicated `attachments.capture.tool_missing` error when none is installed, and the cancelled message otherwise. Extract the installed-tools decision into a pure helper to test without spawning anything. |
 | SDTEST-1423 | `attachment_annotator.rs::empty_export_preserves_original_draft` + `annotation_export_is_a_valid_changed_png` | SDUC-432 | Green | Pins cancel/no-op preservation and proves a real annotation exports a distinct valid PNG without touching the original capture. |
 | SDTEST-1376 | *to write* — shared multi-line Input follows native wrapped-line editing semantics | SDUC-433 | **Red / P0** | GPUI integration: Up/Down retain visual X, Shift selection paints across hard/soft lines, Home/End stay on the visual row, mouse placement matches the glyph, wheel input scrolls a capped field, and `max_rows` keeps the caret visible. |
 | SDTEST-1377 | *to write* — role boundaries cover palette, shortcuts, deep links, and Settings | SDUC-152, SDUC-310 | **Red / P0** | GPUI integration: regular users cannot spawn Dev work; Support never sees Dev; super-admin can enter all modes; Settings opens/closes from every authenticated mode and hides Terminal/Editor for non-Dev accounts. |
 
 ---
 
-## 8d. `shelldeck` AI Dock companion
+## 8d. `shelldeck` AI Dock and desktop companion
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -298,6 +302,95 @@ parallel `cargo test`.
 | SDTEST-1418 | `workspace::tests::portal_absence_is_explained_but_other_errors_pass_through` | SDUC-444 | Green | A Wayland session with no Global Shortcuts portal reaches the user as the translated explanation, never as the ashpd/D-Bus sentence; unrecognized platform errors still arrive verbatim. |
 | SDTEST-1419 | `settings::tests::portal_missing_matches_ashpd_shapes_only` | SDUC-444 | Green | The classifier catches both ashpd shapes (resolved interface name, raw `ServiceUnknown`) without swallowing keycode, `BadAccess`, or portal-refused errors. |
 | SDTEST-1420 | *to write* — tray-mode registration results survive until the Workspace exists | SDUC-444 | **Red / P1** | GPUI integration: with `start_hidden`, a portal answer arriving before the first window must be the status the Workspace is seeded with — the bug behind the silent `PendingPortal` badge. Covered by construction today (the root reads the live registration state instead of a boot snapshot). |
+| SDTEST-1478 | `companion_desktop.rs::runtime_route_requires_enabled_character` | SDUC-447, SDUC-448 | Green | The overlay exists only when desktop mode is explicitly enabled and the selected roster entry is not None. |
+| SDTEST-1479 | `companion_desktop.rs::runtime_uses_core_simulation_and_clamps_after_monitor_removal` | SDUC-448, SDUC-449 | Green | The native owner consumes the tested core simulation and recovers into a smaller surviving work area. |
+| SDTEST-1480 | `companion_desktop.rs::paused_and_reduced_motion_request_no_continuous_frames` | SDUC-448, SDUC-449 | Green | Pause and reduced motion make the overlay event-idle rather than maintaining a render poll. |
+| SDTEST-1481 | `companion_desktop.rs::character_assets_route_to_existing_pngs` | SDUC-447 | Green | Runtime roster IDs resolve to embedded production PNG paths. |
+| SDTEST-1483 | `.github/workflows/release.yml` Linux/macOS/Windows compile matrix | SDUC-448, SDUC-449 | Green | The GPUI top-level movement and geometry APIs are platform-gated; every release target must type-check before assets or manifests publish. |
+| SDTEST-1484 | `tray::tests::clippy_menu_id_routes_directly_to_clippy` | SDUC-445 | Green | The stable native menu id opens the dedicated Clippy surface instead of toggling the generic Assistant or revealing the main window. |
+| SDTEST-1485 | `companion_desktop.rs::external_window_target_perches_above_the_window_inside_the_work_area` | SDUC-448, SDUC-449 | Green | Eligible external window tops produce an on-screen perch target; tiny invalid surfaces are rejected before the native overlay moves. |
+| SDTEST-1486 | `companion_desktop.rs::frame_elapsed_uses_real_refresh_delta_after_the_first_frame` | SDUC-448 | Green | Animation-frame simulation uses real elapsed time and accumulates sub-33 ms refresh deltas, so 60 Hz and 30 Hz displays both advance at the configured fixed-step speed without freezing or running fast. |
+| SDTEST-1487 | `ai_assistant.rs::automatic_clipboard_import_requires_opt_in_and_an_empty_draft` | SDUC-445, SDUC-446 | Green | Shortcut clipboard import is disabled by default and never overwrites an existing Clippy draft. |
+| SDTEST-1488 | `ai_assistant.rs::backend_result_must_satisfy_clippy_proposal_bounds_before_display` | SDUC-445, SDUC-446 | Green | Blank or oversized model output is rejected through the core proposal contract before it can enter the result preview, diff, clipboard, or edit paths. |
+| SDTEST-1489 | `settings::tests::choosing_a_visible_character_enables_it_and_none_disables_it` | SDUC-447, SDUC-450 | Green | Selecting a real mascot cannot leave a hidden selected-but-disabled state; choosing None reliably turns the desktop runtime off. |
+| SDTEST-1490 | `tray::tests::choose_character_menu_id_routes_to_targeted_settings` | SDUC-450 | Green | The stable native tray ID opens the targeted character settings command rather than pausing movement or opening generic Settings. |
+| SDTEST-1491 | `companion_desktop.rs::user_drag_preserves_grab_offset_and_routes_across_display_bounds` | SDUC-448, SDUC-451 | Green | Native hit windows exactly track the selected mascot scale; dragging keeps the pointer-to-character grab offset, scales deltas for mixed-DPI Windows displays, supports negative monitor origins, selects the display under the character center, and clamps the final window origin to it. |
+| SDTEST-1492 | `companion_desktop.rs::clicks_start_bounded_playful_reactions_from_the_current_position` | SDUC-448, SDUC-451 | Green | A click starts a bounded short hop; a sequential double-click upgrades that in-flight hop to the opposite display edge while preserving vertical work-area bounds and continuous-frame policy only during motion. |
+| SDTEST-1493 | `main.rs::every_authored_character_state_is_embedded_in_the_binary_asset_source` | SDUC-447, SDUC-451 | Green | The production asset source lists and loads all 48 idle, listening, thinking, success, warning, error, and sleeping resources across the six mascots, preventing live drag/click reactions from resolving to missing embedded files. |
+| SDTEST-1494 | `companion_desktop.rs::procedural_pose_values_stay_inside_safe_visual_bounds` | SDUC-451 | Green | Every mascot and semantic visual state produces bounded translation, scale, rotation, opacity, and sparkle values while continuing to render the production PNG. |
+| SDTEST-1495 | `companion_desktop.rs::character_personalities_are_visibly_and_kinetically_distinct` | SDUC-451 | Green | Grounded and airborne mascots have distinct speed, bounce, tilt, and pose profiles rather than sharing one generic motion. |
+| SDTEST-1496 | `companion_desktop.rs::playful_targets_are_bounded_varied_and_cooldown_aware` | SDUC-448, SDUC-451 | Green | Deterministic personality-driven roam candidates remain inside the work area, vary their routes, examine every candidate exactly once before repeating a cooled action, and keep speeds within the character profile. |
+| SDTEST-1497 | `companion_desktop.rs::frame_scheduling_policy_is_event_driven_and_honors_reduced_motion` | SDUC-449, SDUC-451 | Green | Static idle and one-shot idle flourishes do not request a companion runtime frame loop; movement/reaction/landing do, while reduced/off/still modes suppress continuous frames. |
+| SDTEST-1498 | `companion_desktop.rs::dpi_aware_drag_threshold_preserves_clicks_and_native_moves_are_gated` | SDUC-448, SDUC-451 | Green | Drag classification scales with desktop coordinates on high-DPI displays; sub-threshold pointer jitter leaves the overlay stationary for click delivery, and visual-only animation frames cannot issue redundant native origin updates after initial placement. |
+| SDTEST-1499 | `companion_desktop.rs::procedural_pose_phase_tracks_wall_clock_time_not_refresh_count` | SDUC-451 | Green | Procedural pose phase is derived from elapsed wall-clock time, so visual animation cadence remains consistent on 30 Hz, 60 Hz, and higher-refresh displays. |
+| SDTEST-1500 | `companion_desktop.rs::attachment_preserves_top_edge_offset_when_window_moves` | SDUC-448, SDUC-451 | Green | A perched character retains the same pixel offset from the external window's left edge when the window moves, enters the stable Perched state, and marks exactly one native origin update. |
+| SDTEST-1501 | `companion_desktop.rs::attachment_clamps_offset_when_window_resizes` | SDUC-448, SDUC-451 | Green | Resizing a followed window clamps the saved perch offset to its new usable top edge instead of leaving the companion floating beyond the window. |
+| SDTEST-1502 | `companion_desktop.rs::attachment_unchanged_window_does_not_request_native_move` | SDUC-448, SDUC-451 | Green | Repeating an identical external-window snapshot keeps the attachment alive without scheduling a redundant native overlay move. |
+| SDTEST-1503 | `companion_desktop.rs::attachment_missing_window_detaches_safely` | SDUC-449, SDUC-451 | Green | When the stable native window ID disappears from the next snapshot, the runtime invalidates the follow generation, clears the attachment, and returns to normal event-driven roaming. |
+| SDTEST-1504 | `companion_desktop.rs::attachment_cancellation_and_scheduler_policy_bump_generations` | SDUC-449, SDUC-451 | Green | The 100 ms follow refresh exists only while attached; drag and explicit cancellation invalidate stale callbacks by generation and leave no scheduled watcher behind. |
+| SDTEST-1512 | `companion_desktop.rs::drag_release_snap_candidate_ranking_prefers_vertical_gap_then_horizontal_distance` | SDUC-451 | Green | Drag release near multiple eligible tops chooses deterministically by smallest vertical gap, then nearest horizontal distance. |
+| SDTEST-1513 | `companion_desktop.rs::drag_release_rejects_maximized_like_snap_windows` | SDUC-451 | Green | Maximized-like windows are rejected for drag-release snapping and physics platforms. |
+| SDTEST-1514 | `companion_desktop.rs::drag_release_does_not_snap_outside_vertical_or_overlap_thresholds` | SDUC-451 | Green | Candidate tops outside the vertical snap band or horizontal overlap threshold are ignored. |
+| SDTEST-1515 | `companion_desktop.rs::drag_release_velocity_is_bounded_from_logical_desktop_samples` | SDUC-451 | Green | Release velocity comes from logical desktop samples and is bounded by horizontal speed and terminal-velocity limits. |
+| SDTEST-1516 | `companion_desktop.rs::dynamic_fall_lands_on_window_and_maps_attachment` | SDUC-451 | Green | After release without immediate snap, gravity lands on a window top and maps the stable contact back to its native window ID for attachment. |
+| SDTEST-1517 | `companion_desktop.rs::dynamic_fall_lands_on_display_floor_without_window` | SDUC-451 | Green | Falling with no eligible window lands on the display work-area floor and transitions to Sleeping. |
+| SDTEST-1518 | `companion_desktop.rs::missing_attached_window_falls_only_when_full_motion_allowed` | SDUC-451 | Green | A disappeared attachment restarts gravity in full motion, but reduced motion suppresses dynamic falling. |
+| SDTEST-1519 | `companion_desktop.rs::reduced_motion_release_never_starts_dynamic_frames` | SDUC-451 | Green | Reduced-motion drag release never enters Dynamic or requests continuous physics frames. |
+| SDTEST-1520 | `companion_desktop.rs::subthreshold_drag_jitter_does_not_move_native_overlay` | SDUC-451 | Green | Pointer jitter below the drag threshold preserves click delivery and does not move the native overlay. |
+| SDTEST-1521 | `companion_desktop.rs::immediate_snap_release_starts_attachment_follow_lifecycle` | SDUC-451 | Green | A valid near-top release snaps immediately, creates an attachment, and starts the follow lifecycle without a redundant timer. |
+| SDTEST-1522 | `companion_desktop.rs::floor_landing_policy_schedules_roam_only_when_unattached_and_not_dragging` | SDUC-451 | Green | Screen-floor landing schedules normal roaming only for unattached, non-dragging landings. |
+| SDTEST-1523 | `companion_desktop.rs::disappeared_attachment_requests_dynamic_frame_restart_when_falling` | SDUC-451 | Green | Losing the attached window requests a dynamic frame restart when the character begins falling. |
+| SDTEST-1524 | `companion_desktop.rs::window_climbing_disabled_prevents_snap_platforms_and_window_attachment` | SDUC-451 | Green | Disabling window climbing prevents snap platforms and window attachment, so the character falls to the screen floor. |
+| SDTEST-1525 | `companion_desktop.rs::maximized_like_rejects_taskbar_inset_but_keeps_ordinary_large_window` | SDUC-451 | Green | Taskbar-inset maximized windows are rejected while ordinary large windows remain eligible. |
+| SDTEST-1526 | `companion_desktop.rs::stale_mouse_up_velocity_is_zeroed` | SDUC-451 | Green | Stale drag velocity samples are zeroed at mouse-up instead of launching the character with old motion. |
+| SDTEST-1527 | `companion_desktop.rs::disabling_window_climbing_mid_fall_clears_cached_window_platforms` | SDUC-451 | Green | Turning off window climbing while already falling clears cached window platforms/windows and lands on the screen floor instead of a stale top. |
+| SDTEST-1528 | `companion_desktop.rs::snapped_window_display_becomes_disappearance_fall_floor_context` | SDUC-451 | Green | Snapping to a window on another display updates the simulation display, so a later disappearance fall lands on that monitor floor instead of an old display or virtual gap. |
+| SDTEST-1529 | `companion_desktop.rs::magnetic_snap_acquires_early_and_releases_only_beyond_hysteresis` | SDUC-451 | Green | Dragging near an eligible outer top acquires a visible magnetic preview before the strict release band and keeps the same stable window ID until the wider exit threshold is crossed. |
+| SDTEST-1530 | `companion_desktop.rs::magnetic_snap_position_lands_on_top_and_preserves_minimum_overlap` | SDUC-451 | Green | Magnetic placement aligns the mascot bottom exactly with the window top while retaining the configured minimum horizontal overlap at either edge. |
+| SDTEST-1531 | `companion_desktop.rs::active_magnetic_preview_commits_attachment_on_release` | SDUC-451 | Green | Releasing an active preview commits the same native window ID, exact perch origin, stable attachment, and follow lifecycle. |
+| SDTEST-1534 | `companion_desktop.rs::drag_window_snapshots_are_throttled_to_the_refresh_interval` | SDUC-451 | Green | Full external-window enumeration obeys its low-rate refresh interval instead of running on every pointer or animation frame. |
+| SDTEST-1535 | `companion_desktop.rs::runtime_floor_collision_subtracts_companion_extent_exactly_once` | SDUC-451 | Green | Runtime passes the raw work area to core physics, so the floor settles at work-area bottom minus one mascot extent rather than leaving an extra-height gap. |
+| SDTEST-1536 | `companion_desktop.rs::magnetic_release_never_switches_preview_window_id` | SDUC-451 | Green | Fresh release enumeration may reorder or reveal a closer competitor, but release revalidates and commits only the stable ID shown by the preview. |
+| SDTEST-1537 | `companion_desktop.rs::missing_preview_window_does_not_fallback_to_another_window` | SDUC-451 | Green | If the previewed native ID closes, minimizes, or vanishes before mouse-up, release falls normally and never silently attaches to another candidate. |
+| SDTEST-1538 | `companion_desktop.rs::preview_release_and_follow_share_the_same_perch_origin` | SDUC-451 | Green | Preview, release commit, and the first follow refresh use identical top-edge geometry, including a window narrower than the mascot, preventing visible jumps. |
+| SDTEST-1539 | `companion_desktop.rs::windows_snap_metrics_scale_extent_and_thresholds_for_target_display` | SDUC-451 | Green | Windows physical-desktop coordinates scale mascot extent, acquisition bands, and overlap thresholds with the candidate display's scale factor; logical-coordinate platforms remain unchanged. |
+| SDTEST-1540 | `companion_desktop.rs::drag_snapshot_policy_separates_full_list_and_locked_window_refreshes` | SDUC-451 | Green | A locked preview uses targeted stable-ID geometry refreshes while the expensive full external-window list remains on its slower cadence. |
+| SDTEST-1541 | `companion_desktop.rs::autonomous_climb_ignores_maximized_like_windows` | SDUC-451 | Green | Autonomous climbing applies the same eligibility filter as snapping and physics, ignoring the nearer maximized/taskbar-inset surface in favor of an ordinary unmaximized window. |
+| SDTEST-1542 | `companion_desktop.rs::invalidated_preview_blocks_retargeting_for_the_rest_of_the_drag` | SDUC-451 | Green | Once a locked preview native ID disappears, the current drag cannot silently acquire or release onto a different cached window. |
+| SDTEST-1543 | `companion_desktop.rs::hysteresis_preview_release_and_follow_use_the_canonical_perch_overlap` | SDUC-451 | Green | Hysteresis uses a relaxed eligibility overlap but preview placement, release, and follow retain the canonical perch overlap without a first-refresh jump. |
+| SDTEST-1544 | `companion_desktop.rs::autonomous_climb_respects_single_monitor_routing` | SDUC-451 | Green | Disabling multi-monitor movement restricts autonomous climbing to eligible windows on the character's current display. |
+| SDTEST-1545 | `companion_desktop.rs::autonomous_climb_ranks_vertical_gap_then_horizontal_distance_then_native_id` | SDUC-451 | Green | Autonomous targets are ranked deterministically by vertical gap, horizontal distance, and stable native ID. |
+| SDTEST-1546 | `companion_desktop.rs::moved_preview_geometry_invalidates_the_drag_without_competitor_fallback` | SDUC-451 | Green | A still-visible preview that moves outside hysteresis or becomes ineligible invalidates the locked drag and cannot retarget to a competing window. |
+| SDTEST-1551 | `companion_desktop.rs::physics_catchup_reports_first_landing_while_preserving_final_body_state` | SDUC-448, SDUC-451 | Green | Multi-step catch-up preserves the first landing event while returning the final sleeping body position and velocity, so the frame loop terminates correctly. |
+| SDTEST-1552 | `companion_desktop.rs::duration_timing_preserves_submillisecond_remainder_and_no_first_frame_invention` | SDUC-448, SDUC-451 | Green | Fixed-step timing retains sub-millisecond remainder and contributes zero on an uninitialized first frame instead of inventing 33 ms. |
+| SDTEST-1553 | `companion_desktop.rs::dynamic_physics_refresh_tracks_captured_windows_on_cadence` | SDUC-448, SDUC-449, SDUC-451 | Green | After initial discovery, dynamic falls refresh the selected stable ID at a bounded cadence, track its moved top, and remove it when closed before collision. |
+| SDTEST-1554 | `companion_desktop.rs::unrelated_config_transition_preserves_attachment_but_disabling_climb_detaches_safely` | SDUC-449, SDUC-451 | Green | Unrelated settings keep an attachment; disabling climbing immediately falls under full motion or rests safely under reduced motion. |
+| SDTEST-1555 | `companion_desktop.rs::invalid_attachment_geometry_enters_dynamic_fall_or_reduced_motion_rest` | SDUC-449, SDUC-451 | Green | A resized target that no longer supports the mascot uses the same safe detach lifecycle as a missing native window. |
+| SDTEST-1556 | `companion_desktop.rs::release_commit_position_change_marks_pending_native_move` | SDUC-448, SDUC-451 | Green | Fresh same-ID release revalidation requests the canonical native origin when the target moved inside hysteresis after the last preview sample. |
+| SDTEST-1557 | `companion_desktop.rs::stale_late_mouse_move_zeroes_throw_velocity_sample` | SDUC-451 | Green | A pointer event after the velocity sampling deadline clears the old throw vector rather than making it look fresh. |
+| SDTEST-1558 | `companion_desktop.rs::pause_rest_stops_dynamic_body_and_requests_idle_visual_state` | SDUC-449, SDUC-451 | Green | Pause and motion-policy interruption clear dynamic velocity/contact and return to an event-idle visual state. |
+| SDTEST-1559 | `companion_desktop.rs::active_drag_lifecycle_types_are_zero_sized_and_outside_release_is_idempotent` | SDUC-448, SDUC-451 | Green | GPUI active-drag delivery plus inside/outside mouse-up share one idempotent release lifecycle, preventing a native snap from stranding drag state. |
+| SDTEST-1560 | `companion_desktop.rs::rounded_native_origin_gate_skips_subpixel_redundant_moves` | SDUC-448 | Green | Native placement is issued only when the rounded platform origin changes, suppressing redundant subpixel movement calls. |
+| SDTEST-1561 | `companion_desktop.rs::system_motion_preference_honors_platform_reduced_motion` | SDUC-449, SDUC-451 | Green | System motion follows the OS reduced-motion preference, while explicit Full remains an intentional override. |
+| SDTEST-1562 | `companion_desktop.rs::idle_flourish_duty_cycle_stays_below_the_playful_background_budget` | SDUC-448, SDUC-451 | Green | Idle flourishes remain occasional and below one fifth of their waiting interval, reducing background GPU/CPU activity without removing personality. |
+| SDTEST-1570 | `settings::tests::native_wayland_companion_limitation_is_reported_without_misclassifying_x11` | SDUC-449, SDUC-450 | Green | Appearance uses the same GPUI compositor detection as the runtime, shows a localized native-Wayland limitation, and does not misclassify X11. |
+| SDTEST-1571 | `companion_desktop.rs::gravity_fall_discovers_window_platforms_after_starting_with_an_empty_snapshot` | SDUC-448, SDUC-451 | Green | Gravity that starts without cached geometry discovers current visible window tops, lands at the companion extent above the chrome, and maps the contact back to the stable window ID. |
+| SDTEST-1572 | `companion_desktop.rs::dynamic_physics_refresh_switches_to_stable_id_updates_after_initial_scan` | SDUC-448, SDUC-449, SDUC-451 | Green | A fall performs one full visible-window discovery, then updates only the trajectory-selected captured stable ID without admitting newly appeared windows or repeating an expensive full X11 scan. |
+| SDTEST-1573 | `adabraka_gpui::platform::linux::x11::client::companion_external_window_tests::x11_frame_extents_require_cardinal_32_and_bounded_exact_values` | SDUC-448, SDUC-449, SDUC-451 | Yellow | The vendored-fork parser test accepts only exact CARDINAL/32 four-value `_NET_FRAME_EXTENTS` payloads inside a defensive bound. It passes in the isolated patch harness but is not yet executed by the root workspace test command. |
+| SDTEST-1574 | `companion_desktop.rs::dynamic_physics_refresh_budget_prefers_a_reachable_diagonal_collision` | SDUC-448, SDUC-449, SDUC-451 | Green | Each 100 ms physics refresh simulates the next fixed-step trajectory and targets at most the first reachable captured window, including fast diagonal motion without current horizontal overlap. |
+| SDTEST-1575 | `companion_desktop.rs::targeted_refresh_does_not_promote_an_unvalidated_cached_fallback` | SDUC-448, SDUC-449, SDUC-451 | Green | If the one revalidated target closes or disappears, no older unrefreshed cached window is promoted into the active collision set and no phantom landing can occur. |
+| SDTEST-1576 | `companion_desktop.rs::trajectory_refresh_orders_collisions_within_the_same_fixed_step` | SDUC-448, SDUC-451 | Green | Two reachable tops crossed in one fixed step are ordered by exact projected vertical time of impact, not current overlap or coarse step number. |
+| SDTEST-1577 | `companion_desktop.rs::drag_release_predicts_first_interval_platforms_from_release_velocity` | SDUC-448, SDUC-451 | Green | The production drag-release path enters Dynamic mode with the bounded throw velocity before selecting its first 100 ms collision platform. |
+| SDTEST-1594 | `main.rs::x11_pointer_coordinates_are_not_offset_twice` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. X11 pointer math applies the display origin exactly once. The coordinate-space decision feeding it now comes from `companion_desktop::is_x11_session` (`gpui::guess_compositor()`), never `XDG_SESSION_TYPE` — fixing the `XDG_SESSION_TYPE=x11` + `WAYLAND_DISPLAY` disagreement. |
+| SDTEST-1595 | `main.rs::xrandr_geometry_preserves_each_monitor_origin` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `xrandr`-parsed monitor bounds keep every monitor's true origin. `xrandr`/`xprop` are optional runtime soft deps: spawn errors, non-zero exits and unparseable output warn and fall back to GPUI display bounds. |
+| SDTEST-1596 | `main.rs::x11_workarea_excludes_the_system_toolbar` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `_NET_WORKAREA` (via `xprop`) excludes panels/taskbars from the roaming area; absence degrades to full display bounds. |
+| SDTEST-1597 | SDPATCH-113 X11 external-window filter — compile-check only (`cargo check -p adabraka-gpui`) | SDUC-449 | Yellow | The EWMH dock/menu/toolbar/tooltip/popup-menu/dropdown-menu/splash/notification/utility + `WM_TRANSIENT_FOR` exclusions in the vendored fork have no runnable test: a live X server would be required, and the fork's own tests are not executed by the workspace test command (same limitation as SDTEST-1573). |
+
+### `shelldeck-ui/server_sync_view.rs` — file-browser breadcrumbs
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1589 | `server_sync_view.rs::breadcrumb_segments_remote_is_unix_regardless_of_host` + `server_sync_view.rs::breadcrumb_segments_local_matches_remote_shape_on_unix` | SDUC-457 | Green | 2 tests, added 2026-08-06. Remote panes keep pure Unix string math on every host platform (a Windows host never receives backslash paths from a Linux server); the local pane's `std::path`-components breadcrumbs are byte-identical to the remote flavor on Unix, while Windows locals get `C:\` round-trip and a `..` row that disappears at filesystem roots. |
 
 ### Application chrome (menu bar, sidebar rail, scaling)
 
@@ -328,9 +421,15 @@ checklist:
 
 - SDTEST-121, SDTEST-122 (keychain macOS/Windows)
 - SDTEST-960..968 (PTY spawn on all three)
+- SDTEST-1579..1581 (shell resolution — pure fn asserts both platform
+  branches from any target, no cfg gate)
 - SDTEST-1201, SDTEST-1202 (platform key mapping)
 - SDTEST-1242, SDTEST-1243 (installer replace on Unix / Windows)
 - SDTEST-1260, SDTEST-1261 (install-script + manifest parity)
+- SDTEST-1483 (desktop overlay native movement, work-area, reduced-motion, and no-focus platform APIs)
+- SDTEST-1584 (`#[cfg(windows)]` Jcode executor spawn — **no CI target
+  compiles or runs it today**; needs a windows-latest test or
+  `cargo check --tests --target x86_64-pc-windows-msvc` job)
 
 The release-day rule: **all P0 cross-platform tests must be green on
 the matching CI runner before the tag goes out.** This maps directly
@@ -341,4 +440,8 @@ builds fails, the release + manifest jobs are skipped entirely".
 
 ## Retired tests
 
-*(none yet)*
+- **SDTEST-1333 / SDTEST-1334** (2026-08-06) — `terminal_view.rs` command
+  discovery tests. `command_available` now delegates to
+  `shelldeck_core::util::executable_on_path`, whose contracts (multi-dir PATH
+  walk, PATHEXT extensions, unix `+x` check — a stricter superset) are pinned
+  by SDTEST-1591 in `tests-core.md`. IDs stay reserved per the sticky-ID rule.

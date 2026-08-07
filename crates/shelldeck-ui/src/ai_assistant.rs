@@ -2,16 +2,18 @@ use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
 use adabraka_ui::components::empty_state::{EmptyState, EmptyStateSize};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown, Spinner,
-    SpinnerSize, SpinnerVariant,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer,
+    Markdown, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    AiBackend, AiCapability, AiChatRole, AiContext, AiConversation, AiConversationStore, AiSurface,
-    AiTask, AiTaskStatus,
+    ai_line_diff, clippy_prompt as build_clippy_prompt, AiBackend, AiCapability, AiChatRole,
+    AiContext, AiConversation, AiConversationStore, AiDiffLine, AiSurface, AiTask, AiTaskStatus,
+    ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
 };
 use uuid::Uuid;
 
@@ -96,6 +98,7 @@ pub enum AiHost {
 enum AiActivity {
     #[default]
     Chat,
+    Clippy,
     Tasks,
     History,
 }
@@ -120,10 +123,94 @@ struct AiQuickAction {
     mode: AiQuickActionMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClippyOperationKind {
+    Rewrite,
+    Translate,
+    Shorten,
+    Summarize,
+    Explain,
+    DraftReply,
+    Custom,
+}
+
+impl ClippyOperationKind {
+    fn all() -> &'static [Self] {
+        &[
+            Self::Rewrite,
+            Self::Translate,
+            Self::Shorten,
+            Self::Summarize,
+            Self::Explain,
+            Self::DraftReply,
+            Self::Custom,
+        ]
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Rewrite => "rewrite",
+            Self::Translate => "translate",
+            Self::Shorten => "shorten",
+            Self::Summarize => "summarize",
+            Self::Explain => "explain",
+            Self::DraftReply => "draft_reply",
+            Self::Custom => "custom",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Rewrite => "sparkles",
+            Self::Translate => "globe",
+            Self::Shorten => "minimize-2",
+            Self::Summarize => "scroll-text",
+            Self::Explain => "circle-help",
+            Self::DraftReply => "reply",
+            Self::Custom => "settings",
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Rewrite => t!("ai.clippy.operation.rewrite").to_string(),
+            Self::Translate => t!("ai.clippy.operation.translate").to_string(),
+            Self::Shorten => t!("ai.clippy.operation.shorten").to_string(),
+            Self::Summarize => t!("ai.clippy.operation.summarize").to_string(),
+            Self::Explain => t!("ai.clippy.operation.explain").to_string(),
+            Self::DraftReply => t!("ai.clippy.operation.draft_reply").to_string(),
+            Self::Custom => t!("ai.clippy.operation.custom").to_string(),
+        }
+    }
+}
+
+fn should_auto_import_clippy(enabled: bool, current_source: &str) -> bool {
+    enabled && current_source.trim().is_empty()
+}
+
+/// Whether replacing the view's context with `next` is a real context switch
+/// (which must invalidate the request gate and reset transient state) rather
+/// than a host re-preparing the same surface (which must preserve any
+/// in-flight request). Pure so the reopen contract is unit-testable.
+fn context_switch_resets(current: &AiContext, next: &AiContext) -> bool {
+    current.surface != next.surface || current.title != next.title
+}
+
+fn validated_clippy_result(text: String) -> Result<String, String> {
+    let proposal = ClippyProposal {
+        result: text.trim().to_string(),
+        explanation: None,
+        warnings: Vec::new(),
+    };
+    proposal.validate().map_err(|error| error.to_string())?;
+    Ok(proposal.result)
+}
+
 pub struct AiAssistantView {
     prompt_state: Entity<InputState>,
     context: AiContext,
     available: bool,
+    clippy_available: bool,
     loading: bool,
     error: Option<String>,
     request_gate: AiRequestGate,
@@ -148,6 +235,13 @@ pub struct AiAssistantView {
     show_archived: bool,
     pending_delete: Option<Uuid>,
     tasks: Vec<AiTask>,
+    clippy_source_state: Entity<InputState>,
+    clippy_instruction_state: Entity<InputState>,
+    clippy_result: Option<String>,
+    clippy_error: Option<String>,
+    clippy_operation: ClippyOperationKind,
+    clippy_pending_request: Option<u64>,
+    clippy_auto_import_clipboard: bool,
 }
 
 impl AiAssistantView {
@@ -160,6 +254,9 @@ impl AiAssistantView {
             prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             context,
             available: true,
+            // Clippy is opt-in (`ai.surfaces.clippy`): stay unavailable until a
+            // host pushes the real capability via `set_clippy_available`.
+            clippy_available: false,
             loading: false,
             error: None,
             request_gate: AiRequestGate::default(),
@@ -186,6 +283,13 @@ impl AiAssistantView {
             show_archived: false,
             pending_delete: None,
             tasks: Vec::new(),
+            clippy_source_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            clippy_instruction_state: cx.new(InputState::new),
+            clippy_result: None,
+            clippy_error: None,
+            clippy_operation: ClippyOperationKind::Rewrite,
+            clippy_pending_request: None,
+            clippy_auto_import_clipboard: false,
         }
     }
 
@@ -219,18 +323,21 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    /// Kept as the hosts' entry point (the Dock opens without history). It now
-    /// drives the rail's activity instead of a split-pane flag.
+    /// Kept as the hosts' entry point (the Dock opens without history).
+    /// `history_open` is Sheet-only state — it drives the side column and the
+    /// header toggle. The Dock never reads it (its rail renders on
+    /// `active_tab`), so a Dock host maps the call onto its activity instead
+    /// of writing dead state.
     pub fn set_history_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.history_open = open;
-        // Only the Dock turns history into an activity; in the Sheet it is a
-        // column that appears beside the conversation.
-        if self.host == AiHost::Dock {
-            self.active_tab = if open {
-                AiActivity::History
-            } else {
-                AiActivity::Chat
-            };
+        match self.host {
+            AiHost::Sheet => self.history_open = open,
+            AiHost::Dock => {
+                self.active_tab = if open {
+                    AiActivity::History
+                } else {
+                    AiActivity::Chat
+                };
+            }
         }
         cx.notify();
     }
@@ -277,19 +384,30 @@ impl AiAssistantView {
     }
 
     pub fn set_context(&mut self, context: AiContext, cx: &mut Context<Self>) {
-        self.request_gate.invalidate();
-        let context_changed =
-            self.context.surface != context.surface || self.context.title != context.title;
+        // Re-preparing a host over the *same* context must not kill an
+        // in-flight request. The Dock removes its window on focus loss while
+        // the controller (and any pending completion) survives; reopening runs
+        // `prepare()` → `set_context()`, and unconditionally invalidating here
+        // meant the reply landed on a dead gate — the user saw their own
+        // message with no answer, no spinner, and no error, forever. Only a
+        // real context switch discards outstanding work.
+        let context_changed = context_switch_resets(&self.context, &context);
         self.context = context;
-        self.context_dropped = false;
-        self.loading = false;
-        self.error = None;
-        if context_changed
-            && self
+        if context_changed {
+            // A genuine context switch re-arms the removable chip: the user
+            // dropped the *previous* screen, not this one.
+            self.context_dropped = false;
+            self.request_gate.invalidate();
+            self.loading = false;
+            self.error = None;
+            // A pending Clippy id must not outlive the gate that issued it.
+            self.clippy_pending_request = None;
+            if self
                 .active_conversation()
                 .is_some_and(|conversation| !conversation.messages.is_empty())
-        {
-            self.active_conversation = None;
+            {
+                self.active_conversation = None;
+            }
         }
         cx.notify();
     }
@@ -305,6 +423,35 @@ impl AiAssistantView {
             self.error = None;
         }
         cx.notify();
+    }
+
+    pub fn set_clippy_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        self.clippy_available = available;
+        if !available && self.clippy_pending_request.is_some() {
+            self.request_gate.invalidate();
+            self.loading = false;
+            self.clippy_pending_request = None;
+            self.clippy_error = Some(t!("ai.dock.unavailable").to_string());
+        }
+        cx.notify();
+    }
+
+    pub fn show_clippy(&mut self, cx: &mut Context<Self>) {
+        self.active_tab = AiActivity::Clippy;
+        if should_auto_import_clippy(
+            self.clippy_auto_import_clipboard,
+            self.clippy_source_state.read(cx).content(),
+        ) {
+            self.load_clippy_clipboard(cx);
+        }
+        cx.notify();
+    }
+
+    pub fn set_clippy_auto_import_clipboard(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.clippy_auto_import_clipboard != enabled {
+            self.clippy_auto_import_clipboard = enabled;
+            cx.notify();
+        }
     }
 
     pub fn focus_composer(&self, window: &mut Window, cx: &App) {
@@ -355,6 +502,30 @@ impl AiAssistantView {
             return false;
         }
         self.loading = false;
+        if self.clippy_pending_request == Some(request_id) {
+            self.clippy_pending_request = None;
+            match result {
+                Ok(text) => match validated_clippy_result(text) {
+                    Ok(result) => {
+                        self.clippy_result = Some(result);
+                        self.clippy_error = None;
+                    }
+                    Err(error) => {
+                        self.clippy_result = None;
+                        self.clippy_error = Some(error);
+                    }
+                },
+                Err(error) => self.clippy_error = Some(error),
+            }
+            cx.notify();
+            // The returned bool gates routed `AiAssistantAction` application
+            // in both hosts (`Workspace::handle_ai_assistant_event`,
+            // `AiCompanionController`). A Clippy turn transforms untrusted
+            // clipboard content and must never apply actions — return false
+            // so an Action that ever slipped through for a Clippy request is
+            // dropped here, not one crate away.
+            return false;
+        }
         match result {
             Ok(text) => {
                 if let Some(conversation) = self
@@ -372,6 +543,129 @@ impl AiAssistantView {
         }
         cx.notify();
         true
+    }
+
+    fn import_clippy_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.load_clippy_clipboard(cx) {
+            return;
+        }
+        self.clippy_source_state
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window);
+    }
+
+    fn load_clippy_clipboard(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            self.clippy_error = Some(t!("ai.clippy.error.no_clipboard").to_string());
+            cx.notify();
+            return false;
+        };
+        let Some(text) = item.text() else {
+            self.clippy_error = Some(t!("ai.clippy.error.no_clipboard_text").to_string());
+            cx.notify();
+            return false;
+        };
+        self.clippy_source_state
+            .update(cx, |state, cx| state.replace_content(text, cx));
+        self.clippy_error = None;
+        cx.notify();
+        true
+    }
+
+    fn clippy_request(&self, cx: &App) -> Result<(String, AiContext), String> {
+        let source = self
+            .clippy_source_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        if source.is_empty() {
+            return Err(t!("ai.clippy.error.blank").to_string());
+        }
+        let instruction = self
+            .clippy_instruction_state
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        let operation = match self.clippy_operation {
+            ClippyOperationKind::Rewrite => CoreClippyOperation::Rewrite,
+            ClippyOperationKind::Translate => CoreClippyOperation::Translate {
+                language: if instruction.is_empty() {
+                    t!("ai.clippy.default_translation_language").to_string()
+                } else {
+                    instruction
+                },
+            },
+            ClippyOperationKind::Shorten => CoreClippyOperation::Shorten,
+            ClippyOperationKind::Summarize => CoreClippyOperation::Summarize,
+            ClippyOperationKind::Explain => CoreClippyOperation::Explain,
+            ClippyOperationKind::DraftReply => CoreClippyOperation::DraftReply,
+            ClippyOperationKind::Custom => CoreClippyOperation::Custom { instruction },
+        };
+        let context = ClippyContext {
+            source: ClippyContextSource::Clipboard,
+            text: source,
+            application: None,
+            window_title: None,
+            focused_role: None,
+            screenshot: None,
+            selection: None,
+        };
+        let prompt =
+            build_clippy_prompt(&operation, &context).map_err(|error| error.to_string())?;
+        let ai_context = context
+            .to_ai_context(&operation)
+            .map_err(|error| error.to_string())?;
+        Ok((prompt, ai_context))
+    }
+
+    fn run_clippy(&mut self, cx: &mut Context<Self>) {
+        if self.loading || !self.clippy_available {
+            return;
+        }
+        let (prompt, context) = match self.clippy_request(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.clippy_error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let request_id = self.request_gate.begin();
+        self.loading = true;
+        self.clippy_pending_request = Some(request_id);
+        self.clippy_result = None;
+        self.clippy_error = None;
+        cx.emit(AiAssistantEvent::Submit {
+            request_id,
+            conversation_id: Uuid::nil(),
+            prompt,
+            // Clippy submits untrusted clipboard content, not a conversational
+            // instruction: the empty message keeps the action router out of
+            // the turn entirely (see `complete_assistant_turn`).
+            latest_user_message: String::new(),
+            context,
+        });
+        cx.notify();
+    }
+
+    fn cancel_clippy(&mut self, cx: &mut Context<Self>) {
+        self.request_gate.invalidate();
+        self.loading = false;
+        self.clippy_pending_request = None;
+        self.clippy_error = None;
+        cx.notify();
+    }
+
+    fn edit_clippy_result(&mut self, cx: &mut Context<Self>) {
+        if let Some(result) = self.clippy_result.clone() {
+            self.clippy_source_state
+                .update(cx, |state, cx| state.replace_content(result, cx));
+            self.clippy_result = None;
+            cx.notify();
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -645,7 +939,7 @@ impl AiAssistantView {
                 "activity",
                 AiQuickActionMode::Submit,
             )],
-            AiSurface::Global => &[],
+            AiSurface::Global | AiSurface::Clippy => &[],
         };
         keys.iter()
             .map(|(label, prompt, icon, mode)| AiQuickAction {
@@ -840,7 +1134,8 @@ impl AiAssistantView {
         } else {
             shell = shell.w_full().min_w(px(0.0));
         }
-        shell.child(header)
+        shell
+            .child(header)
             .child(
                 div()
                     .id("ai-history-scroll")
@@ -865,6 +1160,15 @@ impl AiAssistantView {
                 activity: AiActivity::Chat,
                 icon: "messages-square",
                 label: t!("ai.rail.chat").to_string(),
+                badge: None,
+            },
+            AiRailEntry {
+                activity: AiActivity::Clippy,
+                // `paperclip` is not in the bundled Lucide subset
+                // (.agents/icons.md) and silently painted nothing;
+                // `clipboard-paste` ships and matches the clipboard job.
+                icon: "clipboard-paste",
+                label: t!("ai.clippy.tab").to_string(),
                 badge: None,
             },
             AiRailEntry {
@@ -1014,8 +1318,9 @@ impl AiAssistantView {
                     .child(glyph)
                     .child(entry.label)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // `history_open` is Sheet-only state; the rail (Dock)
+                        // navigates purely on `active_tab`.
                         this.active_tab = activity;
-                        this.history_open = activity == AiActivity::History;
                         cx.notify();
                     })),
             );
@@ -1300,6 +1605,9 @@ impl AiAssistantView {
             AiCapability::ScriptFix => "ai.tasks.capability.script_fix",
             AiCapability::TerminalCommand => "ai.tasks.capability.terminal_command",
             AiCapability::TerminalDiagnose => "ai.tasks.capability.terminal_diagnose",
+            AiCapability::ClippyTransform => "ai.tasks.capability.clippy_transform",
+            AiCapability::ClippyExplain => "ai.tasks.capability.clippy_explain",
+            AiCapability::ClippyReplaceSelection => "ai.tasks.capability.clippy_replace",
         };
         t!(key).to_string()
     }
@@ -1357,7 +1665,7 @@ impl AiAssistantView {
             | AiSurface::Terminal
             | AiSurface::Jean => true,
             AiSurface::Naming => task.target_kind.as_deref() == Some("naming_terminal"),
-            AiSurface::Recent | AiSurface::Global => false,
+            AiSurface::Recent | AiSurface::Global | AiSurface::Clippy => false,
         };
         let status_detail = task
             .status_message
@@ -1587,73 +1895,264 @@ impl AiAssistantView {
             .child(list)
             .into_any_element()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::{AiAssistantView, AiQuickActionMode, AiRequestGate, ButtonVariant};
-    use shelldeck_core::ai::AiSurface;
+    fn render_clippy(&self, cx: &mut Context<Self>) -> AnyElement {
+        let source = self.clippy_source_state.read(cx).content().to_string();
+        let source_len = source.chars().count();
+        let source_input = Input::new(&self.clippy_source_state)
+            .size(InputSize::Sm)
+            .multi_line(true)
+            .min_rows(6)
+            .max_rows(12)
+            .placeholder(t!("ai.clippy.source_placeholder").to_string())
+            .disabled(self.loading || !self.clippy_available);
+        let instruction_input = Input::new(&self.clippy_instruction_state)
+            .size(InputSize::Sm)
+            .placeholder(t!("ai.clippy.instruction_placeholder").to_string())
+            .disabled(self.loading || !self.clippy_available);
 
-    // SDTEST-1341
-    #[test]
-    fn stale_ai_response_is_rejected_after_context_invalidation() {
-        let mut gate = AiRequestGate::default();
-        let old_request = gate.begin();
-        assert!(gate.accepts(old_request));
-
-        gate.invalidate();
-        assert!(!gate.accepts(old_request));
-
-        let current_request = gate.begin();
-        assert!(gate.accepts(current_request));
-    }
-
-    // SDTEST-1429
-    #[test]
-    fn quick_actions_distinguish_immediate_submit_from_composer_prefill() {
-        // The two modes used to be told apart by their adabraka button variant.
-        // The empty screen now renders them as tiles, so the visual difference
-        // is gone — but the behavioural one is the point of this test and is
-        // unchanged: `Submit` sends straight away, `Prefill` only fills the
-        // composer. The assertions below pin that mapping per surface.
-        let script = AiAssistantView::quick_actions(AiSurface::Script);
-        assert_eq!(script[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(script[0].prompt_key, "ai.prefill.script_generate");
-        assert_eq!(script[1].mode, AiQuickActionMode::Submit);
-        assert_eq!(script[2].mode, AiQuickActionMode::Prefill);
-        assert_eq!(script[2].prompt_key, "ai.prefill.script_convert");
-        assert!(script[3..]
-            .iter()
-            .all(|action| action.mode == AiQuickActionMode::Submit));
-
-        let terminal = AiAssistantView::quick_actions(AiSurface::Terminal);
-        assert_eq!(terminal[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(terminal[0].prompt_key, "ai.prefill.terminal_command");
-        assert_eq!(terminal[1].mode, AiQuickActionMode::Submit);
-        assert_eq!(terminal[2].mode, AiQuickActionMode::Prefill);
-        assert_eq!(terminal[2].prompt_key, "ai.prefill.terminal_issue");
-
-        let issue = AiAssistantView::quick_actions(AiSurface::Issue);
-        assert_eq!(issue[0].mode, AiQuickActionMode::Prefill);
-        assert_eq!(issue[0].prompt_key, "ai.prefill.issue_draft");
-        assert!(issue[1..]
-            .iter()
-            .all(|action| action.mode == AiQuickActionMode::Submit));
-
-        let support = AiAssistantView::quick_actions(AiSurface::Support);
-        assert_eq!(support[2].prompt_key, "ai.prompt.support_triage_chat");
-
-        for surface in [
-            AiSurface::Support,
-            AiSurface::Jean,
-            AiSurface::Naming,
-            AiSurface::Recent,
-            AiSurface::Global,
-        ] {
-            assert!(AiAssistantView::quick_actions(surface)
-                .iter()
-                .all(|action| action.mode == AiQuickActionMode::Submit));
+        let mut operations = div().flex().flex_wrap().gap(px(7.0));
+        for operation in ClippyOperationKind::all() {
+            let operation = *operation;
+            operations = operations.child(
+                Button::new(
+                    SharedString::from(format!("clippy-op-{}", operation.key())),
+                    operation.label(),
+                )
+                .variant(if self.clippy_operation == operation {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Outline
+                })
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from(operation.icon()))
+                .disabled(self.loading || !self.clippy_available)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.clippy_operation = operation;
+                    cx.notify();
+                })),
+            );
         }
+
+        let header = div()
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap(px(12.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .gap(px(3.0))
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(t!("ai.clippy.title").to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("ai.clippy.description").to_string()),
+                    ),
+            )
+            .child(
+                Button::new("clippy-import", t!("ai.clippy.use_clipboard").to_string())
+                    .variant(ButtonVariant::Secondary)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("clipboard-paste"))
+                    .disabled(self.loading || !self.clippy_available)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.import_clippy_clipboard(window, cx);
+                    })),
+            );
+
+        let mut result_card = div().flex().flex_col().gap(px(8.0));
+        if self.loading && self.clippy_pending_request.is_some() {
+            result_card = result_card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(
+                        Spinner::new()
+                            .size(SpinnerSize::Xs)
+                            .variant(SpinnerVariant::Primary),
+                    )
+                    .child(t!("ai.clippy.generating").to_string()),
+            );
+        }
+        if let Some(error) = &self.clippy_error {
+            result_card = result_card.child(
+                div()
+                    .rounded(px(7.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .bg(ShellDeckColors::error().opacity(0.10))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::error())
+                    .child(error.clone()),
+            );
+        }
+        if let Some(result) = &self.clippy_result {
+            let result_for_copy = result.clone();
+            let diff = ai_line_diff(&source, result);
+            let diff_rows = diff.into_iter().map(|line| {
+                let (prefix, text, color) = match line {
+                    AiDiffLine::Added(text) => ("+ ", text, ShellDeckColors::success()),
+                    AiDiffLine::Removed(text) => ("- ", text, ShellDeckColors::error()),
+                    AiDiffLine::Context(text) => ("  ", text, ShellDeckColors::text_muted()),
+                };
+                div()
+                    .font_family("monospace")
+                    .text_size(px(11.0))
+                    .text_color(color)
+                    .child(format!("{prefix}{text}"))
+            });
+            result_card = result_card
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(t!("ai.clippy.result").to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(6.0))
+                                .child(
+                                    Button::new("clippy-copy", t!("ai.clippy.copy").to_string())
+                                        .variant(ButtonVariant::Secondary)
+                                        .size(ButtonSize::Sm)
+                                        .icon(IconSource::from("copy"))
+                                        .on_click(move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                result_for_copy.clone(),
+                                            ));
+                                        }),
+                                )
+                                .child(
+                                    Button::new("clippy-edit", t!("ai.clippy.edit").to_string())
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Sm)
+                                        .icon(IconSource::from("pencil"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.edit_clippy_result(cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new(
+                                        "clippy-regenerate",
+                                        t!("ai.clippy.regenerate").to_string(),
+                                    )
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("rotate-ccw"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.run_clippy(cx))),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(ShellDeckColors::border())
+                        .bg(ShellDeckColors::bg_surface())
+                        .p(px(10.0))
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(result.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(ShellDeckColors::border())
+                        .bg(ShellDeckColors::bg_primary())
+                        .p(px(10.0))
+                        .child(
+                            div()
+                                .mb(px(4.0))
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(t!("ai.clippy.diff").to_string()),
+                        )
+                        .children(diff_rows),
+                );
+        }
+
+        let content = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.0))
+            .p(px(16.0))
+            .size_full()
+            .child(header)
+            .child(operations)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("ai.clippy.source").to_string()),
+                    )
+                    .child(source_input)
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t!("ai.clippy.source_count", count = source_len).to_string()),
+                    ),
+            )
+            .child(instruction_input)
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("clippy-generate", t!("ai.clippy.generate").to_string())
+                            .variant(ButtonVariant::Ai)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("sparkles"))
+                            .disabled(self.loading || !self.clippy_available)
+                            .on_click(cx.listener(|this, _, _, cx| this.run_clippy(cx))),
+                    )
+                    .when(
+                        self.loading && self.clippy_pending_request.is_some(),
+                        |row| {
+                            row.child(
+                                Button::new("clippy-cancel", t!("ai.clippy.cancel").to_string())
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .icon(IconSource::from("x"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.cancel_clippy(cx))),
+                            )
+                        },
+                    ),
+            )
+            .child(result_card);
+        scrollable_vertical(content).into_any_element()
     }
 }
 
@@ -1700,11 +2199,11 @@ impl Render for AiAssistantView {
                                 .hover(|style| style.bg(ShellDeckColors::selected_bg()))
                         })
                         .when(disabled, |tile| tile.opacity(0.5))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .child(lucide_icon(action.icon, 15.0, ShellDeckColors::primary())),
-                        )
+                        .child(div().flex_shrink_0().child(lucide_icon(
+                            action.icon,
+                            15.0,
+                            ShellDeckColors::primary(),
+                        )))
                         .child(div().flex_1().min_w(px(0.0)).child(action.label.clone()))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if this.loading || !this.available {
@@ -1795,6 +2294,47 @@ impl Render for AiAssistantView {
                 .child(active_title),
         );
         if in_sheet {
+            // Without a rail, the Sheet needs its own way into — and back out
+            // of — the Clippy activity. Same pill pattern as the tasks pill
+            // below (.agents/ui-components.md harmonization). Hidden when the
+            // surface is disallowed (`ai.surfaces.clippy`), except while
+            // already showing Clippy so the route back to Chat never vanishes.
+            if self.clippy_available || self.active_tab == AiActivity::Clippy {
+                let showing_clippy = self.active_tab == AiActivity::Clippy;
+                conversation_header = conversation_header.child(
+                    div()
+                        .id("ai-clippy-pill")
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(5.0))
+                        .h(px(22.0))
+                        .px(px(8.0))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if showing_clippy {
+                            ShellDeckColors::selected_bg()
+                        } else {
+                            ShellDeckColors::bg_surface()
+                        })
+                        .text_size(px(11.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(lucide_icon(
+                            "clipboard-paste",
+                            12.0,
+                            ShellDeckColors::text_muted(),
+                        ))
+                        .child(t!("ai.clippy.tab").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.active_tab == AiActivity::Clippy {
+                                this.active_tab = AiActivity::Chat;
+                                cx.notify();
+                            } else {
+                                this.show_clippy(cx);
+                            }
+                        })),
+                );
+            }
             // Without a rail, the Sheet needs its own way into the task list.
             if active_tasks > 0 || self.active_tab == AiActivity::Tasks {
                 let showing_tasks = self.active_tab == AiActivity::Tasks;
@@ -2037,6 +2577,30 @@ impl Render for AiAssistantView {
                 .disabled(self.loading || !self.available)
                 // The context left the header: it now rides with the message,
                 // where it is visible next to what it will be sent with.
+                // Placeholders, on purpose: the affordances are drawn now so
+                // the footer has its final shape, but attachments and targeting
+                // are not implemented yet. They carry no click handler and are
+                // rendered `disabled`, so nothing pretends to work.
+                .action(
+                    Button::new("ai-composer-attach", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("plus"))
+                        .tooltip(t!("ai.composer.attach_soon").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
+                        })),
+                )
+                .action(
+                    Button::new("ai-composer-target", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("at-sign"))
+                        .tooltip(t!("ai.composer.target_soon").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
+                        })),
+                )
                 // The model moves out of the header and into the footer, where
                 // every reference app puts it.
                 // The chip is a picker: Settings already lets you switch
@@ -2182,6 +2746,7 @@ impl Render for AiAssistantView {
             AiHost::Dock => {
                 let panel = match self.active_tab {
                     AiActivity::Chat => chat.into_any_element(),
+                    AiActivity::Clippy => self.render_clippy(cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
                     AiActivity::History => self.render_history(false, cx),
                 };
@@ -2209,6 +2774,7 @@ impl Render for AiAssistantView {
             AiHost::Sheet => {
                 let main = match self.active_tab {
                     AiActivity::Tasks => self.render_tasks(window, cx),
+                    AiActivity::Clippy => self.render_clippy(cx),
                     _ => chat.into_any_element(),
                 };
                 let mut split = div()
@@ -2325,11 +2891,7 @@ impl Render for AiAssistantView {
                             .text_size(px(12.0))
                             .text_color(ShellDeckColors::text_primary())
                             .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                            .child(lucide_icon(
-                                "settings",
-                                13.0,
-                                ShellDeckColors::text_muted(),
-                            ))
+                            .child(lucide_icon("settings", 13.0, ShellDeckColors::text_muted()))
                             .child(t!("settings.title").to_string())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.account_menu_open = false;
@@ -2500,5 +3062,132 @@ impl Render for AiAssistantView {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        context_switch_resets, should_auto_import_clippy, validated_clippy_result, AiAssistantView,
+        AiQuickActionMode, AiRequestGate,
+    };
+    use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
+
+    // SDTEST-1341
+    #[test]
+    fn stale_ai_response_is_rejected_after_context_invalidation() {
+        let mut gate = AiRequestGate::default();
+        let old_request = gate.begin();
+        assert!(gate.accepts(old_request));
+
+        gate.invalidate();
+        assert!(!gate.accepts(old_request));
+
+        let current_request = gate.begin();
+        assert!(gate.accepts(current_request));
+    }
+
+    // SDTEST-1578 — the Dock removes its window on focus loss while the
+    // controller and any in-flight request survive; reopening re-prepares the
+    // same Global context. That re-preparation must NOT invalidate the gate
+    // (the pending reply would land on a dead gate and vanish without spinner
+    // or error), while a genuine surface/title switch still must.
+    #[test]
+    fn reopening_the_same_context_preserves_the_in_flight_request() {
+        let global = AiContext::new(
+            AiSurface::Global,
+            "Global".to_string(),
+            serde_json::json!({}),
+        );
+        // Same surface + title, different payload: a reopen, not a switch.
+        let global_reopened = AiContext::new(
+            AiSurface::Global,
+            "Global".to_string(),
+            serde_json::json!({ "active_view": "Dashboard" }),
+        );
+        let terminal = AiContext::new(
+            AiSurface::Terminal,
+            "Terminal".to_string(),
+            serde_json::json!({}),
+        );
+
+        let mut gate = AiRequestGate::default();
+        let in_flight = gate.begin();
+
+        // Reopen: `set_context` keeps the gate → the reply is still accepted.
+        assert!(!context_switch_resets(&global, &global_reopened));
+        assert!(gate.accepts(in_flight));
+
+        // Real switch: `set_context` invalidates → the stale reply is dropped.
+        assert!(context_switch_resets(&global_reopened, &terminal));
+        gate.invalidate();
+        assert!(!gate.accepts(in_flight));
+    }
+
+    // SDTEST-1487
+    #[test]
+    fn automatic_clipboard_import_requires_opt_in_and_an_empty_draft() {
+        assert!(!should_auto_import_clippy(false, ""));
+        assert!(should_auto_import_clippy(true, "  \n"));
+        assert!(!should_auto_import_clippy(true, "keep my draft"));
+    }
+
+    // SDTEST-1488
+    #[test]
+    fn backend_result_must_satisfy_clippy_proposal_bounds_before_display() {
+        assert_eq!(
+            validated_clippy_result("  reviewed result  ".to_string()).unwrap(),
+            "reviewed result"
+        );
+        assert!(validated_clippy_result("  ".to_string()).is_err());
+        assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
+    }
+
+    // SDTEST-1429
+    #[test]
+    fn quick_actions_distinguish_immediate_submit_from_composer_prefill() {
+        // The two modes used to be told apart by their adabraka button variant.
+        // The empty screen now renders them as tiles, so the visual difference
+        // is gone — but the behavioural one is the point of this test and is
+        // unchanged: `Submit` sends straight away, `Prefill` only fills the
+        // composer. The assertions below pin that mapping per surface.
+        let script = AiAssistantView::quick_actions(AiSurface::Script);
+        assert_eq!(script[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[0].prompt_key, "ai.prefill.script_generate");
+        assert_eq!(script[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(script[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(script[2].prompt_key, "ai.prefill.script_convert");
+        assert!(script[3..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let terminal = AiAssistantView::quick_actions(AiSurface::Terminal);
+        assert_eq!(terminal[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[0].prompt_key, "ai.prefill.terminal_command");
+        assert_eq!(terminal[1].mode, AiQuickActionMode::Submit);
+        assert_eq!(terminal[2].mode, AiQuickActionMode::Prefill);
+        assert_eq!(terminal[2].prompt_key, "ai.prefill.terminal_issue");
+
+        let issue = AiAssistantView::quick_actions(AiSurface::Issue);
+        assert_eq!(issue[0].mode, AiQuickActionMode::Prefill);
+        assert_eq!(issue[0].prompt_key, "ai.prefill.issue_draft");
+        assert!(issue[1..]
+            .iter()
+            .all(|action| action.mode == AiQuickActionMode::Submit));
+
+        let support = AiAssistantView::quick_actions(AiSurface::Support);
+        assert_eq!(support[2].prompt_key, "ai.prompt.support_triage_chat");
+
+        for surface in [
+            AiSurface::Support,
+            AiSurface::Jean,
+            AiSurface::Naming,
+            AiSurface::Recent,
+            AiSurface::Global,
+        ] {
+            assert!(AiAssistantView::quick_actions(surface)
+                .iter()
+                .all(|action| action.mode == AiQuickActionMode::Submit));
+        }
     }
 }

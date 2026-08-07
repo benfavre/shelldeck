@@ -11,7 +11,7 @@ entries, `git grep <fn>` lands on the code.
 
 ---
 
-## 1. `util.rs` — atomic write
+## 1. `util.rs` — atomic write + cross-platform env helpers
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -20,6 +20,8 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-003 | `util.rs::atomic_write_leaves_no_tmp_files` | SDUC-091 | Green | |
 | SDTEST-004 | *to write* — atomic_write preserves prior file when write fails mid-way | SDUC-091 | **Red / P1** | Simulate a fake writer that Errs after N bytes; assert the target path is either the *prior* content or absent, never partial. |
 | SDTEST-005 | *to write* — atomic_write fsync semantics on Windows | SDUC-091 | **Red / P2** | Windows rename semantics are different; add a Windows-gated regression once the pattern hits a real bug. |
+| SDTEST-1590 | `util.rs::{home_dir_prefers_home_then_userprofile_and_rejects_blanks, username_prefers_user_then_logname_then_username, hostname_env_prefers_hostname_then_computername_and_trims, hostname_is_never_empty}` | SDUC-330 | Green | 4 tests, added 2026-08-06. Injectable env-precedence contracts behind `home_dir()` / `current_username()` / `hostname()` — the helpers the Windows-portability wave rewired PTY cwd, SSH known_hosts/key discovery, fleet workdir, and cloud device names onto. Blank values are rejected; the hostname terminal fallback is `"ShellDeck"`. |
+| SDTEST-1591 | `util.rs::{path_extensions_windows_parses_pathext_and_defaults, executable_lookup_searches_all_path_dirs_with_extensions, executable_lookup_rejects_directories_and_non_executables}` | SDUC-330, SDUC-413 | Green | 3 tests. PATHEXT-aware `executable_on_path_in`: every `PATH` entry searched, Windows extension candidates honored, directories and non-executables rejected. `ai::command_available` now delegates here — its coverage moved with the logic. (Behavior note: the old Windows path also probed the bare extension-less name; PATHEXT-only is correct cmd.exe semantics and no caller passes a name with its own extension.) |
 
 ---
 
@@ -38,6 +40,10 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-018 | `discovery.rs::parse_nginx_configs_takes_first_server_name_when_multiple_listed` | SDUC-072 | Green | Added 2026-07-09. **Pins current limitation** — the parser calls `split_whitespace().next()`, so only the first host wins. Future TODO is to emit all names; this test locks the shape so a well-meaning refactor doesn't regress to picking the last. |
 | SDTEST-019 | `server_sync.rs::percent_is_none_when_total_unknown` + `percent_zero_total_returns_100` + `percent_clamps_to_100_even_if_transferred_exceeds_total` + `percent_normal_case` + `overall_percent_is_size_weighted_not_count_weighted` + `overall_percent_empty_operation_is_none` + `overall_percent_none_when_no_item_knows_its_total` | SDUC-076 | Green | 7 tests, added 2026-07-09. **Contract correction** — `percent()` is a percentage (0..=100), not a ratio (0..=1). Size-weighting test uses a 1 GB@50% + 10× 1 KB@100% fixture: naive count-weighting would report ~95%, correct size-weighting reports ~50%. |
 | SDTEST-020 | `discovery.rs::rsync_command_includes_delete_and_ignore_existing_switches` + `rsync_command_shell_escapes_source_and_dest_paths` + `rsync_command_emits_one_exclude_per_pattern` | SDUC-075 | Green | 3 tests, added 2026-07-09. Extends the existing `test_rsync_command` (SDTEST-015) with the untouched switches (`delete_extra`, `skip_existing`), verifies `shell_escape` wraps paths containing spaces, and asserts one `--exclude=` emitted per pattern. |
+| SDTEST-1585 | `discovery.rs::join_child_path_matches_unix_expectations` | SDUC-457 | Green | Added 2026-08-06. `join_child_path` matches the old string concatenation on Unix (root and trailing-slash cases pinned) while being drive-letter-correct on Windows via `std::path`. |
+| SDTEST-1586 | `discovery.rs::format_readonly_permissions_never_fabricates_mode_bits` | SDUC-457 | Green | Added 2026-08-06. The non-Unix local listing derives `drw`/`dr-`/`-rw`/`-r-` from the readonly flag only — never the fabricated `drwxr-xr-x` it used to report. |
+| SDTEST-1587 | `discovery.rs::read_local_nginx_configs_feeds_parse_nginx_configs` | SDUC-457, SDUC-072 | Green | Added 2026-08-06. Local vhost files read via `std::fs` produce the same `---FILE:` wire format the SSH command emits (symlinks followed, dotfiles skipped, name order) and flow through the existing nginx parser unchanged. |
+| SDTEST-1588 | `discovery.rs::discover_argv_forms_match_shell_commands` | SDUC-457, SDUC-073, SDUC-074 | Green | Added 2026-08-06. `mysql_discover_argv`/`pg_discover_argv` carry the same SQL as the remote shell command strings (shared consts; real tab instead of the `$'\t'` bash-ism, no empty arg on empty credentials) — and the remote shell strings themselves are pinned byte-identical to HEAD. |
 
 ---
 
@@ -275,6 +281,18 @@ Existing: **0 tests**.
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
 | SDTEST-272 | *to write* — runtime_tick with enabled=false is a no-op | SDUC-206 | **Red / P0** | Safety guarantee per AGENTS.md. |
+| SDTEST-1584 | `jean_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Yellow | Added 2026-08-06. Windows twin of the JSON-output parse test through a `.cmd` batch fake (std launches it via `cmd.exe`), covering the real `JcodeExecutor` spawn→parse path on the one platform where process launch differs. **Yellow: no CI target compiles or runs it today** — `ci.yml` tests on ubuntu only and the release Windows job only builds. Per `.agents/testing.md` item 5, closing the gap needs a windows-latest `cargo test -p shelldeck-core` (or at least `cargo check --tests --target x86_64-pc-windows-msvc`). |
+
+> ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
+> `c5dd9c2`/`148b975` (`jcode_executor_uses_run_ndjson_flags_and_prompt_arg`,
+> `jcode_executor_parses_json_output`, `jcode_acp_probe_is_explicitly_disabled_by_contract`,
+> `jcode_acp_transport_falls_back_to_process_run`,
+> `jcode_executor_rejects_relative_or_missing_workdir_before_spawn`,
+> `jcode_executor_kills_child_on_timeout`,
+> `jcode_acp_fallback_preserves_process_timeout_cancellation`,
+> `configured_executor_falls_back_to_legacy_claude_only_when_jcode_cannot_start`)
+> are Green in code but have no SDTEST rows yet. SDUC-458 now exists to map
+> them to — back-fill pending.
 
 ---
 
@@ -357,8 +375,8 @@ Existing: **0 tests**.
 | SDTEST-1369 | `ai.rs::ai_action_policies_default_to_confirmation_and_map_exact_capabilities` | SDUC-430 | Green | Pins safe defaults, exact capability mapping, moderate automatic execution, and forced confirmation for every high-risk plan. |
 | SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
 | SDTEST-1407 | `ai.rs::ai_running_status_excludes_drafts_and_confirmation_waits` | SDUC-429 | Green | The tray-running contract includes only `Generating` and `Executing`; ready/pending drafts, confirmation waits, and terminal states remain excluded. |
-| SDTEST-1427 | `ai.rs::assistant_turn_routes_request_drafts_and_preserves_normal_chat` | SDUC-445 | Green | A strict `create_request` route yields one validated draft without a chat completion; `chat` preserves Markdown through the normal completion, and malformed routing safely falls back to chat. The latest message is isolated in bounded untrusted context. |
-| SDTEST-1430 | `ai.rs::assistant_action_router_accepts_only_bounded_typed_workflow_payloads` | SDUC-447 | Green | Script, Terminal, Support, Jean, and existing-request navigation routes parse into distinct typed actions; empty targets and oversized dispatch content are rejected before Workspace orchestration. |
+| SDTEST-1427 | `ai.rs::assistant_turn_routes_request_drafts_and_preserves_normal_chat` | SDUC-452, SDUC-445 | Green | A strict `create_request` route yields one validated draft without a chat completion; `chat` preserves Markdown through the normal completion, and malformed routing safely falls back to chat. The latest message is isolated in bounded untrusted context, and a turn with no user message (Clippy clipboard transform) never calls the action router at all. |
+| SDTEST-1430 | `ai.rs::assistant_action_router_accepts_only_bounded_typed_workflow_payloads` | SDUC-454 | Green | Script, Terminal, Support, Jean, and existing-request navigation routes parse into distinct typed actions; empty targets and oversized dispatch content are rejected before Workspace orchestration. |
 
 ---
 
@@ -375,6 +393,45 @@ Existing: **0 tests**.
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
 | SDTEST-1387 | `git.rs::porcelain_branch_status_parses_in_one_pass` | SDUC-437 | Green | Pins normal/upstream, unborn, and detached branch headers plus staged/modified/untracked counts from the single `git status --porcelain=v1 --branch` response. |
+
+---
+
+## 23. `ai/clippy.rs` + `companion/` + `[clippy]` config
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1460 | `ai/clippy.rs::defaults_are_safe_and_unknown_character_falls_back` | SDUC-447 | Green | Clippy and desktop roaming default off; unknown roster IDs safely resolve to Clippy. |
+| SDTEST-1461 | `ai/clippy.rs::context_rejects_blank_oversized_and_password_roles` | SDUC-446 | Green | Blank/oversized input and password-role accessibility context cannot reach a provider. |
+| SDTEST-1462 | `ai/clippy.rs::prompt_delimits_and_redacts_untrusted_context` | SDUC-445, SDUC-446 | Green | Provider input carries explicit trust boundaries and removes common bearer-token material. |
+| SDTEST-1463 | `ai/clippy.rs::ai_context_omits_screenshot_bytes_and_delimits_titles` | SDUC-446 | Green | Context metadata never serializes screenshot bytes and treats titles as untrusted data. |
+| SDTEST-1464 | `ai/clippy.rs::proposal_and_replace_payload_are_bounded` | SDUC-446 | Green | Result and replacement payloads reject blank or excessive content. |
+| SDTEST-1465 | `ai/clippy.rs::stale_selection_identity_is_detected` | SDUC-446 | Green | Window/range identity and selected text must still match before replacement. |
+| SDTEST-1466 | `ai/clippy.rs::audit_metadata_excludes_source_and_result_content` | SDUC-446 | Green | Durable audit copy records operation and counts, never private text. |
+| SDTEST-1467 | `companion/geometry.rs::window_filter_rejects_fullscreen_and_invalid_windows` | SDUC-449 | Green | Invalid, minimized, fullscreen and desktop surfaces are not walkable. |
+| SDTEST-1468 | `companion/geometry.rs::work_area_clamps_points` | SDUC-448 | Green | Recovery cannot strand the overlay beyond a display work area. |
+| SDTEST-1469 | `companion/navigation.rs::shared_edge_route_prefers_overlap` | SDUC-448 | Green | Adjacent monitors route through their real overlapping edge. |
+| SDTEST-1470 | `companion/navigation.rs::disconnected_displays_use_portal_route` | SDUC-448 | Green | Gapped monitor layouts use an explicit portal transition rather than an invalid walk. |
+| SDTEST-1471 | `companion/navigation.rs::removed_monitor_recovers_to_primary_work_area` | SDUC-448, SDUC-449 | Green | Hot-unplug recovers to a valid remaining display. |
+| SDTEST-1472 | `companion/simulation.rs::movement_stays_inside_work_area_and_catch_up_is_capped` | SDUC-448 | Green | Fixed-step movement clamps coordinates and limits resume catch-up work. |
+| SDTEST-1473 | `companion/simulation.rs::reduced_motion_and_sleeping_request_no_frames` | SDUC-448, SDUC-449 | Green | Static states do not keep the GPU animation loop awake. |
+| SDTEST-1474 | `companion/simulation.rs::stale_surface_moves_to_recovering` | SDUC-449 | Green | Invalidated external surfaces cancel the action and enter recovery. |
+| SDTEST-1475 | `companion/simulation.rs::seeded_random_source_is_deterministic_and_cooldowns_work` | SDUC-448 | Green | Behavior selection is reproducible and avoids immediate repetition. |
+| SDTEST-1476 | `companion/simulation.rs::duty_cycle_blocks_excessive_movement` | SDUC-448 | Green | The simulation enforces its movement duty-cycle budget. |
+| SDTEST-1477 | `app_config.rs::clippy_config_defaults_and_surface_opt_in_round_trip` | SDUC-445, SDUC-447 | Green | Old configs parse safely and selected character/desktop preferences persist without enabling AI implicitly. |
+| SDTEST-1482 | `ai/clippy.rs::fake_adapter_preserves_copy_fallback_and_rejects_stale_replacement` | SDUC-446 | Green | One fake-adapter workflow covers apply, unsupported, closed target, stale focus/text, password role, and permission-denied replacement while retaining the reviewed draft. |
+| SDTEST-1505 | `companion/physics.rs::gravity_accelerates_dynamic_body_and_clamps_terminal_velocity` | SDUC-451 | Green | The dedicated single-body AABB solver applies gravity to a Dynamic companion and clamps falling speed at the configured terminal velocity. |
+| SDTEST-1506 | `companion/physics.rs::swept_descending_collision_does_not_tunnel_through_window_top` | SDUC-451 | Green | Descending swept collision catches a window top crossed in one fixed step instead of tunneling through it. |
+| SDTEST-1507 | `companion/physics.rs::descending_collision_selects_nearest_crossed_platform` | SDUC-451 | Green | When multiple one-way tops are crossed, the solver lands on the nearest upper platform deterministically. |
+| SDTEST-1508 | `companion/physics.rs::platforms_without_horizontal_overlap_are_rejected` | SDUC-451 | Green | A window top is eligible only when the falling AABB overlaps it horizontally. |
+| SDTEST-1509 | `companion/physics.rs::display_work_area_floor_is_used_when_no_platform_matches` | SDUC-451 | Green | With no valid platform, the display work-area floor becomes the fallback contact and landing surface. |
+| SDTEST-1510 | `companion/physics.rs::release_from_drag_bounds_velocity_and_clears_contact` | SDUC-451 | Green | Drag release switches to Dynamic, clears the previous stable contact, and clamps the sampled release velocity. |
+| SDTEST-1511 | `companion/physics.rs::repeated_steps_are_deterministic_and_stale_contacts_invalidate` | SDUC-451 | Green | Equal fixed-step inputs produce equal results, and source-generation changes invalidate stale surface contacts before falling resumes. |
+| SDTEST-1532 | `companion/physics.rs::side_wall_collision_clamps_and_reflects_horizontal_velocity` | SDUC-451 | Green | The single-body AABB solver cannot leave the display horizontally; wall impacts reflect with bounded restitution and tiny residual velocities settle to zero. |
+| SDTEST-1533 | `companion/physics.rs::ceiling_collision_clamps_and_reflects_upward_velocity_downward` | SDUC-451 | Green | Upward movement clamps at the work-area ceiling and reflects downward without creating a false landing contact. |
+| SDTEST-1547 | `companion/physics.rs::diagonal_sweep_does_not_land_on_platform_only_overlapped_by_union_corridor` | SDUC-451 | Green | Descending diagonal collision evaluates horizontal overlap at vertical time-of-impact, preventing false landings on platforms crossed only by the broad movement corridor. |
+| SDTEST-1548 | `companion/physics.rs::equal_height_platform_selection_is_stable_when_input_order_is_reversed` | SDUC-451 | Green | Equal-height overlapping platforms use a stable identity/generation/geometry tie-break rather than native enumeration order. |
+| SDTEST-1549 | `companion/physics.rs::expanded_work_area_floor_wakes_sleeping_body_instead_of_leaving_it_suspended` | SDUC-448, SDUC-451 | Green | A changed work-area floor invalidates an old sleeping floor contact and resumes falling instead of leaving the mascot suspended. |
+| SDTEST-1550 | `companion/physics.rs::zero_vertical_span_collision_check_is_safe_and_uses_current_horizontal_interval` | SDUC-451 | Green | Zero-span collision checks avoid division errors and use the current horizontal interval deterministically. |
 
 ---
 

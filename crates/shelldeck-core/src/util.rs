@@ -1,3 +1,4 @@
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -49,20 +50,187 @@ pub fn shell_escape(s: &str) -> String {
     format!("'{}'", escaped)
 }
 
-/// Get the user's home directory from environment, returning `None` if unavailable.
+/// Get the user's home directory, returning `None` if it cannot be determined.
+///
+/// Order: `$HOME` (Unix convention, also honored on Windows when set), then
+/// `%USERPROFILE%` (Windows), then the `directories` crate's platform lookup
+/// (native API on Windows/macOS, passwd db on Unix). Never fabricates a path.
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
+    home_dir_from_env(
+        std::env::var("HOME").ok().as_deref(),
+        std::env::var("USERPROFILE").ok().as_deref(),
+    )
+    .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+}
+
+/// Env-only part of [`home_dir`], injectable for tests.
+fn home_dir_from_env(home: Option<&str>, userprofile: Option<&str>) -> Option<PathBuf> {
+    [home, userprofile]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
         .map(PathBuf::from)
 }
 
 /// Get the current username from environment variables.
+///
+/// Order: `$USER`, `$LOGNAME` (Unix), then `%USERNAME%` (Windows).
 pub fn current_username() -> Option<String> {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
+    username_from_env(
+        std::env::var("USER").ok().as_deref(),
+        std::env::var("LOGNAME").ok().as_deref(),
+        std::env::var("USERNAME").ok().as_deref(),
+    )
+}
+
+/// Env-only part of [`current_username`], injectable for tests.
+fn username_from_env(
+    user: Option<&str>,
+    logname: Option<&str>,
+    username: Option<&str>,
+) -> Option<String> {
+    [user, logname, username]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Best-effort machine hostname, never empty.
+///
+/// Order: `$HOSTNAME`, `%COMPUTERNAME%` (Windows), then the platform lookup
+/// (`gethostname(2)` on Unix, with `/etc/hostname` as a last resort). Falls
+/// back to `"ShellDeck"` only when everything else fails.
+pub fn hostname() -> String {
+    hostname_from_env(
+        std::env::var("HOSTNAME").ok().as_deref(),
+        std::env::var("COMPUTERNAME").ok().as_deref(),
+    )
+    .or_else(platform_hostname)
+    .unwrap_or_else(|| "ShellDeck".to_string())
+}
+
+/// Env-only part of [`hostname`], injectable for tests.
+fn hostname_from_env(hostname: Option<&str>, computername: Option<&str>) -> Option<String> {
+    [hostname, computername]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(unix)]
+fn platform_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is valid for `buf.len()` writes for the duration of the
+    // call. POSIX leaves NUL-termination unspecified on truncation, so the
+    // last byte is force-terminated below before scanning.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc == 0 {
+        buf[buf.len() - 1] = 0;
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(0);
+        let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    // Linux last resort (the file simply doesn't exist elsewhere).
+    std::fs::read_to_string("/etc/hostname")
         .ok()
-        .filter(|u| !u.is_empty())
+        .map(|contents| contents.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(not(unix))]
+fn platform_hostname() -> Option<String> {
+    // On Windows the OS sets %COMPUTERNAME% in every normal session, so the
+    // env path above already covers it; a GetComputerNameW syscall would add
+    // a windows-sys dependency for a case that cannot practically occur.
+    None
+}
+
+/// True when `name` resolves to an executable file on `PATH`.
+///
+/// Honors `PATHEXT` on Windows (falling back to `.COM/.EXE/.BAT/.CMD` like
+/// `cmd.exe` when it is unset); on Unix the bare name is looked up as-is and
+/// must carry an executable permission bit.
+pub fn executable_on_path(name: &str) -> bool {
+    executable_on_path_in(
+        name,
+        std::env::var_os("PATH").as_deref(),
+        &path_extensions(),
+    )
+}
+
+fn path_extensions() -> Vec<OsString> {
+    path_extensions_from(std::env::var("PATHEXT").ok().as_deref(), cfg!(windows))
+}
+
+/// Pure part of the `PATHEXT` handling, injectable for tests: on Windows the
+/// candidate suffixes come from `PATHEXT` (with the `cmd.exe` defaults as
+/// fallback); elsewhere only the bare name (empty suffix) is probed.
+fn path_extensions_from(pathext: Option<&str>, windows: bool) -> Vec<OsString> {
+    if !windows {
+        return vec![OsString::new()];
+    }
+    let parsed: Vec<OsString> = pathext
+        .map(|value| {
+            value
+                .split(';')
+                .map(str::trim)
+                .filter(|ext| !ext.is_empty())
+                .map(OsString::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if parsed.is_empty() {
+        [".COM", ".EXE", ".BAT", ".CMD"]
+            .into_iter()
+            .map(OsString::from)
+            .collect()
+    } else {
+        parsed
+    }
+}
+
+/// Pure part of [`executable_on_path`], injectable for tests.
+fn executable_on_path_in(name: &str, path: Option<&OsStr>, extensions: &[OsString]) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let Some(path) = path else {
+        return false;
+    };
+    std::env::split_paths(path).any(|directory| {
+        extensions.iter().any(|extension| {
+            let mut filename = OsString::from(name);
+            filename.push(extension);
+            is_executable_file(&directory.join(filename))
+        })
+    })
+}
+
+/// A regular file that the platform would let us execute.
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows executability is determined by the extension, which the
+        // PATHEXT candidates above already encode.
+        true
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +301,169 @@ mod tests {
 
         assert_eq!(count_tmp_files(&dir), 0);
         assert_eq!(std::fs::read(&path).unwrap(), b"null");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------------
+    // Platform helpers — env portions are injectable, so no test below
+    // reads or mutates the runner's real environment.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn home_dir_prefers_home_then_userprofile_and_rejects_blanks() {
+        assert_eq!(
+            home_dir_from_env(Some("/home/ben"), Some("C:\\Users\\ben")),
+            Some(PathBuf::from("/home/ben"))
+        );
+        assert_eq!(
+            home_dir_from_env(None, Some("C:\\Users\\ben")),
+            Some(PathBuf::from("C:\\Users\\ben"))
+        );
+        assert_eq!(
+            home_dir_from_env(Some(""), Some("C:\\Users\\ben")),
+            Some(PathBuf::from("C:\\Users\\ben")),
+            "empty HOME must fall through, not produce an empty path"
+        );
+        assert_eq!(home_dir_from_env(Some("   "), Some("")), None);
+        assert_eq!(home_dir_from_env(None, None), None);
+    }
+
+    #[test]
+    fn username_prefers_user_then_logname_then_username() {
+        assert_eq!(
+            username_from_env(Some("ben"), Some("log"), Some("win")),
+            Some("ben".to_string())
+        );
+        assert_eq!(
+            username_from_env(None, Some("log"), Some("win")),
+            Some("log".to_string())
+        );
+        assert_eq!(
+            username_from_env(Some(""), None, Some("win")),
+            Some("win".to_string()),
+            "empty USER must fall through to the Windows variable"
+        );
+        assert_eq!(username_from_env(None, None, None), None);
+    }
+
+    #[test]
+    fn hostname_env_prefers_hostname_then_computername_and_trims() {
+        assert_eq!(
+            hostname_from_env(Some("  srv1  "), Some("WIN-PC")),
+            Some("srv1".to_string())
+        );
+        assert_eq!(
+            hostname_from_env(Some("   "), Some("WIN-PC")),
+            Some("WIN-PC".to_string()),
+            "whitespace-only HOSTNAME must fall through"
+        );
+        assert_eq!(hostname_from_env(None, None), None);
+    }
+
+    #[test]
+    fn hostname_is_never_empty() {
+        // Whatever the runner's env / platform, the chain must bottom out at
+        // a non-empty value (final fallback "ShellDeck").
+        assert!(!hostname().is_empty());
+    }
+
+    #[test]
+    fn path_extensions_windows_parses_pathext_and_defaults() {
+        // Non-Windows: exactly one empty suffix (bare-name lookup).
+        assert_eq!(path_extensions_from(None, false), vec![OsString::new()]);
+        assert_eq!(
+            path_extensions_from(Some(".COM;.EXE"), false),
+            vec![OsString::new()],
+            "PATHEXT is Windows-only and must be ignored elsewhere"
+        );
+
+        // Windows: PATHEXT entries, trimmed, empties dropped.
+        assert_eq!(
+            path_extensions_from(Some(".COM; .EXE ;;.PS1"), true),
+            vec![
+                OsString::from(".COM"),
+                OsString::from(".EXE"),
+                OsString::from(".PS1")
+            ]
+        );
+
+        // Windows without (usable) PATHEXT: cmd.exe defaults.
+        let defaults = [".COM", ".EXE", ".BAT", ".CMD"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(path_extensions_from(None, true), defaults);
+        assert_eq!(path_extensions_from(Some(" ; ; "), true), defaults);
+    }
+
+    /// Mark a file executable where that is a distinct permission bit.
+    fn make_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+    }
+
+    #[test]
+    fn executable_lookup_searches_all_path_dirs_with_extensions() {
+        let dir_a = unique_temp_dir("path-a");
+        let dir_b = unique_temp_dir("path-b");
+
+        // Bare name in the *second* PATH entry.
+        let tool = dir_b.join("mytool");
+        std::fs::write(&tool, b"#!/bin/sh\n").expect("write tool");
+        make_executable(&tool);
+        // Suffixed name (Windows-style candidate) in the first entry.
+        let batch = dir_a.join("build.CMD");
+        std::fs::write(&batch, b"@echo off\n").expect("write batch");
+        make_executable(&batch);
+
+        let path = std::env::join_paths([dir_a.clone(), dir_b.clone()]).expect("join_paths");
+        let bare = [OsString::new()];
+        let win_exts = [OsString::from(".COM"), OsString::from(".CMD")];
+
+        assert!(executable_on_path_in("mytool", Some(&path), &bare));
+        assert!(executable_on_path_in("build", Some(&path), &win_exts));
+        assert!(
+            !executable_on_path_in("build", Some(&path), &bare),
+            "without the suffix candidates the batch file must not match"
+        );
+        assert!(!executable_on_path_in("missing", Some(&path), &bare));
+        assert!(!executable_on_path_in("", Some(&path), &bare));
+        assert!(!executable_on_path_in("mytool", None, &bare));
+
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
+    }
+
+    #[test]
+    fn executable_lookup_rejects_directories_and_non_executables() {
+        let dir = unique_temp_dir("path-neg");
+
+        // A directory named like the command is not an executable.
+        std::fs::create_dir_all(dir.join("subcmd")).expect("mkdir");
+
+        let path = std::env::join_paths([dir.clone()]).expect("join_paths");
+        let bare = [OsString::new()];
+        assert!(!executable_on_path_in("subcmd", Some(&path), &bare));
+
+        // Unix only: a plain file without +x must not count as executable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let plain = dir.join("datafile");
+            std::fs::write(&plain, b"not a program").expect("write plain");
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod -x");
+            assert!(!executable_on_path_in("datafile", Some(&path), &bare));
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

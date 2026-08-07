@@ -198,31 +198,36 @@ impl Workspace {
         let spawn_result = std::thread::Builder::new()
             .name("sync-discover-local".to_string())
             .spawn(move || {
-                let nginx_output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(discovery::nginx_discover_command())
-                    .output()
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default();
+                // Local discovery must not shell out via `sh -c`: `sh` does
+                // not exist on Windows and GNU `timeout` is not stock on
+                // macOS, so the old pipeline silently reported "nothing
+                // found" there. nginx configs are plain files — read them
+                // directly; mysql/psql run argv-style with an explicit
+                // kill-on-timeout (the SSH flavors keep the shell strings).
+                let nginx_output = match discovery::local_nginx_config_dirs()
+                    .into_iter()
+                    .find(|dir| dir.is_dir())
+                {
+                    Some(dir) => discovery::read_local_nginx_configs_in(&dir),
+                    None => {
+                        tracing::debug!(
+                            "local nginx discovery: no site-config directory found — reporting no sites"
+                        );
+                        String::new()
+                    }
+                };
                 let sites = discovery::parse_nginx_configs(&nginx_output);
 
-                let mysql_output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(discovery::mysql_discover_command(""))
-                    .output()
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default();
+                let timeout = std::time::Duration::from_secs(10);
+                let mysql_output =
+                    run_local_discovery_tool("mysql", &discovery::mysql_discover_argv(""), timeout);
                 let mysql_dbs = discovery::parse_mysql_discovery(&mysql_output);
 
-                let pg_output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(discovery::pg_discover_command("-U postgres"))
-                    .output()
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default();
+                let pg_output = run_local_discovery_tool(
+                    "postgresql",
+                    &discovery::pg_discover_argv("-U postgres"),
+                    timeout,
+                );
                 let pg_dbs = discovery::parse_pg_discovery(&pg_output);
 
                 let mut all_dbs = mysql_dbs;
@@ -675,5 +680,105 @@ impl Workspace {
             }
         })
         .detach();
+    }
+}
+
+/// Run one local discovery tool (`mysql` / `psql`) directly — no shell — with
+/// nulled stdin and a hard timeout, returning captured stdout for the parsers.
+///
+/// Unlike the old `sh -c … 2>/dev/null` pipeline, a missing binary, a non-zero
+/// exit, or a timeout is *logged*, so "the tool errored" stays distinguishable
+/// from "the tool found nothing". All of them still yield an empty (or
+/// partial) stdout, keeping discovery best-effort like before.
+fn run_local_discovery_tool(label: &str, argv: &[String], timeout: std::time::Duration) -> String {
+    use std::process::{Command, Stdio};
+
+    let Some((program, args)) = argv.split_first() else {
+        return String::new();
+    };
+
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                "local {} discovery: `{}` is not installed — skipping",
+                label,
+                program
+            );
+            return String::new();
+        }
+        Err(e) => {
+            tracing::warn!(
+                "local {} discovery: failed to run `{}`: {}",
+                label,
+                program,
+                e
+            );
+            return String::new();
+        }
+    };
+
+    // Poll instead of blocking so a hung server connection can't wedge the
+    // discovery thread — this replaces the shell pipeline's `timeout 10`.
+    // Discovery output is tiny (a few lines), so draining the pipes only
+    // after exit/kill cannot deadlock on a full pipe buffer in practice.
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() >= timeout => {
+                tracing::warn!(
+                    "local {} discovery: `{}` timed out after {:?} — killing it",
+                    label,
+                    program,
+                    timeout
+                );
+                let _ = child.kill();
+                break;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => {
+                tracing::warn!(
+                    "local {} discovery: wait on `{}` failed: {}",
+                    label,
+                    program,
+                    e
+                );
+                let _ = child.kill();
+                break;
+            }
+        }
+    }
+
+    match child.wait_with_output() {
+        Ok(output) => {
+            if !output.status.success() {
+                // Typically "no local server running" or auth refused — trace
+                // it so an error isn't mistaken for a genuinely empty result.
+                tracing::debug!(
+                    "local {} discovery: `{}` exited with {} — stderr: {}",
+                    label,
+                    program,
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        Err(e) => {
+            tracing::warn!(
+                "local {} discovery: reading `{}` output failed: {}",
+                label,
+                program,
+                e
+            );
+            String::new()
+        }
     }
 }

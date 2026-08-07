@@ -37,6 +37,7 @@ pub enum MenuCommand {
     NewScript,
     NewRequest,
     SyncNow,
+    OpenCompanionSettings,
     OpenSettings,
     Quit,
     // — Édition —
@@ -241,6 +242,14 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             .icon("refresh-cw"),
         );
         file.push(MenuEntry::Separator);
+        file.push(
+            MenuEntry::command(
+                "file-characters",
+                t!("menu.file.characters").to_string(),
+                MenuCommand::OpenCompanionSettings,
+            )
+            .icon("bot"),
+        );
         file.push(
             MenuEntry::command(
                 "file-settings",

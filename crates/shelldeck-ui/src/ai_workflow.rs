@@ -115,7 +115,10 @@ impl AiWorkflowTarget {
             AiCapability::TerminalDiagnose => Self::TerminalDiagnose { session_id: target },
             AiCapability::IssueCompose
             | AiCapability::JeanDispatch
-            | AiCapability::FleetDispatch => return None,
+            | AiCapability::FleetDispatch
+            | AiCapability::ClippyTransform
+            | AiCapability::ClippyExplain
+            | AiCapability::ClippyReplaceSelection => return None,
         })
     }
 

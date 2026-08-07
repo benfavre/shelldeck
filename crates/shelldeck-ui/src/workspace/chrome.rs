@@ -258,17 +258,16 @@ impl Workspace {
                 );
         }
 
-        account_btn =
-            account_btn.on_click(cx.listener(|this, event: &ClickEvent, _window, cx| {
-                // Remember where the chip is so the panel can be anchored to it
-                // rather than to the window edge.
-                this.account_menu_pos = Some(event.position());
-                this.account_menu_open = !this.account_menu_open;
-                if this.account_menu_open {
-                    this.theme_menu_open = false;
-                }
-                cx.notify();
-            }));
+        account_btn = account_btn.on_click(cx.listener(|this, event: &ClickEvent, _window, cx| {
+            // Remember where the chip is so the panel can be anchored to it
+            // rather than to the window edge.
+            this.account_menu_pos = Some(event.position());
+            this.account_menu_open = !this.account_menu_open;
+            if this.account_menu_open {
+                this.theme_menu_open = false;
+            }
+            cx.notify();
+        }));
         if account_menu_open {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }

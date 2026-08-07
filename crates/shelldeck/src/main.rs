@@ -1,9 +1,11 @@
 mod actions;
+mod companion_desktop;
 mod tray;
 
 use adabraka_ui::prelude::*;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString, WindowDecorations};
+use shelldeck_core::ai::ClippyConfig;
 use shelldeck_core::config::app_config::{AppConfig, CompanionConfig};
 use shelldeck_core::config::deep_link::DeepLink;
 use shelldeck_core::config::single_instance::{self, Acquire};
@@ -14,9 +16,12 @@ use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
     AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
+    WorkspaceAiBindings,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
+
+use crate::companion_desktop::{is_x11_session, CompanionRuntimeCommand, DesktopCharacterRuntime};
 
 /// Embed Lucide SVGs at `icons/lucide/{name}.svg`. Add new slugs here when
 /// copying icons into `assets/icons/lucide/` (see that folder's README).
@@ -165,6 +170,43 @@ simple_assets!(
     "systemd",
 );
 
+macro_rules! character_assets {
+    ($($character:literal),+ $(,)?) => {
+        fn character_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(
+                    concat!("characters/", $character, "/idle.png") => Some(include_bytes!(concat!("../assets/characters/", $character, "/idle.png"))),
+                    concat!("characters/", $character, "/idle.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/idle.svg"))),
+                    concat!("characters/", $character, "/listening.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/listening.svg"))),
+                    concat!("characters/", $character, "/thinking.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/thinking.svg"))),
+                    concat!("characters/", $character, "/success.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/success.svg"))),
+                    concat!("characters/", $character, "/warning.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/warning.svg"))),
+                    concat!("characters/", $character, "/error.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/error.svg"))),
+                    concat!("characters/", $character, "/sleeping.svg") => Some(include_bytes!(concat!("../assets/characters/", $character, "/sleeping.svg"))),
+                )+
+                _ => None,
+            }
+        }
+
+        fn character_asset_paths() -> Vec<SharedString> {
+            vec![
+                $(
+                    SharedString::from(concat!("characters/", $character, "/idle.png")),
+                    SharedString::from(concat!("characters/", $character, "/idle.svg")),
+                    SharedString::from(concat!("characters/", $character, "/listening.svg")),
+                    SharedString::from(concat!("characters/", $character, "/thinking.svg")),
+                    SharedString::from(concat!("characters/", $character, "/success.svg")),
+                    SharedString::from(concat!("characters/", $character, "/warning.svg")),
+                    SharedString::from(concat!("characters/", $character, "/error.svg")),
+                    SharedString::from(concat!("characters/", $character, "/sleeping.svg")),
+                )+
+            ]
+        }
+    };
+}
+
+character_assets!("clippy", "shelly", "spark", "byte", "orbit", "nox");
+
 /// In-process asset source that ships a small set of images embedded in the
 /// binary (see `assets/images/`). GPUI's `svg()` element requires an
 /// `AssetSource` to resolve `.path("images/…")`.
@@ -295,6 +337,9 @@ impl AssetSource for Assets {
             "images/logo-google.svg" => include_bytes!("../assets/images/logo-google.svg"),
             "images/logo-1clicpro.svg" => include_bytes!("../assets/images/logo-1clicpro.svg"),
             _ => {
+                if let Some(bytes) = character_bytes(path) {
+                    return Ok(Some(Cow::Borrowed(bytes)));
+                }
                 if let Some(bytes) = simple_bytes(path) {
                     return Ok(Some(Cow::Borrowed(bytes)));
                 }
@@ -357,6 +402,7 @@ impl AssetSource for Assets {
             SharedString::from("images/logo-google.svg"),
             SharedString::from("images/logo-1clicpro.svg"),
         ];
+        paths.extend(character_asset_paths());
         paths.extend(simple_asset_paths());
         paths.extend(lucide_asset_paths());
         Ok(paths)
@@ -404,8 +450,9 @@ impl WorkspaceSlot {
 struct CompanionRuntime {
     main_window: gpui::AnyWindowHandle,
     ai_companion: gpui::Entity<AiCompanionController>,
+    desktop_character: gpui::Entity<DesktopCharacterRuntime>,
     tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
-    companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
+    companion_config_tx: tokio::sync::mpsc::UnboundedSender<(CompanionConfig, ClippyConfig)>,
     ai_dock_window: Option<gpui::WindowHandle<AiDockView>>,
     command_palette_window: Option<gpui::WindowHandle<CommandPaletteWindowView>>,
 }
@@ -448,12 +495,14 @@ impl CompanionRoot {
         config: AppConfig,
         workspace_slot: WorkspaceSlot,
         tray_state_tx: Option<tokio::sync::mpsc::UnboundedSender<tray::TrayState>>,
-        companion_config_tx: tokio::sync::mpsc::UnboundedSender<CompanionConfig>,
+        companion_config_tx: tokio::sync::mpsc::UnboundedSender<(CompanionConfig, ClippyConfig)>,
         shortcut_state: Rc<RefCell<GlobalShortcutRegistrationState>>,
         main_window: gpui::AnyWindowHandle,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let ai_companion = cx.new(|cx| AiCompanionController::new(config.ai.clone(), cx));
+        let ai_companion =
+            cx.new(|cx| AiCompanionController::new(config.ai.clone(), config.clippy.clone(), cx));
+        let desktop_character = cx.new(|_cx| DesktopCharacterRuntime::new(config.clippy.clone()));
         let ai_companion_sub = cx.subscribe(
             &ai_companion,
             |this, _controller, event: &AiCompanionEvent, cx| {
@@ -465,6 +514,7 @@ impl CompanionRoot {
             runtime: CompanionRuntime {
                 main_window,
                 ai_companion,
+                desktop_character,
                 tray_state_tx,
                 companion_config_tx,
                 ai_dock_window: None,
@@ -546,15 +596,19 @@ impl CompanionRoot {
         let ai_dock_assistant = controller.assistant();
         let ai_tasks = controller.tasks();
         let ai_companion_config = controller.shared_config();
+        let clippy_companion_config = controller.shared_clippy_config();
         let workspace = cx.new(|cx| {
             Workspace::new(
                 cx,
                 config,
                 connections,
                 store,
-                ai_dock_assistant,
-                ai_tasks,
-                ai_companion_config,
+                WorkspaceAiBindings {
+                    assistant: ai_dock_assistant,
+                    tasks: ai_tasks,
+                    config: ai_companion_config,
+                    clippy_config: clippy_companion_config,
+                },
             )
         });
 
@@ -571,8 +625,8 @@ impl CompanionRoot {
 
         let companion_config_tx = self.runtime.companion_config_tx.clone();
         workspace.update(cx, |ws, _cx| {
-            ws.set_companion_config_publisher(Box::new(move |config| {
-                if companion_config_tx.send(config).is_err() {
+            ws.set_companion_config_publisher(Box::new(move |companion, clippy| {
+                if companion_config_tx.send((companion, clippy)).is_err() {
                     tracing::debug!("companion config dropped during shutdown");
                 }
             }));
@@ -678,7 +732,29 @@ fn dispatch_tray_command(
         }
         TrayCommand::ToggleAiDock => toggle_ai_dock(root, window, cx),
         TrayCommand::OpenAiTasks => show_ai_task_center(root, window, cx),
+        TrayCommand::OpenClippy => show_clippy(root, window, cx),
         TrayCommand::OpenPalette => toggle_companion_command_palette(root, window, cx),
+        TrayCommand::ChooseCharacter => {
+            if let Err(error) = window.update(cx, |_, window, cx| {
+                if let Some(root) = root.upgrade() {
+                    let workspace = root.update(cx, |root, cx| root.ensure_workspace(window, cx));
+                    workspace.update(cx, |workspace, cx| workspace.open_companion_settings(cx));
+                    window.show_window();
+                    window.activate_window();
+                }
+            }) {
+                tracing::warn!(error = %error, "tray could not open character settings");
+            }
+        }
+        TrayCommand::PauseCharacter => {
+            route_desktop_character_command(root, window, CompanionRuntimeCommand::Pause, cx)
+        }
+        TrayCommand::ReturnCharacterToCorner => route_desktop_character_command(
+            root,
+            window,
+            CompanionRuntimeCommand::ReturnToCorner,
+            cx,
+        ),
         TrayCommand::ConnectPinned(id) => {
             if let Err(error) = window.update(cx, |_, window, cx| {
                 if let Some(root) = root.upgrade() {
@@ -702,11 +778,32 @@ fn dispatch_tray_command(
     }
 }
 
+fn route_desktop_character_command(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    command: CompanionRuntimeCommand,
+    cx: &mut gpui::App,
+) {
+    let Some(root) = root.upgrade() else {
+        return;
+    };
+    let desktop_character = root.read(cx).runtime.desktop_character.clone();
+    let runtime_entity = desktop_character.clone();
+    desktop_character.update(cx, |runtime, cx| {
+        runtime.handle_command(runtime_entity.clone(), command, main_window, cx);
+        let diagnostics = runtime.diagnostics();
+        if let Some(reason) = &diagnostics.reason {
+            tracing::info!(?diagnostics.tier, %reason, "desktop character command handled with limitation");
+        }
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AiDockRequest {
     Toggle,
     Show,
     ShowTasks,
+    ShowClippy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,9 +816,11 @@ enum AiDockWindowAction {
 fn ai_dock_window_action(visible: Option<bool>, request: AiDockRequest) -> AiDockWindowAction {
     match (visible, request) {
         (None, _) => AiDockWindowAction::Create,
-        (Some(false), _) | (Some(true), AiDockRequest::Show | AiDockRequest::ShowTasks) => {
-            AiDockWindowAction::Show
-        }
+        (Some(false), _)
+        | (
+            Some(true),
+            AiDockRequest::Show | AiDockRequest::ShowTasks | AiDockRequest::ShowClippy,
+        ) => AiDockWindowAction::Show,
         (Some(true), AiDockRequest::Toggle) => AiDockWindowAction::Hide,
     }
 }
@@ -924,19 +1023,6 @@ struct CompanionDisplay {
 }
 
 #[cfg(target_os = "linux")]
-fn is_x11_session() -> bool {
-    std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("x11"))
-        || (std::env::var_os("XDG_SESSION_TYPE").is_none()
-            && std::env::var_os("DISPLAY").is_some()
-            && std::env::var_os("WAYLAND_DISPLAY").is_none())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn is_x11_session() -> bool {
-    false
-}
-
-#[cfg(target_os = "linux")]
 fn parse_xrandr_monitor_geometry(
     geometry: &str,
     scale_factor: f32,
@@ -995,12 +1081,10 @@ fn x11_monitor_bounds(scale_factor: f32) -> Vec<gpui::Bounds<gpui::Pixels>> {
 fn parse_x11_workarea(properties: &str, scale_factor: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
     let desktop = properties
         .lines()
-        .find(|line| line.starts_with("_NET_CURRENT_DESKTOP"))?
-        .split_once('=')?
-        .1
-        .trim()
-        .parse::<usize>()
-        .ok()?;
+        .find(|line| line.starts_with("_NET_CURRENT_DESKTOP"))
+        .and_then(|line| line.split_once('='))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
     let values = properties
         .lines()
         .find(|line| line.starts_with("_NET_WORKAREA"))?
@@ -1168,6 +1252,14 @@ fn show_ai_task_center(
     open_ai_dock(root, main_window, AiDockRequest::ShowTasks, cx);
 }
 
+fn show_clippy(
+    root: gpui::WeakEntity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) {
+    open_ai_dock(root, main_window, AiDockRequest::ShowClippy, cx);
+}
+
 fn open_ai_dock(
     root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
@@ -1206,10 +1298,14 @@ fn open_ai_dock(
                         window.remove_window();
                         return (true, true);
                     }
-                    ai_companion.update(cx, |controller, cx| {
-                        if request == AiDockRequest::ShowTasks {
+                    ai_companion.update(cx, |controller, cx| match request {
+                        AiDockRequest::ShowTasks => {
                             controller.prepare_task_center(cx);
-                        } else {
+                        }
+                        AiDockRequest::ShowClippy => {
+                            controller.prepare_clippy(cx);
+                        }
+                        AiDockRequest::Toggle | AiDockRequest::Show => {
                             controller.refresh(cx);
                         }
                     });
@@ -1241,12 +1337,10 @@ fn open_ai_dock(
         }
     }
 
-    let assistant = ai_companion.update(cx, |controller, cx| {
-        if request == AiDockRequest::ShowTasks {
-            controller.prepare_task_center(cx)
-        } else {
-            controller.prepare(cx)
-        }
+    let assistant = ai_companion.update(cx, |controller, cx| match request {
+        AiDockRequest::ShowTasks => controller.prepare_task_center(cx),
+        AiDockRequest::ShowClippy => controller.prepare_clippy(cx),
+        AiDockRequest::Toggle | AiDockRequest::Show => controller.prepare(cx),
     });
     let bounds = ai_dock_bounds(display.bounds);
     let options = WindowOptions {
@@ -1558,7 +1652,7 @@ fn main() -> Result<()> {
         initial_global_shortcut_state.sync(&config.companion, cx);
         let global_shortcut_state = Rc::new(RefCell::new(initial_global_shortcut_state));
         let (companion_config_tx, companion_config_rx) =
-            tokio::sync::mpsc::unbounded_channel::<CompanionConfig>();
+            tokio::sync::mpsc::unbounded_channel::<(CompanionConfig, ClippyConfig)>();
 
         // Open main window
         let mut window_options = WindowOptions {
@@ -1639,6 +1733,25 @@ fn main() -> Result<()> {
                     root.ensure_workspace(window, cx);
                 });
             }
+            root.update(cx, |root, cx| {
+                let desktop_character = root.runtime.desktop_character.clone();
+                let runtime_entity = desktop_character.clone();
+                desktop_character.update(cx, |runtime, cx| {
+                    runtime.apply_config(
+                        runtime_entity.clone(),
+                        config.clippy.clone(),
+                        main_window,
+                        cx,
+                    );
+                    if let Some(reason) = &runtime.diagnostics().reason {
+                        tracing::info!(
+                            tier = ?runtime.diagnostics().tier,
+                            %reason,
+                            "desktop character startup capability limitation"
+                        );
+                    }
+                });
+            });
 
             // Route tray menu clicks through the lightweight root. Commands
             // that need application state initialize the Workspace once.
@@ -1724,10 +1837,33 @@ fn main() -> Result<()> {
                 let mut companion_config_rx = companion_config_rx;
                 let shortcut_workspace_slot = workspace_slot.clone();
                 let global_shortcut_state = global_shortcut_state.clone();
+                let root_handle = root.downgrade();
+                let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    while let Some(config) = companion_config_rx.recv().await {
+                    while let Some((companion, clippy)) = companion_config_rx.recv().await {
+                        let root_handle = root_handle.clone();
                         if let Err(error) = cx.update(|cx| {
-                            global_shortcut_state.borrow_mut().sync(&config, cx);
+                            global_shortcut_state.borrow_mut().sync(&companion, cx);
+                            if let Some(root) = root_handle.upgrade() {
+                                let desktop_character =
+                                    root.read(cx).runtime.desktop_character.clone();
+                                let runtime_entity = desktop_character.clone();
+                                desktop_character.update(cx, |runtime, cx| {
+                                    runtime.apply_config(
+                                        runtime_entity.clone(),
+                                        clippy.clone(),
+                                        window_handle,
+                                        cx,
+                                    );
+                                    if let Some(reason) = &runtime.diagnostics().reason {
+                                        tracing::info!(
+                                            tier = ?runtime.diagnostics().tier,
+                                            %reason,
+                                            "desktop character capability limitation"
+                                        );
+                                    }
+                                });
+                            }
                             if let Some(workspace) = shortcut_workspace_slot.upgrade() {
                                 let statuses = global_shortcut_state.borrow().statuses();
                                 workspace.update(cx, |workspace, cx| {
@@ -2004,10 +2140,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, command_palette_bounds,
-        command_palette_global_shortcut, companion_main_window_visible, companion_pointer,
-        merge_workspace_connections, workspace_created_at_boot, AiDockRequest, AiDockWindowAction,
-        Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
+        ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, character_asset_paths,
+        command_palette_bounds, command_palette_global_shortcut, companion_main_window_visible,
+        companion_pointer, merge_workspace_connections, workspace_created_at_boot, AiDockRequest,
+        AiDockWindowAction, Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
         GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
         COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
@@ -2105,6 +2241,26 @@ mod tests {
         assert!(companion_main_window_visible(false, true));
         assert!(companion_main_window_visible(true, false));
         assert!(!companion_main_window_visible(true, true));
+    }
+
+    // SDTEST-1493
+    #[test]
+    fn every_authored_character_state_is_embedded_in_the_binary_asset_source() {
+        let assets = Assets;
+        let paths = character_asset_paths();
+        let listed = assets.list("").expect("character asset list");
+
+        assert_eq!(paths.len(), 48);
+        for path in paths {
+            assert!(listed.contains(&path), "asset list omitted {path}");
+            assert!(
+                assets
+                    .load(path.as_ref())
+                    .expect("embedded character asset load")
+                    .is_some(),
+                "asset bytes omitted {path}"
+            );
+        }
     }
 
     // SDTEST-1391
@@ -2325,6 +2481,13 @@ mod tests {
 
         assert_eq!(usable.origin, gpui::point(gpui::px(1920.0), gpui::px(32.0)));
         assert_eq!(usable.size, gpui::size(gpui::px(1920.0), gpui::px(1048.0)));
+
+        let missing_current_desktop =
+            "_NET_CURRENT_DESKTOP:  not found.\n_NET_WORKAREA(CARDINAL) = 0, 32, 3840, 1048\n";
+        assert_eq!(
+            parse_x11_workarea(missing_current_desktop, 1.0),
+            Some(workarea)
+        );
     }
 
     #[test]

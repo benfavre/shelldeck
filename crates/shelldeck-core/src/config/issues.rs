@@ -810,7 +810,7 @@ mod tests {
                 let resp = format!(
                     "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
-                    out.as_bytes().len(),
+                    out.len(),
                     out
                 );
                 let _ = stream.write_all(resp.as_bytes());
@@ -987,7 +987,7 @@ mod tests {
     fn attachment_limit_keeps_multipart_below_bext_request_cap() {
         const BEXT_REQUEST_CAP: usize = 10 * 1024 * 1024;
         const MULTIPART_HEADROOM: usize = 1024 * 1024;
-        assert!(ISSUE_ATTACHMENT_MAX_BYTES + MULTIPART_HEADROOM <= BEXT_REQUEST_CAP);
+        const { assert!(ISSUE_ATTACHMENT_MAX_BYTES + MULTIPART_HEADROOM <= BEXT_REQUEST_CAP) };
     }
 
     #[test]

@@ -313,20 +313,13 @@ fn auth_url(base_url: &str) -> String {
 }
 
 /// Best-effort device name for the auth check-in / connect flow.
+///
+/// Delegates to [`crate::util::hostname`] so macOS (`gethostname`) and Windows
+/// (`%COMPUTERNAME%`) devices register under their real name in Manage instead
+/// of the `"ShellDeck"` fallback the old `$HOSTNAME` → `/etc/hostname` chain
+/// produced there.
 pub fn device_name() -> String {
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        let h = h.trim();
-        if !h.is_empty() {
-            return h.to_string();
-        }
-    }
-    if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
-        let h = h.trim();
-        if !h.is_empty() {
-            return h.to_string();
-        }
-    }
-    "ShellDeck".to_string()
+    crate::util::hostname()
 }
 
 /// Password sign-in. Returns the account-bound bearer token and identity.

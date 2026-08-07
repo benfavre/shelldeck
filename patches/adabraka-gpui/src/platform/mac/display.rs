@@ -1,4 +1,4 @@
-use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, px, size};
+use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, size};
 use anyhow::Result;
 use cocoa::{
     appkit::NSScreen,
@@ -16,6 +16,56 @@ pub(crate) struct MacDisplay(pub(crate) CGDirectDisplayID);
 unsafe impl Send for MacDisplay {}
 
 impl MacDisplay {
+    fn screen(&self) -> Option<id> {
+        unsafe {
+            let screens = NSScreen::screens(nil);
+            let count: usize = msg_send![screens, count];
+            let screen_number_key: id = NSString::alloc(nil).init_str("NSScreenNumber");
+            for index in 0..count {
+                let screen = cocoa::foundation::NSArray::objectAtIndex(screens, index as u64);
+                let device_description = NSScreen::deviceDescription(screen);
+                let screen_number = device_description.objectForKey_(screen_number_key);
+                let screen_number: CGDirectDisplayID = msg_send![screen_number, unsignedIntegerValue];
+                if screen_number == self.0 {
+                    return Some(screen);
+                }
+            }
+            None
+        }
+    }
+
+    // ShellDeck patch: retain CoreGraphics global origins for desktop companion routing.
+    pub(crate) fn global_bounds(&self) -> Bounds<Pixels> {
+        unsafe {
+            let bounds = CGDisplayBounds(self.0);
+            Bounds {
+                origin: crate::point(px(bounds.origin.x as f32), px(bounds.origin.y as f32)),
+                size: size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            }
+        }
+    }
+
+    // ShellDeck patch: expose AppKit's true visible work area in GPUI's global top-left coordinates.
+    pub(crate) fn global_work_area(&self) -> Bounds<Pixels> {
+        unsafe {
+            let Some(screen) = self.screen() else {
+                return self.global_bounds();
+            };
+            let visible_frame = NSScreen::visibleFrame(screen);
+            let primary_frame = NSScreen::frame(NSScreen::screens(nil).objectAtIndex(0));
+            Bounds {
+                origin: point(
+                    px(visible_frame.origin.x as f32),
+                    px((primary_frame.size.height - visible_frame.origin.y - visible_frame.size.height) as f32),
+                ),
+                size: size(
+                    px(visible_frame.size.width as f32),
+                    px(visible_frame.size.height as f32),
+                ),
+            }
+        }
+    }
+
     /// Get the screen with the given [`DisplayId`].
     pub fn find_by_id(id: DisplayId) -> Option<Self> {
         Self::all().find(|screen| screen.id() == id)
@@ -60,6 +110,20 @@ impl MacDisplay {
             } else {
                 panic!("Failed to get active display list. Result: {result}");
             }
+        }
+    }
+
+    // ShellDeck patch: expose NSScreen.visibleFrame as the per-display usable work area.
+    fn work_area(&self) -> Bounds<Pixels> {
+        self.global_work_area()
+    }
+
+    // ShellDeck patch: report the backing scale for display metrics.
+    fn scale_factor(&self) -> f32 {
+        unsafe {
+            self.screen()
+                .map(|screen| msg_send![screen, backingScaleFactor])
+                .unwrap_or(1.0)
         }
     }
 }

@@ -23,6 +23,10 @@ pub fn render_ai_action_dialog(
         AiActionKind::SupportSend => (t!("ai.action.kind.support").to_string(), "send"),
         AiActionKind::JeanDispatch => (t!("ai.action.kind.jean").to_string(), "bot"),
         AiActionKind::FleetDispatch => (t!("ai.action.kind.fleet").to_string(), "server"),
+        AiActionKind::ClippyReplaceSelection => (
+            t!("ai.action.kind.clippy_replace").to_string(),
+            "clipboard-paste",
+        ),
     };
     let (risk_label, risk_color) = match plan.risk {
         AiActionRisk::Low => (
@@ -51,6 +55,10 @@ pub fn render_ai_action_dialog(
             t!("ai.action.issue", id = issue_id).as_ref(),
             t!("ai.action.instance", id = instance_id).as_ref()
         ),
+        AiActionPayload::ClippyReplaceSelection {
+            expected_selection,
+            replacement,
+        } => format!("{}\n\n{}", expected_selection.text, replacement),
     };
     let confirm_label = match plan.kind {
         AiActionKind::SupportSend => t!("ai.action.confirm_send").to_string(),
