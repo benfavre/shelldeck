@@ -448,7 +448,12 @@ impl<T: Clone + 'static> Render for Select<T> {
                                 .items_center()
                                 .justify_center()
                                 .child(
-                                    Icon::new(if open { "arrow-up" } else { "arrow-down" })
+                                    // ShellDeck patch: SDPATCH-029 — a chevron,
+                                    // not a full arrow. An arrow reads as "move
+                                    // / sort"; every picker in the app (theme,
+                                    // account, site, model, priority) uses a
+                                    // chevron for "this opens".
+                                    Icon::new(if open { "chevron-up" } else { "chevron-down" })
                                         .size(px(14.0))
                                         .color(theme.tokens.muted_foreground),
                                 )

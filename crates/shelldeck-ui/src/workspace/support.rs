@@ -233,6 +233,13 @@ impl Workspace {
             SupportViewEvent::IssueDispatch { id, instance_id } => {
                 self.prepare_fleet_dispatch(id, instance_id, cx)
             }
+            // `ai.*` belongs to Settings — same route as the assistant and the
+            // request sheet, so the three cannot drift.
+            SupportViewEvent::SelectAiBackend(backend) => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_ai_backend(backend, cx);
+                });
+            }
             SupportViewEvent::IssueGithubPush(id) => {
                 self.issue_staff_action(cx, move |b, t| issues::github_push(&b, &t, &id))
             }

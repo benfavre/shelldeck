@@ -553,6 +553,56 @@ code.ref {
 .old-chip.w { background: color-mix(in srgb, var(--p-warning) 22%, transparent); color: var(--p-text); }
 .old-chip.e { background: color-mix(in srgb, var(--p-error) 20%, transparent); color: var(--p-text); }
 
+/* Les deux puces de contexte sont des SÉLECTEURS, pas des étiquettes : même
+   forme que les puces de l'assistant, avec un chevron. Le sélecteur de site
+   n'est PAS un Select bordé de 186 px — à cette largeur, lui plus quatre
+   badges de priorité débordaient la rangée sur deux lignes. */
+.pick.picker { cursor: pointer; }
+.pick.picker:hover { background: var(--p-selected); }
+/* le menu, peint AU-DESSUS du cadre : il sort du conteneur et de son
+   overflow, sinon le filet titre/corps lui passe dessus */
+.pick-wrap { position: relative; }
+.pick-menu {
+  position: absolute; top: 28px; left: 0; z-index: 20; width: 168px; padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--p-surface); border: 1px solid var(--p-border); border-radius: 9px;
+  box-shadow: 0 10px 26px -12px rgba(0,0,0,.5);
+}
+.pick-menu .opt {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+  font-size: 11.5px;
+}
+.pick-menu .opt:hover { background: var(--p-hover); }
+.pick-menu .opt.on { background: var(--p-selected); }
+/* les badges de priorité gardent leurs couleurs sémantiques — mais AUCUN
+   n'est en opacity réduite : c'est ce qui rendait « Basse » illisible */
+.pbadge {
+  height: 21px; padding: 0 9px; border-radius: 999px; font-size: 11px;
+  display: inline-flex; align-items: center; flex: 0 0 auto;
+}
+.pbadge.low { background: transparent; border: 1px solid var(--p-border); color: var(--p-text); }
+.pbadge.normal { background: var(--p-surface); color: var(--p-text); }
+.pbadge.high { background: color-mix(in srgb, var(--p-warning) 30%, transparent); color: var(--p-text); }
+.pbadge.urgent { background: color-mix(in srgb, var(--p-error) 26%, transparent); color: var(--p-text); }
+
+/* Menu de site : plus large que celui de priorité (les libellés sont longs)
+   mais toujours une LISTE compacte, pas un Select bordé qui occupe la moitié
+   de la rangée quand il est fermé. */
+.pick-menu.site { width: 246px; }
+.pick-menu .msearch {
+  display: flex; align-items: center; gap: 7px; padding: 6px 8px; margin-bottom: 3px;
+  border: 1px solid var(--p-border); border-radius: 7px;
+  font-size: 11.5px; color: var(--p-muted);
+}
+.pick-menu .msearch svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.pick-menu .opt .sub {
+  display: block; font-size: 10px; color: var(--p-muted); margin-top: 1px;
+}
+.pick-menu .opt .lbl { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-menu .opt.site-opt { display: flex; align-items: flex-start; gap: 8px; }
+.pick-menu .opt.site-opt svg { width: 13px; height: 13px; flex: 0 0 auto; margin-top: 2px; }
+.pick-menu .opt.site-opt > div { min-width: 0; flex: 1 1 auto; }
+
 /* la refonte : titre + corps dans le même conteneur */
 .req-title { padding: 11px 12px 9px; font-size: 15px; font-weight: 600; }
 .req-title.ph { color: var(--p-muted); font-weight: 500; }
@@ -1271,10 +1321,18 @@ code.ref {
             <div style="padding:16px 14px">
               <div class="composer focused">
                 <div class="ctx-row">
-                  <span class="pick"><svg><use href="#i-server"/></svg>Aucun site précis
+                  <span class="pick picker"><svg><use href="#i-server"/></svg>Aucun site précis
                     <svg class="cv"><use href="#i-chev-down"/></svg></span>
-                  <span class="pick"><span class="prio n"></span>Normale
-                    <svg class="cv"><use href="#i-chev-down"/></svg></span>
+                  <span class="pick-wrap">
+                    <span class="pick picker"><span class="pbadge normal">Normale</span>
+                      <svg class="cv"><use href="#i-chev-down"/></svg></span>
+                    <span class="pick-menu">
+                      <span class="opt"><span class="pbadge low">Basse</span></span>
+                      <span class="opt on"><span class="pbadge normal">Normale</span></span>
+                      <span class="opt"><span class="pbadge high">Haute</span></span>
+                      <span class="opt"><span class="pbadge urgent">Urgente</span></span>
+                    </span>
+                  </span>
                 </div>
                 <div class="req-title ph">Titre de la demande</div>
                 <div class="req-sep"></div>
@@ -1282,6 +1340,50 @@ code.ref {
                 <div class="foot">
                   <button class="foot-btn" type="button" aria-label="Joindre une image"><svg><use href="#i-plus"/></svg></button>
                   <button class="foot-btn" type="button" aria-label="Préparer avec l'IA"><svg><use href="#i-sparkles"/></svg></button>
+                  <span class="spacer"></span>
+                  <button class="foot-btn primary-btn" type="button">Créer</button>
+                </div>
+              </div>
+              <div class="under"><span>Aucune image · PNG, JPEG, WebP · 9 Mo max</span></div>
+            </div>
+          </div>
+        </div>
+      <figure class="slot">
+        <figcaption><span class="tag">Refonte · site</span>
+          <span class="cap">Le même geste pour l'autre puce&nbsp;: une liste compacte, pas un champ bordé permanent.</span></figcaption>
+        <div class="dock" style="width:480px;height:420px">
+          <div class="dk-head">
+            <div class="dk-title">Nouvelle demande</div>
+            <button class="ico-btn" type="button" aria-label="Fermer"><svg><use href="#i-x"/></svg></button>
+          </div>
+          <div class="dk-body">
+            <div style="padding:16px 14px">
+              <div class="composer focused">
+                <div class="ctx-row">
+                  <span class="pick-wrap">
+                    <span class="pick picker"><svg><use href="#i-server"/></svg>Aucun site précis
+                      <svg class="cv"><use href="#i-chev-down"/></svg></span>
+                    <span class="pick-menu site">
+                      <span class="msearch"><svg><use href="#i-search"/></svg>Rechercher un site…</span>
+                      <span class="opt site-opt on"><svg><use href="#i-server"/></svg>
+                        <div><span class="lbl">Aucun site précis</span></div></span>
+                      <span class="opt site-opt"><svg><use href="#i-server"/></svg>
+                        <div><span class="lbl">ACTIV Communication</span><span class="sub">activ-com.fr</span></div></span>
+                      <span class="opt site-opt"><svg><use href="#i-server"/></svg>
+                        <div><span class="lbl">PAILLARD Mobilier</span><span class="sub">paillard-mobilier.fr</span></div></span>
+                      <span class="opt site-opt"><svg><use href="#i-server"/></svg>
+                        <div><span class="lbl">WatchMe</span><span class="sub">watchme.video</span></div></span>
+                    </span>
+                  </span>
+                  <span class="pick picker"><span class="pbadge normal">Normale</span>
+                    <svg class="cv"><use href="#i-chev-down"/></svg></span>
+                </div>
+                <div class="req-title ph">Titre de la demande</div>
+                <div class="req-sep"></div>
+                <div class="req-body ph">Décris ce qui ne va pas, ou ce que tu veux obtenir</div>
+                <div class="foot">
+                  <button class="foot-btn" type="button" aria-label="Joindre une image"><svg><use href="#i-plus"/></svg></button>
+                  <button class="foot-btn" type="button" aria-label="Proposer un titre"><svg><use href="#i-sparkles"/></svg></button>
                   <span class="spacer"></span>
                   <button class="foot-btn primary-btn" type="button">Créer</button>
                 </div>
@@ -1299,14 +1401,27 @@ code.ref {
         <p>Fichier, Coller, Capturer une zone et Depuis une URL deviennent le menu du <b>+</b>. Le
         compteur et le format descendent sous le cadre, où ils ne coûtent plus une rangée.</p></div></li>
       <li class="row"><span class="num">B</span>
-        <div><h3>Une seule entrée IA</h3>
-        <p>Le bandeau « Préparer avec l'IA » et le bouton « Nommer » faisaient deux portes vers la même
-        pièce. Il en reste une, dans le pied&nbsp;: <i>Préparer la demande</i> / <i>Proposer un titre</i>.</p></div></li>
+        <div><h3>Deux entrées IA, mais qui ne pèsent plus pareil</h3>
+        <p><i>Correction d'une erreur de cette maquette&nbsp;:</i> j'y avais écrit que le bandeau
+        « Préparer avec l'IA » et le bouton « Nommer » étaient deux portes vers la même pièce. C'est
+        faux — le bandeau rédige <b>toute la demande</b> depuis une consigne, l'autre ne propose qu'un
+        <b>titre</b>. Les deux restent.</p>
+        <p style="margin-top:7px">Ce qui change, c'est leur poids&nbsp;: « Nommer » était un bouton de
+        formulaire aussi lourd que « Créer », collé au titre. Il devient l'icône ✦ du pied, au même
+        rang que les autres outils du composer.</p></div></li>
       <li class="row"><span class="num">C</span>
         <div><h3>Site et priorité sont du contexte, pas des étapes</h3>
         <p>Ils décrivent la demande, pas son contenu&nbsp;: ils rejoignent la rangée de contexte, au même
-        endroit que les puces de l'assistant. La priorité garde ses couleurs sémantiques mais perd son
-        <code class="ref">opacity(0.55)</code>, qui rendait « Basse » illisible.</p></div></li>
+        endroit que les puces de l'assistant.</p>
+        <p style="margin-top:7px"><b>Deux puces, pas six.</b> La priorité est <i>un</i> sélecteur —
+        le menu est montré ouvert ci-dessus pour lever l'ambiguïté. Quatre badges alignés plus un
+        sélecteur de site large débordent la rangée sur deux lignes, et l'
+        <code class="ref">opacity(0.55)</code> des badges non retenus rendait « Basse » illisible.
+        Aucun badge du menu n'est atténué.</p>
+        <p style="margin-top:7px"><b>Le menu se peint au-dessus du cadre.</b> Posé en enfant normal
+        de la rangée, il passe sous le filet titre/corps et sous le
+        <code class="ref">overflow_hidden</code> du conteneur — il lui faut une couche différée
+        (<code class="ref">deferred(anchored())</code>), comme le kebab de la sidebar.</p></div></li>
       <li class="row"><span class="num">D</span>
         <div><h3>« Créer » reste un bouton nommé</h3>
         <p>Seule divergence assumée avec l'assistant&nbsp;: envoyer un message et valider un formulaire ne

@@ -280,6 +280,9 @@ pub enum SupportViewEvent {
         id: String,
         instance_id: String,
     },
+    /// The reply composer's provider chip. Support does not own `ai.*`, so the
+    /// Workspace persists it through Settings like every other surface.
+    SelectAiBackend(shelldeck_core::ai::AiBackend),
     IssueGithubPush(String),
     IssueGithubRefresh(String),
     /// Soft-delete a request (staff only — confirmed via a dialog first).
@@ -339,6 +342,11 @@ pub struct SupportView {
     compose_note: bool,
     ai_reply_enabled: bool,
     ai_issue_enabled: bool,
+    /// Which backend answers here. Support only knew *whether* AI was on, not
+    /// *which* one — so the reply composer had no way to show or change it.
+    ai_backend: shelldeck_core::ai::AiBackend,
+    ai_model: String,
+    ai_backend_menu: bool,
     loading: bool,
     error: Option<String>,
     assign_menu_open: bool,
@@ -447,6 +455,9 @@ impl SupportView {
             compose_note: false,
             ai_reply_enabled: false,
             ai_issue_enabled: false,
+            ai_backend: shelldeck_core::ai::AiBackend::Disabled,
+            ai_model: String::new(),
+            ai_backend_menu: false,
             loading: false,
             error: None,
             assign_menu_open: false,
@@ -927,6 +938,20 @@ impl SupportView {
 
     pub fn selected_id(&self) -> Option<String> {
         self.selected_id.clone()
+    }
+
+    pub fn set_ai_backend(
+        &mut self,
+        backend: shelldeck_core::ai::AiBackend,
+        model: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_backend != backend || self.ai_model != model {
+            self.ai_backend = backend;
+            self.ai_model = model;
+            self.ai_backend_menu = false;
+            cx.notify();
+        }
     }
 
     pub fn set_ai_reply_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {

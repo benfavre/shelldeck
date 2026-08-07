@@ -43,7 +43,12 @@ pub enum ComposerCommit {
 #[derive(IntoElement)]
 pub struct Composer {
     id: SharedString,
-    state: Entity<InputState>,
+    /// The built-in field. `None` when the caller supplies its own — the
+    /// Support surfaces write with an `Editor`, not an `Input`, and what this
+    /// component contributes is the frame and the slots, not the field type.
+    state: Option<Entity<InputState>>,
+    custom_field: Option<AnyElement>,
+    custom_focus: Option<FocusHandle>,
     placeholder: SharedString,
     min_rows: usize,
     max_rows: Option<usize>,
@@ -71,9 +76,36 @@ pub struct Composer {
 
 impl Composer {
     pub fn new(id: impl Into<SharedString>, state: &Entity<InputState>) -> Self {
+        Self::build(id.into(), Some(state.clone()), None, None)
+    }
+
+    /// Same frame and slots, but the caller renders the field. `focus_handle`
+    /// is what makes the frame light up, since the component can no longer ask
+    /// the field itself.
+    pub fn with_field(
+        id: impl Into<SharedString>,
+        focus_handle: FocusHandle,
+        field: impl IntoElement,
+    ) -> Self {
+        Self::build(
+            id.into(),
+            None,
+            Some(field.into_any_element()),
+            Some(focus_handle),
+        )
+    }
+
+    fn build(
+        id: SharedString,
+        state: Option<Entity<InputState>>,
+        custom_field: Option<AnyElement>,
+        custom_focus: Option<FocusHandle>,
+    ) -> Self {
         Self {
-            id: id.into(),
-            state: state.clone(),
+            id,
+            state,
+            custom_field,
+            custom_focus,
             placeholder: SharedString::default(),
             min_rows: 2,
             max_rows: Some(10),
@@ -153,31 +185,44 @@ impl Composer {
         self
     }
 
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.state.read(cx).focus_handle(cx)
+    fn focus_handle(&self, cx: &App) -> Option<FocusHandle> {
+        self.custom_focus
+            .clone()
+            .or_else(|| self.state.as_ref().map(|state| state.read(cx).focus_handle(cx)))
     }
 }
 
 impl RenderOnce for Composer {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = use_theme();
-        let focused = self.focus_handle(cx).is_focused(window) && !self.disabled;
+        let focused = self
+            .focus_handle(cx)
+            .is_some_and(|handle| handle.is_focused(window))
+            && !self.disabled;
 
         let commit_ready = self.commit_enabled && !self.disabled;
-        let field = Input::new(&self.state)
-            .variant(InputVariant::Bare)
-            .multi_line(true)
-            .min_rows(self.min_rows)
-            .placeholder(self.placeholder.clone())
-            .disabled(self.disabled);
-        let field = match self.max_rows {
-            Some(rows) => field.max_rows(rows),
-            None => field,
-        };
-        // Enter commits through the very same closure as the button.
-        let field = match (commit_ready, self.on_commit.clone()) {
-            (true, Some(handler)) => field.on_enter(move |_value, cx| handler(cx)),
-            _ => field,
+        let field: AnyElement = match (self.custom_field, self.state.as_ref()) {
+            (Some(custom), _) => custom,
+            (None, Some(state)) => {
+                let field = Input::new(state)
+                    .variant(InputVariant::Bare)
+                    .multi_line(true)
+                    .min_rows(self.min_rows)
+                    .placeholder(self.placeholder.clone())
+                    .disabled(self.disabled);
+                let field = match self.max_rows {
+                    Some(rows) => field.max_rows(rows),
+                    None => field,
+                };
+                // Enter commits through the very same closure as the button.
+                match (commit_ready, self.on_commit.clone()) {
+                    (true, Some(handler)) => {
+                        field.on_enter(move |_value, cx| handler(cx)).into_any_element()
+                    }
+                    _ => field.into_any_element(),
+                }
+            }
+            (None, None) => div().into_any_element(),
         };
 
         let has_footer =

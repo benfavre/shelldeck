@@ -1,4 +1,7 @@
 use super::*;
+use adabraka_ui::components::input::InputVariant;
+use adabraka_ui::prelude::{Composer, ComposerCommit};
+use shelldeck_core::ai::AiBackend;
 
 impl Workspace {
     /// Return a label that always carries a visible Unicode ellipsis when it
@@ -649,43 +652,504 @@ impl Workspace {
         )
     }
 
-    pub(super) fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let priorities = ["low", "normal", "high", "urgent"];
-        let mut prio_row = div().flex().items_center().gap(px(6.0));
-        for p in priorities {
-            let active = self.issue_new_priority == p;
-            // Colored adabraka Badge picks up the severity mapping; the
-            // wrapper div carries the click-target + a soft ring on the
-            // selected option so the picker still reads as a choice, not a
-            // read-only tag.
-            let mut chip = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "iss-np-sheet-{p}"
-                ))))
-                .p(px(2.0))
-                .rounded_full()
+    /// The AI provider chip, as a picker. Shared by the request sheet's AI
+    /// panel header and by that panel's composer footer: the panel *moves* it
+    /// when it expands. Collapsed, the header is the only place to show which
+    /// backend will run; expanded, it belongs in the composer footer with the
+    /// other settings — exactly where the assistant puts it.
+    pub(super) fn render_ai_backend_picker(
+        &self,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.issue_ai_backend_menu;
+        let mut wrap = div().relative().flex().flex_shrink_0().child(
+            div()
+                .id("iss-ai-backend")
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .rounded(px(6.0))
                 .cursor_pointer()
-                .child(priority_badge(p))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.issue_new_priority = p.to_string();
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                .child(ai_provider_badge(self.app_config.ai.backend, model))
+                .child(
+                    svg()
+                        .path(lucide_path(if open {
+                            "chevron-up"
+                        } else {
+                            "chevron-down"
+                        }))
+                        .size(px(12.0))
+                        .flex_shrink_0()
+                        .mr(px(2.0))
+                        .text_color(ShellDeckColors::text_muted()),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.issue_ai_backend_menu = !this.issue_ai_backend_menu;
                     cx.notify();
-                }));
-            if active {
-                chip = chip.border_2().border_color(ShellDeckColors::primary());
-            } else {
-                chip = chip
-                    .border_2()
-                    .border_color(gpui::transparent_black())
-                    .opacity(0.55);
+                })),
+        );
+        if open {
+            let current = self.app_config.ai.backend;
+            let mut list = div()
+                .id("iss-ai-backend-menu")
+                .w(px(208.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .bg(ShellDeckColors::bg_surface())
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .rounded(px(9.0))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    |_e, _window, cx: &mut App| cx.stop_propagation(),
+                );
+            for (index, (backend, label)) in [
+                (AiBackend::ClaudeCli, "Claude Code CLI"),
+                (AiBackend::CodexCli, "Codex CLI"),
+                (AiBackend::AiderCli, "Aider CLI"),
+                (AiBackend::OpenAi, "OpenAI API"),
+                (AiBackend::Anthropic, "Anthropic API"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let selected = backend == current;
+                list = list.child(
+                    div()
+                        .id(("iss-ai-backend-opt", index))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(9.0))
+                        .py(px(7.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .when(selected, |el| {
+                            el.bg(ShellDeckColors::selected_bg())
+                        })
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        // The provider marks, same as on the closed chip:
+                        // recognising the Claude or OpenAI logo is faster than
+                        // reading five near-identical CLI names.
+                        .child(match backend {
+                            AiBackend::ClaudeCli => {
+                                simple_icon("claudecode", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            AiBackend::CodexCli | AiBackend::OpenAi => {
+                                simple_icon("openai", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            AiBackend::Anthropic => {
+                                simple_icon("anthropic", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            _ => lucide_icon("terminal", 14.0, ShellDeckColors::text_primary())
+                                .into_any_element(),
+                        })
+                        .child(div().flex_1().min_w(px(0.0)).child(label))
+                        .when(selected, |el| {
+                            el.child(lucide_icon(
+                                "check",
+                                13.0,
+                                ShellDeckColors::primary(),
+                            ))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.issue_ai_backend_menu = false;
+                            // Routed through Settings: it
+                            // owns `ai.*`.
+                            this.settings.update(cx, |settings, cx| {
+                                settings.set_ai_backend(backend, cx);
+                            });
+                            cx.notify();
+                        })),
+                );
             }
-            prio_row = prio_row.child(chip);
+            wrap = wrap.child(
+                deferred(
+                    anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Local)
+                        // The chip's left edge, like the site and priority
+                        // pickers. A hardcoded −140 was tuned for the header
+                        // and stayed wrong once the chip moved to the footer.
+                        // 36, not 28: `ai_provider_badge` is a 30px badge,
+                        // where the site and priority chips are 24px pills. The
+                        // drop is chip height + 6, per surface — a shared
+                        // constant here would touch one of the two.
+                        .position(point(gpui::px(0.0), gpui::px(36.0)))
+                        .snap_to_window_with_margin(gpui::px(8.0))
+                        .anchor(gpui::Corner::TopLeft)
+                        .child(list),
+                )
+                .with_priority(3),
+            );
+        }
+        wrap
+    }
+
+    pub(super) fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // One chip, not four. Four badges plus a 186px site select overflowed
+        // the context row onto a second line, and the unselected ones carried
+        // `opacity(0.55)` — which made "Basse" unreadable on a light theme.
+        // Hand-rolled, by exception. adabraka's `Select` derives its dropdown
+        // width from its trigger, so a chip-sized trigger gives a chip-sized
+        // menu with the site names clipped — and the popover needs to be wider
+        // than the chip. `.agents/ui-components.md` asks for the reason to be
+        // spelled out next to the divergence; this is it. The two pickers in
+        // this row are therefore built from the same custom parts, which also
+        // guarantees they stay identical.
+        let site_label = self
+            .issue_new_site_id
+            .as_deref()
+            .and_then(|id| {
+                self.site_directory
+                    .as_ref()
+                    .and_then(|directory| {
+                        directory.sites.iter().find(|site| site.site_id == id)
+                    })
+                    .map(|site| site.display_label())
+            })
+            .unwrap_or_else(|| t!("user.requests.site_none").to_string());
+        let site_button = div()
+            .id("iss-np-site")
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .flex_shrink_0()
+            .h(px(24.0))
+            .max_w(px(200.0))
+            .px(px(8.0))
+            .rounded(px(6.0))
+            .bg(ShellDeckColors::bg_surface())
+            .text_size(px(11.0))
+            .text_color(ShellDeckColors::text_primary())
+            .cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::selected_bg()))
+            .child(
+                svg()
+                    .path(lucide_path("globe"))
+                    .size(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .child(div().min_w(px(0.0)).truncate().child(site_label))
+            .child(
+                svg()
+                    .path(lucide_path(if self.issue_site_menu {
+                        "chevron-up"
+                    } else {
+                        "chevron-down"
+                    }))
+                    .size(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.issue_site_menu = if this.issue_site_menu {
+                    false
+                } else {
+                    // One picker at a time.
+                    this.issue_priority_menu = false;
+                    true
+                };
+                cx.notify();
+            }));
+
+        // The popover hangs off a plain wrapper, never off the chip: the chip
+        // is a 24px-high flex row, and an anchored child inside it is measured
+        // as one of its flex items instead of from the row's origin.
+        let mut site_chip = div().relative().flex().flex_shrink_0().child(site_button);
+
+        // Same skin as the compact site Select beside it — 24px pill, muted
+        // fill, 11px label, chevron. The two chips do the same job (open a
+        // picker) so they must look the same; a `Badge` inside a chip made one
+        // a pill-in-a-pill and the other a plain badge with a loose chevron.
+        // The severity colour survives as the leading dot; the menu still shows
+        // the full coloured badges.
+        let priority_dot = match self.issue_new_priority.as_str() {
+            "urgent" => ShellDeckColors::error(),
+            "high" => ShellDeckColors::warning(),
+            "low" => ShellDeckColors::text_muted(),
+            _ => ShellDeckColors::primary(),
+        };
+        let priority_chip = div()
+            .id("iss-np-priority")
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .flex_shrink_0()
+            .h(px(24.0))
+            .px(px(8.0))
+            .rounded(px(6.0))
+            .bg(ShellDeckColors::bg_surface())
+            .text_size(px(11.0))
+            .text_color(ShellDeckColors::text_primary())
+            .cursor_pointer()
+            .hover(|style| style.bg(ShellDeckColors::selected_bg()))
+            .child(
+                div()
+                    .w(px(7.0))
+                    .h(px(7.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(priority_dot),
+            )
+            .child(crate::support_view::priority_label(&self.issue_new_priority))
+            .child(
+                svg()
+                    .path(lucide_path(if self.issue_priority_menu {
+                        "chevron-up"
+                    } else {
+                        "chevron-down"
+                    }))
+                    .size(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.issue_priority_menu = if this.issue_priority_menu {
+                    false
+                } else {
+                    this.issue_site_menu = false;
+                    true
+                };
+                cx.notify();
+            }));
+
+        let mut prio_row = div().relative().flex().flex_shrink_0().child(priority_chip);
+
+        if self.issue_site_menu {
+            let query = self.issue_site_search.read(cx).content().to_lowercase();
+            let query = query.trim().to_string();
+            let selected_id = self.issue_new_site_id.clone();
+            let mut rows = div()
+                .id("iss-np-site-rows")
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .max_h(px(260.0))
+                .overflow_y_scroll();
+
+            let none_selected = selected_id.is_none();
+            rows = rows.child(
+                div()
+                    .id("iss-np-site-none")
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .text_size(px(12.0))
+                    .when(none_selected, |el| el.bg(ShellDeckColors::selected_bg()))
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .child(
+                        svg()
+                            .path(lucide_path("globe"))
+                            .size(px(13.0))
+                            .flex_shrink_0()
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
+                    .child(t!("user.requests.site_none").to_string())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.issue_new_site_id = None;
+                        this.issue_site_menu = false;
+                        cx.notify();
+                    })),
+            );
+
+            let sites: Vec<ManagedSiteInfo> = self
+                .site_directory
+                .as_ref()
+                .map(|directory| directory.sites.clone())
+                .unwrap_or_default();
+            let mut matches: Vec<ManagedSiteInfo> = sites
+                .into_iter()
+                .filter(|site| {
+                    query.is_empty()
+                        || site.display_label().to_lowercase().contains(&query)
+                        || site.host.to_lowercase().contains(&query)
+                        || site.tenant_name.to_lowercase().contains(&query)
+                })
+                .collect();
+            matches.sort_by_key(|site| site.display_label().to_lowercase());
+            // Capped: 167 sites in one popover is a scroll marathon, and the
+            // search field above is the way through. The count says so.
+            let total = matches.len();
+            for (index, site) in matches.into_iter().take(40).enumerate() {
+                let id = site.site_id.clone();
+                let selected = selected_id.as_deref() == Some(id.as_str());
+                let host = site.host.trim().to_string();
+                rows = rows.child(
+                    div()
+                        .id(("iss-np-site-opt", index))
+                        .flex()
+                        .items_start()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .child(
+                            svg()
+                                .path(lucide_path("globe"))
+                                .size(px(13.0))
+                                .flex_shrink_0()
+                                .mt(px(2.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.0))
+                                        .text_color(ShellDeckColors::text_primary())
+                                        .child(site.display_label()),
+                                )
+                                .when(!host.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(10.0))
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .child(host.clone()),
+                                    )
+                                }),
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.issue_new_site_id = Some(id.clone());
+                            this.issue_site_menu = false;
+                            cx.notify();
+                        })),
+                );
+            }
+
+            let mut panel = div()
+                .id("iss-np-site-menu")
+                .w(px(264.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .bg(ShellDeckColors::bg_surface())
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .rounded(px(9.0))
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    div().px(px(2.0)).pt(px(2.0)).child(
+                        Input::new(&self.issue_site_search)
+                            .size(InputSize::Sm)
+                            .placeholder(t!("user.requests.site_placeholder").to_string()),
+                    ),
+                )
+                .child(rows);
+            if total > 40 {
+                panel = panel.child(
+                    div()
+                        .px(px(8.0))
+                        .py(px(5.0))
+                        .text_size(px(10.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("user.requests.site_more", count = total - 40).to_string()),
+                );
+            }
+
+            // Anchored on the CHIP, not on the pointer. `Local` mode measures
+            // from this element's own layout position, so the panel lines up
+            // with the chip's left edge no matter where inside it you clicked —
+            // anchoring on `event.position()` made it slide sideways.
+            // `deferred` keeps it above the frame and out of its clip.
+            site_chip = site_chip.child(
+                deferred(
+                    anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Local)
+                        // Chip height (24) + 6. The gap is the same 6px for
+                        // every picker in this sheet; only the chip height
+                        // differs, so only that part of the sum changes.
+                        .position(point(gpui::px(0.0), gpui::px(30.0)))
+                        .anchor(gpui::Corner::TopLeft)
+                        .child(panel),
+                )
+                .with_priority(3),
+            );
         }
 
-        // Real Input widgets — cursor, selection, undo, Enter to submit.
-        // Sm size (32px h / 8px padx / 13px font) matches the compact look
-        // the fake-input divs used before the migration.
+        if self.issue_priority_menu {
+            let current = self.issue_new_priority.clone();
+            let mut list = div()
+                .id("iss-np-priority-menu")
+                .w(px(168.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .bg(ShellDeckColors::bg_surface())
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .rounded(px(9.0))
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation();
+                });
+            for p in ["low", "normal", "high", "urgent"] {
+                let selected = current == p;
+                list = list.child(
+                    div()
+                        .id(ElementId::from(SharedString::from(format!("iss-np-opt-{p}"))))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .child(priority_badge(p))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.issue_new_priority = p.to_string();
+                            this.issue_priority_menu = false;
+                            cx.notify();
+                        })),
+                );
+            }
+            prio_row = prio_row.child(
+                deferred(
+                    anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Local)
+                        // Chip height (24) + 6. The gap is the same 6px for
+                        // every picker in this sheet; only the chip height
+                        // differs, so only that part of the sum changes.
+                        .position(point(gpui::px(0.0), gpui::px(30.0)))
+                        .anchor(gpui::Corner::TopLeft)
+                        .child(list),
+                )
+                .with_priority(3),
+            );
+        }
+
+
+        // Title and body share one frame, like a mail composer: the `Composer`
+        // owns the border and the focus ring, so both fields are `Bare`.
         let title_input = Input::new(&self.issue_title_state)
-            .size(InputSize::Sm)
+            .variant(InputVariant::Bare)
+            // Lg = 16px against the body's 13px: the title must read as the
+            // headline of the request, not as another field.
+            .size(InputSize::Lg)
             .placeholder(t!("user.requests.title_placeholder").to_string())
             .on_enter({
                 let entity = cx.entity();
@@ -693,11 +1157,6 @@ impl Workspace {
                     entity.update(cx, |ws, cx| ws.submit_new_request(cx));
                 }
             });
-        let body_input = Input::new(&self.issue_body_state)
-            .size(InputSize::Sm)
-            .placeholder(t!("user.requests.body_placeholder").to_string())
-            .multi_line(true)
-            .min_rows(4);
 
         let ai_enabled = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Issue);
         let mut inner = div().flex().flex_col().gap(px(10.0)).on_action(cx.listener(
@@ -746,7 +1205,15 @@ impl Workspace {
                         .items_center()
                         .gap(px(6.0))
                         .flex_shrink_0()
-                        .child(ai_provider_badge(self.app_config.ai.backend, &model))
+                        // Collapsed, this is a read-only badge: the whole
+                        // header row is the collapsible's trigger, so a
+                        // clickable picker inside it would fight the toggle for
+                        // the same click. It only becomes a picker once the
+                        // panel is open — and then it lives in the composer
+                        // footer below, never in two places at once.
+                        .when(!expanded, |row| {
+                            row.child(ai_provider_badge(self.app_config.ai.backend, &model))
+                        })
                         .child(
                             svg()
                                 .path(lucide_path("chevron-down"))
@@ -769,35 +1236,29 @@ impl Workspace {
                 .px(px(10.0))
                 .pb(px(10.0))
                 .child(
-                    div()
-                        .flex()
-                        .items_end()
-                        .gap(px(8.0))
-                        .child(
-                            div().flex_1().min_w(px(0.0)).child(
-                                Input::new(&self.issue_ai_prompt_state)
-                                    .size(InputSize::Sm)
-                                    .multi_line(true)
-                                    .min_rows(2)
-                                    .max_rows(4)
-                                    .placeholder(t!("user.requests.ai.placeholder").to_string())
-                                    .disabled(self.issue_ai_loading),
-                            ),
-                        )
-                        .child(
-                            Button::new(
-                                "user-request-ai-generate",
-                                t!("user.requests.ai.generate").to_string(),
-                            )
-                            .variant(ButtonVariant::Ai)
-                            .size(ButtonSize::Sm)
-                            .min_w(px(104.0))
-                            .disabled(self.issue_ai_loading)
-                            .icon(IconSource::from("sparkles"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.generate_new_request_with_ai(cx);
-                            })),
-                        ),
+                    // The fifth surface on the shared composer. It used to be
+                    // the old shape — a bordered `Input` with a labelled button
+                    // beside it — sitting directly above the composer it was
+                    // supposed to feed, which made the panel read as a
+                    // different kind of field.
+                    //
+                    // Round arrow, not a named button: this sends a prompt, it
+                    // does not commit the form. "Créer" below is the commit.
+                    Composer::new("user-request-ai-composer", &self.issue_ai_prompt_state)
+                        .placeholder(t!("user.requests.ai.placeholder").to_string())
+                        .min_rows(2)
+                        .max_rows(5)
+                        .disabled(self.issue_ai_loading)
+                        .commit_enabled(!self.issue_ai_loading)
+                        .option(self.render_ai_backend_picker(&model, cx))
+                        .on_commit({
+                            let entity = cx.entity();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.generate_new_request_with_ai(cx);
+                                });
+                            }
+                        }),
                 );
             if self.issue_ai_loading {
                 content = content.child(
@@ -835,6 +1296,9 @@ impl Workspace {
                 .on_toggle(move |open, _, cx| {
                     entity.update(cx, |workspace, cx| {
                         workspace.issue_ai_expanded = open;
+                        // Collapsing hides the picker; leaving its flag set
+                        // would reopen the panel with the menu already down.
+                        workspace.issue_ai_backend_menu = false;
                         cx.notify();
                     });
                 })
@@ -848,74 +1312,106 @@ impl Workspace {
             inner = inner.child(ai_block);
         }
 
-        inner = inner
-            .child(
+        // Everything below used to be six stacked rows: a site label + select,
+        // a title row with its own AI button, a body box, three rows of
+        // attachment controls, and a footer pairing the priority chips with
+        // Create. It is one object now — the same `Composer` the assistant
+        // uses, with site and priority as context chips and the title in the
+        // frame above the body.
+        let ai_naming =
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let attachments_open =
+            self.issue_attachments_open || !self.issue_new_attachments.is_empty();
+        let attachment_count = self.issue_new_attachments.len();
+
+        let mut composer = Composer::new("user-new-request-composer", &self.issue_body_state)
+            .placeholder(t!("user.requests.body_placeholder").to_string())
+            .min_rows(5)
+            .max_rows(14)
+            .commit(ComposerCommit::Labeled(
+                t!("user.requests.create").to_string().into(),
+            ))
+            // Site and priority describe the request, not its wording: they
+            // belong in the context row, where the assistant puts its own.
+            .context(site_chip)
+            .context(prio_row)
+            // Title and body inside one frame, separated by a hairline.
+            .lead(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(5.0))
+                    .child(div().px(px(2.0)).pt(px(4.0)).child(title_input))
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("user.requests.site_label").to_string()),
-                    )
-                    .child(self.issue_site_select.clone()),
+                            .h(px(1.0))
+                            .mx(px(12.0))
+                            .bg(ShellDeckColors::border()),
+                    ),
             )
-            .child(
+            .action(
+                Button::new("iss-attach", "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("plus"))
+                    .tooltip(t!("user.requests.attachments.title").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.issue_attachments_open = !this.issue_attachments_open;
+                        cx.notify();
+                    })),
+            )
+            .on_commit({
+                let entity = cx.entity();
+                move |cx| {
+                    entity.update(cx, |this, cx| this.submit_new_request(cx));
+                }
+            })
+            .footnote(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
-                    .child(div().flex_1().min_w(px(0.0)).child(title_input))
-                    .when(
-                        self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming),
-                        |row| {
-                            row.child(
-                                Button::new("request-ai-name", t!("ai.naming.action").to_string())
-                                    .variant(ButtonVariant::Ai)
-                                    .size(ButtonSize::Sm)
-                                    .icon(IconSource::from("sparkles"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_ai_workflow(
-                                            AiWorkflowTarget::EntityNaming {
-                                                kind: AiNamingKind::Issue,
-                                                target_id: "new-request".to_string(),
-                                            },
-                                            cx,
-                                        );
-                                    })),
-                            )
-                        },
-                    ),
-            )
-            .child(body_input)
-            .child(self.render_issue_attachment_picker(IssueAttachmentTarget::NewRequest, cx))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .mt(px(4.0))
-                    .child(prio_row)
-                    .child(
-                        div()
-                            .id("iss-create")
-                            .px(px(14.0))
-                            .py(px(8.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary())
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .child(t!("user.requests.create").to_string())
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_new_request(cx);
-                            })),
-                    ),
+                    .gap(px(6.0))
+                    .child(if attachment_count == 0 {
+                        t!("user.requests.attachments.none").to_string()
+                    } else {
+                        t!("user.requests.attachments.count", count = attachment_count).to_string()
+                    }),
             );
+        if ai_naming {
+            composer = composer.action(
+                Button::new("request-ai-name", "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("sparkles"))
+                    .tooltip(t!("ai.naming.action").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_ai_workflow(
+                            AiWorkflowTarget::EntityNaming {
+                                kind: AiNamingKind::Issue,
+                                target_id: "new-request".to_string(),
+                            },
+                            cx,
+                        );
+                    })),
+            );
+        }
+
+        inner = inner.child(composer);
+
+        // Site picker popover — mounted at sheet level like the priority one,
+        // and wider than its chip so the site names are readable.
+
+        // Mounted here, not inside the composer's context row. Nested there it
+        // was trapped under the frame's `overflow_hidden`, and the oversized
+        // backdrop I had wrapped it in threw off `snap_to_window_with_margin`,
+        // which decided there was no room below and flipped the menu above the
+        // chip. This is the same shape as the titlebar account popover: a
+        // full-panel dismiss layer plus a `deferred(anchored())` menu.
+        // Unfolded on demand — or on its own once something is attached, so a
+        // pasted image never lands somewhere invisible.
+        if attachments_open {
+            inner = inner
+                .child(self.render_issue_attachment_picker(IssueAttachmentTarget::NewRequest, cx));
+        }
 
         self.render_user_sheet(
             "user-new-request-sheet",

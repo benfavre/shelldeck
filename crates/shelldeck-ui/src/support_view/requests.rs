@@ -1,4 +1,6 @@
 use super::*;
+use adabraka_ui::prelude::Composer;
+use crate::icons::{ai_provider_inline, simple_icon};
 
 impl SupportView {
     pub(super) fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -34,6 +36,7 @@ impl SupportView {
                     })),
             );
 
+        let entity = cx.entity();
         // Simple filter bar — mirrors `render_filters` (tickets) exactly:
         // a search row (input + IconButton "filter" + optional count badge)
         // followed by a chips row (`compact_filter_button` with `selected`).
@@ -53,8 +56,7 @@ impl SupportView {
                         .placeholder(t!("support.issues.search").to_string())
                         .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
                         .on_enter({
-                            let entity = cx.entity();
-                            move |value, cx| {
+                                                move |value, cx| {
                                 let q = value.to_string();
                                 entity.update(cx, |this, cx| {
                                     this.issues_filter.q = q;
@@ -232,13 +234,26 @@ impl SupportView {
             meta.push_str(&format!(" · GH #{}", g.number));
         }
 
+        // The title gets the whole first line. It used to share it with the
+        // tag icon, a filled status badge, a filled priority badge and the
+        // date — roughly 200 of the column's 340px — so a title like
+        // `<@U0BETU0RUMS…` was cut before it had said anything.
+        //
+        // Status moves down to the metadata line as a coloured dot plus its
+        // word, which costs a fraction of a filled pill; priority only shows
+        // when it is not the default, because "Normale" on every row is noise.
+        let status_dot = match iss.status.as_str() {
+            "done" | "closed" => ShellDeckColors::success(),
+            "in_progress" | "triaging" => ShellDeckColors::warning(),
+            "blocked" => ShellDeckColors::error(),
+            _ => ShellDeckColors::primary(),
+        };
         row = row
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(lucide_icon("tag", 12.0, ShellDeckColors::text_muted()))
                     .child(
                         div()
                             .flex_1()
@@ -254,17 +269,6 @@ impl SupportView {
                             .text_color(ShellDeckColors::text_primary())
                             .child(title),
                     )
-                    .child(issue_status_badge(&iss.status))
-                    .child(priority_badge(&iss.priority))
-                    .when(!when.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(10.0))
-                                .text_color(ShellDeckColors::text_muted())
-                                .child(when),
-                        )
-                    })
                     // Per-row kebab. Hand-rolled (matches sidebar's
                     // per-connection kebab) because adabraka `IconButton`
                     // derives its element id from the icon name and would
@@ -308,9 +312,37 @@ impl SupportView {
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(10.5))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(meta),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .rounded_full()
+                                    .bg(status_dot),
+                            )
+                            .child(issue_status_label(&iss.status)),
+                    )
+                    .when(iss.priority != "normal" && !iss.priority.trim().is_empty(), |el| {
+                        el.child(div().flex_shrink_0().child(priority_badge(&iss.priority)))
+                    })
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(meta))
+                    .when(!when.is_empty(), |el| {
+                        el.child(div().flex_shrink_0().child(when.clone()))
+                    }),
             );
         row
     }
@@ -367,7 +399,7 @@ impl SupportView {
             (!self.account_name_lc.is_empty() && a == self.account_name_lc)
                 || (!self.account_email_lc.is_empty() && a == self.account_email_lc)
         };
-        let (bg, align_end, label, icon) = if is_note {
+        let (bg, align_end, label) = if is_note {
             (
                 ShellDeckColors::warning().opacity(0.12),
                 false,
@@ -376,7 +408,6 @@ impl SupportView {
                 } else {
                     c.kind.clone()
                 },
-                "info",
             )
         } else if author_matches_me {
             (
@@ -387,7 +418,6 @@ impl SupportView {
                 } else {
                     c.author.clone()
                 },
-                "reply",
             )
         } else {
             (
@@ -398,39 +428,43 @@ impl SupportView {
                 } else {
                     c.author.clone()
                 },
-                "user",
             )
         };
+        // Per the mockup: a reply is prose on the surface, not a card with a
+        // framed author tag. The name in semibold and the time in muted text
+        // carry the same information the border and the label did — and the
+        // thread stops looking like a list of forms.
+        //
+        // System notes keep a tint, because they are genuinely a different kind
+        // of thing; a human reply does not need one.
         let bubble = div()
             .max_w(px(560.0))
-            .rounded(px(8.0))
-            .bg(bg)
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .px(px(10.0))
-            .py(px(7.0))
             .flex()
             .flex_col()
             .gap(px(3.0))
+            .when(is_note, |el| {
+                el.rounded(px(8.0))
+                    .bg(bg)
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .border_1()
+                    .border_color(ShellDeckColors::warning().opacity(0.35))
+            })
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(10.0))
+                    .items_baseline()
+                    .gap(px(7.0))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(lucide_icon(icon, 11.0, ShellDeckColors::text_muted()))
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(label),
-                            ),
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if author_matches_me {
+                                ShellDeckColors::primary()
+                            } else {
+                                ShellDeckColors::text_primary()
+                            })
+                            .child(label),
                     )
                     .child(
                         div()
@@ -1513,13 +1547,77 @@ impl SupportView {
         };
 
         let assignee = assignee_display(&iss.assignee, None);
+        // The badges ARE the triggers. The status and priority pickers already
+        // existed — buried in the kebab, two clicks away (⋮ → Statut → choose).
+        // The thing you want to change is right there on screen; making it the
+        // button is the whole point of the mockup's `[• À traiter ⌄]`.
+        // Non-staff still get plain badges: no chevron, no click.
+        let staff = self.issues_staff;
         let mut meta_row = div()
             .flex()
             .items_center()
             .flex_wrap()
             .gap(px(8.0))
-            .child(issue_status_badge(&iss.status))
-            .child(priority_badge(&iss.priority))
+            .child(
+                div()
+                    .id("iss-detail-status")
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .rounded(px(6.0))
+                    .when(staff, |el| {
+                        el.cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    })
+                    .child(issue_status_badge(&iss.status))
+                    .when(staff, |el| {
+                        el.child(
+                            svg()
+                                .path(lucide_path("chevron-down"))
+                                .size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if !this.issues_staff {
+                            return;
+                        }
+                        this.issue_status_menu = true;
+                        this.issue_priority_menu_open = false;
+                        this.issue_dispatch_menu = false;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("iss-detail-priority")
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .rounded(px(6.0))
+                    .when(staff, |el| {
+                        el.cursor_pointer()
+                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    })
+                    .child(priority_badge(&iss.priority))
+                    .when(staff, |el| {
+                        el.child(
+                            svg()
+                                .path(lucide_path("chevron-down"))
+                                .size(px(11.0))
+                                .text_color(ShellDeckColors::text_muted()),
+                        )
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if !this.issues_staff {
+                            return;
+                        }
+                        this.issue_priority_menu_open = true;
+                        this.issue_status_menu = false;
+                        this.issue_dispatch_menu = false;
+                        cx.notify();
+                    })),
+            )
             .child(
                 div()
                     .text_size(px(11.0))
@@ -1633,35 +1731,33 @@ impl SupportView {
             .bg(ShellDeckColors::bg_surface());
 
         if !iss.body.trim().is_empty() {
+            // The opening message is prose, like every reply below it. It used
+            // to be an adabraka `Card` with a framed author tag — which is why
+            // stripping `render_issue_comment` alone left this one boxed: it
+            // never went through that function.
             thread = thread.child(
-                Card::new()
-                    .header(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .w_full()
+                    .max_w(px(560.0))
+                    .min_w(px(0.0))
+                    .child(
                         div()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(10.0))
+                            .items_baseline()
+                            .gap(px(7.0))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .child(lucide_icon(
-                                        "sticky-note",
-                                        11.0,
-                                        ShellDeckColors::text_muted(),
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(px(10.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(if iss.requested_by.trim().is_empty() {
-                                                t!("support.issue.description").to_string()
-                                            } else {
-                                                iss.requested_by.clone()
-                                            }),
-                                    ),
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .child(if iss.requested_by.trim().is_empty() {
+                                        t!("support.issue.description").to_string()
+                                    } else {
+                                        iss.requested_by.clone()
+                                    }),
                             )
                             .child(
                                 div()
@@ -1671,8 +1767,7 @@ impl SupportView {
                                     .child(rel_time(iss.created_at)),
                             ),
                     )
-                    .header_divider(false)
-                    .content({
+                    .child({
                         let mut body = div().flex().flex_col().w_full().min_w(px(0.0));
                         for line in iss.body.split('\n') {
                             let line = if line.is_empty() { " " } else { line };
@@ -1685,10 +1780,7 @@ impl SupportView {
                             );
                         }
                         body
-                    })
-                    .w(px(560.0))
-                    .max_w(relative(1.0))
-                    .flex_shrink_0(),
+                    }),
             );
         } else if iss.comments.is_empty() && iss.attachments.is_empty() {
             thread = thread.child(
@@ -1717,9 +1809,130 @@ impl SupportView {
             .into_any_element()
     }
 
+    /// The provider chip for the reply composer — same slot the assistant gives
+    /// its model, same persistence route (Workspace → Settings).
+    fn render_support_ai_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use shelldeck_core::ai::AiBackend;
+        let open = self.ai_backend_menu;
+        let model = if self.ai_model.trim().is_empty() {
+            self.ai_backend.default_model().to_string()
+        } else {
+            self.ai_model.trim().to_string()
+        };
+        let mut wrap = div().relative().flex().flex_shrink_0().child(
+            div()
+                .id("sup-ai-backend")
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .h(px(26.0))
+                .px(px(6.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::text_muted())
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                .child(ai_provider_inline(self.ai_backend, &model))
+                .child(
+                    svg()
+                        .path(lucide_path(if open { "chevron-up" } else { "chevron-down" }))
+                        .size(px(11.0))
+                        .flex_shrink_0()
+                        .text_color(ShellDeckColors::text_muted()),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.ai_backend_menu = !this.ai_backend_menu;
+                    cx.notify();
+                })),
+        );
+        if open {
+            let current = self.ai_backend;
+            let mut list = div()
+                .id("sup-ai-backend-menu")
+                .w(px(208.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .bg(ShellDeckColors::bg_surface())
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .rounded(px(9.0))
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation()
+                });
+            for (index, (backend, label)) in [
+                (AiBackend::ClaudeCli, "Claude Code CLI"),
+                (AiBackend::CodexCli, "Codex CLI"),
+                (AiBackend::AiderCli, "Aider CLI"),
+                (AiBackend::OpenAi, "OpenAI API"),
+                (AiBackend::Anthropic, "Anthropic API"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let selected = backend == current;
+                list = list.child(
+                    div()
+                        .id(("sup-ai-opt", index))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(9.0))
+                        .py(px(7.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
+                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .child(match backend {
+                            AiBackend::ClaudeCli => {
+                                simple_icon("claudecode", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            AiBackend::CodexCli | AiBackend::OpenAi => {
+                                simple_icon("openai", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            AiBackend::Anthropic => {
+                                simple_icon("anthropic", 14.0, ShellDeckColors::text_primary())
+                                    .into_any_element()
+                            }
+                            _ => lucide_icon("terminal", 14.0, ShellDeckColors::text_primary())
+                                .into_any_element(),
+                        })
+                        .child(div().flex_1().min_w(px(0.0)).child(label))
+                        .when(selected, |el| {
+                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.ai_backend_menu = false;
+                            cx.emit(SupportViewEvent::SelectAiBackend(backend));
+                            cx.notify();
+                        })),
+                );
+            }
+            wrap = wrap.child(
+                deferred(
+                    anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Local)
+                        // Upward, explicitly: this composer sits at the bottom
+                        // of the panel, so there is never room below. Letting
+                        // `snap_to_window` flip it produced a menu that landed
+                        // back on top of its own chip, because the +32 drop was
+                        // still applied after the flip.
+                        .position(point(gpui::px(0.0), gpui::px(-6.0)))
+                        .anchor(gpui::Corner::BottomLeft)
+                        .child(list),
+                )
+                .with_priority(3),
+            );
+        }
+        wrap
+    }
+
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = adabraka_ui::theme::use_theme();
-        let entity = cx.entity();
         let issue_id = self.issue_selected.clone();
         div()
             .flex()
@@ -1738,55 +1951,124 @@ impl SupportView {
             }))
             .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
                 let issue_id = issue_id.clone().unwrap_or_default();
-                composer.child(
-                    div().flex().items_center().pb(px(6.0)).child(
-                        Button::new("issue-ai-reply", t!("ai.workflow.issue_reply").to_string())
-                            .variant(ButtonVariant::Ai)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("sparkles"))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
-                            })),
-                    ),
-                )
+                composer.child(div().h(px(0.0)).child(
+                    // Kept as a marker so the `when` arm still has a body; the
+                    // AI action now lives in the composer footer below.
+                    div().id(SharedString::from(format!("issue-ai-anchor-{issue_id}"))),
+                ))
             })
-            .child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .h(px(80.0))
-                    .overflow_hidden()
-                    .child(
-                        Editor::new(&self.composer_state)
-                            .placeholder(t!("support.issue_comment_placeholder").to_string())
-                            .font_family(theme.tokens.font_family.clone())
-                            .min_lines(4)
-                            .max_lines(4)
-                            .show_horizontal_scrollbar(false)
-                            .current_line_color(transparent_black()),
-                    ),
-            )
+            .child({
+                // The shared composer, hosting an `Editor` rather than an
+                // `Input`: Support writes replies, not one-liners. Everything
+                // that used to sit loose around the field — the AI suggestion
+                // above it, the attachment toggle and Send below — is now in the
+                // frame's footer, in the order every other surface uses.
+                let focus = self.composer_state.read(cx).focus_handle(cx);
+                let send_entity = cx.entity();
+                let ai_issue_id = issue_id.clone().unwrap_or_default();
+                let empty = self.composer_state.read(cx).content().trim().is_empty();
+                let mut frame = Composer::with_field(
+                    "sup-issue-composer",
+                    focus,
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        // Two lines, not four: the field grows with what you
+                        // write instead of reserving an empty box.
+                        .h(px(54.0))
+                        // Vertical breathing room. Without it the caret sits
+                        // flush against the frame's top border — the collision
+                        // `.agents/spacing.md` calls blocking.
+                        .pt(px(8.0))
+                        .pb(px(4.0))
+                        .px(px(8.0))
+                        .overflow_hidden()
+                        .child(
+                            // `show_border(false)`: the `Composer` frame owns
+                            // the border and the focus ring. Left on, the editor
+                            // drew a second frame inside the first — the exact
+                            // thing this component exists to prevent.
+                            Editor::new(&self.composer_state)
+                                .placeholder(t!("support.issue_comment_placeholder").to_string())
+                                .font_family(theme.tokens.font_family.clone())
+                                .show_border(false)
+                                .min_lines(2)
+                                .max_lines(2)
+                                .show_horizontal_scrollbar(false)
+                                .current_line_color(transparent_black()),
+                        ),
+                )
+                // Grey while there is nothing to send, like every other
+                // composer in the app.
+                .commit_enabled(!self.attachment_busy && !empty)
+                .action(
+                    // Icon only. A bordered "Images jointes" button next to a
+                    // plain-text AI action made two different kinds of control
+                    // in the same footer row.
+                    Button::new("issue-attachments-toggle", "")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .selected(self.attachment_panel_open)
+                        .tooltip(t!("user.requests.attachments.title").to_string())
+                        .icon(IconSource::from("plus"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.attachment_panel_open = !this.attachment_panel_open;
+                            cx.notify();
+                        })),
+                )
+                .on_commit(move |cx| {
+                    send_entity.update(cx, |this, cx| this.send_composer(cx));
+                })
+                .footnote(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .child(t!("ai.assistant.hint.send").to_string())
+                        .child(t!("ai.assistant.hint.newline").to_string()),
+                );
+                if self.ai_reply_enabled {
+                    // Hand-rolled rather than an adabraka `Button`: `ButtonSize::Sm`
+                    // is a fixed 36px with medium weight, which towered over the
+                    // 26px controls beside it. The footer's own scale is 11.5px
+                    // muted (see `.agents/chrome.md` on adabraka's absolute sizes).
+                    frame = frame.action(
+                        div()
+                            .id("issue-ai-reply")
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .h(px(26.0))
+                            .px(px(6.0))
+                            .rounded(px(7.0))
+                            .cursor_pointer()
+                            .text_size(px(11.5))
+                            .text_color(ShellDeckColors::text_muted())
+                            .hover(|style| {
+                                style
+                                    .bg(ShellDeckColors::hover_bg())
+                                    .text_color(ShellDeckColors::text_primary())
+                            })
+                            .child(
+                                svg()
+                                    .path(lucide_path("sparkles"))
+                                    .size(px(14.0))
+                                    .flex_shrink_0()
+                                    .text_color(ShellDeckColors::text_muted()),
+                            )
+                            .child(t!("ai.workflow.issue_reply").to_string())
+                            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                cx.emit(SupportViewEvent::SuggestIssueReply(ai_issue_id.clone()));
+                            })),
+                    );
+                    // The right-hand slot — where the assistant puts its model —
+                    // holds the provider here too.
+                    frame = frame.option(self.render_support_ai_picker(cx));
+                }
+                frame
+            })
             .when(self.attachment_panel_open, |composer| {
                 composer.child(self.render_attachment_picker(cx))
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(self.render_attachment_toggle("issue-attachments-toggle", cx))
-                    .child(
-                        Button::new("sup-issue-send", t!("support.send").to_string())
-                            .size(ButtonSize::Sm)
-                            .h(gpui::px(32.0))
-                            .icon(IconSource::from("send"))
-                            .disabled(self.attachment_busy)
-                            .on_click({
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| this.send_composer(cx));
-                                }
-                            }),
-                    ),
-            )
     }
 }

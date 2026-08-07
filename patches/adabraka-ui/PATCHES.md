@@ -566,6 +566,23 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet. `InputVariant::Bare` is generic and worth
   upstreaming on its own; `Composer` is closer to ShellDeck's own vocabulary.
 
+### SDPATCH-029 — `Select` opens with a chevron, not an arrow
+
+- **Files / symbols**:
+  - `src/components/select.rs` — `Select::render`
+- **Markers**:
+  - `src/components/select.rs` — `// ShellDeck patch: SDPATCH-029 — a chevron,`
+- **Why**: The closed trigger used `arrow-down` / `arrow-up`. A full arrow reads
+  as "move" or "sort"; every other picker in ShellDeck — theme, account, site,
+  AI model, request priority — uses a chevron to mean "this opens". One glyph
+  for one meaning.
+- **Note**: this entry also briefly carried a `compact` chip-skin flag for the
+  trigger. It was dropped the same day: the composer's site picker needs a
+  popover wider than its trigger, which a `Select` derives from the trigger,
+  so that surface hand-rolls its picker instead (see
+  `workspace/request_views.rs`). The chevron change is unrelated and stays.
+- **Upstream status**: not filed yet — generic.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -648,6 +665,9 @@ carries no marker of its own — see its entry).
   marker count 29 → 30.
 - **2026-07-29** — added SDPATCH-027: Markdown list and table flex children
   now shrink to their constrained parent and wrap instead of being clipped.
+- **2026-08-06** — added SDPATCH-029: `Select` chevron. 1 marker.
+  Marker count 40 → 41. (A `compact` trigger skin was added and removed the
+  same day — see the entry's note.)
 - **2026-08-06** — added SDPATCH-028: `InputVariant::Bare` plus the shared
   `Composer` component. 10 new markers (6 in `input.rs`, 2 in `textarea.rs`,
   1 in `composer.rs`, 1 in `prelude.rs`). Marker count 30 → 40.

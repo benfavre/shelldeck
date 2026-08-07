@@ -1,5 +1,5 @@
 use crate::i18n::rel_time;
-use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
+use crate::icons::{ai_provider_badge, lucide_icon, lucide_path, simple_icon};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -581,6 +581,22 @@ pub struct Workspace {
     issue_attachment_generation: u64,
     issue_ai_prompt_state: Entity<InputState>,
     issue_ai_expanded: bool,
+    /// Whether the attachment picker is unfolded in the new-request sheet. It
+    /// used to occupy three permanent rows for the least-used field; the `+` in
+    /// the composer footer opens it on demand instead.
+    issue_attachments_open: bool,
+    /// Whether the new-request site picker is open. No click position is
+    /// stored: the popover anchors on the chip itself
+    /// (`AnchoredPositionMode::Local`), not on the pointer — anchoring on the
+    /// pointer made the panel slide depending on where inside the chip you hit.
+    issue_site_menu: bool,
+    /// Whether the new-request AI panel's provider picker is open.
+    issue_ai_backend_menu: bool,
+    /// Filter for the site picker's list.
+    issue_site_search: Entity<InputState>,
+    /// Whether the new-request priority picker is open. Anchored on its chip,
+    /// like the site one.
+    issue_priority_menu: bool,
     issue_ai_loading: bool,
     issue_ai_error: Option<String>,
     issue_ai_request_id: u64,
@@ -916,6 +932,7 @@ impl Workspace {
                 ai_backend_ready && app_config.ai.allows(AiSurface::Issue),
                 cx,
             );
+            view.set_ai_backend(app_config.ai.backend, app_config.ai.model.clone(), cx);
         });
         scripts.update(cx, |view, cx| {
             view.set_ai_generation_enabled(
@@ -1224,6 +1241,11 @@ impl Workspace {
             issue_attachment_generation: 0,
             issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_ai_expanded: false,
+            issue_attachments_open: false,
+            issue_site_menu: false,
+            issue_ai_backend_menu: false,
+            issue_site_search: cx.new(InputState::new),
+            issue_priority_menu: false,
             issue_ai_loading: false,
             issue_ai_error: None,
             issue_ai_request_id: 0,
