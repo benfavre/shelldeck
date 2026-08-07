@@ -243,15 +243,18 @@ async fn install_windows(archive: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(&staging)?;
 
-    // Use PowerShell to extract zip
+    // Use PowerShell to extract zip. The paths are interpolated into
+    // single-quoted PowerShell strings, where an embedded quote is escaped by
+    // doubling it — otherwise a `'` in the install path breaks the command
+    // (same escaping as the clipboard capture in issue_attachments.rs).
+    let archive_arg = archive.to_string_lossy().replace('\'', "''");
+    let staging_arg = staging.to_string_lossy().replace('\'', "''");
     let status = tokio::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
             &format!(
-                "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
-                archive.to_string_lossy(),
-                staging.to_string_lossy()
+                "Expand-Archive -Force -Path '{archive_arg}' -DestinationPath '{staging_arg}'"
             ),
         ])
         .status()

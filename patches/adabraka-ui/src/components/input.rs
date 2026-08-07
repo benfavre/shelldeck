@@ -85,6 +85,12 @@ pub enum InputVariant {
     Default,
     Outline,
     Ghost,
+    // ShellDeck patch: SDPATCH-028 — `Ghost` still paints a border, a shadow,
+    // a hover border and a focus ring, so an Input nested inside a container
+    // that already owns those draws a second frame. `Bare` draws none of them
+    // and renders in the UI font rather than `font_mono`, so a composer can
+    // host the field directly and carry the focus ring itself.
+    Bare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -644,6 +650,13 @@ impl RenderOnce for Input {
                     theme.tokens.destructive.opacity(0.3),
                     theme.tokens.foreground,
                 ),
+                // ShellDeck patch: SDPATCH-028 — the host container signals the
+                // error state; the field stays chrome-free even when invalid.
+                InputVariant::Bare => (
+                    gpui::transparent_black(),
+                    gpui::transparent_black(),
+                    theme.tokens.foreground,
+                ),
             }
         } else {
             match self.variant {
@@ -662,8 +675,19 @@ impl RenderOnce for Input {
                     theme.tokens.border.opacity(0.3),
                     theme.tokens.foreground,
                 ),
+                // ShellDeck patch: SDPATCH-028 — no background, no border; the
+                // 1px transparent border is kept so switching variants at
+                // runtime does not shift the layout by a pixel.
+                InputVariant::Bare => (
+                    gpui::transparent_black(),
+                    gpui::transparent_black(),
+                    theme.tokens.foreground,
+                ),
             }
         };
+        // ShellDeck patch: SDPATCH-028 — suppresses every chrome affordance
+        // below (shadow, hover border, focus ring) and the monospace face.
+        let bare = self.variant == InputVariant::Bare;
 
         let has_value = !self.state.read(cx).content.is_empty();
         let show_clear = self.clearable && has_value && !self.disabled;
@@ -804,11 +828,20 @@ impl RenderOnce for Input {
                             .when(!self.multi_line, |h| h.items_center())
                             .when(self.multi_line, |h| h.items_start())
                             .text_size(font_size)
-                            .font_family(theme.tokens.font_mono.clone())
+                            // ShellDeck patch: SDPATCH-028 — prose typed into a
+                            // composer is not code; only the chrome-bearing
+                            // variants keep the monospace face.
+                            .font_family(if bare {
+                                theme.tokens.font_family.clone()
+                            } else {
+                                theme.tokens.font_mono.clone()
+                            })
                             .text_color(text_color)
-                            .shadow(smallvec::smallvec![shadow_xs])
+                            // ShellDeck patch: SDPATCH-028 — the host container
+                            // owns shadow, hover and focus ring for `Bare`.
+                            .when(!bare, |h| h.shadow(smallvec::smallvec![shadow_xs]))
                             .when(!self.disabled, |h| h.cursor(gpui::CursorStyle::IBeam))
-                            .when(!self.disabled, |h| {
+                            .when(!self.disabled && !bare, |h| {
                                 h.hover(move |style| {
                                     style.border_color(if self.error {
                                         destructive_color
@@ -817,7 +850,7 @@ impl RenderOnce for Input {
                                     })
                                 })
                             })
-                            .when(is_focused && !self.disabled, |h| {
+                            .when(is_focused && !self.disabled && !bare, |h| {
                                 if self.error {
                                     h.border_color(destructive_color)
                                         .shadow(smallvec::smallvec![error_ring_focused])
@@ -826,7 +859,7 @@ impl RenderOnce for Input {
                                         .shadow(smallvec::smallvec![focus_ring])
                                 }
                             })
-                            .when(self.error && !is_focused, |h| {
+                            .when(self.error && !is_focused && !bare, |h| {
                                 h.shadow(smallvec::smallvec![error_ring_unfocused])
                             })
                             .children(self.prefix)

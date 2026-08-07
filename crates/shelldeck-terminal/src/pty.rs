@@ -1,6 +1,55 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
+/// Resolve the shell a local PTY should spawn.
+///
+/// Priority: the explicit caller/config choice, then the platform's
+/// environment convention, then a platform-correct default. Shared with
+/// `TerminalSession::spawn_local` so shell-flavor detection always matches
+/// the shell that actually runs.
+pub(crate) fn resolve_shell(explicit: Option<&str>) -> String {
+    resolve_shell_from(
+        explicit,
+        cfg!(windows),
+        std::env::var("SHELL").ok().as_deref(),
+        std::env::var("COMSPEC").ok().as_deref(),
+        cfg!(windows) && shelldeck_core::util::executable_on_path("powershell"),
+    )
+}
+
+/// Pure part of [`resolve_shell`], parameterized so both platform branches
+/// are unit-testable from any host OS.
+///
+/// - Unix: `$SHELL`, else `/bin/bash`.
+/// - Windows: PowerShell when it is on `PATH` (the shell the rest of the
+///   repo already targets — `ShellFlavor::PowerShell` command framing, the
+///   updater and attachment helpers all shell out to `powershell`), else
+///   `%COMSPEC%`, else `cmd.exe`. `$SHELL` is deliberately ignored on
+///   Windows: GUI-launched processes never carry it, and when present
+///   (MSYS/git-bash) it names POSIX paths that don't resolve outside that
+///   environment.
+fn resolve_shell_from(
+    explicit: Option<&str>,
+    windows: bool,
+    env_shell: Option<&str>,
+    env_comspec: Option<&str>,
+    has_powershell: bool,
+) -> String {
+    let non_blank =
+        |value: Option<&str>| value.filter(|v| !v.trim().is_empty()).map(str::to_string);
+    if let Some(shell) = non_blank(explicit) {
+        return shell;
+    }
+    if windows {
+        if has_powershell {
+            return "powershell.exe".to_string();
+        }
+        non_blank(env_comspec).unwrap_or_else(|| "cmd.exe".to_string())
+    } else {
+        non_blank(env_shell).unwrap_or_else(|| "/bin/bash".to_string())
+    }
+}
+
 pub struct LocalPty {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -46,13 +95,15 @@ impl LocalPty {
             })
             .map_err(|e| crate::TerminalError::Pty(e.to_string()))?;
 
-        let shell_path = match shell {
-            Some(s) => s.to_string(),
-            None => std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-        };
+        let shell_path = resolve_shell(shell);
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        cmd.cwd(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+        // Start in the user's home directory; fall back to the process cwd
+        // (`.`) when it cannot be determined — never a hardcoded `/`, which
+        // is meaningless on Windows.
+        let home =
+            shelldeck_core::util::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        cmd.cwd(home);
 
         // Set TERM so applications know what terminal features are available.
         cmd.env("TERM", "xterm-256color");
@@ -126,6 +177,105 @@ impl LocalPty {
             .wait()
             .map_err(|e| crate::TerminalError::Pty(e.to_string()))?;
         Ok(status.exit_code())
+    }
+}
+
+#[cfg(test)]
+mod shell_fallback_tests {
+    use super::resolve_shell_from;
+
+    // SDTEST-1579
+    #[test]
+    fn unix_prefers_explicit_then_shell_env_then_bin_bash() {
+        assert_eq!(
+            resolve_shell_from(Some("/bin/zsh"), false, Some("/usr/bin/fish"), None, false),
+            "/bin/zsh"
+        );
+        assert_eq!(
+            resolve_shell_from(None, false, Some("/usr/bin/fish"), None, false),
+            "/usr/bin/fish"
+        );
+        assert_eq!(
+            resolve_shell_from(None, false, Some("   "), None, false),
+            "/bin/bash",
+            "blank $SHELL must fall through to the default"
+        );
+        assert_eq!(
+            resolve_shell_from(None, false, None, None, false),
+            "/bin/bash"
+        );
+        // COMSPEC is Windows-only and must be ignored on Unix even when set.
+        assert_eq!(
+            resolve_shell_from(
+                None,
+                false,
+                None,
+                Some("C:\\Windows\\system32\\cmd.exe"),
+                false
+            ),
+            "/bin/bash"
+        );
+    }
+
+    // SDTEST-1580
+    #[test]
+    fn windows_prefers_explicit_then_powershell_then_comspec_then_cmd() {
+        assert_eq!(
+            resolve_shell_from(
+                Some("pwsh.exe"),
+                true,
+                None,
+                Some("C:\\Windows\\system32\\cmd.exe"),
+                true
+            ),
+            "pwsh.exe",
+            "an explicit shell must win over the PowerShell preference"
+        );
+        assert_eq!(
+            resolve_shell_from(
+                None,
+                true,
+                None,
+                Some("C:\\Windows\\system32\\cmd.exe"),
+                true
+            ),
+            "powershell.exe"
+        );
+        assert_eq!(
+            resolve_shell_from(
+                None,
+                true,
+                None,
+                Some("C:\\Windows\\system32\\cmd.exe"),
+                false
+            ),
+            "C:\\Windows\\system32\\cmd.exe",
+            "without PowerShell on PATH, %COMSPEC% is the shell"
+        );
+        assert_eq!(resolve_shell_from(None, true, None, None, false), "cmd.exe");
+        assert_eq!(
+            resolve_shell_from(None, true, None, Some("   "), false),
+            "cmd.exe",
+            "blank %COMSPEC% must fall through to cmd.exe"
+        );
+        // $SHELL leakage (MSYS/git-bash) must not override the Windows chain.
+        assert_eq!(
+            resolve_shell_from(None, true, Some("/usr/bin/bash"), None, false),
+            "cmd.exe"
+        );
+    }
+
+    // SDTEST-1581
+    #[test]
+    fn blank_explicit_shell_falls_through_to_platform_default() {
+        assert_eq!(
+            resolve_shell_from(Some("  "), false, None, None, false),
+            "/bin/bash"
+        );
+        assert_eq!(
+            resolve_shell_from(Some(""), true, None, None, true),
+            "powershell.exe"
+        );
     }
 }
 

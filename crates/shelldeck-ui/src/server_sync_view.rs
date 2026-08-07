@@ -21,6 +21,55 @@ fn local_machine_label() -> String {
     t!("sync.local_machine").to_string()
 }
 
+/// Breadcrumb model for a panel path: the root navigation target plus one
+/// `(label, nav_path)` per path segment.
+///
+/// Remote panels always speak the *server's* Unix paths, whatever the host OS
+/// — those stay pure string math. Local panels go through `std::path` so
+/// Windows drive letters round-trip (`C:\Users\ben` → `C:\` / `C:\Users` /
+/// `C:\Users\ben`); on Unix the two flavors produce identical output.
+fn breadcrumb_segments(current: &str, is_local: bool) -> (String, Vec<(String, String)>) {
+    if !is_local {
+        let parts: Vec<&str> = current.split('/').filter(|s| !s.is_empty()).collect();
+        let segments = parts
+            .iter()
+            .enumerate()
+            .map(|(i, part)| (part.to_string(), format!("/{}", parts[..=i].join("/"))))
+            .collect();
+        return ("/".to_string(), segments);
+    }
+
+    use std::path::{Component, Path, PathBuf};
+    let mut acc = PathBuf::new();
+    let mut root = String::new();
+    let mut segments = Vec::new();
+    for component in Path::new(current).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                acc.push(component.as_os_str());
+                root = acc.to_string_lossy().into_owned();
+            }
+            Component::Normal(name) => {
+                acc.push(name);
+                segments.push((
+                    name.to_string_lossy().into_owned(),
+                    acc.to_string_lossy().into_owned(),
+                ));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                acc.push("..");
+                segments.push(("..".to_string(), acc.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    if root.is_empty() {
+        // Defensive: a relative path has no root component to navigate to.
+        root = "/".to_string();
+    }
+    (root, segments)
+}
+
 /// Which side of the split view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelSide {
@@ -508,7 +557,11 @@ impl ServerSyncView {
     fn on_connection_picked(&mut self, side: PanelSide, conn_id: Uuid, cx: &mut Context<Self>) {
         let is_local = conn_id == LOCAL_MACHINE_ID;
         let (name, path) = if is_local {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            // home_dir() also honors %USERPROFILE% on Windows; the separator
+            // fallback ("/" on Unix, "\" on Windows) is the drive root.
+            let home = shelldeck_core::util::home_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| std::path::MAIN_SEPARATOR.to_string());
             (local_machine_label(), home)
         } else if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
             (conn.display_name().to_string(), "/".to_string())
@@ -553,7 +606,7 @@ impl ServerSyncView {
     // -----------------------------------------------------------------------
     fn render_breadcrumbs(&self, side: PanelSide, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.panel_state(side);
-        let current = &state.current_path;
+        let (root_nav, segments) = breadcrumb_segments(&state.current_path, state.is_local);
 
         let mut crumbs = div()
             .flex()
@@ -565,7 +618,8 @@ impl ServerSyncView {
             .overflow_hidden()
             .w_full();
 
-        // Root
+        // Root ("/" on Unix and remotes, e.g. "C:\" on a local Windows drive)
+        let root_label = root_nav.clone();
         crumbs = crumbs.child(
             div()
                 .id(ElementId::from(SharedString::from(format!(
@@ -585,20 +639,18 @@ impl ServerSyncView {
                         state.files_loading = true;
                         cx.emit(ServerSyncEvent::ListFiles {
                             connection_id: conn_id,
-                            path: "/".to_string(),
+                            path: root_nav.clone(),
                             panel: side,
                         });
                         cx.notify();
                     }
                 }))
-                .child("/"),
+                .child(root_label),
         );
 
         // Path segments
-        let parts: Vec<&str> = current.split('/').filter(|s| !s.is_empty()).collect();
-        for (i, part) in parts.iter().enumerate() {
-            let nav_path = format!("/{}", parts[..=i].join("/"));
-            let part_string = part.to_string();
+        let last_index = segments.len().saturating_sub(1);
+        for (i, (label, nav_path)) in segments.into_iter().enumerate() {
             crumbs = crumbs
                 .child(
                     div()
@@ -610,15 +662,15 @@ impl ServerSyncView {
                     div()
                         .id(ElementId::from(SharedString::from(format!(
                             "crumb-{}-{}-{:?}",
-                            i, part_string, side
+                            i, label, side
                         ))))
                         .text_size(px(11.0))
                         .cursor_pointer()
-                        .when(i == parts.len() - 1, |el| {
+                        .when(i == last_index, |el| {
                             el.text_color(ShellDeckColors::text_primary())
                                 .font_weight(FontWeight::MEDIUM)
                         })
-                        .when(i < parts.len() - 1, |el| {
+                        .when(i < last_index, |el| {
                             el.text_color(ShellDeckColors::primary())
                                 .hover(|el| el.text_color(ShellDeckColors::text_primary()))
                         })
@@ -637,7 +689,7 @@ impl ServerSyncView {
                                 cx.notify();
                             }
                         }))
-                        .child(part_string),
+                        .child(label),
                 );
         }
 
@@ -757,14 +809,15 @@ impl ServerSyncView {
                 ),
         );
 
-        // Parent directory ".." entry
-        if state.current_path != "/" {
-            let parent_path = {
-                let p = std::path::Path::new(&state.current_path);
-                p.parent()
-                    .map(|pp| pp.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/".to_string())
-            };
+        // Parent directory ".." entry. `Path::parent` slices the original
+        // string, so remote Unix paths keep their separators even when the
+        // host is Windows; a filesystem root ("/", "C:\") has no parent and
+        // renders no ".." row.
+        let parent_nav = std::path::Path::new(&state.current_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.is_empty());
+        if let Some(parent_path) = parent_nav {
             list = list.child(
                 div()
                     .id(ElementId::from(SharedString::from(format!(
@@ -2378,5 +2431,50 @@ impl Render for ServerSyncView {
         root = root.child(self.render_wizard(cx));
 
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::breadcrumb_segments;
+
+    // Remote panels always speak the server's Unix paths — the crumb rebuild
+    // must stay pure string math ("/" + join) no matter the host OS, or a
+    // Windows host would send backslash paths to a Linux server.
+    #[test]
+    fn breadcrumb_segments_remote_is_unix_regardless_of_host() {
+        let (root, segs) = breadcrumb_segments("/var/www/html", false);
+        assert_eq!(root, "/");
+        assert_eq!(
+            segs,
+            vec![
+                ("var".to_string(), "/var".to_string()),
+                ("www".to_string(), "/var/www".to_string()),
+                ("html".to_string(), "/var/www/html".to_string()),
+            ]
+        );
+
+        let (root, segs) = breadcrumb_segments("/", false);
+        assert_eq!(root, "/");
+        assert!(segs.is_empty());
+    }
+
+    // Local panels go through std::path so Windows drive letters round-trip
+    // (compile-checked by the CI Windows target); on Unix the output must be
+    // byte-identical to the remote flavor so Linux behavior is unchanged.
+    #[test]
+    fn breadcrumb_segments_local_matches_remote_shape_on_unix() {
+        let (root, segs) = breadcrumb_segments("/home/ben/projects", true);
+        let (remote_root, remote_segs) = breadcrumb_segments("/home/ben/projects", false);
+        assert_eq!(root, remote_root);
+        assert_eq!(segs, remote_segs);
+
+        // Trailing separators collapse instead of minting an empty crumb.
+        let (_, segs) = breadcrumb_segments("/home/ben/", true);
+        assert_eq!(segs.last().map(|(_, nav)| nav.as_str()), Some("/home/ben"),);
+
+        // A relative path (defensive case) still yields a usable root.
+        let (root, _) = breadcrumb_segments("relative/dir", true);
+        assert_eq!(root, "/");
     }
 }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 
 use adabraka_ui::theme::use_theme;
@@ -35,49 +34,8 @@ use palette::{brighten_for_bold, dim_color, TerminalPalette};
 const CLAUDE_CLI_COMMAND: &str = "claude --dangerously-skip-permissions";
 const CODEX_CLI_COMMAND: &str = "codex --sandbox workspace-write --ask-for-approval on-request";
 
-fn command_extensions() -> Vec<OsString> {
-    if cfg!(windows) {
-        std::env::var_os("PATHEXT")
-            .map(|value| {
-                value
-                    .to_string_lossy()
-                    .split(';')
-                    .filter(|extension| !extension.trim().is_empty())
-                    .map(|extension| OsString::from(extension.trim()))
-                    .collect()
-            })
-            .filter(|extensions: &Vec<OsString>| !extensions.is_empty())
-            .unwrap_or_else(|| {
-                [".COM", ".EXE", ".BAT", ".CMD"]
-                    .into_iter()
-                    .map(OsString::from)
-                    .collect()
-            })
-    } else {
-        vec![OsString::new()]
-    }
-}
-
-fn command_available_in_path(command: &str, path: Option<&OsStr>, extensions: &[OsString]) -> bool {
-    let Some(path) = path else {
-        return false;
-    };
-
-    std::env::split_paths(path).any(|directory| {
-        extensions.iter().any(|extension| {
-            let mut filename = OsString::from(command);
-            filename.push(extension);
-            directory.join(filename).is_file()
-        })
-    })
-}
-
 fn command_available(command: &str) -> bool {
-    command_available_in_path(
-        command,
-        std::env::var_os("PATH").as_deref(),
-        &command_extensions(),
-    )
+    shelldeck_core::util::executable_on_path(command)
 }
 
 pub(crate) fn validate_ai_command(command: &str) -> Result<&str, &'static str> {
@@ -183,6 +141,12 @@ pub struct TerminalView {
     pub tabs: Vec<TerminalTab>,
     pub font_size: f32,
     pub font_family: String,
+    /// User-configured shell for new local terminals (`[terminal]
+    /// default_shell` in `shelldeck.toml`, pushed by the workspace like the
+    /// font settings). `None` → the platform default resolved by
+    /// `shelldeck-terminal` ($SHELL → /bin/bash on Unix; PowerShell →
+    /// %COMSPEC% → cmd.exe on Windows).
+    default_shell: Option<String>,
     pub focus_handle: FocusHandle,
     _refresh_task: Option<gpui::Task<()>>,
     /// Last known grid dimensions so we can detect when a resize is needed.
@@ -342,6 +306,7 @@ impl TerminalView {
             tabs: Vec::new(),
             font_size: 14.0,
             font_family: "JetBrains Mono".to_string(),
+            default_shell: None,
             focus_handle: cx.focus_handle(),
             _refresh_task: None,
             last_grid_rows: 0,
@@ -443,6 +408,13 @@ impl TerminalView {
     pub fn set_font_family(&mut self, family: String) {
         self.font_family = family;
         self.glyph_cache = None;
+    }
+
+    /// Update the user-configured shell used for *new* local terminals.
+    /// Blank values count as unset; already-running sessions keep the shell
+    /// they were spawned with.
+    pub fn set_default_shell(&mut self, shell: Option<String>) {
+        self.default_shell = shell.filter(|s| !s.trim().is_empty());
     }
 
     /// Update the cursor style preference.
@@ -1239,7 +1211,7 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        match TerminalSession::spawn_local(None, rows, cols) {
+        match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
             Ok(session) => {
                 self.add_session(session);
                 tracing::info!("Spawned new local terminal");
@@ -4287,13 +4259,14 @@ impl TerminalView {
         } else {
             (24, 80)
         };
-        let new_session = match TerminalSession::spawn_local(None, rows, cols) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to spawn split terminal: {}", e);
-                return;
-            }
-        };
+        let new_session =
+            match TerminalSession::spawn_local(self.default_shell.as_deref(), rows, cols) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to spawn split terminal: {}", e);
+                    return;
+                }
+            };
         self.install_split_pane(new_session, direction);
         self.ensure_refresh_running(cx);
         cx.notify();
@@ -4970,53 +4943,12 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_available_in_path, validate_ai_command};
-    use std::ffi::OsString;
-    use std::fs;
+    use super::validate_ai_command;
 
-    fn test_dir(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("shelldeck-{label}-{}", uuid::Uuid::new_v4()))
-    }
-
-    // SDTEST-1333
-    #[test]
-    fn command_discovery_searches_every_path_entry() {
-        let missing = test_dir("missing-cli");
-        let bin = test_dir("available-cli");
-        fs::create_dir_all(&bin).expect("create test bin directory");
-        fs::write(bin.join("claude"), b"").expect("create test executable");
-        let path = std::env::join_paths([missing, bin.clone()]).expect("join test PATH");
-
-        assert!(command_available_in_path(
-            "claude",
-            Some(path.as_os_str()),
-            &[OsString::new()],
-        ));
-        assert!(!command_available_in_path(
-            "codex",
-            Some(path.as_os_str()),
-            &[OsString::new()],
-        ));
-
-        fs::remove_dir_all(bin).expect("remove test bin directory");
-    }
-
-    // SDTEST-1334
-    #[test]
-    fn command_discovery_honors_executable_extensions() {
-        let bin = test_dir("extension-cli");
-        fs::create_dir_all(&bin).expect("create test bin directory");
-        fs::write(bin.join("codex.CMD"), b"").expect("create test executable");
-        let path = std::env::join_paths([bin.clone()]).expect("join test PATH");
-
-        assert!(command_available_in_path(
-            "codex",
-            Some(path.as_os_str()),
-            &[OsString::from(".CMD")],
-        ));
-
-        fs::remove_dir_all(bin).expect("remove test bin directory");
-    }
+    // SDTEST-1333 / SDTEST-1334 retired 2026-08-06: command_available now
+    // delegates to shelldeck_core::util::executable_on_path, whose contracts
+    // (multi-dir PATH walk, PATHEXT extensions, unix +x check) are pinned by
+    // SDTEST-1591 in shelldeck-core.
 
     #[test]
     fn ai_command_accepts_exactly_one_non_empty_line() {

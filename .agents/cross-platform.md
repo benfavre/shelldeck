@@ -62,3 +62,37 @@ absent from the session bus entirely.
 - **Report it as environmental.** `shortcut_error_is_portal_missing` in
   `settings.rs` maps this one error to a translated explanation; everything
   else reaches the user verbatim.
+
+## Desktop companion on Wayland — top-level positioning is unavailable
+
+Same class of limit as the portal above, different capability: Wayland gives a
+client **no** protocol to position its own top-level window, so
+`set_window_origin` cannot be implemented there and the roaming desktop
+character cannot work on native Wayland. ShellDeck does not fake it: the
+companion runtime reports `OverlayCapabilityTier::Unavailable`
+(`crates/shelldeck/src/companion_desktop.rs`), keeps the character disabled,
+and Appearance explains the limitation instead of showing a dead toggle.
+External-window geometry of native Wayland apps is equally unavailable (no
+compositor exposes a permitted global window-geometry API), so such windows
+are never presented as climbable.
+
+Full write-up: `docs/clippy.md` (§ Cross-platform behavior, and the
+external-window filtering rules under § Desktop character runtime) and
+`docs/testing/USE_CASES.md` SDUC-449 / SDUC-451.
+
+- **Do not "fix" it** with an XWayland fallback, compositor-specific hacks, or
+  guessed geometry — degrading honestly *is* the specified behavior
+  (SDTEST-1570 pins the Appearance report; misclassifying X11 as limited is
+  the regression to fear).
+- **Detection follows GPUI**, not env vars: `companion_desktop::is_x11_session`
+  wraps `gpui::guess_compositor()` and is the single source of truth —
+  `XDG_SESSION_TYPE` is no longer consulted anywhere in the `shelldeck` crate.
+
+## Optional Linux/X11 runtime tools — `xrandr` and `xprop`
+
+Companion window placement on X11 shells out to `xrandr` (multi-monitor
+bounds, `main.rs::x11_monitor_bounds`) and `xprop` (`_NET_WORKAREA`,
+`main.rs::x11_workarea`). Both are **optional runtime dependencies**: spawn
+failure, non-zero exit, or unparseable output logs a `tracing::warn` and falls
+back to GPUI display bounds — never an error surface. Keep any new consumer on
+that same warn-and-continue pattern.

@@ -11,6 +11,7 @@ impl Workspace {
         allowed_modes: &'static [AppMode],
         current_mode: AppMode,
         ai_configured: bool,
+        clippy_configured: bool,
     ) -> Vec<PaletteAction> {
         let mut actions = vec![
             PaletteAction::new(
@@ -169,6 +170,16 @@ impl Workspace {
                 Box::new(OpenAiAssistant),
             ));
         }
+        // Hidden when the Clippy surface is disallowed — never display a
+        // command the caller cannot reach (`.agents/roles.md` spirit).
+        if clippy_configured {
+            actions.push(PaletteAction::new(
+                t!("palette.open_clippy").to_string(),
+                None,
+                "clipboard-paste",
+                Box::new(OpenClippy),
+            ));
+        }
         if allowed_modes.len() > 1 {
             for &m in allowed_modes {
                 actions.push(PaletteAction::new(
@@ -208,6 +219,7 @@ impl Workspace {
             self.allowed_modes(),
             self.effective_mode(),
             self.ai_available_for_current_surface(cx),
+            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Clippy),
         );
         if let (Some(site), Some(dir)) = (self.active_site_info(), self.site_directory.as_ref()) {
             let label = site.display_label();
@@ -325,6 +337,8 @@ impl Workspace {
             self.connect_bext_cloud_action(cx);
         } else if action.as_any().is::<OpenAiAssistant>() {
             self.open_ai_assistant(cx);
+        } else if action.as_any().is::<OpenClippy>() {
+            self.open_ai_clippy(cx);
         } else {
             cx.dispatch_action(action);
         }

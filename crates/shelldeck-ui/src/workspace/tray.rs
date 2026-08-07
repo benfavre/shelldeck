@@ -26,7 +26,7 @@ impl Workspace {
     /// dependency boundary.
     pub fn set_companion_config_publisher(
         &mut self,
-        publisher: Box<dyn Fn(CompanionConfig) + Send + Sync>,
+        publisher: Box<dyn Fn(CompanionConfig, ClippyConfig) + Send + Sync>,
     ) {
         self.companion_config_publisher = Some(publisher);
     }

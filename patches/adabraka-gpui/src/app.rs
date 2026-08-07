@@ -36,8 +36,10 @@ use crate::InspectorElementRegistry;
 use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
-    CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter, FocusHandle,
-    FocusMap, FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
+    CrashReport, CursorStyle, DialogOptions, DispatchPhase, DisplayId, EventEmitter,
+    // ShellDeck patch: import public desktop-companion snapshot and metrics types for App APIs.
+    DesktopDisplayMetrics, ExternalWindow, ExternalWindowId, FocusHandle, FocusMap,
+    FocusedWindowInfo, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap,
     Keystroke, LayoutId, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, PermissionStatus, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerSaveBlockerKind, PromptBuilder,
@@ -1286,6 +1288,72 @@ impl App {
     /// Returns the list of currently active displays.
     pub fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
         self.platform.displays()
+    }
+
+    /// Returns each active display's bounds in global logical pixels.
+    // ShellDeck patch: expose global display geometry for cross-monitor desktop companions.
+    pub fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        self.platform.global_display_bounds()
+    }
+
+    /// Returns global bounds paired with each display's native scale factor.
+    // ShellDeck patch: expose scale-aware global display metrics for desktop companions.
+    pub fn global_display_metrics(&self) -> Vec<(DisplayId, Bounds<Pixels>, f32)> {
+        let scales = self
+            .platform
+            .displays()
+            .into_iter()
+            .map(|display| (display.id(), display.scale_factor()))
+            .collect::<std::collections::HashMap<_, _>>();
+        self.platform
+            .global_display_bounds()
+            .into_iter()
+            .map(|(id, bounds)| (id, bounds, scales.get(&id).copied().unwrap_or(1.0)))
+            .collect()
+    }
+
+    /// Returns display metrics in the platform desktop coordinate space accepted
+    /// by [`Window::set_window_origin`] and external-window APIs.
+    ///
+    /// Prefer this over [`App::global_display_metrics`] for desktop companions
+    /// that need coherent mixed-DPI placement plus usable work areas. The legacy
+    /// metrics API is preserved for existing callers.
+    // ShellDeck patch: expose coherent desktop metrics with per-display work area.
+    pub fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        self.platform.desktop_display_metrics()
+    }
+
+    /// Returns whether the platform prefers reduced non-essential motion.
+    ///
+    /// This is a cheap best-effort query. Windows uses
+    /// `SPI_GETCLIENTAREAANIMATION`, macOS uses the accessibility reduce-motion
+    /// flag, Linux currently honors safe GTK settings fallbacks, and unsupported
+    /// platforms return `false`.
+    // ShellDeck patch: expose reduced-motion platform preference for animation policy.
+    pub fn prefers_reduced_motion(&self) -> bool {
+        self.platform.prefers_reduced_motion()
+    }
+
+    /// Returns visible external top-level window bounds in the platform desktop
+    /// coordinate space accepted by [`Window::set_window_origin`].
+    // ShellDeck patch: expose read-only external window geometry for desktop companions.
+    pub fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.platform.visible_external_window_bounds()
+    }
+
+    /// Returns visible external top-level window snapshots with native lifetime
+    /// IDs and bounds in the platform desktop coordinate space accepted by
+    /// [`Window::set_window_origin`].
+    // ShellDeck patch: expose stable read-only external window snapshots for desktop companions.
+    pub fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        self.platform.visible_external_windows()
+    }
+
+    /// Returns a visible external top-level window snapshot for a native lifetime
+    /// ID, when the active platform can perform a targeted lookup.
+    // ShellDeck patch: expose targeted external-window lookup for attached companions.
+    pub fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        self.platform.external_window(id)
     }
 
     /// Returns the primary display that will be used for new windows.

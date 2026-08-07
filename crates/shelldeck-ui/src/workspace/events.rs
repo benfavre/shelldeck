@@ -442,7 +442,8 @@ impl Workspace {
             }
             SettingsEvent::ConfigChanged(config) => {
                 tracing::info!("Config changed, applying settings");
-                let companion_changed = self.app_config.companion != config.companion;
+                let companion_changed = self.app_config.companion != config.companion
+                    || self.app_config.clippy != config.clippy;
                 if self.app_config.ai != config.ai {
                     self.ai_sheet = None;
                     self.ai_workflow_sheet = None;
@@ -455,10 +456,14 @@ impl Workspace {
                 self.app_config.editor = config.editor.clone();
                 self.app_config.tray = config.tray.clone();
                 self.app_config.companion = config.companion.clone();
+                self.app_config.clippy = config.clippy.clone();
                 self.app_config.ai = config.ai.clone();
                 *self.ai_companion_config.borrow_mut() = config.ai.clone();
+                *self.clippy_companion_config.borrow_mut() = config.clippy.clone();
                 let dock_available =
                     self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Global);
+                let clippy_available =
+                    self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Clippy);
                 self.ai_dock_assistant.update(cx, |assistant, cx| {
                     assistant.set_backend(
                         self.app_config.ai.backend,
@@ -466,6 +471,31 @@ impl Workspace {
                         cx,
                     );
                     assistant.set_available(dock_available, cx);
+                    assistant.set_clippy_available(clippy_available, cx);
+                    assistant.set_clippy_auto_import_clipboard(
+                        self.app_config.clippy.auto_import_clipboard_on_shortcut,
+                        cx,
+                    );
+                });
+                // The Sheet entity holds the same Clippy state and used to be
+                // skipped here, so `ai.surfaces.clippy` was silently ignored
+                // in the main window. Its `available` flag is deliberately
+                // NOT pushed: unlike the Dock (always Global surface), the
+                // Sheet's availability is per-context and validated at open
+                // time by `open_ai_assistant_with_context` — pushing the
+                // Global-surface value would wrongly disable e.g. a
+                // Terminal-context sheet.
+                self.ai_assistant.update(cx, |assistant, cx| {
+                    assistant.set_backend(
+                        self.app_config.ai.backend,
+                        self.app_config.ai.model.clone(),
+                        cx,
+                    );
+                    assistant.set_clippy_available(clippy_available, cx);
+                    assistant.set_clippy_auto_import_clipboard(
+                        self.app_config.clippy.auto_import_clipboard_on_shortcut,
+                        cx,
+                    );
                 });
                 self.sync_ai_affordances(cx);
                 // Apply terminal settings to running view
@@ -473,6 +503,7 @@ impl Workspace {
                 self.terminal.update(cx, |terminal, cx| {
                     terminal.set_font_size(self.app_config.terminal.font_size);
                     terminal.set_font_family(self.app_config.terminal.font_family.clone());
+                    terminal.set_default_shell(self.app_config.terminal.default_shell.clone());
                     terminal.set_cursor_style(&self.app_config.terminal.cursor_style);
                     terminal.set_cursor_blink(self.app_config.terminal.cursor_blink);
                     terminal.set_scrollback_lines(self.app_config.terminal.scrollback_lines);
@@ -505,7 +536,10 @@ impl Workspace {
                 self.publish_tray_state(cx);
                 if companion_changed {
                     if let Some(publisher) = self.companion_config_publisher.as_ref() {
-                        publisher(self.app_config.companion.clone());
+                        publisher(
+                            self.app_config.companion.clone(),
+                            self.app_config.clippy.clone(),
+                        );
                     }
                 }
                 self.refresh_command_palette(cx);

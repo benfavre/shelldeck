@@ -1,5 +1,5 @@
 use crate::i18n::rel_time;
-use crate::icons::{ai_provider_badge, lucide_icon, lucide_path};
+use crate::icons::{ai_provider_badge, lucide_icon, lucide_path, simple_icon};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -24,7 +24,7 @@ use shelldeck_core::ai::{
     parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
     AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
     AiAssistantCompletion, AiConfig, AiContext, AiGeneratedIssueDraft, AiIssueTriageProposal,
-    AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig,
 };
 use shelldeck_core::config::activity::{
     ActivityAction, ActivityEntry, ActivityKind, ActivityStore,
@@ -350,6 +350,7 @@ actions!(
         OpenBextCloud,
         ConnectBextCloud,
         OpenAiAssistant,
+        OpenClippy,
     ]
 );
 
@@ -396,6 +397,7 @@ pub struct Workspace {
     ai_assistant: Entity<AiAssistantView>,
     ai_dock_assistant: Entity<AiAssistantView>,
     ai_companion_config: Rc<RefCell<AiConfig>>,
+    clippy_companion_config: Rc<RefCell<ClippyConfig>>,
     ai_sheet: Option<Entity<Sheet>>,
     ai_workflow: Option<Entity<AiWorkflowView>>,
     ai_workflow_sheet: Option<Entity<Sheet>>,
@@ -501,6 +503,10 @@ pub struct Workspace {
     /// Kebab menu open state for a sidebar host row: which connection and where
     /// (window-relative click position). `None` = closed.
     sidebar_kebab_menu: Option<(Uuid, Point<Pixels>)>,
+    /// Where the account chip was clicked. The chip sits in the middle of the
+    /// titlebar, so a panel pinned to the window's right edge lands under the
+    /// window controls instead of under the chip.
+    account_menu_pos: Option<Point<Pixels>>,
     /// The native Support-mode console.
     support: Entity<SupportView>,
     _support_sub: Subscription,
@@ -577,6 +583,22 @@ pub struct Workspace {
     issue_attachment_generation: u64,
     issue_ai_prompt_state: Entity<InputState>,
     issue_ai_expanded: bool,
+    /// Whether the attachment picker is unfolded in the new-request sheet. It
+    /// used to occupy three permanent rows for the least-used field; the `+` in
+    /// the composer footer opens it on demand instead.
+    issue_attachments_open: bool,
+    /// Whether the new-request site picker is open. No click position is
+    /// stored: the popover anchors on the chip itself
+    /// (`AnchoredPositionMode::Local`), not on the pointer — anchoring on the
+    /// pointer made the panel slide depending on where inside the chip you hit.
+    issue_site_menu: bool,
+    /// Whether the new-request AI panel's provider picker is open.
+    issue_ai_backend_menu: bool,
+    /// Filter for the site picker's list.
+    issue_site_search: Entity<InputState>,
+    /// Whether the new-request priority picker is open. Anchored on its chip,
+    /// like the site one.
+    issue_priority_menu: bool,
     issue_ai_loading: bool,
     issue_ai_error: Option<String>,
     issue_ai_request_id: u64,
@@ -628,7 +650,7 @@ pub struct Workspace {
     tray_notifier: Option<Box<dyn Fn(TrayNotification) + Send + Sync>>,
     /// Publishes Settings-owned companion changes back to the binary-level
     /// runtime, which owns the platform global-hotkey registrations.
-    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig) + Send + Sync>>,
+    companion_config_publisher: Option<Box<dyn Fn(CompanionConfig, ClippyConfig) + Send + Sync>>,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -721,16 +743,27 @@ impl TrayNotification {
     }
 }
 
+pub struct WorkspaceAiBindings {
+    pub assistant: Entity<AiAssistantView>,
+    pub tasks: Vec<AiTask>,
+    pub config: Rc<RefCell<AiConfig>>,
+    pub clippy_config: Rc<RefCell<ClippyConfig>>,
+}
+
 impl Workspace {
     pub fn new(
         cx: &mut Context<Self>,
         config: AppConfig,
         connections: Vec<Connection>,
         store: ConnectionStore,
-        ai_dock_assistant: Entity<AiAssistantView>,
-        ai_tasks: Vec<AiTask>,
-        ai_companion_config: Rc<RefCell<AiConfig>>,
+        ai: WorkspaceAiBindings,
     ) -> Self {
+        let WorkspaceAiBindings {
+            assistant: ai_dock_assistant,
+            tasks: ai_tasks,
+            config: ai_companion_config,
+            clippy_config: clippy_companion_config,
+        } = ai;
         crate::i18n::apply_ui_language(&config.general.ui_language);
         let issue_site_select = Self::build_issue_site_select(&[], None, cx);
 
@@ -824,6 +857,7 @@ impl Workspace {
             let theme = TerminalTheme::by_name(&config.terminal.theme);
             let cfg = &config.terminal;
             let font_family = cfg.font_family.clone();
+            let default_shell = cfg.default_shell.clone();
             let font_size = cfg.font_size;
             let cursor_style = cfg.cursor_style.clone();
             let cursor_blink = cfg.cursor_blink;
@@ -834,6 +868,7 @@ impl Workspace {
                 t.set_terminal_theme(&theme);
                 t.set_font_size(font_size);
                 t.set_font_family(font_family);
+                t.set_default_shell(default_shell);
                 t.set_cursor_style(&cursor_style);
                 t.set_cursor_blink(cursor_blink);
                 t.set_scrollback_lines(scrollback);
@@ -869,12 +904,52 @@ impl Workspace {
         let fleet_view = cx.new(FleetView::new);
         let bext_view = cx.new(BextCloudView::new);
         ai_assistant.update(cx, |view, cx| view.set_tasks(ai_tasks.clone(), cx));
+        // The Dock window has no titlebar, so its only account signal is the
+        // one the rail draws — push it from here, where the account lives.
+        let account_label = app_config.account.as_ref().map(|account| {
+            if account.name.trim().is_empty() {
+                account.email.clone()
+            } else {
+                account.name.clone()
+            }
+        });
+        // Second line: which site the assistant's context is scoped to. In the
+        // Dock this is the only place that information exists at all.
+        let account_detail = app_config
+            .cloud_sync
+            .active_site_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+            .or_else(|| {
+                app_config
+                    .account
+                    .as_ref()
+                    .map(|account| account.email.clone())
+                    .filter(|email| !email.trim().is_empty())
+            });
+        // Only the Dock renders the account rail — the Sheet host never reads
+        // `account_label`, so it is not pushed to `ai_assistant`.
         ai_dock_assistant.update(cx, |view, cx| {
+            view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(ai_tasks.clone(), cx);
+            view.set_account_label(account_label, account_detail, cx);
         });
         let ai_backend_ready = app_config.ai.is_configured()
             && (!app_config.ai.backend.is_cli() || configured_cli_available(&app_config.ai));
+        // Clippy is opt-in and the view defaults to unavailable: push the real
+        // capability to BOTH assistant entities (the Sheet used to keep its
+        // constructor default forever, silently ignoring `ai.surfaces.clippy`).
+        let clippy_ready = ai_backend_ready && app_config.ai.allows(AiSurface::Clippy);
+        let clippy_auto_import = app_config.clippy.auto_import_clipboard_on_shortcut;
+        ai_assistant.update(cx, |view, cx| {
+            view.set_clippy_available(clippy_ready, cx);
+            view.set_clippy_auto_import_clipboard(clippy_auto_import, cx);
+        });
+        ai_dock_assistant.update(cx, |view, cx| {
+            view.set_clippy_available(clippy_ready, cx);
+            view.set_clippy_auto_import_clipboard(clippy_auto_import, cx);
+        });
         support.update(cx, |view, cx| {
             view.set_ai_reply_enabled(
                 ai_backend_ready && app_config.ai.allows(AiSurface::Support),
@@ -884,6 +959,7 @@ impl Workspace {
                 ai_backend_ready && app_config.ai.allows(AiSurface::Issue),
                 cx,
             );
+            view.set_ai_backend(app_config.ai.backend, app_config.ai.model.clone(), cx);
         });
         scripts.update(cx, |view, cx| {
             view.set_ai_generation_enabled(
@@ -918,13 +994,13 @@ impl Workspace {
             // Initial palette build — no account state yet, so no mode
             // switcher. `refresh_command_palette` will rebuild with the
             // right gating on login / whoami.
-            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false, false));
             palette
         });
         let companion_command_palette = cx.new(|cx| {
             let mut palette = CommandPalette::new(cx);
             palette.set_standalone(true);
-            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false));
+            palette.set_actions(Self::base_palette_actions(&[], AppMode::User, false, false));
             palette
         });
 
@@ -1076,6 +1152,7 @@ impl Workspace {
             ai_assistant,
             ai_dock_assistant,
             ai_companion_config,
+            clippy_companion_config,
             ai_sheet: None,
             ai_workflow: None,
             ai_workflow_sheet: None,
@@ -1146,6 +1223,7 @@ impl Workspace {
             site_directory: None,
             site_menu_open: false,
             sidebar_kebab_menu: None,
+            account_menu_pos: None,
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
@@ -1191,6 +1269,11 @@ impl Workspace {
             issue_attachment_generation: 0,
             issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_ai_expanded: false,
+            issue_attachments_open: false,
+            issue_site_menu: false,
+            issue_ai_backend_menu: false,
+            issue_site_search: cx.new(InputState::new),
+            issue_priority_menu: false,
             issue_ai_loading: false,
             issue_ai_error: None,
             issue_ai_request_id: 0,

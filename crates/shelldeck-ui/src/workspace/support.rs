@@ -139,7 +139,16 @@ impl Workspace {
                 self.open_ai_workflow(AiWorkflowTarget::SupportTriage { ticket_id }, cx)
             }
             SupportViewEvent::SuggestIssueReply(issue_id) => {
+                // Let the composer show a pending state on the ✦ button while
+                // the workflow runs — until the draft comes back.
+                self.support.update(cx, |view, cx| view.set_issue_ai_pending(true, cx));
                 self.open_ai_workflow(AiWorkflowTarget::IssueReply { issue_id }, cx)
+            }
+            SupportViewEvent::PublishIssueAiDraft => {
+                self.support.update(cx, |view, cx| view.publish_issue_ai_draft(cx));
+            }
+            SupportViewEvent::DiscardIssueAiDraft => {
+                self.support.update(cx, |view, cx| view.discard_issue_ai_draft(cx));
             }
             SupportViewEvent::SummarizeIssue(issue_id) => {
                 self.open_ai_workflow(AiWorkflowTarget::IssueSummary { issue_id }, cx)
@@ -232,6 +241,13 @@ impl Workspace {
                 .issue_staff_action(cx, move |b, t| issues::set_priority(&b, &t, &id, &priority)),
             SupportViewEvent::IssueDispatch { id, instance_id } => {
                 self.prepare_fleet_dispatch(id, instance_id, cx)
+            }
+            // `ai.*` belongs to Settings — same route as the assistant and the
+            // request sheet, so the three cannot drift.
+            SupportViewEvent::SelectAiBackend(backend) => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_ai_backend(backend, cx);
+                });
             }
             SupportViewEvent::IssueGithubPush(id) => {
                 self.issue_staff_action(cx, move |b, t| issues::github_push(&b, &t, &id))

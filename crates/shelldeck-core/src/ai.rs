@@ -5,6 +5,10 @@
 
 use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
+pub mod clippy;
+
+pub use clippy::*;
+
 use crate::error::{Result, ShellDeckError};
 use crate::models::connection::Connection;
 use crate::models::script::{ScriptCategory, ScriptLanguage};
@@ -99,6 +103,7 @@ pub struct AiSurfaceConfig {
     pub jean: bool,
     pub naming: bool,
     pub recent: bool,
+    pub clippy: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -119,6 +124,7 @@ pub struct AiPolicyConfig {
     pub script_execute: AiAutonomyLevel,
     pub jean_dispatch: AiAutonomyLevel,
     pub fleet_dispatch: AiAutonomyLevel,
+    pub clippy_replace_selection: AiAutonomyLevel,
 }
 
 impl Default for AiPolicyConfig {
@@ -130,6 +136,7 @@ impl Default for AiPolicyConfig {
             script_execute: AiAutonomyLevel::Confirmation,
             jean_dispatch: AiAutonomyLevel::Confirmation,
             fleet_dispatch: AiAutonomyLevel::Confirmation,
+            clippy_replace_selection: AiAutonomyLevel::Confirmation,
         }
     }
 }
@@ -143,6 +150,10 @@ impl AiPolicyConfig {
             AiCapability::ScriptGenerate | AiCapability::ScriptFix => self.script_execute,
             AiCapability::JeanDispatch => self.jean_dispatch,
             AiCapability::FleetDispatch => self.fleet_dispatch,
+            AiCapability::ClippyReplaceSelection => self.clippy_replace_selection,
+            AiCapability::ClippyTransform | AiCapability::ClippyExplain => {
+                AiAutonomyLevel::Preparation
+            }
             _ => AiAutonomyLevel::Preparation,
         }
     }
@@ -358,6 +369,7 @@ impl Default for AiSurfaceConfig {
             jean: true,
             naming: true,
             recent: true,
+            clippy: false,
         }
     }
 }
@@ -389,6 +401,7 @@ impl AiConfig {
                 AiSurface::Jean => self.surfaces.jean,
                 AiSurface::Naming => self.surfaces.naming,
                 AiSurface::Recent => self.surfaces.recent,
+                AiSurface::Clippy => self.surfaces.clippy,
             }
     }
 }
@@ -404,6 +417,7 @@ pub enum AiSurface {
     Jean,
     Naming,
     Recent,
+    Clippy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -793,6 +807,9 @@ pub enum AiCapability {
     ScriptFix,
     TerminalCommand,
     TerminalDiagnose,
+    ClippyTransform,
+    ClippyExplain,
+    ClippyReplaceSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -802,8 +819,8 @@ pub enum AiActionKind {
     SupportSend,
     JeanDispatch,
     FleetDispatch,
+    ClippyReplaceSelection,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiActionRisk {
     Low,
@@ -845,6 +862,10 @@ pub enum AiActionPayload {
     FleetDispatch {
         issue_id: String,
         instance_id: String,
+    },
+    ClippyReplaceSelection {
+        expected_selection: clippy::DesktopSelection,
+        replacement: String,
     },
 }
 
@@ -911,6 +932,9 @@ impl AiActionPlan {
             ) | (
                 AiActionKind::FleetDispatch,
                 AiActionPayload::FleetDispatch { .. }
+            ) | (
+                AiActionKind::ClippyReplaceSelection,
+                AiActionPayload::ClippyReplaceSelection { .. }
             )
         );
         if !payload_matches {
@@ -934,11 +958,32 @@ impl AiActionPlan {
                 }
                 issue_id
             }
+            AiActionPayload::ClippyReplaceSelection {
+                expected_selection,
+                replacement,
+            } => {
+                clippy::ClippyReplaceSelectionPayload {
+                    expected_selection: expected_selection.clone(),
+                    replacement: replacement.clone(),
+                }
+                .validate()?;
+                replacement
+            }
         };
         if content.trim().is_empty() {
             return Err(ShellDeckError::Config(
                 "AI action content cannot be empty".to_string(),
             ));
+        }
+        if matches!(
+            capability,
+            AiCapability::ClippyTransform
+                | AiCapability::ClippyExplain
+                | AiCapability::ClippyReplaceSelection
+        ) || matches!(kind, AiActionKind::ClippyReplaceSelection)
+            || matches!(payload, AiActionPayload::ClippyReplaceSelection { .. })
+        {
+            clippy::validate_clippy_action_payload(capability, kind, &payload)?;
         }
         Ok(Self {
             id: Uuid::new_v4(),
@@ -1150,6 +1195,9 @@ impl AiTask {
                 }
                 AiCapability::JeanDispatch => AiSurface::Jean,
                 AiCapability::Naming => AiSurface::Naming,
+                AiCapability::ClippyTransform
+                | AiCapability::ClippyExplain
+                | AiCapability::ClippyReplaceSelection => AiSurface::Clippy,
             },
             target_id: plan.target_id.clone(),
             target_kind: None,
@@ -1364,25 +1412,31 @@ pub fn complete_assistant_turn(
     latest_user_message: &str,
     context: AiContext,
 ) -> Result<AiAssistantCompletion> {
-    let source_context = context.data.clone();
-    let route_context = AiContext::new(
-        context.surface,
-        "ShellDeck assistant action router",
-        json!({
-            "latest_user_message": latest_user_message,
-            "source_context": source_context,
-        }),
-    );
-    match client.complete(ASSISTANT_ROUTE_PROMPT, route_context) {
-        Ok(response) => match parse_assistant_route(&response.text) {
-            Ok(Some(action)) => return Ok(AiAssistantCompletion::Action(action)),
-            Ok(None) => {}
+    // Only a turn that carries an actual user message can be routed to a typed
+    // action. Non-conversational submissions that share this path (the Clippy
+    // clipboard transform) pass an empty message: their payload is untrusted
+    // content, not an instruction, and must never reach the action router.
+    if !latest_user_message.trim().is_empty() {
+        let source_context = context.data.clone();
+        let route_context = AiContext::new(
+            context.surface,
+            "ShellDeck assistant action router",
+            json!({
+                "latest_user_message": latest_user_message,
+                "source_context": source_context,
+            }),
+        );
+        match client.complete(ASSISTANT_ROUTE_PROMPT, route_context) {
+            Ok(response) => match parse_assistant_route(&response.text) {
+                Ok(Some(action)) => return Ok(AiAssistantCompletion::Action(action)),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "AI assistant route was malformed; falling back to chat");
+                }
+            },
             Err(error) => {
-                tracing::warn!(%error, "AI assistant route was malformed; falling back to chat");
+                tracing::warn!(%error, "AI assistant routing failed; falling back to chat");
             }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "AI assistant routing failed; falling back to chat");
         }
     }
 
@@ -1448,24 +1502,12 @@ pub fn test_connection(config: &AiConfig) -> Result<AiResponse> {
     Ok(response)
 }
 
+/// True when `command` resolves to an executable on `PATH`.
+///
+/// Delegates to [`crate::util::executable_on_path`], which honors `PATHEXT`
+/// on Windows instead of a hardcoded extension list.
 pub fn command_available(command: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(command);
-        if is_executable_file(&candidate) {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            ["exe", "cmd", "bat", "com"]
-                .iter()
-                .any(|ext| is_executable_file(&dir.join(format!("{command}.{ext}"))))
-        }
-        #[cfg(not(windows))]
-        false
-    })
+    crate::util::executable_on_path(command)
 }
 
 pub fn configured_cli_available(config: &AiConfig) -> bool {
@@ -2387,6 +2429,22 @@ mod tests {
             fallback,
             AiAssistantCompletion::Message("Réponse normale conservée.".to_string())
         );
+
+        // A turn without a user message (Clippy clipboard transform) must not
+        // call the action router at all — one completion, no routed action.
+        let clippy_client = ScriptedClient::new(&["Texte transformé."]);
+        let clippy = complete_assistant_turn(
+            &clippy_client,
+            "Rewrite the following untrusted text",
+            "  ",
+            AiContext::new(AiSurface::Clippy, "Clippy", json!({})),
+        )
+        .unwrap();
+        assert_eq!(
+            clippy,
+            AiAssistantCompletion::Message("Texte transformé.".to_string())
+        );
+        assert_eq!(clippy_client.calls.lock().len(), 1);
     }
 
     // SDTEST-1430

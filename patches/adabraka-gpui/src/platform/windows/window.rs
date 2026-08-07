@@ -386,7 +386,8 @@ impl WindowsWindow {
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
             (WS_EX_TOOLWINDOW, WINDOW_STYLE(0x0))
         } else if params.kind == WindowKind::Overlay {
-            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WS_POPUP)
+            // ShellDeck patch: overlays are interactive but must never activate or steal foreground focus.
+            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, WS_POPUP)
         } else {
             let mut dwstyle = WS_SYSMENU;
 
@@ -458,7 +459,7 @@ impl WindowsWindow {
         register_drag_drop(&this)?;
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.borrow_mut().border_offset.update(hwnd)?;
-        let placement = retrieve_window_placement(
+        let mut placement = retrieve_window_placement(
             hwnd,
             display,
             params.bounds,
@@ -466,7 +467,25 @@ impl WindowsWindow {
             this.state.borrow().border_offset,
         )?;
         if params.show {
+            if params.kind == WindowKind::Overlay {
+                // ShellDeck patch: opening an overlay must be non-activating even when first shown.
+                placement.showCmd = SW_SHOWNOACTIVATE.0 as u32;
+            }
             unsafe { SetWindowPlacement(hwnd, &placement)? };
+            if params.kind == WindowKind::Overlay {
+                unsafe {
+                    ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE).ok()?;
+                    SetWindowPos(
+                        hwnd,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    )?;
+                }
+            }
         } else {
             this.state.borrow_mut().initial_placement = Some(WindowOpenStatus {
                 placement,
@@ -690,6 +709,25 @@ impl PlatformWindow for WindowsWindow {
             .spawn(async move {
                 this.set_window_placement().log_err();
 
+                let extended_style = unsafe { get_window_long(hwnd, GWL_EXSTYLE) } as u32;
+                if extended_style & WS_EX_NOACTIVATE.0 != 0 {
+                    // ShellDeck patch: explicit activation requests keep overlays visible without focus theft.
+                    unsafe {
+                        ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE).ok().log_err();
+                        SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        )
+                        .log_err();
+                    }
+                    return;
+                }
+
                 unsafe {
                     // If the window is minimized, restore it.
                     if IsIconic(hwnd).as_bool() {
@@ -748,6 +786,31 @@ impl PlatformWindow for WindowsWindow {
         unsafe { SetWindowTextW(self.0.hwnd, &HSTRING::from(title)) }
             .inspect_err(|e| log::error!("Set title failed: {e}"))
             .ok();
+    }
+
+    // ShellDeck patch: move windows without resizing, changing Z-order, or activating them.
+    fn set_window_origin(&self, origin: Point<Pixels>) -> Result<()> {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        // Global Windows desktop coordinates are physical pixels. Keeping the
+        // public unit as `Pixels` avoids a platform-specific API while preventing
+        // per-monitor scale factors from creating overlapping virtual bounds.
+        let x = origin.x.0.round() as i32;
+        let y = origin.y.0.round() as i32;
+
+        unsafe {
+            SetWindowPos(
+                self.0.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )?;
+        }
+
+        self.0.state.borrow_mut().origin = logical_point(x as f32, y as f32, scale_factor);
+        Ok(())
     }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {

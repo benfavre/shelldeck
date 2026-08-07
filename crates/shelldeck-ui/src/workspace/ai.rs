@@ -1047,6 +1047,7 @@ impl Workspace {
             AiActionKind::SupportSend => ActivityKind::Support,
             AiActionKind::JeanDispatch => ActivityKind::Jean,
             AiActionKind::FleetDispatch => ActivityKind::Fleet,
+            AiActionKind::ClippyReplaceSelection => ActivityKind::Script,
         };
         let actor = self
             .app_config
@@ -1275,6 +1276,14 @@ impl Workspace {
                 instance_id,
             } => {
                 self.execute_ai_fleet_dispatch(plan, issue_id, instance_id, cx);
+            }
+            AiActionPayload::ClippyReplaceSelection { .. } => {
+                self.audit_ai_action(&plan, "unsupported", cx);
+                self.show_toast(
+                    t!("toast.ai.action_clippy_replace_unsupported").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -1721,8 +1730,10 @@ impl Workspace {
                         });
                     }
                     AiWorkflowTarget::IssueReply { .. } => {
+                        // Distinct card, not the composer: a suggestion is a
+                        // proposal to review, not a keystroke.
                         self.support.update(cx, |view, cx| {
-                            view.set_composer_draft(result, cx);
+                            view.set_issue_ai_draft(result, cx);
                         });
                     }
                     AiWorkflowTarget::SupportSummary { .. }
@@ -1860,11 +1871,6 @@ impl Workspace {
         if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
             return;
         }
-        for handle in cx.windows() {
-            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
-                let _ = dock.update(cx, |_dock, window, _cx| window.hide_window());
-            }
-        }
         self.ai_assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(
@@ -1874,13 +1880,53 @@ impl Workspace {
             );
             assistant.set_context(context, cx);
         });
+        self.present_ai_sheet(cx);
+    }
+
+    /// Open the assistant Sheet directly on the Clippy activity (palette
+    /// `OpenClippy`). Gated on the Clippy surface, not the current chat
+    /// surface: Clippy transforms clipboard text and is independent of what
+    /// the conversation context is about — so the chat context is left as-is
+    /// and no in-flight chat request is disturbed.
+    pub(super) fn open_ai_clippy(&mut self, cx: &mut Context<Self>) {
+        if !self.ai_backend_available() || !self.app_config.ai.allows(AiSurface::Clippy) {
+            return;
+        }
+        let backend = self.app_config.ai.backend;
+        let model = self.app_config.ai.model.clone();
+        let auto_import = self.app_config.clippy.auto_import_clipboard_on_shortcut;
+        self.ai_assistant.update(cx, |assistant, cx| {
+            assistant.reload_conversations(cx);
+            assistant.set_backend(backend, model, cx);
+            // The guard above just validated the Clippy surface.
+            assistant.set_clippy_available(true, cx);
+            assistant.set_clippy_auto_import_clipboard(auto_import, cx);
+            assistant.show_clippy(cx);
+        });
+        self.present_ai_sheet(cx);
+    }
+
+    /// Hide any Dock windows and (re)build the main-window assistant Sheet
+    /// around the shared `ai_assistant` entity. Callers gate access and
+    /// prepare the entity (context / activity) before presenting.
+    fn present_ai_sheet(&mut self, cx: &mut Context<Self>) {
+        for handle in cx.windows() {
+            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
+                let _ = dock.update(cx, |_dock, window, _cx| window.hide_window());
+            }
+        }
         let sheet_assistant = self.ai_assistant.clone();
         let workspace = cx.entity().downgrade();
         self.ai_sheet = Some(cx.new(move |sheet_cx| {
+            // No title and no close button => adabraka's `has_header` is
+            // false and the Sheet draws no chrome of its own. The single 44px
+            // row now lives inside the view, which is what the mockup calls
+            // "the host provides one row" — here the host's contribution is to
+            // get out of the way.
             Sheet::new(sheet_cx)
                 .width(gpui::px(780.0))
                 .variant(SheetVariant::Assistant)
-                .title(t!("ai.assistant.title").to_string())
+                .show_close_button(false)
                 .dynamic_content(move || sheet_assistant.clone())
                 .on_close(move |_window, cx| {
                     if let Some(workspace) = workspace.upgrade() {
@@ -1901,6 +1947,25 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
+            // Routed through the Settings entity, which owns `ai.*`. Writing
+            // `app_config` here would leave the Settings snapshot stale and
+            // resurrect the old backend on the next settings save
+            // (`.agents/session-state.md`).
+            AiAssistantEvent::OpenSettings => self.open_settings(cx),
+            // Only the Dock's rail raises these — in the Sheet the main window
+            // is already in front and the palette has its own shortcut.
+            AiAssistantEvent::OpenMainWindow | AiAssistantEvent::OpenPalette => {}
+            AiAssistantEvent::SelectBackend(backend) => {
+                self.settings.update(cx, |settings, cx| {
+                    settings.set_ai_backend(backend, cx);
+                });
+            }
+            // The Sheet no longer draws its own chrome, so its close button
+            // lives in the view and asks us to dismiss.
+            AiAssistantEvent::Close => {
+                self.ai_sheet = None;
+                cx.notify();
+            }
             AiAssistantEvent::Submit {
                 request_id,
                 conversation_id,
@@ -1994,6 +2059,9 @@ impl Workspace {
             AiCompanionEvent::ApplyAction(action) => {
                 self.apply_ai_assistant_action(action, cx);
             }
+            AiCompanionEvent::OpenSettings => self.open_settings(cx),
+            // The app root already raised the main window on its way here.
+            AiCompanionEvent::OpenMainWindow | AiCompanionEvent::OpenPalette => {}
             AiCompanionEvent::ResumeTask(task_id) => {
                 let target = self
                     .ai_tasks
@@ -2229,7 +2297,7 @@ impl Workspace {
                     }
                 }
             }
-            AiSurface::Recent | AiSurface::Global => {}
+            AiSurface::Recent | AiSurface::Global | AiSurface::Clippy => {}
         }
         cx.notify();
     }

@@ -14,6 +14,7 @@ pub use icon_source::IconSource;
 pub mod checkbox;
 pub mod confirm_dialog;
 pub mod drag_drop;
+pub mod composer;
 pub mod editor;
 pub mod input;
 pub mod input_state;

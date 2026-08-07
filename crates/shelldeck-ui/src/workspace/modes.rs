@@ -210,6 +210,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open Settings directly on the character cards. The Appearance tab puts
+    /// companion controls first so this route is immediately actionable.
+    pub fn open_companion_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
+        self.settings.update(cx, |settings, cx| {
+            settings.set_active_tab(crate::settings::SettingsTab::Appearance, cx);
+        });
+        self.open_settings(cx);
+    }
+
     /// Wipe every "which issue row is open" bit — Workspace-side selection
     /// (`issue_selected`, `issue_detail`), the User-mode sheet flags, the
     /// delete confirm dialog, AND the child `SupportView` selection — so

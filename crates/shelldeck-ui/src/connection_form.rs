@@ -643,7 +643,5 @@ impl Render for ConnectionForm {
 
 /// Get current username
 fn whoami() -> Option<String> {
-    std::env::var("USER")
-        .ok()
-        .or_else(|| std::env::var("USERNAME").ok())
+    shelldeck_core::util::current_username()
 }

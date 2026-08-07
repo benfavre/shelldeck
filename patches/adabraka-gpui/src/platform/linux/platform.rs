@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -24,8 +24,10 @@ use util::ResultExt as _;
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
-    Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, ClipboardItem,
-    CursorStyle, DialogOptions, DisplayId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
+    Action, AnyWindowHandle, AttentionType, BackgroundExecutor, BiometricStatus, Bounds, ClipboardItem,
+    CursorStyle, DialogOptions, DisplayId,
+    // ShellDeck patch: import external-window snapshot types for the Linux platform trait.
+    ExternalWindow, ExternalWindowId, FocusedWindowInfo, ForegroundExecutor, Keymap, Keystroke,
     LinuxDispatcher, MediaKeyEvent, Menu, MenuItem, NetworkStatus, OsInfo, OwnedMenu,
     PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, PowerSaveBlockerKind,
@@ -75,6 +77,21 @@ pub trait LinuxClient {
     fn read_from_primary(&self) -> Option<ClipboardItem>;
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
+    // ShellDeck patch: X11 overrides this while Wayland retains the safe empty snapshot fallback.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        Vec::new()
+    }
+    // ShellDeck patch: X11 overrides targeted lookup while Wayland keeps the safe None fallback.
+    fn external_window(&self, _id: ExternalWindowId) -> Option<ExternalWindow> {
+        None
+    }
+    // ShellDeck patch: preserve the legacy bounds-only external window API.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.visible_external_windows()
+            .into_iter()
+            .map(|window| window.bounds)
+            .collect()
+    }
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
     fn run(&self);
 
@@ -148,6 +165,7 @@ pub(crate) struct LinuxCommon {
     pub(crate) next_blocker_id: u32,
     pub(crate) last_network_status: NetworkStatus,
     pub(crate) attention_window: Option<AnyWindowHandle>,
+    pub(crate) prefers_reduced_motion: bool,
 }
 
 impl LinuxCommon {
@@ -179,9 +197,47 @@ impl LinuxCommon {
             next_blocker_id: 0,
             last_network_status: NetworkStatus::Online,
             attention_window: None,
+            prefers_reduced_motion: linux_prefers_reduced_motion(),
         };
 
         (common, main_receiver)
+    }
+}
+
+// ShellDeck patch: cheap Linux fallback for GTK's gtk-enable-animations setting.
+fn linux_prefers_reduced_motion() -> bool {
+    gtk_enable_animations_from_env().is_some_and(|enabled| !enabled)
+        || gtk_enable_animations_from_settings_file().is_some_and(|enabled| !enabled)
+}
+
+fn gtk_enable_animations_from_env() -> Option<bool> {
+    env::var("GTK_ENABLE_ANIMATIONS")
+        .ok()
+        .and_then(|value| parse_gtk_enable_animations(&value))
+}
+
+fn gtk_enable_animations_from_settings_file() -> Option<bool> {
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    ["gtk-4.0/settings.ini", "gtk-3.0/settings.ini"]
+        .into_iter()
+        .filter_map(|relative| fs::read_to_string(config_home.join(relative)).ok())
+        .find_map(|contents| {
+            contents.lines().find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "gtk-enable-animations")
+                    .then(|| parse_gtk_enable_animations(value.trim()))
+                    .flatten()
+            })
+        })
+}
+
+fn parse_gtk_enable_animations(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -719,6 +775,26 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn focused_window_info(&self) -> Option<FocusedWindowInfo> {
         LinuxClient::focused_window_info(self)
+    }
+
+    // ShellDeck patch: honor cheap Linux animation settings fallbacks.
+    fn prefers_reduced_motion(&self) -> bool {
+        self.with_common(|common| common.prefers_reduced_motion)
+    }
+
+    // ShellDeck patch: route external desktop snapshots through the active Linux backend.
+    fn visible_external_windows(&self) -> Vec<ExternalWindow> {
+        LinuxClient::visible_external_windows(self)
+    }
+
+    // ShellDeck patch: route targeted external desktop lookup through the active Linux backend.
+    fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
+        LinuxClient::external_window(self, id)
+    }
+
+    // ShellDeck patch: route legacy external desktop geometry through the active Linux backend.
+    fn visible_external_window_bounds(&self) -> Vec<Bounds<Pixels>> {
+        LinuxClient::visible_external_window_bounds(self)
     }
 
     fn set_auto_launch(&self, app_id: &str, enabled: bool) -> Result<()> {
@@ -1303,5 +1379,15 @@ mod tests {
             zero,
             Point::new(px(5.0), px(5.1))
         ),);
+    }
+
+    #[test]
+    fn parses_gtk_enable_animations_values() {
+        assert_eq!(parse_gtk_enable_animations("0"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("false"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("off"), Some(false));
+        assert_eq!(parse_gtk_enable_animations("1"), Some(true));
+        assert_eq!(parse_gtk_enable_animations("TRUE"), Some(true));
+        assert_eq!(parse_gtk_enable_animations("unexpected"), None);
     }
 }

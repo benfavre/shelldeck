@@ -258,14 +258,16 @@ impl Workspace {
                 );
         }
 
-        account_btn =
-            account_btn.on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                this.account_menu_open = !this.account_menu_open;
-                if this.account_menu_open {
-                    this.theme_menu_open = false;
-                }
-                cx.notify();
-            }));
+        account_btn = account_btn.on_click(cx.listener(|this, event: &ClickEvent, _window, cx| {
+            // Remember where the chip is so the panel can be anchored to it
+            // rather than to the window edge.
+            this.account_menu_pos = Some(event.position());
+            this.account_menu_open = !this.account_menu_open;
+            if this.account_menu_open {
+                this.theme_menu_open = false;
+            }
+            cx.notify();
+        }));
         if account_menu_open {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
@@ -649,7 +651,11 @@ impl Workspace {
     /// Render the titlebar account dropdown: a dismiss backdrop plus an anchored
     /// panel. Logged out shows the sign-in options (password modal + OIDC);
     /// logged in shows the account, sync, and sign-out controls.
-    pub(super) fn render_account_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_account_menu(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let shadow = vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.45),
             // BoxShadow fields are typed `Pixels` — real pixels, not rems.
@@ -661,9 +667,6 @@ impl Workspace {
 
         let mut panel = div()
             .id("account-menu-panel")
-            .absolute()
-            .top(px(46.0))
-            .right(px(12.0))
             .w(px(288.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
@@ -890,6 +893,22 @@ impl Workspace {
                 );
         }
 
+        // Anchored to the chip that opened it, not to the window edge — same
+        // `deferred(anchored())` treatment as the sidebar kebab, so it also
+        // flips back inside the viewport near an edge.
+        //
+        // Only the X comes from the click. Taking the Y too made the panel hang
+        // from wherever inside the chip the pointer happened to be, which put it
+        // against the titlebar. The drop is a fixed distance below the titlebar
+        // (40px tall, see line 491) expressed in rems, so it follows the UI
+        // scale the titlebar itself follows.
+        let drop = px(52.0).to_pixels(window.rem_size());
+        let anchor_x = self
+            .account_menu_pos
+            .map(|position| position.x)
+            .unwrap_or_else(|| gpui::px(900.0));
+        let anchor = point(anchor_x, drop);
+
         // Dismiss backdrop.
         div()
             .id("account-menu-backdrop")
@@ -905,7 +924,17 @@ impl Workspace {
                     cx.notify();
                 }),
             )
-            .child(panel)
+            .child(
+                deferred(
+                    anchored()
+                        // Centre the 288px panel under the chip.
+                        .position(anchor + point(gpui::px(-144.0), gpui::px(0.0)))
+                        .anchor(gpui::Corner::TopLeft)
+                        .snap_to_window_with_margin(gpui::px(8.0))
+                        .child(panel),
+                )
+                .with_priority(2),
+            )
     }
 
     /// Render the titlebar site-switcher dropdown: "Tous les sites" + the site

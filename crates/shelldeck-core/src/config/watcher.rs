@@ -20,8 +20,16 @@ impl Default for ConfigWatcher {
 impl ConfigWatcher {
     /// Create a new ConfigWatcher targeting the default ~/.ssh/config.
     pub fn new() -> Self {
-        let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-        let ssh_config_path = home.join(".ssh").join("config");
+        let ssh_config_path = match crate::util::home_dir() {
+            Some(home) => home.join(".ssh").join("config"),
+            None => {
+                // No resolvable home: watching is disabled explicitly (start()
+                // will fail on the empty path) instead of targeting a
+                // fabricated /root that is wrong everywhere but root's Linux.
+                tracing::warn!("no home directory resolved; SSH config watching disabled");
+                PathBuf::new()
+            }
+        };
 
         Self {
             ssh_config_path,

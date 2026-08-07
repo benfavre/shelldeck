@@ -8,8 +8,9 @@ use super::{
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardItem, ClipboardString,
     CursorStyle, ForegroundExecutor, Image, ImageFormat, KeyContext, Keymap, MacDispatcher,
-    MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    Bounds, DesktopDisplayMetrics, DisplayId, MacDisplay, MacWindow, Menu, MenuItem, OsMenu,
+    OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Result, SemanticVersion, SharedString, SystemMenuType, Task, TrayIconEvent,
     TrayMenuItem, WindowAppearance, WindowParams, hash,
 };
@@ -687,6 +688,26 @@ impl Platform for MacPlatform {
             .collect()
     }
 
+    // ShellDeck patch: return CoreGraphics global display origins instead of local NSScreen coordinates.
+    fn global_display_bounds(&self) -> Vec<(DisplayId, Bounds<Pixels>)> {
+        MacDisplay::all()
+            .map(|display| (display.id(), display.global_bounds()))
+            .collect()
+    }
+
+    // ShellDeck patch: expose CoreGraphics global display metrics with AppKit visible work areas.
+    fn desktop_display_metrics(&self) -> Vec<DesktopDisplayMetrics> {
+        MacDisplay::all()
+            .map(|display| DesktopDisplayMetrics {
+                id: display.id(),
+                global_bounds: display.global_bounds(),
+                global_work_area: display.global_work_area(),
+                logical_work_area: display.work_area(),
+                scale_factor: display.scale_factor(),
+            })
+            .collect()
+    }
+
     #[cfg(feature = "screen-capture")]
     fn is_screen_capture_supported(&self) -> bool {
         let min_version = cocoa::foundation::NSOperatingSystemVersion::new(12, 3, 0);
@@ -1112,6 +1133,15 @@ impl Platform for MacPlatform {
         }
     }
 
+    // ShellDeck patch: query macOS Accessibility reduce-motion preference cheaply.
+    fn prefers_reduced_motion(&self) -> bool {
+        unsafe {
+            let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let reduced: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+            reduced == YES
+        }
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
         use crate::ClipboardEntry;
 
@@ -1443,6 +1473,16 @@ impl Platform for MacPlatform {
 
     fn focused_window_info(&self) -> Option<crate::FocusedWindowInfo> {
         super::active_window::get_focused_window_info()
+    }
+
+    // ShellDeck patch: expose visible external top-level macOS window snapshots.
+    fn visible_external_windows(&self) -> Vec<crate::ExternalWindow> {
+        super::external_windows::visible_external_windows()
+    }
+
+    // ShellDeck patch: expose targeted CoreGraphics external-window lookup.
+    fn external_window(&self, id: crate::ExternalWindowId) -> Option<crate::ExternalWindow> {
+        super::external_windows::external_window(id)
     }
 
     fn accessibility_status(&self) -> crate::PermissionStatus {

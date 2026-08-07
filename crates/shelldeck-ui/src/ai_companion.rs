@@ -2,6 +2,7 @@ use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Subscription};
 use shelldeck_core::ai::{
     complete_assistant_turn, configured_cli_available, create_client, AiAssistantAction,
     AiAssistantCompletion, AiConfig, AiContext, AiSurface, AiTask, AiTaskStatus, AiTaskStore,
+    ClippyConfig,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,6 +14,13 @@ use crate::t;
 #[derive(Debug, Clone)]
 pub enum AiCompanionEvent {
     ApplyAction(AiAssistantAction),
+    /// Raised from the Dock's rail toolbox; the app root must show the main
+    /// window before the workspace can honour it.
+    OpenSettings,
+    /// Bring the main window forward and close the Dock.
+    OpenMainWindow,
+    /// The command palette is its own window, owned by the app root.
+    OpenPalette,
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
@@ -27,6 +35,7 @@ pub enum AiCompanionEvent {
 pub struct AiCompanionController {
     assistant: Entity<AiAssistantView>,
     config: Rc<RefCell<AiConfig>>,
+    clippy_config: Rc<RefCell<ClippyConfig>>,
     tasks: Vec<AiTask>,
     _assistant_sub: Subscription,
 }
@@ -34,7 +43,7 @@ pub struct AiCompanionController {
 impl EventEmitter<AiCompanionEvent> for AiCompanionController {}
 
 impl AiCompanionController {
-    pub fn new(config: AiConfig, cx: &mut Context<Self>) -> Self {
+    pub fn new(config: AiConfig, clippy_config: ClippyConfig, cx: &mut Context<Self>) -> Self {
         let mut tasks = AiTaskStore::load().unwrap_or_else(|error| {
             tracing::warn!("Failed to load AI tasks for companion: {error}");
             Vec::new()
@@ -59,15 +68,43 @@ impl AiCompanionController {
                 ),
                 cx,
             );
+            view.set_host(crate::ai_assistant::AiHost::Dock, cx);
             view.set_history_open(false, cx);
             view.set_tasks(tasks.clone(), cx);
             view
         });
         let config = Rc::new(RefCell::new(config));
+        let clippy_config = Rc::new(RefCell::new(clippy_config));
         let assistant_sub =
             cx.subscribe(
                 &assistant,
                 |this, view, event: &AiAssistantEvent, cx| match event.clone() {
+                    // The Dock has its own close control in `AiDockView`; the
+                    // in-view one only exists for the Sheet.
+                    AiAssistantEvent::Close => {}
+                    // The Dock cannot open Settings itself — it is a separate
+                    // window with no workspace. Forwarded to the app root,
+                    // which raises the main window and routes it.
+                    AiAssistantEvent::OpenSettings => {
+                        cx.emit(AiCompanionEvent::OpenSettings);
+                    }
+                    AiAssistantEvent::OpenMainWindow => {
+                        cx.emit(AiCompanionEvent::OpenMainWindow);
+                    }
+                    AiAssistantEvent::OpenPalette => {
+                        cx.emit(AiCompanionEvent::OpenPalette);
+                    }
+                    // Applied to the shared `AiConfig` the Workspace also
+                    // holds, so the change is live in both hosts immediately.
+                    // Durable persistence is the Workspace's job via Settings.
+                    AiAssistantEvent::SelectBackend(backend) => {
+                        {
+                            let mut config = this.config.borrow_mut();
+                            config.backend = backend;
+                            config.model.clear();
+                        }
+                        this.refresh(cx);
+                    }
                     AiAssistantEvent::Submit {
                         request_id,
                         conversation_id,
@@ -147,6 +184,7 @@ impl AiCompanionController {
         Self {
             assistant,
             config,
+            clippy_config,
             tasks,
             _assistant_sub: assistant_sub,
         }
@@ -160,15 +198,21 @@ impl AiCompanionController {
         self.config.clone()
     }
 
+    pub fn shared_clippy_config(&self) -> Rc<RefCell<ClippyConfig>> {
+        self.clippy_config.clone()
+    }
+
     pub fn tasks(&self) -> Vec<AiTask> {
         self.tasks.clone()
     }
 
     pub fn prepare(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
         let config = self.config.borrow().clone();
-        let available = config.is_configured()
-            && (!config.backend.is_cli() || configured_cli_available(&config))
-            && config.allows(AiSurface::Global);
+        let backend_available = config.is_configured()
+            && (!config.backend.is_cli() || configured_cli_available(&config));
+        let available = backend_available && config.allows(AiSurface::Global);
+        let clippy_available = backend_available && config.allows(AiSurface::Clippy);
+        let clippy_config = self.clippy_config.borrow().clone();
         self.assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(config.backend, config.model, cx);
@@ -181,8 +225,19 @@ impl AiCompanionController {
                 cx,
             );
             assistant.set_available(available, cx);
+            assistant.set_clippy_available(clippy_available, cx);
+            assistant.set_clippy_auto_import_clipboard(
+                clippy_config.auto_import_clipboard_on_shortcut,
+                cx,
+            );
         });
         self.assistant.clone()
+    }
+
+    pub fn prepare_clippy(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
+        let assistant = self.prepare(cx);
+        assistant.update(cx, |assistant, cx| assistant.show_clippy(cx));
+        assistant
     }
 
     pub fn prepare_task_center(&mut self, cx: &mut Context<Self>) -> Entity<AiAssistantView> {
@@ -194,13 +249,20 @@ impl AiCompanionController {
     /// Refresh a hidden Dock without invalidating an in-flight request.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let config = self.config.borrow().clone();
-        let available = config.is_configured()
-            && (!config.backend.is_cli() || configured_cli_available(&config))
-            && config.allows(AiSurface::Global);
+        let backend_available = config.is_configured()
+            && (!config.backend.is_cli() || configured_cli_available(&config));
+        let available = backend_available && config.allows(AiSurface::Global);
+        let clippy_available = backend_available && config.allows(AiSurface::Clippy);
+        let clippy_config = self.clippy_config.borrow().clone();
         self.assistant.update(cx, |assistant, cx| {
             assistant.reload_conversations(cx);
             assistant.set_backend(config.backend, config.model, cx);
             assistant.set_available(available, cx);
+            assistant.set_clippy_available(clippy_available, cx);
+            assistant.set_clippy_auto_import_clipboard(
+                clippy_config.auto_import_clipboard_on_shortcut,
+                cx,
+            );
         });
     }
 }

@@ -20,7 +20,11 @@ pub fn dock_tray_label() -> String {
 pub struct TrayLabels {
     pub show: String,
     pub assistant: String,
+    pub clippy: String,
     pub palette: String,
+    pub choose_character: String,
+    pub pause_character: String,
+    pub return_character: String,
     pub quit: String,
     pub pinned: String,
     pub no_pinned: String,
@@ -31,7 +35,11 @@ impl TrayLabels {
         Self {
             show: t!("tray.show").to_string(),
             assistant: dock_tray_label(),
+            clippy: t!("tray.clippy").to_string(),
             palette: t!("tray.palette").to_string(),
+            choose_character: t!("tray.character.choose").to_string(),
+            pause_character: t!("tray.character.pause").to_string(),
+            return_character: t!("tray.character.return_to_dock").to_string(),
             quit: t!("tray.quit").to_string(),
             pinned: t!("tray.pinned").to_string(),
             no_pinned: t!("tray.no_pinned").to_string(),
@@ -134,61 +142,69 @@ impl AiDockView {
 }
 
 impl Render for AiDockView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let main_window = self.main_window;
         let escape_assistant = self.assistant.clone();
+        // The single chrome row for this window. The view no longer draws one
+        // of its own, so this must name the thread rather than the app: a
+        // constant "Assistant ShellDeck" said nothing about what was on screen
+        // and cost a whole 44px row to say it.
+        let title = self.assistant.read(cx).active_title();
         let toolbar = div()
             .flex()
             .items_center()
-            .justify_between()
-            .gap(px(8.0))
+            .gap(px(6.0))
             .h(px(44.0))
             .px(px(12.0))
             .flex_shrink_0()
             .border_b_1()
             .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_surface())
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
+                    .flex_1()
                     .min_w_0()
-                    .text_size(px(12.0))
+                    .truncate()
+                    .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(t!("ai.dock.title").to_string()),
+                    .child(title),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(18.0))
+                    .flex_shrink_0()
+                    .bg(ShellDeckColors::border()),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(4.0))
                     .flex_shrink_0()
                     .child(
-                        Button::new(
-                            "ai-dock-open-shelldeck",
-                            t!("ai.dock.open_shelldeck").to_string(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .tooltip(t!("ai.dock.open_shelldeck").to_string())
-                        .icon(IconSource::from("external-link"))
-                        .on_click(move |_, dock_window, cx| {
-                            if let Err(error) = main_window.update(cx, |_, main_window, _| {
-                                main_window.show_window();
-                                main_window.activate_window();
-                            }) {
-                                tracing::warn!(
-                                    error = %error,
-                                    "AI Dock could not activate the main window"
-                                );
-                            }
-                            dock_window.remove_window();
-                        }),
+                        // Icon-only: three spelled-out labels ate most of a
+                        // 480px row. The tooltip keeps them named.
+                        Button::new("ai-dock-open-shelldeck", "")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .tooltip(t!("ai.dock.open_shelldeck").to_string())
+                            .icon(IconSource::from("external-link"))
+                            .on_click(move |_, dock_window, cx| {
+                                if let Err(error) = main_window.update(cx, |_, main_window, _| {
+                                    main_window.show_window();
+                                    main_window.activate_window();
+                                }) {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "AI Dock could not activate the main window"
+                                    );
+                                }
+                                dock_window.remove_window();
+                            }),
                     )
                     .child(
-                        Button::new("ai-dock-hide", t!("ai.dock.hide").to_string())
+                        Button::new("ai-dock-hide", "")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .tooltip(t!("ai.dock.hide").to_string())

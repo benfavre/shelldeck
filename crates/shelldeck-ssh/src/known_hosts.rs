@@ -13,10 +13,35 @@ pub enum KnownHostResult {
     NotFound,
 }
 
-/// Get the path to ~/.ssh/known_hosts.
-fn known_hosts_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-    PathBuf::from(home).join(".ssh").join("known_hosts")
+/// Get the path to `~/.ssh/known_hosts`, or `None` when no home directory
+/// can be resolved on this platform (`$HOME` / `%USERPROFILE%` / native
+/// lookup all absent).
+///
+/// Security note: never fabricate a fallback path here. The old behavior
+/// (`$HOME` else literal `/root`) meant that on Windows every host-key
+/// check read and wrote `/root/.ssh/known_hosts` — a path that does not
+/// exist — so verification silently degraded to non-persistent TOFU.
+/// When no home is resolvable we degrade *explicitly* instead: callers
+/// warn once and skip persistence.
+fn known_hosts_path() -> Option<PathBuf> {
+    known_hosts_path_in(shelldeck_core::util::home_dir())
+}
+
+/// Pure part of [`known_hosts_path`], injectable for tests.
+fn known_hosts_path_in(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|h| h.join(".ssh").join("known_hosts"))
+}
+
+/// Warn exactly once per process that host-key persistence is unavailable.
+/// One warning is enough — this fires on every host-key check otherwise.
+fn warn_no_home_once() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "No home directory could be resolved; known_hosts cannot be read or written. \
+             Host-key verification degrades to per-session trust-on-first-use."
+        );
+    });
 }
 
 /// Build the host pattern SSH uses in a known_hosts entry:
@@ -105,7 +130,10 @@ pub fn check_known_host(
     key_type: &str,
     key_base64: &str,
 ) -> KnownHostResult {
-    let path = known_hosts_path();
+    let Some(path) = known_hosts_path() else {
+        warn_no_home_once();
+        return KnownHostResult::NotFound;
+    };
     let contents = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return KnownHostResult::NotFound,
@@ -155,14 +183,13 @@ pub fn add_known_host_to(
 
 /// Append a new entry to ~/.ssh/known_hosts (TOFU).
 pub fn add_known_host(hostname: &str, port: u16, key_type: &str, key_base64: &str) {
-    let path = known_hosts_path();
-
-    // Ensure ~/.ssh directory exists
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
+    let Some(path) = known_hosts_path() else {
+        warn_no_home_once();
+        return;
+    };
 
     let host_entry = host_pattern(hostname, port);
+    // `add_known_host_to` creates the ~/.ssh parent directory if missing.
     match add_known_host_to(&path, hostname, port, key_type, key_base64) {
         Ok(_) => tracing::info!("Added {} to known_hosts (TOFU)", host_entry),
         Err(e) => tracing::warn!("Failed to write to known_hosts: {}", e),
@@ -172,6 +199,24 @@ pub fn add_known_host(hostname: &str, port: u16, key_type: &str, key_base64: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // known_hosts path is built off the resolved home directory with
+    // platform-native joins — never off a raw `$HOME` string, and never
+    // a fabricated `/root` fallback.
+    #[test]
+    fn known_hosts_path_is_built_under_resolved_home() {
+        let home = PathBuf::from("home-dir");
+        let path = known_hosts_path_in(Some(home.clone())).expect("path when home resolves");
+        assert_eq!(path, home.join(".ssh").join("known_hosts"));
+    }
+
+    // Security contract: no resolvable home → no path at all. The old
+    // behavior fabricated `/root/.ssh/known_hosts` on Windows, silently
+    // degrading host-key verification to non-persistent TOFU.
+    #[test]
+    fn known_hosts_path_is_none_without_home_never_fabricated() {
+        assert!(known_hosts_path_in(None).is_none());
+    }
 
     // SDTEST-580 — Match against a plain hostname entry.
     #[test]

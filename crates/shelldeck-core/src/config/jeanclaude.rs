@@ -581,7 +581,7 @@ mod tests {
                     "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status,
                     reason,
-                    body.as_bytes().len(),
+                    body.len(),
                     body
                 );
                 let _ = stream.write_all(resp.as_bytes());

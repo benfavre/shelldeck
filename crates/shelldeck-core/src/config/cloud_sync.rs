@@ -210,23 +210,6 @@ pub fn merge_profiles(store: &mut ConnectionStore, remote: &[RemoteProfile]) -> 
     stats
 }
 
-/// Best-effort machine hostname, dependency-free.
-fn machine_hostname() -> String {
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        let h = h.trim();
-        if !h.is_empty() {
-            return h.to_string();
-        }
-    }
-    if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
-        let h = h.trim();
-        if !h.is_empty() {
-            return h.to_string();
-        }
-    }
-    "unknown".to_string()
-}
-
 /// `{os}-{arch}` platform string, e.g. `linux-x86_64`.
 fn platform_string() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
@@ -249,7 +232,10 @@ pub fn fetch_sync(cfg: &CloudSyncConfig, app_version: &str) -> Result<SyncPayloa
 
     let body = serde_json::json!({
         "version": app_version,
-        "hostname": machine_hostname(),
+        // util::hostname() covers Windows (%COMPUTERNAME%) and macOS
+        // (gethostname) — the old $HOSTNAME → /etc/hostname chain registered
+        // every non-Linux device under the same fallback name in Manage.
+        "hostname": crate::util::hostname(),
         "platform": platform_string(),
     });
 
@@ -493,9 +479,11 @@ sync_on_startup = false
         assert_eq!(cfg.mode, crate::config::cloud_account::AppMode::Dev);
 
         // Round-trip with an active site set.
-        let mut with_site = CloudSyncConfig::default();
-        with_site.active_site_id = Some("site-uuid".to_string());
-        with_site.active_site_label = Some("Inklura".to_string());
+        let with_site = CloudSyncConfig {
+            active_site_id: Some("site-uuid".to_string()),
+            active_site_label: Some("Inklura".to_string()),
+            ..Default::default()
+        };
         let s = toml::to_string(&with_site).unwrap();
         let back: CloudSyncConfig = toml::from_str(&s).unwrap();
         assert_eq!(back.active_site_id.as_deref(), Some("site-uuid"));

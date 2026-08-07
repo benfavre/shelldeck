@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 /// Parse the default ~/.ssh/config file.
 pub fn parse_ssh_config() -> Result<Vec<Connection>> {
-    let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+    let Some(home) = crate::util::home_dir() else {
+        // No resolvable home means no ~/.ssh/config to parse.
+        return Ok(Vec::new());
+    };
     let config_path = home.join(".ssh").join("config");
     if !config_path.exists() {
         return Ok(Vec::new());
@@ -99,8 +102,12 @@ fn is_wildcard_only(pattern: &str) -> bool {
 fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(stripped) = s.strip_prefix("~/") {
-        let home = crate::util::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
-        home.join(stripped)
+        match crate::util::home_dir() {
+            Some(home) => home.join(stripped),
+            // No resolvable home: leave the tilde path untouched rather than
+            // expanding it against a fabricated /root.
+            None => path.to_path_buf(),
+        }
     } else {
         path.to_path_buf()
     }

@@ -2,6 +2,8 @@
 //!
 //! No SSH or async dependencies — fully unit-testable.
 
+use std::path::{Path, PathBuf};
+
 use super::server_sync::{
     DatabaseEngine, DiscoveredDatabase, DiscoveredSite, FileEntry, SyncOptions,
 };
@@ -154,11 +156,7 @@ pub fn list_local_files(path: &str) -> Vec<FileEntry> {
         }
         let is_dir = meta.is_dir();
         let size = if is_dir { 0 } else { meta.len() };
-        let entry_path = if path == "/" {
-            format!("/{}", name)
-        } else {
-            format!("{}/{}", path.trim_end_matches('/'), name)
-        };
+        let entry_path = join_child_path(path, &name);
 
         // Format permissions from mode (Unix)
         #[cfg(unix)]
@@ -168,11 +166,7 @@ pub fn list_local_files(path: &str) -> Vec<FileEntry> {
             format_mode(mode, is_dir)
         };
         #[cfg(not(unix))]
-        let permissions = if is_dir {
-            "drwxr-xr-x".to_string()
-        } else {
-            "-rw-r--r--".to_string()
-        };
+        let permissions = format_readonly_permissions(is_dir, meta.permissions().readonly());
 
         // Owner/group from uid/gid (Unix)
         #[cfg(unix)]
@@ -180,8 +174,10 @@ pub fn list_local_files(path: &str) -> Vec<FileEntry> {
             use std::os::unix::fs::MetadataExt;
             (meta.uid().to_string(), meta.gid().to_string())
         };
+        // No cheap owner/group lookup on Windows — leave the fields empty
+        // rather than fabricating a "user"/"user" pair.
         #[cfg(not(unix))]
-        let (owner, group) = ("user".to_string(), "user".to_string());
+        let (owner, group) = (String::new(), String::new());
 
         let modified = meta.modified().ok().map(|t| {
             let dt: chrono::DateTime<chrono::Utc> = t.into();
@@ -220,6 +216,25 @@ fn format_mode(mode: u32, is_dir: bool) -> String {
     s
 }
 
+/// Join a directory-listing entry name onto its base directory using
+/// `std::path`, so separators and Windows drive letters stay correct
+/// (`C:\Users` + `ben` → `C:\Users\ben`; `/var/www` + `html` → `/var/www/html`).
+pub fn join_child_path(base: &str, name: &str) -> String {
+    Path::new(base).join(name).to_string_lossy().into_owned()
+}
+
+/// Minimal honest permission string for platforms without Unix modes
+/// (Windows): a type char plus the owner read/write we actually know from
+/// the readonly flag. Never fabricates group/other bits the way the old
+/// hardcoded `drwxr-xr-x` did.
+pub fn format_readonly_permissions(is_dir: bool, readonly: bool) -> String {
+    format!(
+        "{}{}",
+        if is_dir { 'd' } else { '-' },
+        if readonly { "r-" } else { "rw" }
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Nginx discovery
 // ---------------------------------------------------------------------------
@@ -227,6 +242,64 @@ fn format_mode(mode: u32, is_dir: bool) -> String {
 /// Build a command that prints all nginx site configs with `---FILE:path` markers.
 pub fn nginx_discover_command() -> &'static str {
     r#"timeout 10 sh -c 'for f in /etc/nginx/sites-enabled/*; do [ -f "$f" ] && echo "---FILE:$f" && cat "$f"; done' 2>/dev/null"#
+}
+
+/// Candidate directories holding per-site nginx configs on the *local*
+/// machine, checked in order. Mirrors [`nginx_discover_command`] (which reads
+/// `/etc/nginx/sites-enabled` over SSH) but as plain-file reads, so local
+/// discovery works without `sh` (absent on Windows) or GNU `timeout` (not
+/// stock on macOS).
+pub fn local_nginx_config_dirs() -> Vec<PathBuf> {
+    if cfg!(target_os = "windows") {
+        // nginx has no packaging convention on Windows; this is the closest
+        // common layout, and a missing directory honestly means "no sites".
+        vec![PathBuf::from(r"C:\nginx\conf\sites-enabled")]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/etc/nginx/sites-enabled"),
+            PathBuf::from("/opt/homebrew/etc/nginx/servers"),
+            PathBuf::from("/usr/local/etc/nginx/servers"),
+        ]
+    } else {
+        vec![PathBuf::from("/etc/nginx/sites-enabled")]
+    }
+}
+
+/// Read every regular file in `dir` into the same `---FILE:path` marker format
+/// [`nginx_discover_command`] emits, ready for [`parse_nginx_configs`].
+///
+/// Matches the shell loop's semantics: symlinked configs are followed (the
+/// `[ -f "$f" ]` test), dotfiles are skipped (the `*` glob), files are visited
+/// in name order, and unreadable files are silently dropped (`2>/dev/null`).
+pub fn read_local_nginx_configs_in(dir: &Path) -> String {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return String::new(),
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            p.file_name()
+                .map(|n| !n.to_string_lossy().starts_with('.'))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+
+    let mut out = String::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        out.push_str("---FILE:");
+        out.push_str(&file.to_string_lossy());
+        out.push('\n');
+        out.push_str(&String::from_utf8_lossy(&bytes));
+        out.push('\n');
+    }
+    out
 }
 
 /// Parse concatenated nginx config output into discovered sites.
@@ -394,14 +467,33 @@ pub fn parse_nginx_configs(output: &str) -> Vec<DiscoveredSite> {
 // Database discovery
 // ---------------------------------------------------------------------------
 
+/// The MySQL discovery query — shared by the shell command (remote/SSH) and
+/// the argv form (local) so the two paths can never drift.
+const MYSQL_DISCOVER_SQL: &str = "SELECT s.schema_name, IFNULL(SUM(t.data_length + t.index_length), 0) AS size_bytes, COUNT(t.table_name) AS table_count FROM information_schema.schemata s LEFT JOIN information_schema.tables t ON s.schema_name = t.table_schema WHERE s.schema_name NOT IN ('information_schema','mysql','performance_schema','sys') GROUP BY s.schema_name ORDER BY s.schema_name";
+
 /// Build a MySQL discovery command. Outputs: `db_name\tsize_bytes\ttable_count`
 pub fn mysql_discover_command(credentials: &str) -> String {
     // credentials might be "-u root -pPASSWORD" or empty for socket auth
     // timeout + /dev/null stdin prevents hanging on password prompts
     format!(
-        r#"timeout 10 mysql {} --batch --skip-column-names -e "SELECT s.schema_name, IFNULL(SUM(t.data_length + t.index_length), 0) AS size_bytes, COUNT(t.table_name) AS table_count FROM information_schema.schemata s LEFT JOIN information_schema.tables t ON s.schema_name = t.table_schema WHERE s.schema_name NOT IN ('information_schema','mysql','performance_schema','sys') GROUP BY s.schema_name ORDER BY s.schema_name" < /dev/null 2>/dev/null"#,
-        credentials
+        r#"timeout 10 mysql {} --batch --skip-column-names -e "{}" < /dev/null 2>/dev/null"#,
+        credentials, MYSQL_DISCOVER_SQL
     )
+}
+
+/// Argv form of [`mysql_discover_command`] for running the discovery directly
+/// on the local machine — no `sh`, no GNU `timeout`, so it also works on
+/// Windows and stock macOS. The caller must null stdin and enforce its own
+/// timeout (the shell version's `timeout 10` + `< /dev/null`).
+pub fn mysql_discover_argv(credentials: &str) -> Vec<String> {
+    let mut argv = vec!["mysql".to_string()];
+    argv.extend(credentials.split_whitespace().map(str::to_string));
+    argv.extend(
+        ["--batch", "--skip-column-names", "-e", MYSQL_DISCOVER_SQL]
+            .into_iter()
+            .map(str::to_string),
+    );
+    argv
 }
 
 /// Parse MySQL discovery output (tab-separated: name, size, table_count).
@@ -426,14 +518,39 @@ pub fn parse_mysql_discovery(output: &str) -> Vec<DiscoveredDatabase> {
     databases
 }
 
+/// The PostgreSQL discovery query — shared by the shell command (remote/SSH)
+/// and the argv form (local) so the two paths can never drift.
+const PG_DISCOVER_SQL: &str = "SELECT d.datname, pg_database_size(d.datname), (SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = d.datname AND table_schema = 'public') FROM pg_database d WHERE d.datistemplate = false AND d.datname != 'postgres' ORDER BY d.datname";
+
 /// Build a PostgreSQL discovery command. Outputs: `db_name\tsize_bytes\ttable_count`
 pub fn pg_discover_command(credentials: &str) -> String {
     // credentials might be "-U postgres" or "-U user -h host"
     // timeout + /dev/null stdin prevents hanging on password prompts
     format!(
-        r#"timeout 10 psql {} --tuples-only --no-align --field-separator=$'\t' -c "SELECT d.datname, pg_database_size(d.datname), (SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = d.datname AND table_schema = 'public') FROM pg_database d WHERE d.datistemplate = false AND d.datname != 'postgres' ORDER BY d.datname" < /dev/null 2>/dev/null"#,
-        credentials
+        r#"timeout 10 psql {} --tuples-only --no-align --field-separator=$'\t' -c "{}" < /dev/null 2>/dev/null"#,
+        credentials, PG_DISCOVER_SQL
     )
+}
+
+/// Argv form of [`pg_discover_command`] for running the discovery directly on
+/// the local machine (see [`mysql_discover_argv`] for the portability
+/// rationale). Passes a *real* tab as the field separator — `$'\t'` is a
+/// shell-ism that only exists in the SSH flavor.
+pub fn pg_discover_argv(credentials: &str) -> Vec<String> {
+    let mut argv = vec!["psql".to_string()];
+    argv.extend(credentials.split_whitespace().map(str::to_string));
+    argv.extend(
+        [
+            "--tuples-only",
+            "--no-align",
+            "--field-separator=\t",
+            "-c",
+            PG_DISCOVER_SQL,
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    argv
 }
 
 /// Parse PostgreSQL discovery output (tab-separated: name, size, table_count).
@@ -780,6 +897,96 @@ server {
             "raw path with a space must be shell-quoted, got: {cmd}",
         );
         assert!(cmd.contains("u@h:"));
+    }
+
+    // join_child_path — the std::path join must keep the old Linux string
+    // concatenation behaviour (root base, nested base, trailing slash) so
+    // Server Sync local browsing is unchanged on Unix. Windows correctness
+    // (drive letters, backslashes) follows from std::path and is covered by
+    // the CI cross-compile — it cannot be asserted from a Linux test runner.
+    #[test]
+    fn join_child_path_matches_unix_expectations() {
+        assert_eq!(join_child_path("/", "etc"), "/etc");
+        assert_eq!(join_child_path("/var/www", "html"), "/var/www/html");
+        assert_eq!(join_child_path("/var/www/", "html"), "/var/www/html");
+    }
+
+    // Windows permission strings are derived from the readonly flag only —
+    // a regression back to the fabricated "drwxr-xr-x" would claim mode bits
+    // we never read.
+    #[test]
+    fn format_readonly_permissions_never_fabricates_mode_bits() {
+        assert_eq!(format_readonly_permissions(true, false), "drw");
+        assert_eq!(format_readonly_permissions(true, true), "dr-");
+        assert_eq!(format_readonly_permissions(false, false), "-rw");
+        assert_eq!(format_readonly_permissions(false, true), "-r-");
+    }
+
+    // Local nginx discovery reads plain files into the same `---FILE:` wire
+    // format the SSH command emits, so `parse_nginx_configs` applies
+    // unchanged. Pins the glob semantics too: dotfiles skipped, name order,
+    // missing directory → empty (not an error).
+    #[test]
+    fn read_local_nginx_configs_feeds_parse_nginx_configs() {
+        let dir = std::env::temp_dir().join(format!(
+            "shelldeck-nginx-discover-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("b-site.conf"),
+            "server {\n    listen 80;\n    server_name b.example.com;\n    root /var/www/b;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("a-site.conf"),
+            "server {\n    listen 443 ssl;\n    server_name a.example.com;\n    root /var/www/a;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".hidden"),
+            "server { server_name nope.example.com; }",
+        )
+        .unwrap();
+
+        let out = read_local_nginx_configs_in(&dir);
+        let sites = parse_nginx_configs(&out);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(sites.len(), 2, "dotfile must be skipped; raw output: {out}");
+        assert_eq!(sites[0].server_name, "a.example.com", "files in name order");
+        assert!(sites[0].ssl);
+        assert_eq!(sites[1].server_name, "b.example.com");
+
+        assert_eq!(
+            read_local_nginx_configs_in(&dir.join("does-not-exist")),
+            "",
+            "missing directory reads as no sites",
+        );
+    }
+
+    // The argv builders are the local (shell-free) contract with the mysql /
+    // psql binaries. They must stay in lockstep with the SSH shell commands:
+    // same SQL text, a *real* tab where the shell flavor uses the `$'\t'`
+    // bash-ism, and no empty argv entry when credentials are empty (mysql
+    // would read "" as a database name).
+    #[test]
+    fn discover_argv_forms_match_shell_commands() {
+        let pg = pg_discover_argv("-U postgres");
+        assert_eq!(pg[0], "psql");
+        assert!(pg.contains(&"-U".to_string()) && pg.contains(&"postgres".to_string()));
+        assert!(pg.contains(&"--field-separator=\t".to_string()));
+        assert!(pg_discover_command("").contains(r#"--field-separator=$'\t'"#));
+        assert!(pg_discover_command("").contains(pg.last().unwrap().as_str()));
+
+        let my = mysql_discover_argv("");
+        assert_eq!(my[0], "mysql");
+        assert!(
+            my.iter().all(|a| !a.is_empty()),
+            "empty credentials must not inject an empty argv entry: {my:?}",
+        );
+        assert!(mysql_discover_command("").contains(my.last().unwrap().as_str()));
     }
 
     #[test]
