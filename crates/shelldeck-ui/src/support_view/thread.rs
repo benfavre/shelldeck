@@ -9,7 +9,6 @@ use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
-use adabraka_ui::components::editor::{Editor, EditorState};
 use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
@@ -292,65 +291,6 @@ pub(super) fn message_action(
         )
         .on_click(on_click)
         .into_any_element()
-}
-
-/// The Editor-backed field shared by both Support composers. The placeholder
-/// lives in this wrapper instead of inside `Editor`: the editor's own absolute
-/// placeholder is painted inside its scroll viewport and disappeared when the
-/// borderless editor was embedded in a fixed-height Composer field.
-fn composer_visible_lines(line_count: usize) -> usize {
-    line_count.clamp(1, 7)
-}
-
-pub(super) fn composer_editor_field(
-    state: &Entity<EditorState>,
-    placeholder: impl Into<SharedString>,
-    font_family: impl Into<SharedString>,
-    cx: &App,
-) -> Div {
-    let empty = state.read(cx).content().trim().is_empty();
-    let focus = state.read(cx).focus_handle(cx);
-    let placeholder = placeholder.into();
-    // The editor reserves 12 px above and below its lines. Grow from one to
-    // seven visible 20 px lines, then let its existing vertical scroll take
-    // over. Reading the line count here also keeps the frame and editor on the
-    // same sizing rule whenever EditorState invalidates the window.
-    let visible_lines = composer_visible_lines(state.read(cx).line_count());
-    let field_height = px(24.0 + visible_lines as f32 * 20.0);
-
-    div()
-        .relative()
-        .w_full()
-        .min_w(px(0.0))
-        // 44 px empty, up to 164 px for seven lines.
-        .h(field_height)
-        .overflow_hidden()
-        .child(
-            Editor::new(state)
-                .font_family(font_family)
-                .show_border(false)
-                .min_lines(visible_lines)
-                .max_lines(7)
-                .show_horizontal_scrollbar(false)
-                .current_line_color(transparent_black()),
-        )
-        .when(empty, |field| {
-            field.child(
-                div()
-                    .absolute()
-                    .top(px(11.0))
-                    .left(px(12.0))
-                    .right(px(12.0))
-                    .line_clamp(1)
-                    .cursor_text()
-                    .text_size(px(14.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(placeholder)
-                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                        window.focus(&focus);
-                    }),
-            )
-        })
 }
 
 /// A human-authored message in the thread. The author's colour identifies our
@@ -655,17 +595,7 @@ pub(super) fn note(
 
 #[cfg(test)]
 mod tests {
-    use super::{composer_visible_lines, markdown_blocks};
-
-    #[test]
-    fn composer_grows_to_seven_lines_then_scrolls() {
-        assert_eq!(composer_visible_lines(0), 1);
-        assert_eq!(composer_visible_lines(1), 1);
-        assert_eq!(composer_visible_lines(6), 6);
-        assert_eq!(composer_visible_lines(7), 7);
-        assert_eq!(composer_visible_lines(8), 7);
-        assert_eq!(composer_visible_lines(100), 7);
-    }
+    use super::markdown_blocks;
 
     #[test]
     fn markdown_is_split_on_complete_top_level_blocks() {

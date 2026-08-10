@@ -1,8 +1,7 @@
 use super::thread::{
-    ThreadDeliveryTone, ThreadMessageExtras, ThreadNoteKind, attributed_quote,
-    composer_editor_field, day_separator, delivery_status, human_message,
-    human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
-    typing_indicator,
+    ThreadDeliveryTone, ThreadMessageExtras, ThreadNoteKind, attributed_quote, day_separator,
+    delivery_status, human_message, human_message_continuation, local_draft, markdown_blocks,
+    message_action, note as thread_note, typing_indicator,
 };
 use super::*;
 use crate::icons::{ai_provider_inline, simple_icon};
@@ -761,7 +760,7 @@ impl SupportView {
                             format!("{}{}", prefix, current)
                         };
                         this.composer_state
-                            .update(cx, |state, cx| state.set_content(&next, cx));
+                            .update(cx, |state, cx| state.replace_content(next, cx));
                     });
                     window.focus(&focus);
                 },
@@ -2713,7 +2712,6 @@ impl SupportView {
     }
 
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let issue_id = self.issue_selected.clone();
         let placeholder = self
             .issue_detail
@@ -2730,7 +2728,7 @@ impl SupportView {
             .px(px(16.0))
             .pt(px(10.0))
             .pb(px(14.0))
-            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
                 } else {
@@ -2738,48 +2736,43 @@ impl SupportView {
                 }
             }))
             .child({
-                // The shared composer, hosting an `Editor` rather than an
-                // `Input`: Support writes replies, not one-liners. Everything
-                // that used to sit loose around the field — the AI suggestion
-                // above it, the attachment toggle and Send below — is now in the
-                // frame's footer, in the order every other surface uses.
-                let focus = self.composer_state.read(cx).focus_handle(cx);
+                // The shared Composer owns its multiline Input and therefore
+                // one min/max measurement, one viewport and one scroll state.
                 let send_entity = cx.entity();
                 let ai_issue_id = issue_id.clone().unwrap_or_default();
                 let empty = self.composer_state.read(cx).content().trim().is_empty();
-                let mut frame = Composer::with_field(
-                    "sup-issue-composer",
-                    focus,
-                    composer_editor_field(&self.composer_state, placeholder, font_family, cx),
-                )
-                // Grey while there is nothing to send, like every other
-                // composer in the app.
-                .commit_enabled(!self.attachment_busy && !empty)
-                .action(
-                    IconButton::new("plus")
-                        .variant(if self.attachment_panel_open {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Ghost
-                        })
-                        .size(gpui::px(28.0))
-                        .icon_size(gpui::px(14.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.attachment_panel_open = !this.attachment_panel_open;
-                            cx.notify();
-                        })),
-                )
-                .on_commit(move |cx| {
-                    send_entity.update(cx, |this, cx| this.send_composer(cx));
-                })
-                .footnote(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.0))
-                        .child(t!("ai.assistant.hint.send").to_string())
-                        .child(t!("ai.assistant.hint.newline").to_string()),
-                );
+                let mut frame = Composer::new("sup-issue-composer", &self.composer_state)
+                    .placeholder(placeholder)
+                    .min_rows(1)
+                    .max_rows(7)
+                    // Grey while there is nothing to send, like every other
+                    // composer in the app.
+                    .commit_enabled(!self.attachment_busy && !empty)
+                    .action(
+                        IconButton::new("plus")
+                            .variant(if self.attachment_panel_open {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(14.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.attachment_panel_open = !this.attachment_panel_open;
+                                cx.notify();
+                            })),
+                    )
+                    .on_commit(move |cx| {
+                        send_entity.update(cx, |this, cx| this.send_composer(cx));
+                    })
+                    .footnote(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .child(t!("ai.assistant.hint.send").to_string())
+                            .child(t!("ai.assistant.hint.newline").to_string()),
+                    );
                 if self.ai_reply_enabled {
                     frame = frame.action(
                         compact_composer_action(

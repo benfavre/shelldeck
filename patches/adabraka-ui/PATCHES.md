@@ -362,15 +362,26 @@ carries no marker of its own — see its entry).
 
 - **Files / symbols**:
   - `src/components/input.rs` — `Input::max_rows`, multi-line container
+  - `src/components/input_state.rs` — `InputState`, `InputState::render`
 - **Markers**:
-  - `src/components/input.rs` — `ShellDeck patch: SDPATCH-018`
+  - `src/components/input.rs` — `ShellDeck patch: SDPATCH-018 — cap a multi-line input's visible`
+  - `src/components/input.rs` — `ShellDeck patch: SDPATCH-018 — cap the`
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-018 — remember what the caret-following pass`
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-018 — the first paint establishes the`
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-018 — only follow a caret that`
+  - `src/components/input_state.rs` — `ShellDeck patch: SDPATCH-018 — keep a multi-line state's root`
 - **Why**: multi-line Inputs previously grew to every visual line. Large
   Support or AI drafts could therefore push actions and status bars outside
   the window. `max_rows` caps the visible viewport while the text element
   retains its natural height inside a vertically scrollable child. The scroll
   child itself carries the row cap: using `h_full()` beneath a merely
   `max_h`-capped parent let it expand to the full draft, leaving GPUI with no
-  measured inner overflow and making mouse-wheel scrolling a no-op.
+  measured inner overflow and making mouse-wheel scrolling a no-op. The
+  `InputState` root also keeps intrinsic height in multi-line mode; otherwise
+  its own `h_full()` stretches short drafts to the capped viewport immediately.
+  Caret following is armed only by a text or cursor mutation and consumed on
+  the next paint, so a stationary caret cannot snap a manual wheel scroll back
+  to the bottom.
 - **Upstream status**: not filed yet.
 
 ### SDPATCH-019 — Alert text stays inside narrow flex containers
@@ -683,6 +694,12 @@ carries no marker of its own — see its entry).
 - **2026-07-24** — fixed SDPATCH-018's capped viewport: the scroll child now
   owns the row cap instead of resolving `h_full()` against an indefinite
   parent, restoring mouse-wheel scrolling in long Support and AI drafts.
+- **2026-08-10** — fixed SDPATCH-018's short-draft sizing: the multi-line
+  `InputState` root now keeps intrinsic height instead of filling the capped
+  viewport, so the textarea grows one visual line at a time before scrolling.
+  The capped viewport also owns a bounded wheel handler with the correct
+  ScrollHandle sign and leaves boundary events unconsumed. Caret following is
+  edge-triggered so a stationary end caret no longer cancels wheel-up scrolling.
 - **2026-07-22** — added SDPATCH-022: searchable Select menus accept a localized
   hint, keep their deferred search surface focused using measured popup bounds,
   reuse the real Input caret, virtualize result sets of 50+ options, and render

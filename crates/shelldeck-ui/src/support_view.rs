@@ -24,7 +24,6 @@ use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
-use adabraka_ui::components::editor::{EditorState, Paste as EditorPaste};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -448,7 +447,7 @@ pub struct SupportView {
     /// Assignee picker inside the filter dialog (adabraka-ui `Select`).
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
-    composer_state: Entity<EditorState>,
+    composer_state: Entity<InputState>,
     /// Pending AI reply (issue only, for now). Kept OUT of `composer_state` so
     /// it does not shove aside what the user was writing — the mockup shows it
     /// as a distinct card above the composer, with Publier / Modifier /
@@ -549,6 +548,7 @@ impl SupportView {
         let parent = cx.entity();
         let assignee_draft_select =
             Self::build_assignee_draft_select(None, &[], parent.clone(), cx);
+        let composer_state = cx.new(|cx| InputState::new(cx).multi_line(true));
         Self {
             tickets: Vec::new(),
             counts: SupportCounts::default(),
@@ -572,11 +572,7 @@ impl SupportView {
             assignee_draft_select,
             issue_ai_draft: None,
             issue_ai_pending: false,
-            composer_state: cx.new(|cx| {
-                let mut state = EditorState::new(cx);
-                state.show_line_numbers = false;
-                state
-            }),
+            composer_state,
             attachment_url_state: cx.new(InputState::new),
             attachment_url_open: false,
             attachment_drafts: Vec::new(),
@@ -839,7 +835,7 @@ impl SupportView {
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
         self.composer_state.update(cx, |s, cx| {
-            s.set_content("", cx);
+            s.reset(cx);
         });
     }
 
@@ -1145,7 +1141,7 @@ impl SupportView {
             format!("{}\n\n{}", current, draft.body)
         };
         self.composer_state.update(cx, |state, cx| {
-            state.set_content(&merged, cx);
+            state.replace_content(merged, cx);
         });
         cx.notify();
     }
@@ -1159,7 +1155,7 @@ impl SupportView {
     pub fn set_composer_draft(&mut self, text: String, cx: &mut Context<Self>) {
         self.compose_note = false;
         self.composer_state
-            .update(cx, |state, cx| state.set_content(&text, cx));
+            .update(cx, |state, cx| state.replace_content(text, cx));
         cx.notify();
     }
 

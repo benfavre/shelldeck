@@ -1,6 +1,6 @@
 use super::thread::{
-    ThreadMessageExtras, ThreadNoteKind, composer_editor_field, human_message,
-    human_message_continuation, markdown_blocks, note as thread_note,
+    ThreadMessageExtras, ThreadNoteKind, human_message, human_message_continuation,
+    markdown_blocks, note as thread_note,
 };
 use super::*;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
@@ -1865,7 +1865,6 @@ impl SupportView {
         _ticket_id: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let is_note = self.compose_note;
 
         let placeholder = if is_note {
@@ -1884,7 +1883,7 @@ impl SupportView {
             .px(px(16.0))
             .pt(px(10.0))
             .pb(px(14.0))
-            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
                 } else {
@@ -1892,46 +1891,44 @@ impl SupportView {
                 }
             }))
             .child({
-                let focus = self.composer_state.read(cx).focus_handle(cx);
                 let empty = self.composer_state.read(cx).content().trim().is_empty();
                 let send_entity = cx.entity();
-                let mut frame = Composer::with_field(
-                    "support-ticket-composer",
-                    focus,
-                    composer_editor_field(&self.composer_state, placeholder, font_family, cx),
-                )
-                .commit(if is_note {
-                    ComposerCommit::Labeled(t!("support.compose.add_note").to_string().into())
-                } else {
-                    ComposerCommit::Send
-                })
-                .commit_enabled(!self.attachment_busy && !empty)
-                .action(
-                    IconButton::new("plus")
-                        .variant(if self.attachment_panel_open {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Ghost
-                        })
-                        .size(gpui::px(28.0))
-                        .icon_size(gpui::px(14.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.attachment_panel_open = !this.attachment_panel_open;
-                            cx.notify();
-                        })),
-                )
-                .on_commit(move |cx| {
-                    send_entity.update(cx, |this, cx| this.send_composer(cx));
-                })
-                .footnote(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.0))
-                        .child(t!("ai.assistant.hint.send").to_string())
-                        .child(t!("ai.assistant.hint.newline").to_string()),
-                )
-                .option(self.render_ticket_delivery_picker(cx));
+                let mut frame = Composer::new("support-ticket-composer", &self.composer_state)
+                    .placeholder(placeholder)
+                    .min_rows(1)
+                    .max_rows(7)
+                    .commit(if is_note {
+                        ComposerCommit::Labeled(t!("support.compose.add_note").to_string().into())
+                    } else {
+                        ComposerCommit::Send
+                    })
+                    .commit_enabled(!self.attachment_busy && !empty)
+                    .action(
+                        IconButton::new("plus")
+                            .variant(if self.attachment_panel_open {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(14.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.attachment_panel_open = !this.attachment_panel_open;
+                                cx.notify();
+                            })),
+                    )
+                    .on_commit(move |cx| {
+                        send_entity.update(cx, |this, cx| this.send_composer(cx));
+                    })
+                    .footnote(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .child(t!("ai.assistant.hint.send").to_string())
+                            .child(t!("ai.assistant.hint.newline").to_string()),
+                    )
+                    .option(self.render_ticket_delivery_picker(cx));
 
                 if ai_enabled {
                     frame = frame.action(

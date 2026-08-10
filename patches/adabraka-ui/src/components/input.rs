@@ -4,9 +4,9 @@ use crate::animations::{easings, shake_offset};
 use crate::components::icon::Icon;
 pub use crate::components::input_state::{
     Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, Down, End, Enter, Escape, Home,
-    InputEvent, InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord, SelectAll,
-    SelectDown, SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, SelectUp, ShiftTab, Tab,
-    Up, ValidationError, ValidationRules,
+    InputEvent, InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord,
+    SelectAll, SelectDown, SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, SelectUp,
+    ShiftTab, Tab, Up, ValidationError, ValidationRules,
 };
 use crate::layout::{HStack, VStack};
 use crate::theme::use_theme;
@@ -879,11 +879,30 @@ impl RenderOnce for Input {
                                     // therefore measured no inner overflow
                                     // and wheel scrolling was a no-op.
                                     let fs_px: f32 = font_size.into();
-                                    let viewport_h = gpui::px(
-                                        fs_px * 1.4 * self.max_rows.unwrap_or(1) as f32,
-                                    );
+                                    let viewport_h =
+                                        gpui::px(fs_px * 1.4 * self.max_rows.unwrap_or(1) as f32);
+                                    let wheel_handle = handle.clone();
                                     text = text.max_h(viewport_h);
-                                    text.track_scroll(handle).overflow_y_scroll()
+                                    text.track_scroll(handle).overflow_hidden().on_scroll_wheel(
+                                        move |event, window, cx| {
+                                            let delta =
+                                                event.delta.pixel_delta(window.line_height());
+                                            if delta.y.is_zero() {
+                                                return;
+                                            }
+                                            let offset = wheel_handle.offset();
+                                            let max = wheel_handle.max_offset().height;
+                                            // ScrollHandle stores a negative viewport offset;
+                                            // GPUI's wheel delta already has the matching sign
+                                            // (up positive, down negative), so accumulate it.
+                                            let next_y = (offset.y + delta.y).clamp(-max, px(0.0));
+                                            if next_y != offset.y {
+                                                wheel_handle.set_offset(point(offset.x, next_y));
+                                                cx.stop_propagation();
+                                                window.refresh();
+                                            }
+                                        },
+                                    )
                                 } else {
                                     text.overflow_hidden()
                                 }
