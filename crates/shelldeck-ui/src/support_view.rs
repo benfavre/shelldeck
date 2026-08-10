@@ -16,11 +16,10 @@ use crate::attachment_annotator::AttachmentAnnotator;
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::issue_attachments::{
-    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
-    render_attachment_draft_gallery, render_stored_attachment_gallery,
+    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
 };
 use crate::scale::px;
-use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
@@ -40,10 +39,10 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use shelldeck_core::config::issues::{
-    ISSUE_ATTACHMENT_MAX_COUNT, Issue, IssueAttachment, IssueInstance,
+    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
 };
 use shelldeck_core::config::manage_support::{
-    SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
+    SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportMessageDelivery, SupportTicket,
 };
 
 use crate::t;
@@ -56,6 +55,10 @@ pub enum SupportSection {
     Tickets,
     Requests,
 }
+
+/// Staff-only in-memory Ticket fixture. Shared by Workspace injection and the
+/// view so demo interactions never fall through to a nonexistent Manage row.
+pub(crate) const SUPPORT_TICKET_SHOWCASE_ID: &str = "fake-ticket-thread-showcase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
@@ -314,6 +317,35 @@ enum IssueThreadRow {
     LocalDraft,
 }
 
+/// Ticket-side adapter rows. The source remains `SupportMessage`; this merely
+/// normalises its timeline shape to the same semantic objects rendered for
+/// Requests without coupling the two API models.
+#[derive(Debug, Clone)]
+enum TicketThreadRow {
+    Empty,
+    Message {
+        message: usize,
+        block: usize,
+        first: bool,
+        last: bool,
+    },
+    Day {
+        at: f64,
+    },
+    Typing {
+        index: usize,
+    },
+    AiDraft,
+    LocalDraft,
+}
+
+#[derive(Clone)]
+struct HeaderAssigneeOption {
+    value: String,
+    label: String,
+    email: String,
+}
+
 /// Requests the view raises for the workspace to service (all network).
 #[derive(Debug, Clone)]
 pub enum SupportViewEvent {
@@ -472,8 +504,6 @@ pub struct SupportView {
     ai_model: String,
     loading: bool,
     error: Option<String>,
-    assign_menu_open: bool,
-    priority_menu_open: bool,
     /// Popover menu for ticket actions (header kebab or list row).
     popover_menu: Option<(SupportMenuKind, Point<Pixels>)>,
     // JeanClaude strip (fed by the workspace when Jean config is present).
@@ -540,6 +570,7 @@ pub struct SupportView {
     /// Bottom alignment opens on the latest exchange without rendering the
     /// complete history.
     ticket_message_blocks: Vec<Vec<SharedString>>,
+    ticket_thread_rows: Vec<TicketThreadRow>,
     ticket_thread_list: ListState,
 }
 
@@ -586,8 +617,6 @@ impl SupportView {
             ai_model: String::new(),
             loading: false,
             error: None,
-            assign_menu_open: false,
-            priority_menu_open: false,
             popover_menu: None,
             jean_available: false,
             jean_pending: Vec::new(),
@@ -618,6 +647,7 @@ impl SupportView {
             issue_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
             focus_handle: cx.focus_handle(),
             ticket_message_blocks: Vec::new(),
+            ticket_thread_rows: Vec::new(),
             ticket_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
         }
     }
@@ -671,10 +701,9 @@ impl SupportView {
         self.issue_thread_rows.clear();
         self.issue_thread_list.reset(0);
         self.ticket_message_blocks.clear();
+        self.ticket_thread_rows.clear();
         self.ticket_thread_list.reset(0);
         self.popover_menu = None;
-        self.priority_menu_open = false;
-        self.assign_menu_open = false;
         self.issue_popover_menu = None;
         self.confirm_issue_delete = None;
     }
@@ -765,8 +794,10 @@ impl SupportView {
             if let Some(updated) = self.tickets.iter().find(|t| &t.id == id).cloned() {
                 if let Some(detail) = &mut self.detail {
                     let messages = std::mem::take(&mut detail.messages);
+                    let thread_state = std::mem::take(&mut detail.thread_state);
                     *detail = SupportTicket {
                         messages,
+                        thread_state,
                         ..updated
                     };
                 }
@@ -800,13 +831,27 @@ impl SupportView {
         } else {
             Vec::new()
         };
-        let ticket = if !preserved_msgs.is_empty() {
-            SupportTicket {
-                messages: preserved_msgs,
-                ..ticket
-            }
+        let preserved_thread_state = if ticket.thread_state.is_empty() {
+            self.detail
+                .as_ref()
+                .filter(|d| d.id == ticket.id)
+                .map(|d| d.thread_state.clone())
+                .unwrap_or_default()
         } else {
-            ticket
+            Default::default()
+        };
+        let ticket = SupportTicket {
+            messages: if preserved_msgs.is_empty() {
+                ticket.messages.clone()
+            } else {
+                preserved_msgs
+            },
+            thread_state: if preserved_thread_state.is_empty() {
+                ticket.thread_state.clone()
+            } else {
+                preserved_thread_state
+            },
+            ..ticket
         };
         // Merge the updated slim ticket into the list too (keeping any
         // messages we may have cached alongside).
@@ -816,8 +861,14 @@ impl SupportView {
             } else {
                 existing.messages.clone()
             };
+            let thread_state = if ticket.thread_state.is_empty() {
+                existing.thread_state.clone()
+            } else {
+                ticket.thread_state.clone()
+            };
             *existing = SupportTicket {
                 messages: msgs,
+                thread_state,
                 ..ticket.clone()
             };
         }
@@ -825,8 +876,6 @@ impl SupportView {
         self.detail = Some(ticket);
         self.rebuild_ticket_thread_cache();
         self.popover_menu = None;
-        self.priority_menu_open = false;
-        self.assign_menu_open = false;
         self.reset_composer(cx);
         self.clear_attachment_drafts(cx);
         self.loading = false;
@@ -1561,19 +1610,6 @@ pub(crate) fn status_label(s: &str) -> String {
         "closed" => t!("support.status.closed").to_string(),
         other => other.to_string(),
     }
-}
-
-/// Support ticket status rendered as a color-coded adabraka `Badge`.
-/// `open` = Default (primary, "à faire"), `pending` = Warning (waiting on
-/// the customer), `closed` = Outline (calm, done).
-pub(crate) fn status_badge(s: &str) -> Badge {
-    let variant = match s {
-        "open" => BadgeVariant::Default,
-        "pending" => BadgeVariant::Warning,
-        "closed" => BadgeVariant::Outline,
-        _ => BadgeVariant::Secondary,
-    };
-    Badge::new(status_label(s)).variant(variant)
 }
 
 pub(crate) fn priority_label(p: &str) -> String {

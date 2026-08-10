@@ -1,14 +1,26 @@
 use super::thread::{
-    ThreadMessageExtras, ThreadNoteKind, human_message, human_message_continuation,
-    markdown_blocks, note as thread_note,
+    ai_draft_card, attributed_quote, day_separator, delivery_status, human_message,
+    human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
+    thread_header_picker, thread_picker_option_row, thread_priority_color, thread_status_color,
+    timeline_day, timeline_day_label, typing_indicator, ThreadDeliveryTone, ThreadMessageExtras,
+    ThreadNoteKind,
 };
 use super::*;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
+
+#[derive(Clone, Copy)]
+enum TicketTimelineGroup {
+    Message(usize),
+    Typing(usize),
+    AiDraft,
+    LocalDraft,
+}
 
 impl SupportView {
     pub(super) fn rebuild_ticket_thread_cache(&mut self) {
         let Some(ticket) = &self.detail else {
             self.ticket_message_blocks.clear();
+            self.ticket_thread_rows.clear();
             self.ticket_thread_list.reset(0);
             return;
         };
@@ -23,30 +35,86 @@ impl SupportView {
                 }
             })
             .collect();
-        self.ticket_thread_list
-            .reset(self.ticket_thread_item_count());
+
+        if ticket.messages.is_empty() {
+            self.ticket_thread_rows = vec![TicketThreadRow::Empty];
+            self.ticket_thread_list.reset(1);
+            return;
+        }
+
+        let mut groups = ticket
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| (message.at, index, TicketTimelineGroup::Message(index)))
+            .collect::<Vec<_>>();
+        groups.extend(
+            ticket
+                .thread_state
+                .typing
+                .iter()
+                .enumerate()
+                .map(|(index, typing)| {
+                    (
+                        typing.at,
+                        ticket.messages.len() + index,
+                        TicketTimelineGroup::Typing(index),
+                    )
+                }),
+        );
+        if let Some(draft) = ticket
+            .thread_state
+            .suggested_reply
+            .as_ref()
+            .filter(|draft| !draft.body.trim().is_empty())
+        {
+            groups.push((draft.at, usize::MAX - 1, TicketTimelineGroup::AiDraft));
+        }
+        if let Some(draft) = ticket
+            .thread_state
+            .local_draft
+            .as_ref()
+            .filter(|draft| !draft.body.trim().is_empty())
+        {
+            groups.push((draft.at, usize::MAX, TicketTimelineGroup::LocalDraft));
+        }
+        groups.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        let mut rows = Vec::new();
+        let mut previous_day = None;
+        for (at, _, group) in groups {
+            let day = timeline_day(at);
+            if previous_day.is_some() && day.is_some() && day != previous_day {
+                rows.push(TicketThreadRow::Day { at });
+            }
+            if day.is_some() {
+                previous_day = day;
+            }
+            match group {
+                TicketTimelineGroup::Message(message) => {
+                    let count = if ticket.messages[message].is_note() {
+                        1
+                    } else {
+                        self.ticket_message_blocks[message].len().max(1)
+                    };
+                    rows.extend((0..count).map(|block| TicketThreadRow::Message {
+                        message,
+                        block,
+                        first: block == 0,
+                        last: block + 1 == count,
+                    }));
+                }
+                TicketTimelineGroup::Typing(index) => rows.push(TicketThreadRow::Typing { index }),
+                TicketTimelineGroup::AiDraft => rows.push(TicketThreadRow::AiDraft),
+                TicketTimelineGroup::LocalDraft => rows.push(TicketThreadRow::LocalDraft),
+            }
+        }
+        self.ticket_thread_rows = rows;
+        self.ticket_thread_list.reset(self.ticket_thread_rows.len());
     }
 
     fn ticket_thread_item_count(&self) -> usize {
-        let Some(ticket) = &self.detail else {
-            return 0;
-        };
-        if ticket.messages.is_empty() {
-            1
-        } else {
-            ticket
-                .messages
-                .iter()
-                .zip(&self.ticket_message_blocks)
-                .map(|(message, blocks)| {
-                    if message.is_note() {
-                        1
-                    } else {
-                        blocks.len().max(1)
-                    }
-                })
-                .sum()
-        }
+        self.ticket_thread_rows.len()
     }
 
     pub(super) fn render_jean_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -740,7 +808,7 @@ impl SupportView {
             .h(px(22.0))
             .rounded(px(4.0))
             .text_color(ShellDeckColors::text_muted())
-            .opacity(0.35)
+            .opacity(0.0)
             .group_hover(group_name, |el| el.opacity(1.0))
             .cursor_pointer()
             .hover(|el| {
@@ -761,56 +829,78 @@ impl SupportView {
                 ShellDeckColors::text_muted(),
             ));
 
-        // Line 1: channel glyph + subject + priority dot + time + kebab
-        let subject_weight = if t.unread {
+        // Match Requests exactly: the subject owns the first line; compact
+        // state and source metadata live below it. Ticket fields remain
+        // independent and are only adapted to that shared presentation.
+        let subject_weight = if selected || t.unread {
             FontWeight::SEMIBOLD
         } else {
-            FontWeight::NORMAL
+            FontWeight::MEDIUM
         };
-        row = row.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(lucide_icon(
-                    t.channel_lucide(),
-                    12.0,
-                    ShellDeckColors::text_muted(),
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(px(13.0))
-                        .font_weight(subject_weight)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(subject),
-                )
-                .child(priority_badge(&t.priority))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(10.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(rel_time(t.last_at)),
-                )
-                .child(kebab),
-        );
-        // Line 2: contact only. Message previews made compact virtualized rows
-        // visually unstable at narrow widths; the full message remains in the
-        // selected ticket detail.
-        row = row.child(
-            div().flex().items_center().child(
+        let channel = if t.channel.trim().is_empty() {
+            "—".to_string()
+        } else {
+            t.channel.clone()
+        };
+        let mut meta = format!("{} · {}", t.contact.display(), channel);
+        if t.msg_count > 0 {
+            meta.push_str(&format!(" · {}", t.msg_count));
+        }
+        let when = rel_time(t.last_at);
+        row = row
+            .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(13.0))
+                            .font_weight(subject_weight)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(subject),
+                    )
+                    .child(kebab),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .w_full()
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(px(11.0))
+                    .text_size(px(10.5))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(t.contact.display()),
-            ),
-        );
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .rounded_full()
+                                    .bg(thread_status_color(&t.status)),
+                            )
+                            .child(status_label(&t.status)),
+                    )
+                    .when(
+                        t.priority != "normal" && !t.priority.trim().is_empty(),
+                        |el| el.child(div().flex_shrink_0().child(priority_badge(&t.priority))),
+                    )
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(meta))
+                    .when(!when.is_empty(), |el| {
+                        el.child(div().flex_shrink_0().child(when.clone()))
+                    }),
+            );
         row
     }
 
@@ -862,6 +952,26 @@ impl SupportView {
 
         let attachments = (last && !msg.attachments.is_empty())
             .then(|| self.render_issue_attachment_links(&msg.attachments, cx));
+        let channel = if msg.channel.trim().is_empty() {
+            channel
+        } else {
+            msg.channel.as_str()
+        };
+        let extras = ThreadMessageExtras {
+            quote: first
+                .then(|| {
+                    msg.quote
+                        .as_ref()
+                        .map(|quote| attributed_quote(quote.author.clone(), quote.body.clone()))
+                })
+                .flatten(),
+            delivery: last.then(|| self.render_ticket_delivery(msg)).flatten(),
+            actions: first.then(|| self.render_ticket_message_actions(msg, cx)),
+            group: Some(SharedString::from(format!(
+                "ticket-message-{}",
+                msg.at.to_bits()
+            ))),
+        };
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {
             human_message(
@@ -871,17 +981,222 @@ impl SupportView {
                 (!channel.trim().is_empty()).then(|| SharedString::from(channel.to_string())),
                 body,
                 attachments,
-                ThreadMessageExtras::default(),
+                extras,
                 font_size,
             )
         } else {
-            human_message_continuation(body, attachments, ThreadMessageExtras::default(), font_size)
+            human_message_continuation(body, attachments, extras, font_size)
         }
+    }
+
+    fn render_ticket_message_actions(
+        &self,
+        message: &SupportMessage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let reply_entity = entity.clone();
+        let focus = self.composer_state.read(cx).focus_handle(cx);
+        let author = message
+            .name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| {
+                if message.is_customer() {
+                    t!("support.bubble.client").to_string()
+                } else {
+                    t!("support.bubble.agent").to_string()
+                }
+            });
+        let quoted = message.text.clone();
+        let ticket_id = self.selected_id.clone().unwrap_or_default();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child(message_action(
+                SharedString::from(format!("ticket-reply-{}", message.at.to_bits())),
+                "reply",
+                t!("support.thread.reply").to_string(),
+                move |_, window, cx| {
+                    let author = author.clone();
+                    let quoted = quoted.clone();
+                    reply_entity.update(cx, |this, cx| {
+                        let current = this.composer_state.read(cx).content().to_string();
+                        let prefix = format!("> {} : {}\n\n", author, quoted);
+                        let next = if current.trim().is_empty() {
+                            prefix
+                        } else {
+                            format!("{}{}", prefix, current)
+                        };
+                        this.composer_state
+                            .update(cx, |state, cx| state.replace_content(next, cx));
+                    });
+                    window.focus(&focus);
+                },
+            ))
+            .child(message_action(
+                SharedString::from(format!("ticket-copy-{}", message.at.to_bits())),
+                "copy",
+                t!("support.thread.copy").to_string(),
+                {
+                    let body = message.text.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
+                    }
+                },
+            ))
+            .when(self.ai_reply_enabled, |actions| {
+                actions.child(message_action(
+                    SharedString::from(format!("ticket-ai-{}", message.at.to_bits())),
+                    "sparkles",
+                    t!("support.thread.rewrite_ai").to_string(),
+                    move |_, _, cx| {
+                        entity.update(cx, |_, cx| {
+                            cx.emit(SupportViewEvent::SuggestReply(ticket_id.clone()));
+                        });
+                    },
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn render_ticket_delivery(&self, message: &SupportMessage) -> Option<AnyElement> {
+        let delivery = message.delivery.as_ref()?;
+        let channel = if delivery.channel.trim().is_empty() {
+            if message.channel.trim().is_empty() {
+                self.detail
+                    .as_ref()
+                    .map(|ticket| ticket.channel.as_str())
+                    .unwrap_or("support")
+            } else {
+                message.channel.as_str()
+            }
+        } else {
+            delivery.channel.as_str()
+        };
+        if delivery.status == "failed" {
+            // Future API hook: Support has no idempotent message retry route
+            // yet. Keep the affordance in the fixture without issuing a fake
+            // write; the event can be wired when Manage exposes message ids.
+            let retry = message_action(
+                SharedString::from(format!("ticket-retry-{}", message.at.to_bits())),
+                "rotate-ccw",
+                t!("support.thread.retry").to_string(),
+                |_, _, _| {},
+            );
+            Some(delivery_status(
+                if delivery.error.trim().is_empty() {
+                    t!("support.thread.send_failed").to_string()
+                } else {
+                    delivery.error.clone()
+                },
+                ThreadDeliveryTone::Error,
+                Some(retry),
+            ))
+        } else {
+            let label = if delivery.status == "read" && delivery.at > 0.0 {
+                t!(
+                    "support.thread.sent_read",
+                    channel = channel,
+                    when = rel_time(delivery.at)
+                )
+                .to_string()
+            } else {
+                t!("support.thread.sent", channel = channel).to_string()
+            };
+            Some(delivery_status(label, ThreadDeliveryTone::Success, None))
+        }
+    }
+
+    fn ticket_note_kind(message: &SupportMessage) -> ThreadNoteKind {
+        match message.kind.as_str() {
+            "status" => ThreadNoteKind::Status,
+            "github" => ThreadNoteKind::Github,
+            "dispatch" => ThreadNoteKind::Dispatch,
+            "system" => ThreadNoteKind::System,
+            _ => ThreadNoteKind::Internal,
+        }
+    }
+
+    fn apply_ticket_ai_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(body) = self
+            .detail
+            .as_ref()
+            .and_then(|ticket| ticket.thread_state.suggested_reply.as_ref())
+            .map(|draft| draft.body.clone())
+        else {
+            return;
+        };
+        self.composer_state
+            .update(cx, |state, cx| state.replace_content(body, cx));
+        cx.notify();
+    }
+
+    fn discard_ticket_ai_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(ticket) = self.detail.as_mut() {
+            ticket.thread_state.suggested_reply = None;
+        }
+        self.rebuild_ticket_thread_cache();
+        cx.notify();
+    }
+
+    fn render_ticket_ai_draft_card(
+        &self,
+        body: String,
+        model: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = if model.trim().is_empty() {
+            t!("support.issue.ai_draft").to_string()
+        } else {
+            t!("support.issue.ai_draft_model", model = model).to_string()
+        };
+        let ticket_id = self.selected_id.clone().unwrap_or_default();
+        let leading = vec![
+            Button::new(
+                "ticket-ai-regenerate",
+                t!("support.issue.ai_regenerate").to_string(),
+            )
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("rotate-ccw"))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(SupportViewEvent::SuggestReply(ticket_id.clone()));
+            }))
+            .into_any_element(),
+            Button::new("ticket-ai-edit", t!("support.issue.ai_edit").to_string())
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("pencil"))
+                .on_click(cx.listener(|this, _, _, cx| this.apply_ticket_ai_draft(cx)))
+                .into_any_element(),
+        ];
+        let trailing = vec![
+            Button::new(
+                "ticket-ai-discard",
+                t!("support.issue.ai_discard").to_string(),
+            )
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .on_click(cx.listener(|this, _, _, cx| this.discard_ticket_ai_draft(cx)))
+            .into_any_element(),
+            Button::new(
+                "ticket-ai-publish",
+                t!("support.issue.ai_publish").to_string(),
+            )
+            .variant(ButtonVariant::Ai)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("arrow-up"))
+            .on_click(cx.listener(|this, _, _, cx| this.apply_ticket_ai_draft(cx)))
+            .into_any_element(),
+        ];
+        ai_draft_card(title, body, leading, trailing)
     }
 
     fn render_ticket_thread_item(
         &self,
-        mut index: usize,
+        index: usize,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -890,94 +1205,94 @@ impl SupportView {
         let Some(ticket) = &self.detail else {
             return div().into_any_element();
         };
-        if ticket.messages.is_empty() {
-            return div()
-                .w_full()
-                .pb(px(object_bottom))
-                .text_size(px(12.0))
-                .text_color(ShellDeckColors::text_muted())
-                .child(t!("support.empty.messages").to_string())
-                .into_any_element();
-        }
-
-        for (message, blocks) in ticket.messages.iter().zip(&self.ticket_message_blocks) {
-            if message.is_note() {
-                if index == 0 {
-                    return div()
-                        .w_full()
-                        .pb(px(object_bottom))
-                        .child(thread_note(
+        let Some(row) = self.ticket_thread_rows.get(index).cloned() else {
+            return div().into_any_element();
+        };
+        let (content, bottom) = match row {
+            TicketThreadRow::Empty => (
+                div()
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("support.empty.messages").to_string())
+                    .into_any_element(),
+                object_bottom,
+            ),
+            TicketThreadRow::Message {
+                message: message_index,
+                block,
+                first,
+                last,
+            } => {
+                let message = &ticket.messages[message_index];
+                if message.is_note() {
+                    (
+                        thread_note(
                             message.text.clone(),
                             message.name.clone(),
                             message.at,
-                            ThreadNoteKind::Internal,
+                            Self::ticket_note_kind(message),
                             px(11.5).to_pixels(window.rem_size()),
-                        ))
-                        .into_any_element();
+                        ),
+                        object_bottom,
+                    )
+                } else {
+                    let body = self.ticket_message_blocks[message_index]
+                        .get(block)
+                        .cloned()
+                        .unwrap_or_else(|| SharedString::from(message.text.clone()));
+                    (
+                        self.render_message_segment(
+                            message,
+                            &self.me,
+                            &ticket.channel,
+                            body,
+                            first,
+                            last,
+                            window,
+                            cx,
+                        ),
+                        if last { object_bottom } else { 8.0 },
+                    )
                 }
-                index -= 1;
-                continue;
             }
-
-            let count = blocks.len().max(1);
-            if index < count {
-                let first = index == 0;
-                let last = index + 1 == count;
-                let body = blocks
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| SharedString::from(message.text.clone()));
-                return div()
-                    .w_full()
-                    .pb(px(if last { object_bottom } else { 8.0 }))
-                    .child(self.render_message_segment(
-                        message,
-                        &self.me,
-                        &ticket.channel,
-                        body,
-                        first,
-                        last,
-                        window,
-                        cx,
-                    ))
-                    .into_any_element();
+            TicketThreadRow::Day { at } => (day_separator(timeline_day_label(at)), 14.0),
+            TicketThreadRow::Typing { index } => (
+                typing_indicator(
+                    ticket
+                        .thread_state
+                        .typing
+                        .get(index)
+                        .map(|typing| typing.author.clone())
+                        .unwrap_or_default(),
+                ),
+                object_bottom,
+            ),
+            TicketThreadRow::AiDraft => {
+                let Some(draft) = ticket.thread_state.suggested_reply.as_ref() else {
+                    return div().into_any_element();
+                };
+                (
+                    self.render_ticket_ai_draft_card(draft.body.clone(), draft.model.clone(), cx),
+                    object_bottom,
+                )
             }
-            index -= count;
-        }
-        div().into_any_element()
-    }
-
-    pub(super) fn action_button(
-        &self,
-        id: &'static str,
-        label: String,
-        icon: Option<&'static str>,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-    ) -> impl IntoElement {
-        let mut btn = div()
-            .id(ElementId::from(SharedString::from(id.to_string())))
-            .px(px(9.0))
-            .py(px(5.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .bg(ShellDeckColors::bg_primary())
-            .text_size(px(12.0))
-            .text_color(ShellDeckColors::text_primary())
-            .cursor_pointer()
-            .hover(|s| s.bg(ShellDeckColors::hover_bg()));
-        if let Some(icon_name) = icon {
-            btn = btn
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .child(lucide_icon(icon_name, 12.0, ShellDeckColors::text_muted()))
-                .child(label);
-        } else {
-            btn = btn.child(label);
-        }
-        btn.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| on_click(this, cx)))
+            TicketThreadRow::LocalDraft => (
+                local_draft(
+                    ticket
+                        .thread_state
+                        .local_draft
+                        .as_ref()
+                        .map(|draft| draft.body.clone())
+                        .unwrap_or_default(),
+                ),
+                object_bottom,
+            ),
+        };
+        div()
+            .w_full()
+            .pb(px(bottom))
+            .child(content)
+            .into_any_element()
     }
 
     pub(super) fn close_popover_menu(&mut self, cx: &mut Context<Self>) {
@@ -1092,36 +1407,27 @@ impl SupportView {
         }
 
         if matches!(kind, SupportMenuKind::ConversationHeader) {
-            items.push(
-                PopoverMenuItem::new("menu-priority", t!("support.menu.priority").to_string())
-                    .icon("flag")
+            // Status, priority and assignee are direct header controls now.
+            // Keep the kebab for secondary intentions only, matching Requests.
+            if self.ai_reply_enabled {
+                let triage_id = id.clone();
+                items.push(
+                    PopoverMenuItem::new(
+                        "menu-triage-ai",
+                        t!("ai.workflow.support_triage").to_string(),
+                    )
+                    .icon("sparkles")
                     .on_click({
                         let entity = entity.clone();
                         move |_, cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_popover_menu(cx);
-                                this.priority_menu_open = true;
-                                this.assign_menu_open = false;
-                                cx.notify();
+                                cx.emit(SupportViewEvent::TriageTicket(triage_id.clone()));
                             });
                         }
                     }),
-            );
-            items.push(
-                PopoverMenuItem::new("menu-assign", t!("support.menu.assign").to_string())
-                    .icon("users")
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_popover_menu(cx);
-                                this.assign_menu_open = true;
-                                this.priority_menu_open = false;
-                                cx.notify();
-                            });
-                        }
-                    }),
-            );
+                );
+            }
         } else {
             for p in ["low", "normal", "high", "urgent"] {
                 let pid = id.clone();
@@ -1289,18 +1595,552 @@ impl SupportView {
             )
     }
 
+    pub(crate) fn update_ticket_showcase(
+        &mut self,
+        id: &str,
+        update: impl Fn(&mut SupportTicket),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if id != SUPPORT_TICKET_SHOWCASE_ID {
+            return false;
+        }
+        let Some(old) = self.tickets.iter().find(|ticket| ticket.id == id).cloned() else {
+            cx.notify();
+            return true;
+        };
+        let mut updated = self
+            .detail
+            .as_ref()
+            .filter(|ticket| ticket.id == id)
+            .cloned()
+            .unwrap_or_else(|| old.clone());
+        update(&mut updated);
+
+        if old.status != updated.status {
+            match old.status.as_str() {
+                "open" => self.counts.open = self.counts.open.saturating_sub(1),
+                "pending" => self.counts.pending = self.counts.pending.saturating_sub(1),
+                "closed" => self.counts.closed = self.counts.closed.saturating_sub(1),
+                _ => {}
+            }
+            match updated.status.as_str() {
+                "open" => self.counts.open = self.counts.open.saturating_add(1),
+                "pending" => self.counts.pending = self.counts.pending.saturating_add(1),
+                "closed" => self.counts.closed = self.counts.closed.saturating_add(1),
+                _ => {}
+            }
+        }
+
+        if old.assignee != updated.assignee {
+            let my_email = self.me.email.trim();
+            let old_unassigned = old.assignee.trim().is_empty();
+            let new_unassigned = updated.assignee.trim().is_empty();
+            let old_mine = !my_email.is_empty() && old.assignee.eq_ignore_ascii_case(my_email);
+            let new_mine = !my_email.is_empty() && updated.assignee.eq_ignore_ascii_case(my_email);
+            if old_unassigned != new_unassigned {
+                self.counts.unassigned = if new_unassigned {
+                    self.counts.unassigned.saturating_add(1)
+                } else {
+                    self.counts.unassigned.saturating_sub(1)
+                };
+            }
+            if old_mine != new_mine {
+                self.counts.mine = if new_mine {
+                    self.counts.mine.saturating_add(1)
+                } else {
+                    self.counts.mine.saturating_sub(1)
+                };
+            }
+        }
+
+        if let Some(row) = self.tickets.iter_mut().find(|row| row.id == id) {
+            *row = updated.clone();
+        }
+        if self.detail.as_ref().is_some_and(|ticket| ticket.id == id) {
+            self.detail = Some(updated);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Keep the staff-only fixture fully interactive without ever sending its
+    /// synthetic id or attachments to Manage.
+    pub(crate) fn append_ticket_showcase_message(
+        &mut self,
+        id: &str,
+        text: String,
+        note: bool,
+        attachments: Vec<AttachmentDraft>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if id != SUPPORT_TICKET_SHOWCASE_ID {
+            return false;
+        }
+        let Some(mut ticket) = self.detail.clone().filter(|ticket| ticket.id == id) else {
+            return false;
+        };
+        let now = chrono::Utc::now().timestamp_millis() as f64;
+        let sender = if self.me.name.trim().is_empty() {
+            self.me.email.clone()
+        } else {
+            self.me.name.clone()
+        };
+        let attachments = attachments
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, draft)| shelldeck_core::config::issues::IssueAttachment {
+                    id: format!("fake-ticket-upload-{now:.0}-{index}"),
+                    filename: draft.filename,
+                    content_type: draft.content_type,
+                    bytes: draft.bytes.len() as u64,
+                    created_by: sender.clone(),
+                    created_at: now,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        ticket.messages.push(SupportMessage {
+            from: if note { "note" } else { "agent" }.to_string(),
+            text: text.clone(),
+            at: now,
+            name: Some(sender),
+            attachments,
+            kind: if note { "internal" } else { "comment" }.to_string(),
+            channel: ticket.channel.clone(),
+            delivery: (!note).then_some(SupportMessageDelivery {
+                status: "sent".to_string(),
+                channel: ticket.channel.clone(),
+                at: now,
+                error: String::new(),
+            }),
+            ..Default::default()
+        });
+        ticket.last_at = now;
+        ticket.last_preview = text;
+        ticket.msg_count = ticket.msg_count.saturating_add(1);
+        self.set_detail(ticket, cx);
+        true
+    }
+
+    fn render_ticket_status_picker(
+        &self,
+        ticket: &SupportTicket,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let trigger = thread_header_picker(
+            "ticket-detail-status",
+            div()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(thread_status_color(&ticket.status)),
+            status_label(&ticket.status),
+            self.me.staff,
+        );
+        if !self.me.staff {
+            return trigger;
+        }
+        let parent = cx.entity();
+        let ticket_id = ticket.id.clone();
+        let current = ticket.status.clone();
+        Popover::new("ticket-detail-status-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                let ticket_id = ticket_id.clone();
+                let current = current.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(176.0)).flex().flex_col().gap(px(2.0));
+                        for status in ["open", "pending", "closed"] {
+                            let row_parent = parent.clone();
+                            let row_ticket_id = ticket_id.clone();
+                            list = list.child(
+                                thread_picker_option_row(
+                                    format!("ticket-status-option-{status}").into(),
+                                    div()
+                                        .size(px(7.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .bg(thread_status_color(status)),
+                                    status_label(status),
+                                    None,
+                                    current == status,
+                                )
+                                .on_click(cx.listener(
+                                    move |_content, _: &ClickEvent, _, cx| {
+                                        row_parent.update(cx, |this, cx| {
+                                            if !this.update_ticket_showcase(
+                                                &row_ticket_id,
+                                                |ticket| ticket.status = status.to_string(),
+                                                cx,
+                                            ) {
+                                                cx.emit(SupportViewEvent::SetStatus {
+                                                    id: row_ticket_id.clone(),
+                                                    status: status.to_string(),
+                                                });
+                                            }
+                                        });
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    fn render_ticket_priority_picker(
+        &self,
+        ticket: &SupportTicket,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let trigger = thread_header_picker(
+            "ticket-detail-priority",
+            div()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(thread_priority_color(&ticket.priority)),
+            priority_label(&ticket.priority),
+            self.me.staff,
+        );
+        if !self.me.staff {
+            return trigger;
+        }
+        let parent = cx.entity();
+        let ticket_id = ticket.id.clone();
+        let current = ticket.priority.clone();
+        Popover::new("ticket-detail-priority-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                let ticket_id = ticket_id.clone();
+                let current = current.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(176.0)).flex().flex_col().gap(px(2.0));
+                        for priority in ["low", "normal", "high", "urgent"] {
+                            let row_parent = parent.clone();
+                            let row_ticket_id = ticket_id.clone();
+                            list = list.child(
+                                thread_picker_option_row(
+                                    format!("ticket-priority-option-{priority}").into(),
+                                    div()
+                                        .size(px(7.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .bg(thread_priority_color(priority)),
+                                    priority_label(priority),
+                                    None,
+                                    current == priority,
+                                )
+                                .on_click(cx.listener(
+                                    move |_content, _: &ClickEvent, _, cx| {
+                                        row_parent.update(cx, |this, cx| {
+                                            if !this.update_ticket_showcase(
+                                                &row_ticket_id,
+                                                |ticket| ticket.priority = priority.to_string(),
+                                                cx,
+                                            ) {
+                                                cx.emit(SupportViewEvent::SetPriority {
+                                                    id: row_ticket_id.clone(),
+                                                    priority: priority.to_string(),
+                                                });
+                                            }
+                                        });
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    fn render_ticket_assignee_picker(
+        &self,
+        ticket: &SupportTicket,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let trigger = thread_header_picker(
+            "ticket-detail-assignee",
+            lucide_icon("at-sign", 11.0, ShellDeckColors::text_muted()),
+            self.assignee_label(&ticket.assignee),
+            self.me.staff,
+        );
+        if !self.me.staff {
+            return trigger;
+        }
+
+        let mut agents = self
+            .agents
+            .iter()
+            .filter(|agent| !agent.email.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        agents.sort_by_key(|agent| {
+            if agent.name.trim().is_empty() {
+                agent.email.to_lowercase()
+            } else {
+                agent.name.to_lowercase()
+            }
+        });
+        agents.dedup_by(|a, b| a.email.eq_ignore_ascii_case(&b.email));
+
+        let total = agents.len();
+        let parent = cx.entity();
+        let ticket_id = ticket.id.clone();
+        let current = ticket.assignee.clone();
+        let me_name = self.me.name.clone();
+        let me_email = self.me.email.clone();
+        let search = self.issue_assignee_search_state.clone();
+        Popover::new("ticket-detail-assignee-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                search.update(cx, InputState::reset);
+                let parent = parent.clone();
+                let ticket_id = ticket_id.clone();
+                let current = current.clone();
+                let me_name = me_name.clone();
+                let me_email = me_email.clone();
+                let search = search.clone();
+                let agents = agents.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let query = search.read(cx).content().trim().to_lowercase();
+                        let filtered = agents
+                            .iter()
+                            .filter(|agent| {
+                                query.is_empty()
+                                    || agent.name.to_lowercase().contains(&query)
+                                    || agent.email.to_lowercase().contains(&query)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let filtered_count = filtered.len();
+                        let list_height = px((filtered_count.clamp(1, 5) as f32) * 40.0);
+                        let filtered = Rc::new(filtered);
+                        let content_entity = cx.entity();
+                        let rows_parent = parent.clone();
+                        let rows_ticket_id = ticket_id.clone();
+                        let rows_current = current.clone();
+                        let rows = filtered.clone();
+                        let none_parent = parent.clone();
+                        let none_ticket_id = ticket_id.clone();
+                        let me_parent = parent.clone();
+                        let me_ticket_id = ticket_id.clone();
+                        let me_label = if me_name.trim().is_empty() {
+                            t!("support.assignee.me").to_string()
+                        } else {
+                            format!("{} · {me_name}", t!("support.assignee.me"))
+                        };
+                        let me_click_email = me_email.clone();
+
+                        div()
+                            .w(px(320.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .child(
+                                Input::new(&search)
+                                    .size(InputSize::Sm)
+                                    .placeholder(
+                                        t!("support.issues.assignee.picker.search").to_string(),
+                                    )
+                                    .on_change(move |_, cx| {
+                                        content_entity.update(cx, |_content, cx| cx.notify());
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .child(
+                                        thread_picker_option_row(
+                                            "ticket-assignee-none".into(),
+                                            lucide_icon(
+                                                "at-sign",
+                                                12.0,
+                                                ShellDeckColors::text_muted(),
+                                            ),
+                                            t!("support.assignee.none").to_string(),
+                                            None,
+                                            current.trim().is_empty(),
+                                        )
+                                        .on_click(cx.listener(
+                                            move |_content, _: &ClickEvent, _, cx| {
+                                                none_parent.update(cx, |this, cx| {
+                                                    if !this.update_ticket_showcase(
+                                                        &none_ticket_id,
+                                                        |ticket| ticket.assignee.clear(),
+                                                        cx,
+                                                    ) {
+                                                        cx.emit(SupportViewEvent::Assign {
+                                                            id: none_ticket_id.clone(),
+                                                            assignee: String::new(),
+                                                        });
+                                                    }
+                                                });
+                                                cx.emit(DismissEvent);
+                                            },
+                                        )),
+                                    )
+                                    .child(
+                                        thread_picker_option_row(
+                                            "ticket-assignee-me".into(),
+                                            lucide_icon(
+                                                "at-sign",
+                                                12.0,
+                                                ShellDeckColors::text_muted(),
+                                            ),
+                                            me_label,
+                                            None,
+                                            current.eq_ignore_ascii_case("me")
+                                                || (!me_email.trim().is_empty()
+                                                    && current.eq_ignore_ascii_case(&me_email)),
+                                        )
+                                        .on_click(cx.listener(
+                                            move |_content, _: &ClickEvent, _, cx| {
+                                                let value = me_click_email.clone();
+                                                me_parent.update(cx, |this, cx| {
+                                                    if !this.update_ticket_showcase(
+                                                        &me_ticket_id,
+                                                        |ticket| ticket.assignee = value.clone(),
+                                                        cx,
+                                                    ) {
+                                                        cx.emit(SupportViewEvent::Assign {
+                                                            id: me_ticket_id.clone(),
+                                                            assignee: "me".to_string(),
+                                                        });
+                                                    }
+                                                });
+                                                cx.emit(DismissEvent);
+                                            },
+                                        )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(4.0))
+                                    .border_t_1()
+                                    .border_color(ShellDeckColors::border())
+                                    .child(if filtered_count == 0 {
+                                        div()
+                                            .h(px(40.0))
+                                            .flex()
+                                            .items_center()
+                                            .px(px(8.0))
+                                            .text_size(px(11.0))
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .child(
+                                                t!("support.issues.assignee.no_match").to_string(),
+                                            )
+                                            .into_any_element()
+                                    } else {
+                                        uniform_list(
+                                            "ticket-header-assignee-options",
+                                            filtered_count,
+                                            cx.processor(
+                                                move |_content,
+                                                      range: Range<usize>,
+                                                      _window,
+                                                      cx| {
+                                                    range
+                                                        .filter_map(|index| {
+                                                            rows
+                                                                .get(index)
+                                                                .cloned()
+                                                                .map(|agent| (index, agent))
+                                                        })
+                                                        .map(|(index, agent)| {
+                                                            let label = if agent.name.trim().is_empty() {
+                                                                agent.email.clone()
+                                                            } else {
+                                                                agent.name.clone()
+                                                            };
+                                                            let active = rows_current
+                                                                .eq_ignore_ascii_case(&agent.email)
+                                                                || rows_current.eq_ignore_ascii_case(&label);
+                                                            let row_parent = rows_parent.clone();
+                                                            let row_ticket_id = rows_ticket_id.clone();
+                                                            let value = agent.email.clone();
+                                                            thread_picker_option_row(
+                                                                format!("ticket-assignee-agent-{index}").into(),
+                                                                lucide_icon(
+                                                                    "at-sign",
+                                                                    12.0,
+                                                                    ShellDeckColors::text_muted(),
+                                                                ),
+                                                                label,
+                                                                Some(agent.email.into()),
+                                                                active,
+                                                            )
+                                                            .h(px(40.0))
+                                                            .on_click(cx.listener(
+                                                                move |_content, _: &ClickEvent, _, cx| {
+                                                                    row_parent.update(cx, |this, cx| {
+                                                                        if !this.update_ticket_showcase(
+                                                                            &row_ticket_id,
+                                                                            |ticket| {
+                                                                                ticket.assignee = value.clone()
+                                                                            },
+                                                                            cx,
+                                                                        ) {
+                                                                            cx.emit(SupportViewEvent::Assign {
+                                                                                id: row_ticket_id.clone(),
+                                                                                assignee: value.clone(),
+                                                                            });
+                                                                        }
+                                                                    });
+                                                                    cx.emit(DismissEvent);
+                                                                },
+                                                            ))
+                                                            .into_any_element()
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                },
+                                            ),
+                                        )
+                                        .h(list_height)
+                                        .w_full()
+                                        .into_any_element()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .text_size(px(9.5))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(
+                                        t!("support.issue.assignee_count", count = total)
+                                            .to_string(),
+                                    ),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_conversation(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(ticket) = self.detail.clone() else {
             return self.render_empty_conversation();
         };
         let tid = ticket.id.clone();
 
-        // Header — context card. Big subject, then a single meta row with the
-        // contact avatar + name, the status + priority as color-coded Badges,
-        // the assignee in plain French, and the "last activity" time. Aim is
-        // that a non-tech agent can read the whole context in ~2 seconds.
+        // Same presentation contract as Requests: source-specific values feed
+        // the shared title/actions row and the same three metadata pickers.
+        // Contact + channel replace tenant + site because SupportTicket's wire
+        // schema carries different context.
         let contact_name = ticket.contact.display();
-        let assignee = assignee_display(&ticket.assignee, Some(self.my_email()));
         let last_at = ticket.last_at;
         let subject = if ticket.subject.trim().is_empty() {
             t!("support.empty.no_subject").to_string()
@@ -1308,48 +2148,49 @@ impl SupportView {
             ticket.subject.clone()
         };
 
-        let meta_row = div()
+        let mut context = vec![contact_name];
+        if !ticket.channel.trim().is_empty() {
+            context.push(ticket.channel.clone());
+        }
+        let mut context_label = context.join(" · ");
+        if last_at > 0.0 {
+            context_label.push(' ');
+            context_label
+                .push_str(&t!("support.last_exchange", time = rel_time(last_at)).to_string());
+        }
+
+        let mut meta_row = div()
             .flex()
             .items_center()
             .flex_wrap()
-            .gap(px(8.0))
-            .child(
-                Avatar::new()
-                    .name(contact_name.clone())
-                    .size(AvatarSize::Xs),
-            )
+            .gap(px(6.0))
+            .child(self.render_ticket_status_picker(&ticket, cx))
+            .child(self.render_ticket_priority_picker(&ticket, cx))
+            .child(self.render_ticket_assignee_picker(&ticket, cx))
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(contact_name),
-            )
-            .child(status_badge(&ticket.status))
-            .child(priority_badge(&ticket.priority))
-            .child(
-                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.assigned_to", name = assignee).to_string()),
+                    .child(context_label),
             );
-        let mut meta_row = meta_row;
-        if last_at > 0.0 {
-            meta_row = meta_row.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.last_exchange", time = rel_time(last_at)).to_string()),
-            );
+        for tag in ticket
+            .tags
+            .iter()
+            .filter(|tag| !tag.trim().is_empty())
+            .take(2)
+        {
+            meta_row = meta_row.child(Badge::new(tag.clone()).variant(BadgeVariant::Outline));
         }
 
         let header = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .px(px(16.0))
-            .py(px(12.0))
+            .py(px(10.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
@@ -1361,7 +2202,7 @@ impl SupportView {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
-                            .text_size(px(16.0))
+                            .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .child(subject),
@@ -1369,37 +2210,29 @@ impl SupportView {
                     .child({
                         let entity = cx.entity();
                         let summary_id = tid.clone();
-                        let triage_id = tid.clone();
                         let mut actions = div().flex().items_center().flex_shrink_0().gap(px(6.0));
                         if self.ai_reply_enabled {
-                            actions = actions
-                                .child(
-                                    Button::new("support-ai-summary", "")
-                                        .variant(ButtonVariant::Ai)
-                                        .size(ButtonSize::Sm)
-                                        .tooltip(t!("ai.workflow.support_summary").to_string())
-                                        .icon(IconSource::from("info"))
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            cx.emit(SupportViewEvent::SummarizeTicket(
-                                                summary_id.clone(),
-                                            ));
-                                        })),
+                            actions = actions.child(
+                                Button::new(
+                                    "support-ai-summary",
+                                    t!("support.issue.summarize").to_string(),
                                 )
-                                .child(
-                                    Button::new("support-ai-triage", "")
-                                        .variant(ButtonVariant::Ai)
-                                        .size(ButtonSize::Sm)
-                                        .tooltip(t!("ai.workflow.support_triage").to_string())
-                                        .icon(IconSource::from("flag"))
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            cx.emit(SupportViewEvent::TriageTicket(
-                                                triage_id.clone(),
-                                            ));
-                                        })),
-                                );
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Sm)
+                                .h(px(28.0))
+                                .px(px(8.0))
+                                .icon(IconSource::from("sparkles"))
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        cx.emit(SupportViewEvent::SummarizeTicket(
+                                            summary_id.clone(),
+                                        ));
+                                    },
+                                )),
+                            );
                         }
                         actions.child(
-                            IconButton::new("ellipsis-vertical")
+                            IconButton::new("ellipsis")
                                 .variant(ButtonVariant::Ghost)
                                 .size(gpui::px(28.0))
                                 .icon_size(gpui::px(14.0))
@@ -1417,8 +2250,7 @@ impl SupportView {
                         )
                     }),
             )
-            .child(meta_row)
-            .child(self.render_header_subpanels(&ticket, cx));
+            .child(meta_row);
 
         // Variable-height native list: only visible Markdown blocks are
         // parsed, laid out and painted while bottom alignment keeps the chat
@@ -1462,143 +2294,6 @@ impl SupportView {
             .child(header)
             .child(messages)
             .child(self.render_composer(&tid, cx))
-    }
-
-    /// Priority / assignee pickers opened from the header kebab menu.
-    pub(super) fn render_header_subpanels(
-        &self,
-        ticket: &SupportTicket,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        if !self.priority_menu_open && !self.assign_menu_open {
-            return div().into_any_element();
-        }
-
-        let id = ticket.id.clone();
-        let mut panel = div().flex().flex_col().gap(px(6.0)).pt(px(4.0));
-
-        if self.priority_menu_open {
-            let mut prio_row = div()
-                .w_full()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(6.0));
-            for p in ["low", "normal", "high", "urgent"] {
-                let pid = id.clone();
-                let active = ticket.priority == p;
-                let mut chip = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "sup-pchip-{p}"
-                    ))))
-                    .p(px(2.0))
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_2()
-                    .child(priority_badge(p))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.priority_menu_open = false;
-                        cx.emit(SupportViewEvent::SetPriority {
-                            id: pid.clone(),
-                            priority: p.to_string(),
-                        });
-                    }));
-                if active {
-                    chip = chip.border_color(ShellDeckColors::primary());
-                } else {
-                    chip = chip.border_color(gpui::transparent_black()).opacity(0.55);
-                }
-                prio_row = prio_row.child(chip);
-            }
-            panel = panel.child(prio_row);
-        }
-
-        if self.assign_menu_open {
-            let mut list = div()
-                .id("sup-assign-list")
-                .w_full()
-                .max_h(px(160.0))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap(px(2.0));
-            {
-                let uid = id.clone();
-                list = list.child(self.action_button(
-                    "sup-unassign",
-                    "— Non attribué —".to_string(),
-                    Some("user"),
-                    cx,
-                    move |this, cx| {
-                        this.assign_menu_open = false;
-                        cx.emit(SupportViewEvent::Assign {
-                            id: uid.clone(),
-                            assignee: String::new(),
-                        });
-                    },
-                ));
-            }
-            for agent in &self.agents {
-                let aid = id.clone();
-                let email = agent.email.clone();
-                let display_name = if agent.name.trim().is_empty() {
-                    agent.email.clone()
-                } else {
-                    agent.name.clone()
-                };
-                let email_below = if agent.name.trim().is_empty() {
-                    String::new()
-                } else {
-                    agent.email.clone()
-                };
-                let mut row = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "sup-ag-{}",
-                        agent.email
-                    ))))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(9.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child(
-                        Avatar::new()
-                            .name(display_name.clone())
-                            .size(AvatarSize::Xs),
-                    );
-                let mut name_col = div().flex().flex_col().child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(ShellDeckColors::text_primary())
-                        .child(display_name),
-                );
-                if !email_below.is_empty() {
-                    name_col = name_col.child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(email_below),
-                    );
-                }
-                row = row.child(name_col).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
-                        this.assign_menu_open = false;
-                        cx.emit(SupportViewEvent::Assign {
-                            id: aid.clone(),
-                            assignee: email.clone(),
-                        });
-                    },
-                ));
-                list = list.child(row);
-            }
-            panel = panel.child(list);
-        }
-
-        panel.into_any_element()
     }
 
     pub(super) fn render_attachment_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {

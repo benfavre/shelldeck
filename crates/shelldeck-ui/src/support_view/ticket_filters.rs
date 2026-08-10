@@ -1,8 +1,32 @@
 use super::*;
 
 impl SupportView {
-    pub(super) fn my_email(&self) -> &str {
+    pub(crate) fn my_email(&self) -> &str {
         &self.me.email
+    }
+
+    /// Resolve the compact assignee label shared by Ticket and Request
+    /// headers while each adapter keeps its original wire value.
+    pub(super) fn assignee_label(&self, assignee: &str) -> String {
+        let assignee = assignee.trim();
+        if assignee.is_empty() {
+            return t!("support.assignee.none").to_string();
+        }
+        if assignee.eq_ignore_ascii_case("me")
+            || (!self.me.email.trim().is_empty()
+                && assignee.eq_ignore_ascii_case(self.me.email.trim()))
+        {
+            return if self.me.name.trim().is_empty() {
+                t!("support.assignee.me").to_string()
+            } else {
+                self.me.name.clone()
+            };
+        }
+        self.agents
+            .iter()
+            .find(|agent| agent.email.eq_ignore_ascii_case(assignee))
+            .and_then(|agent| (!agent.name.trim().is_empty()).then(|| agent.name.clone()))
+            .unwrap_or_else(|| assignee.to_string())
     }
 
     pub(super) fn passes_filter(&self, t: &SupportTicket) -> bool {
