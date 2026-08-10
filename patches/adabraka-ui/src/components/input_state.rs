@@ -228,6 +228,10 @@ pub struct InputState {
     preferred_cursor_x: Option<Pixels>,
     pub(crate) text_scroll_handle: Option<ScrollHandle>,
     pub(crate) visible_text_rows: Option<usize>,
+    // ShellDeck patch: SDPATCH-018 — remember what the caret-following pass
+    // last observed. Repaints with an unchanged draft/caret must not snap a
+    // viewport that the user just moved with the wheel.
+    last_caret_snapshot: Option<(SharedString, usize)>,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -296,6 +300,9 @@ impl InputState {
             preferred_cursor_x: None,
             text_scroll_handle: None,
             visible_text_rows: None,
+            // ShellDeck patch: SDPATCH-018 — the first paint establishes the
+            // caret snapshot and, when restored content exists, reveals it.
+            last_caret_snapshot: None,
         }
     }
 
@@ -1652,10 +1659,16 @@ impl gpui::Element for InputTextElement {
                         for visual_row in 0..=line.wrap_boundaries().len() {
                             let row_y = line_h * visual_row as f32;
                             let row_start = line
-                                .closest_index_for_position(point(px(-1.0), row_y + line_h / 2.0), line_h)
+                                .closest_index_for_position(
+                                    point(px(-1.0), row_y + line_h / 2.0),
+                                    line_h,
+                                )
                                 .unwrap_or_else(|index| index);
                             let row_end = line
-                                .closest_index_for_position(point(px(1_000_000.0), row_y + line_h / 2.0), line_h)
+                                .closest_index_for_position(
+                                    point(px(1_000_000.0), row_y + line_h / 2.0),
+                                    line_h,
+                                )
                                 .unwrap_or_else(|index| index);
                             let start = (selected_start - line_start).max(row_start);
                             let end = (selected_end - line_start).min(row_end);
@@ -1903,22 +1916,37 @@ impl gpui::Element for InputTextElement {
                 input.wrapped_line_count = visual_total;
                 input.line_height = line_h;
                 input.last_bounds = Some(bounds);
-                if let (Some(handle), Some(rows), Some(cursor)) = (
-                    input.text_scroll_handle.as_ref(),
-                    input.visible_text_rows,
-                    input.visual_position_for_index(input.cursor_offset()),
-                ) {
-                    let viewport_height = line_h * rows as f32;
-                    let current_top = -handle.offset().y;
-                    let next_top = if cursor.y < current_top {
-                        cursor.y
-                    } else if cursor.y + line_h > current_top + viewport_height {
-                        cursor.y + line_h - viewport_height
-                    } else {
-                        current_top
-                    };
-                    if next_top != current_top {
-                        handle.set_offset(point(handle.offset().x, -next_top.max(px(0.0))));
+                // ShellDeck patch: SDPATCH-018 — only follow a caret that
+                // actually moved (or whose content changed). Cursor blinking,
+                // hover and unrelated parent repaints then preserve a manual
+                // wheel offset instead of snapping back to the end.
+                let cursor_offset = input.cursor_offset();
+                let caret_changed = input
+                    .last_caret_snapshot
+                    .as_ref()
+                    .map(|(content, offset)| {
+                        content != &input.content || *offset != cursor_offset
+                    })
+                    .unwrap_or(true);
+                input.last_caret_snapshot = Some((input.content.clone(), cursor_offset));
+                if caret_changed {
+                    if let (Some(handle), Some(rows), Some(cursor)) = (
+                        input.text_scroll_handle.as_ref(),
+                        input.visible_text_rows,
+                        input.visual_position_for_index(input.cursor_offset()),
+                    ) {
+                        let viewport_height = line_h * rows as f32;
+                        let current_top = -handle.offset().y;
+                        let next_top = if cursor.y < current_top {
+                            cursor.y
+                        } else if cursor.y + line_h > current_top + viewport_height {
+                            cursor.y + line_h - viewport_height
+                        } else {
+                            current_top
+                        };
+                        if next_top != current_top {
+                            handle.set_offset(point(handle.offset().x, -next_top.max(px(0.0))));
+                        }
                     }
                 }
                 if prev_count != visual_total {
@@ -1973,7 +2001,12 @@ impl Render for InputState {
 
         div()
             .w_full()
-            .h_full()
+            // ShellDeck patch: SDPATCH-018 — keep a multi-line state's root
+            // at its intrinsic visual-line height. `h_full()` resolved against
+            // the capped scroll viewport and stretched any non-empty textarea
+            // almost straight to `max_rows`, leaving a large blank band. The
+            // outer Input scroll container already applies the hard cap.
+            .when(!self.multi_line, |root| root.h_full())
             .on_mouse_down(MouseButton::Left, {
                 let input = input.clone();
                 move |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {

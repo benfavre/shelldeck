@@ -24,7 +24,6 @@ use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
-use adabraka_ui::components::editor::{EditorState, Paste as EditorPaste};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -32,6 +31,7 @@ use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::display::card::Card;
+use adabraka_ui::overlays::popover::{Popover, PopoverContent};
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
@@ -101,6 +101,87 @@ impl SupportFilter {
         SupportFilter::Breaching,
         SupportFilter::Closed,
     ];
+}
+
+/// Shared 26 px footer action used by both Support composers. adabraka's
+/// smallest labeled `Button` is 36 px, which makes the footer taller than the
+/// writing field; the shared Composer deliberately exposes custom action slots
+/// for this denser chrome.
+fn compact_composer_action(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(6.0))
+        .rounded(px(7.0))
+        .text_size(px(11.5))
+        .text_color(ShellDeckColors::text_muted())
+        .when(enabled, |action| {
+            action.cursor_pointer().hover(|style| {
+                style
+                    .bg(ShellDeckColors::hover_bg())
+                    .text_color(ShellDeckColors::text_primary())
+            })
+        })
+        .when(!enabled, |action| action.opacity(0.5))
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(14.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+}
+
+/// Message destination in the ticket Composer option slot. Requests use that
+/// slot for their AI model because their API has no destination choice.
+fn composer_delivery_chip(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    interactive: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(7.0))
+        .rounded(px(7.0))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_muted())
+        .when(interactive, |chip| {
+            chip.cursor_pointer()
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        })
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(12.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+        .when(interactive, |chip| {
+            chip.child(
+                svg()
+                    .path(lucide_path("chevron-down"))
+                    .size(px(11.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+        })
 }
 
 /// Advanced filter option — `value` is `None` for the "all" chip.
@@ -366,7 +447,7 @@ pub struct SupportView {
     /// Assignee picker inside the filter dialog (adabraka-ui `Select`).
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
-    composer_state: Entity<EditorState>,
+    composer_state: Entity<InputState>,
     /// Pending AI reply (issue only, for now). Kept OUT of `composer_state` so
     /// it does not shove aside what the user was writing — the mockup shows it
     /// as a distinct card above the composer, with Publier / Modifier /
@@ -389,7 +470,6 @@ pub struct SupportView {
     /// *which* one — so the reply composer had no way to show or change it.
     ai_backend: shelldeck_core::ai::AiBackend,
     ai_model: String,
-    ai_backend_menu: bool,
     loading: bool,
     error: Option<String>,
     assign_menu_open: bool,
@@ -430,14 +510,14 @@ pub struct SupportView {
     /// cramped popover.
     issues_assignee_modal_open: bool,
     issues_assignee_search_state: Entity<InputState>,
+    /// Search state for the compact header assignee popover. Kept separate
+    /// from the advanced-filter modal so opening either picker cannot leak a
+    /// query into the other.
+    issue_assignee_search_state: Entity<InputState>,
     issues_search_state: Entity<InputState>,
     issue_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
-    issue_status_menu: bool,
-    issue_assign_menu: bool,
-    issue_dispatch_menu: bool,
-    issue_priority_menu_open: bool,
     /// Kebab menu anchor for a request. Carries the issue id + click position
     /// so both the list-row kebab (works without opening the detail) and the
     /// detail-header kebab share the same popover machinery.
@@ -468,6 +548,7 @@ impl SupportView {
         let parent = cx.entity();
         let assignee_draft_select =
             Self::build_assignee_draft_select(None, &[], parent.clone(), cx);
+        let composer_state = cx.new(|cx| InputState::new(cx).multi_line(true));
         Self {
             tickets: Vec::new(),
             counts: SupportCounts::default(),
@@ -491,11 +572,7 @@ impl SupportView {
             assignee_draft_select,
             issue_ai_draft: None,
             issue_ai_pending: false,
-            composer_state: cx.new(|cx| {
-                let mut state = EditorState::new(cx);
-                state.show_line_numbers = false;
-                state
-            }),
+            composer_state,
             attachment_url_state: cx.new(InputState::new),
             attachment_url_open: false,
             attachment_drafts: Vec::new(),
@@ -507,7 +584,6 @@ impl SupportView {
             ai_issue_enabled: false,
             ai_backend: shelldeck_core::ai::AiBackend::Disabled,
             ai_model: String::new(),
-            ai_backend_menu: false,
             loading: false,
             error: None,
             assign_menu_open: false,
@@ -526,14 +602,11 @@ impl SupportView {
             issues_filter_modal_open: false,
             issues_assignee_modal_open: false,
             issues_assignee_search_state: cx.new(InputState::new),
+            issue_assignee_search_state: cx.new(InputState::new),
             issues_search_state: cx.new(InputState::new),
             issue_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
-            issue_status_menu: false,
-            issue_assign_menu: false,
-            issue_dispatch_menu: false,
-            issue_priority_menu_open: false,
             issue_popover_menu: None,
             confirm_issue_delete: None,
             confirm_attachment_delete: None,
@@ -603,10 +676,6 @@ impl SupportView {
         self.priority_menu_open = false;
         self.assign_menu_open = false;
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
         self.confirm_issue_delete = None;
     }
 
@@ -640,10 +709,6 @@ impl SupportView {
             self.rebuild_issue_thread_cache(same_issue);
         }
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
     }
 
     /// Feed the JeanClaude strip (workspace pushes this from the cached state).
@@ -770,7 +835,7 @@ impl SupportView {
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
         self.composer_state.update(cx, |s, cx| {
-            s.set_content("", cx);
+            s.reset(cx);
         });
     }
 
@@ -1021,7 +1086,6 @@ impl SupportView {
         if self.ai_backend != backend || self.ai_model != model {
             self.ai_backend = backend;
             self.ai_model = model;
-            self.ai_backend_menu = false;
             cx.notify();
         }
     }
@@ -1077,7 +1141,7 @@ impl SupportView {
             format!("{}\n\n{}", current, draft.body)
         };
         self.composer_state.update(cx, |state, cx| {
-            state.set_content(&merged, cx);
+            state.replace_content(merged, cx);
         });
         cx.notify();
     }
@@ -1091,7 +1155,7 @@ impl SupportView {
     pub fn set_composer_draft(&mut self, text: String, cx: &mut Context<Self>) {
         self.compose_note = false;
         self.composer_state
-            .update(cx, |state, cx| state.set_content(&text, cx));
+            .update(cx, |state, cx| state.replace_content(text, cx));
         cx.notify();
     }
 

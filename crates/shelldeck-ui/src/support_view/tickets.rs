@@ -1,6 +1,6 @@
 use super::thread::{
-    ThreadMessageExtras, ThreadNoteKind, composer_editor_field, human_message,
-    human_message_continuation, markdown_blocks, note as thread_note,
+    ThreadMessageExtras, ThreadNoteKind, human_message, human_message_continuation,
+    markdown_blocks, note as thread_note,
 };
 use super::*;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
@@ -1788,45 +1788,84 @@ impl SupportView {
             })
     }
 
+    fn render_ticket_delivery_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let is_note = self.compose_note;
+        let trigger = composer_delivery_chip(
+            "support-ticket-delivery",
+            if is_note { "sticky-note" } else { "reply" },
+            if is_note {
+                t!("support.note_internal").to_string()
+            } else {
+                t!("support.compose.reply").to_string()
+            },
+            true,
+        );
+        let parent = cx.entity();
+
+        Popover::new("support-ticket-delivery-popover")
+            .anchor(Corner::BottomRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(190.0)).flex().flex_col().gap(px(2.0));
+                        for (index, (note, icon, label)) in [
+                            (false, "reply", t!("support.compose.reply").to_string()),
+                            (true, "sticky-note", t!("support.note_internal").to_string()),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let selected = is_note == note;
+                            let row_parent = parent.clone();
+                            list = list.child(
+                                div()
+                                    .id(("support-ticket-delivery-option", index))
+                                    .h(px(32.0))
+                                    .px(px(8.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .rounded(px(7.0))
+                                    .cursor_pointer()
+                                    .text_size(px(12.0))
+                                    .text_color(ShellDeckColors::text_primary())
+                                    .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
+                                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                                    .child(lucide_icon(icon, 13.0, ShellDeckColors::text_muted()))
+                                    .child(div().flex_1().min_w(px(0.0)).child(label))
+                                    .when(selected, |row| {
+                                        row.child(lucide_icon(
+                                            "check",
+                                            13.0,
+                                            ShellDeckColors::primary(),
+                                        ))
+                                    })
+                                    .on_click(cx.listener(
+                                        move |_content, _: &ClickEvent, _, cx| {
+                                            row_parent.update(cx, |this, cx| {
+                                                this.compose_note = note;
+                                                cx.notify();
+                                            });
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_composer(
         &self,
         _ticket_id: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let is_note = self.compose_note;
-        let toggle =
-            |label: &str, icon: &'static str, active: bool, note: bool, cx: &mut Context<Self>| {
-                let color = if active {
-                    ShellDeckColors::text_primary()
-                } else {
-                    ShellDeckColors::text_muted()
-                };
-                let mut b = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "compose-mode-{note}"
-                    ))))
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(lucide_icon(icon, 11.0, color))
-                    .child(label.to_string())
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.compose_note = note;
-                        cx.notify();
-                    }));
-                if active {
-                    b = b.bg(ShellDeckColors::selected_bg()).text_color(color);
-                } else {
-                    b = b.text_color(color);
-                }
-                b
-            };
 
         let placeholder = if is_note {
             t!("support.note_placeholder").to_string()
@@ -1834,8 +1873,6 @@ impl SupportView {
             t!("support.compose.reply_placeholder").to_string()
         };
 
-        let reply_label = t!("support.compose.reply").to_string();
-        let note_label = t!("support.note_internal").to_string();
         let ai_enabled = self.ai_reply_enabled && !is_note;
 
         div()
@@ -1843,11 +1880,10 @@ impl SupportView {
             .flex_col()
             .flex_shrink_0()
             .gap(px(2.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
-            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+            .px(px(16.0))
+            .pt(px(10.0))
+            .pb(px(14.0))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
                 } else {
@@ -1855,68 +1891,60 @@ impl SupportView {
                 }
             }))
             .child({
-                let focus = self.composer_state.read(cx).focus_handle(cx);
                 let empty = self.composer_state.read(cx).content().trim().is_empty();
                 let send_entity = cx.entity();
-                let mut frame = Composer::with_field(
-                    "support-ticket-composer",
-                    focus,
-                    composer_editor_field(&self.composer_state, placeholder, font_family, cx),
-                )
-                .context(toggle(&reply_label, "reply", !is_note, false, cx))
-                .context(toggle(&note_label, "sticky-note", is_note, true, cx))
-                .commit(if is_note {
-                    ComposerCommit::Labeled(t!("support.compose.add_note").to_string().into())
-                } else {
-                    ComposerCommit::Send
-                })
-                .commit_enabled(!self.attachment_busy && !empty)
-                .action(
-                    Button::new("support-attachments-toggle", "")
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .selected(self.attachment_panel_open)
-                        .tooltip(if self.attachment_drafts.is_empty() {
-                            t!("user.requests.attachments.title").to_string()
-                        } else {
-                            format!(
-                                "{} ({})",
-                                t!("user.requests.attachments.title"),
-                                self.attachment_drafts.len()
-                            )
-                        })
-                        .icon(IconSource::from("plus"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.attachment_panel_open = !this.attachment_panel_open;
-                            cx.notify();
-                        })),
-                )
-                .on_commit(move |cx| {
-                    send_entity.update(cx, |this, cx| this.send_composer(cx));
-                })
-                .footnote(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.0))
-                        .child(t!("ai.assistant.hint.send").to_string())
-                        .child(t!("ai.assistant.hint.newline").to_string()),
-                );
+                let mut frame = Composer::new("support-ticket-composer", &self.composer_state)
+                    .placeholder(placeholder)
+                    .min_rows(1)
+                    .max_rows(7)
+                    .commit(if is_note {
+                        ComposerCommit::Labeled(t!("support.compose.add_note").to_string().into())
+                    } else {
+                        ComposerCommit::Send
+                    })
+                    .commit_enabled(!self.attachment_busy && !empty)
+                    .action(
+                        IconButton::new("plus")
+                            .variant(if self.attachment_panel_open {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(14.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.attachment_panel_open = !this.attachment_panel_open;
+                                cx.notify();
+                            })),
+                    )
+                    .on_commit(move |cx| {
+                        send_entity.update(cx, |this, cx| this.send_composer(cx));
+                    })
+                    .footnote(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .child(t!("ai.assistant.hint.send").to_string())
+                            .child(t!("ai.assistant.hint.newline").to_string()),
+                    )
+                    .option(self.render_ticket_delivery_picker(cx));
 
                 if ai_enabled {
                     frame = frame.action(
-                        Button::new(
+                        compact_composer_action(
                             "support-ai-reply",
+                            "sparkles",
                             t!("ai.workflow.support_reply").to_string(),
+                            true,
                         )
-                        .variant(ButtonVariant::Ai)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("sparkles"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(id) = this.selected_id.clone() {
-                                cx.emit(SupportViewEvent::SuggestReply(id));
-                            }
-                        })),
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                if let Some(id) = this.selected_id.clone() {
+                                    cx.emit(SupportViewEvent::SuggestReply(id));
+                                }
+                            },
+                        )),
                     );
                 }
                 frame

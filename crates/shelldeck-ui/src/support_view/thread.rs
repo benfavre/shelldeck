@@ -9,7 +9,6 @@ use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
-use adabraka_ui::components::editor::{Editor, EditorState};
 use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
@@ -292,57 +291,6 @@ pub(super) fn message_action(
         )
         .on_click(on_click)
         .into_any_element()
-}
-
-/// The Editor-backed field shared by both Support composers. The placeholder
-/// lives in this wrapper instead of inside `Editor`: the editor's own absolute
-/// placeholder is painted inside its scroll viewport and disappeared when the
-/// borderless editor was embedded in a fixed-height Composer field.
-pub(super) fn composer_editor_field(
-    state: &Entity<EditorState>,
-    placeholder: impl Into<SharedString>,
-    font_family: impl Into<SharedString>,
-    cx: &App,
-) -> Div {
-    let empty = state.read(cx).content().trim().is_empty();
-    let focus = state.read(cx).focus_handle(cx);
-    let placeholder = placeholder.into();
-
-    div()
-        .relative()
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(54.0))
-        .pt(px(8.0))
-        .pb(px(4.0))
-        .px(px(8.0))
-        .overflow_hidden()
-        .child(
-            Editor::new(state)
-                .font_family(font_family)
-                .show_border(false)
-                .min_lines(2)
-                .max_lines(2)
-                .show_horizontal_scrollbar(false)
-                .current_line_color(transparent_black()),
-        )
-        .when(empty, |field| {
-            field.child(
-                div()
-                    .absolute()
-                    .top(px(20.0))
-                    .left(px(20.0))
-                    .right(px(12.0))
-                    .line_clamp(1)
-                    .cursor_text()
-                    .text_size(px(14.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(placeholder)
-                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                        window.focus(&focus);
-                    }),
-            )
-        })
 }
 
 /// A human-authored message in the thread. The author's colour identifies our
