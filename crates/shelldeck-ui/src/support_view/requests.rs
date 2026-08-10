@@ -1,11 +1,13 @@
 use super::thread::{
-    ThreadDeliveryTone, ThreadMessageExtras, ThreadNoteKind, attributed_quote, day_separator,
-    delivery_status, human_message, human_message_continuation, local_draft, markdown_blocks,
-    message_action, note as thread_note, typing_indicator,
+    ai_draft_card, attributed_quote, day_separator, delivery_status, human_message,
+    human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
+    thread_header_picker, thread_picker_option_row, thread_priority_color, thread_status_color,
+    timeline_day, timeline_day_label, typing_indicator, ThreadDeliveryTone, ThreadMessageExtras,
+    ThreadNoteKind,
 };
 use super::*;
 use crate::icons::{ai_provider_inline, simple_icon};
-use adabraka_ui::prelude::{Composer, tooltip};
+use adabraka_ui::prelude::{tooltip, Composer};
 
 #[derive(Clone, Copy)]
 enum TimelineGroup {
@@ -16,154 +18,12 @@ enum TimelineGroup {
     LocalDraft,
 }
 
-fn timeline_day(at: f64) -> Option<chrono::NaiveDate> {
-    chrono::DateTime::from_timestamp_millis(at as i64).map(|value| value.date_naive())
-}
-
-fn timeline_day_label(at: f64) -> String {
-    let Some(day) = timeline_day(at) else {
-        return String::new();
-    };
-    let today = chrono::Utc::now().date_naive();
-    if day == today {
-        t!("support.thread.today").to_string()
-    } else if day == today.pred_opt().unwrap_or(today) {
-        t!("support.thread.yesterday").to_string()
-    } else {
-        day.format("%d/%m/%Y").to_string()
-    }
-}
-
 fn thread_scroll_to_restore(
     preserve_scroll: bool,
     old_count: usize,
     old_scroll: gpui::ListOffset,
 ) -> Option<gpui::ListOffset> {
     (preserve_scroll && old_scroll.item_ix < old_count).then_some(old_scroll)
-}
-
-fn issue_status_color(status: &str) -> Hsla {
-    match status {
-        "in_progress" | "triaging" => ShellDeckColors::warning(),
-        "blocked" => ShellDeckColors::error(),
-        "done" | "closed" => ShellDeckColors::success(),
-        _ => ShellDeckColors::primary(),
-    }
-}
-
-fn issue_priority_color(priority: &str) -> Hsla {
-    match priority {
-        "urgent" => ShellDeckColors::error(),
-        "high" => ShellDeckColors::warning(),
-        "low" => ShellDeckColors::text_muted(),
-        _ => ShellDeckColors::primary(),
-    }
-}
-
-/// The prototype's metadata selectors are 24 px contextual chips. The shared
-/// labeled Button starts at 36 px, so using it here would make this secondary
-/// row taller than the request title itself.
-fn issue_header_picker(
-    id: &'static str,
-    marker: impl IntoElement,
-    label: impl Into<SharedString>,
-    interactive: bool,
-) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(24.0))
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(4.0))
-        .px(px(7.0))
-        .rounded(px(6.0))
-        .bg(ShellDeckColors::bg_surface())
-        .text_size(px(10.5))
-        .text_color(ShellDeckColors::text_muted())
-        .when(interactive, |picker| {
-            picker
-                .cursor_pointer()
-                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-        })
-        .child(marker)
-        .child(label.into())
-        .when(interactive, |picker| {
-            picker.child(
-                svg()
-                    .path(lucide_path("chevron-down"))
-                    .size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted()),
-            )
-        })
-        .into_any_element()
-}
-
-/// Compact row shared by the three request-header popovers. `Select`'s
-/// 40 px trigger is intentionally too tall for this 24 px metadata row, while
-/// adabraka's `Popover` still provides the anchored, occluding overlay.
-fn issue_picker_option_row(
-    id: SharedString,
-    marker: impl IntoElement,
-    label: impl Into<SharedString>,
-    subtitle: Option<SharedString>,
-    active: bool,
-) -> Stateful<Div> {
-    let mut row = div()
-        .id(ElementId::from(id))
-        .w_full()
-        .min_h(px(if subtitle.is_some() { 40.0 } else { 30.0 }))
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .px(px(8.0))
-        .rounded(px(5.0))
-        .cursor_pointer()
-        .text_color(ShellDeckColors::text_primary())
-        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-        .child(marker)
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .overflow_hidden()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(label.into()),
-                )
-                .when_some(subtitle, |column, subtitle| {
-                    column.child(
-                        div()
-                            .text_size(px(9.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(subtitle),
-                    )
-                }),
-        );
-    if active {
-        row = row.bg(ShellDeckColors::selected_bg()).child(lucide_icon(
-            "check",
-            12.0,
-            ShellDeckColors::primary(),
-        ));
-    }
-    row
-}
-
-#[derive(Clone)]
-struct IssueAssigneeOption {
-    value: String,
-    label: String,
-    email: String,
 }
 
 impl SupportView {
@@ -987,39 +847,6 @@ impl SupportView {
             kind,
             px(11.5).to_pixels(window.rem_size()),
         )
-    }
-
-    /// Split a plain-text body into lines and stack them. `line_height` MUST
-    /// sit on each child (a factor on the flex parent leaves the child boxes
-    /// at raw font height and they overlap vertically — the exact defect the
-    /// last release shipped).
-    fn render_body_lines(body: &str, color: Hsla) -> impl IntoElement {
-        // `whitespace_normal` + `min_w(0)` + `overflow_hidden` per line: without
-        // this, long words (Slack meta URLs, GitHub links) render on a single
-        // unbounded line and paint OVER whatever the layout put beside them —
-        // which is what produced the earlier overlap where the request body
-        // ran through the system-note cards.
-        let mut wrap = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .text_size(px(12.5))
-            .text_color(color);
-        for line in body.split('\n') {
-            let line = if line.is_empty() { " " } else { line };
-            wrap = wrap.child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_normal()
-                    .line_height(relative(1.62))
-                    .child(line.to_string()),
-            );
-        }
-        wrap
     }
 
     /// Human-readable chip for `iss.source`. Returns `None` for values that do
@@ -1946,35 +1773,13 @@ impl SupportView {
             })
     }
 
-    fn issue_assignee_label(&self, assignee: &str) -> String {
-        let assignee = assignee.trim();
-        if assignee.is_empty() {
-            return t!("support.assignee.none").to_string();
-        }
-        if assignee.eq_ignore_ascii_case("me")
-            || (!self.me.email.trim().is_empty()
-                && assignee.eq_ignore_ascii_case(self.me.email.trim()))
-        {
-            return if self.me.name.trim().is_empty() {
-                t!("support.assignee.me").to_string()
-            } else {
-                self.me.name.clone()
-            };
-        }
-        self.agents
-            .iter()
-            .find(|agent| agent.email.eq_ignore_ascii_case(assignee))
-            .and_then(|agent| (!agent.name.trim().is_empty()).then(|| agent.name.clone()))
-            .unwrap_or_else(|| assignee.to_string())
-    }
-
     fn render_issue_status_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
-        let trigger = issue_header_picker(
+        let trigger = thread_header_picker(
             "iss-detail-status",
             div()
                 .size(px(6.0))
                 .rounded_full()
-                .bg(issue_status_color(&iss.status)),
+                .bg(thread_status_color(&iss.status)),
             issue_status_label(&iss.status),
             self.issues_staff,
         );
@@ -2008,9 +1813,9 @@ impl SupportView {
                                 .size(px(7.0))
                                 .flex_shrink_0()
                                 .rounded_full()
-                                .bg(issue_status_color(status));
+                                .bg(thread_status_color(status));
                             list = list.child(
-                                issue_picker_option_row(
+                                thread_picker_option_row(
                                     format!("iss-status-option-{status}").into(),
                                     marker,
                                     issue_status_label(status),
@@ -2038,12 +1843,12 @@ impl SupportView {
     }
 
     fn render_issue_priority_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
-        let trigger = issue_header_picker(
+        let trigger = thread_header_picker(
             "iss-detail-priority",
             div()
                 .size(px(6.0))
                 .rounded_full()
-                .bg(issue_priority_color(&iss.priority)),
+                .bg(thread_priority_color(&iss.priority)),
             priority_label(&iss.priority),
             self.issues_staff,
         );
@@ -2070,9 +1875,9 @@ impl SupportView {
                                 .size(px(7.0))
                                 .flex_shrink_0()
                                 .rounded_full()
-                                .bg(issue_priority_color(priority));
+                                .bg(thread_priority_color(priority));
                             list = list.child(
-                                issue_picker_option_row(
+                                thread_picker_option_row(
                                     format!("iss-priority-option-{priority}").into(),
                                     marker,
                                     priority_label(priority),
@@ -2100,17 +1905,17 @@ impl SupportView {
     }
 
     fn render_issue_assignee_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
-        let trigger = issue_header_picker(
+        let trigger = thread_header_picker(
             "iss-detail-assignee",
             lucide_icon("at-sign", 11.0, ShellDeckColors::text_muted()),
-            self.issue_assignee_label(&iss.assignee),
+            self.assignee_label(&iss.assignee),
             self.issues_staff,
         );
         if !self.issues_staff {
             return trigger;
         }
 
-        let mut agents = Vec::<IssueAssigneeOption>::new();
+        let mut agents = Vec::<HeaderAssigneeOption>::new();
         for agent in &self.agents {
             if agent.email.trim().is_empty()
                 || agents
@@ -2119,7 +1924,7 @@ impl SupportView {
             {
                 continue;
             }
-            agents.push(IssueAssigneeOption {
+            agents.push(HeaderAssigneeOption {
                 value: agent.email.clone(),
                 label: if agent.name.trim().is_empty() {
                     agent.email.clone()
@@ -2222,7 +2027,7 @@ impl SupportView {
                                     .flex_col()
                                     .gap(px(2.0))
                                     .child(
-                                        issue_picker_option_row(
+                                        thread_picker_option_row(
                                             "iss-assignee-none".into(),
                                             lucide_icon(
                                                 "at-sign",
@@ -2246,7 +2051,7 @@ impl SupportView {
                                         )),
                                     )
                                     .child(
-                                        issue_picker_option_row(
+                                        thread_picker_option_row(
                                             "iss-assignee-me".into(),
                                             lucide_icon(
                                                 "at-sign",
@@ -2302,7 +2107,7 @@ impl SupportView {
                                                         let row_parent = rows_parent.clone();
                                                         let row_issue_id = rows_issue_id.clone();
                                                         let value = agent.value.clone();
-                                                        issue_picker_option_row(
+                                                        thread_picker_option_row(
                                                             format!("iss-assignee-agent-{index}").into(),
                                                             lucide_icon(
                                                                 "at-sign",
@@ -2618,97 +2423,58 @@ impl SupportView {
         body: String,
         model: String,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let issue_id = self.issue_selected.clone().unwrap_or_default();
         let title = if model.trim().is_empty() {
             t!("support.issue.ai_draft").to_string()
         } else {
             t!("support.issue.ai_draft_model", model = model).to_string()
         };
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .max_w(px(560.0))
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .gap(px(8.0))
-            .p(px(11.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(ShellDeckColors::primary().opacity(0.40))
-            .bg(ShellDeckColors::primary().opacity(0.08))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::primary())
-                    .child(lucide_icon("sparkles", 12.0, ShellDeckColors::primary()))
-                    .child(title),
+        let leading = vec![
+            Button::new(
+                "issue-ai-regenerate",
+                t!("support.issue.ai_regenerate").to_string(),
             )
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .line_height(relative(1.55))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(Self::render_body_lines(
-                        &body,
-                        ShellDeckColors::text_primary(),
-                    )),
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("rotate-ccw"))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+            }))
+            .into_any_element(),
+            Button::new("issue-ai-edit", t!("support.issue.ai_edit").to_string())
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("pencil"))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(SupportViewEvent::PublishIssueAiDraft);
+                }))
+                .into_any_element(),
+        ];
+        let trailing = vec![
+            Button::new(
+                "issue-ai-discard",
+                t!("support.issue.ai_discard").to_string(),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        Button::new(
-                            "issue-ai-regenerate",
-                            t!("support.issue.ai_regenerate").to_string(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("rotate-ccw"))
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
-                        })),
-                    )
-                    .child(
-                        Button::new("issue-ai-edit", t!("support.issue.ai_edit").to_string())
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("pencil"))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(SupportViewEvent::PublishIssueAiDraft);
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new(
-                            "issue-ai-discard",
-                            t!("support.issue.ai_discard").to_string(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.emit(SupportViewEvent::DiscardIssueAiDraft);
-                        })),
-                    )
-                    .child(
-                        Button::new(
-                            "issue-ai-publish",
-                            t!("support.issue.ai_publish").to_string(),
-                        )
-                        .variant(ButtonVariant::Ai)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("arrow-up"))
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.emit(SupportViewEvent::PublishIssueAiDraft);
-                        })),
-                    ),
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(SupportViewEvent::DiscardIssueAiDraft);
+            }))
+            .into_any_element(),
+            Button::new(
+                "issue-ai-publish",
+                t!("support.issue.ai_publish").to_string(),
             )
+            .variant(ButtonVariant::Ai)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("arrow-up"))
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(SupportViewEvent::PublishIssueAiDraft);
+            }))
+            .into_any_element(),
+        ];
+        ai_draft_card(title, body, leading, trailing)
     }
 
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2815,16 +2581,14 @@ mod tests {
         assert_eq!(restored.offset_in_item, gpui::px(7.0));
 
         assert!(thread_scroll_to_restore(false, 13, reading).is_none());
-        assert!(
-            thread_scroll_to_restore(
-                true,
-                13,
-                gpui::ListOffset {
-                    item_ix: 13,
-                    offset_in_item: gpui::px(0.0),
-                },
-            )
-            .is_none()
-        );
+        assert!(thread_scroll_to_restore(
+            true,
+            13,
+            gpui::ListOffset {
+                item_ix: 13,
+                offset_in_item: gpui::px(0.0),
+            },
+        )
+        .is_none());
     }
 }

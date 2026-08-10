@@ -38,6 +38,138 @@ pub(super) enum ThreadDeliveryTone {
     Error,
 }
 
+pub(super) fn thread_status_color(status: &str) -> Hsla {
+    match status {
+        "in_progress" | "triaging" | "pending" => ShellDeckColors::warning(),
+        "blocked" => ShellDeckColors::error(),
+        "done" | "closed" => ShellDeckColors::success(),
+        _ => ShellDeckColors::primary(),
+    }
+}
+
+pub(super) fn thread_priority_color(priority: &str) -> Hsla {
+    match priority {
+        "urgent" => ShellDeckColors::error(),
+        "high" => ShellDeckColors::warning(),
+        "low" => ShellDeckColors::text_muted(),
+        _ => ShellDeckColors::primary(),
+    }
+}
+
+/// Compact metadata trigger shared by Request and Ticket headers. Source
+/// adapters choose the labels and actions; this owns the 24 px geometry.
+pub(super) fn thread_header_picker(
+    id: &'static str,
+    marker: impl IntoElement,
+    label: impl Into<SharedString>,
+    interactive: bool,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(24.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(4.0))
+        .px(px(7.0))
+        .rounded(px(6.0))
+        .bg(ShellDeckColors::bg_surface())
+        .text_size(px(10.5))
+        .text_color(ShellDeckColors::text_muted())
+        .when(interactive, |picker| {
+            picker
+                .cursor_pointer()
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        })
+        .child(marker)
+        .child(label.into())
+        .when(interactive, |picker| {
+            picker.child(lucide_icon(
+                "chevron-down",
+                10.0,
+                ShellDeckColors::text_muted(),
+            ))
+        })
+        .into_any_element()
+}
+
+/// Compact option row for the metadata popovers shared by both Support data
+/// sources. The optional subtitle is used by the large assignee directory.
+pub(super) fn thread_picker_option_row(
+    id: SharedString,
+    marker: impl IntoElement,
+    label: impl Into<SharedString>,
+    subtitle: Option<SharedString>,
+    active: bool,
+) -> Stateful<Div> {
+    let mut row = div()
+        .id(ElementId::from(id))
+        .w_full()
+        .min_h(px(if subtitle.is_some() { 40.0 } else { 30.0 }))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(8.0))
+        .rounded(px(5.0))
+        .cursor_pointer()
+        .text_color(ShellDeckColors::text_primary())
+        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        .child(marker)
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label.into()),
+                )
+                .when_some(subtitle, |column, subtitle| {
+                    column.child(
+                        div()
+                            .text_size(px(9.5))
+                            .text_color(ShellDeckColors::text_muted())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(subtitle),
+                    )
+                }),
+        );
+    if active {
+        row = row.bg(ShellDeckColors::selected_bg()).child(lucide_icon(
+            "check",
+            12.0,
+            ShellDeckColors::primary(),
+        ));
+    }
+    row
+}
+
+pub(super) fn timeline_day(at: f64) -> Option<chrono::NaiveDate> {
+    chrono::DateTime::from_timestamp_millis(at as i64).map(|value| value.date_naive())
+}
+
+pub(super) fn timeline_day_label(at: f64) -> String {
+    let Some(day) = timeline_day(at) else {
+        return String::new();
+    };
+    let today = chrono::Utc::now().date_naive();
+    if day == today {
+        t!("support.thread.today").to_string()
+    } else if day == today.pred_opt().unwrap_or(today) {
+        t!("support.thread.yesterday").to_string()
+    } else {
+        day.format("%d/%m/%Y").to_string()
+    }
+}
+
 fn styled_body(
     body: &str,
     font_size: f32,
@@ -256,6 +388,58 @@ pub(super) fn local_draft(body: impl Into<SharedString>) -> AnyElement {
         .line_height(relative(1.45))
         .text_color(ShellDeckColors::text_muted())
         .child(t!("support.thread.local_draft", body = body.into()).to_string())
+        .into_any_element()
+}
+
+/// Shared visual shell for a generated reply awaiting review. Requests and
+/// Tickets keep separate actions/data adapters, but the proposal itself must
+/// not acquire two subtly different layouts.
+pub(super) fn ai_draft_card(
+    title: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+    leading_actions: Vec<AnyElement>,
+    trailing_actions: Vec<AnyElement>,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .max_w(px(560.0))
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .gap(px(8.0))
+        .p(px(11.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(ShellDeckColors::primary().opacity(0.40))
+        .bg(ShellDeckColors::primary().opacity(0.08))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .text_size(px(11.0))
+                .text_color(ShellDeckColors::primary())
+                .child(lucide_icon("sparkles", 12.0, ShellDeckColors::primary()))
+                .child(title.into()),
+        )
+        .child(
+            div()
+                .text_size(px(12.5))
+                .line_height(relative(1.55))
+                .text_color(ShellDeckColors::text_primary())
+                .whitespace_normal()
+                .child(body.into()),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .children(leading_actions)
+                .child(div().flex_1())
+                .children(trailing_actions),
+        )
         .into_any_element()
 }
 

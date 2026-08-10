@@ -1852,13 +1852,28 @@ code.ref {
     </p>
 
     <h3 class="sub-h">Demandes et tickets — mode Support</h3>
-    <p class="sub-p">Les deux onglets partagent la même structure. Dans la liste, le titre est écrasé
-    par ses propres métadonnées&nbsp;; dans le détail, le message est une carte à étiquette d'auteur et
-    la zone de réponse est éclatée en trois blocs.</p>
+    <p class="sub-p"><b>Même rendu, deux sources.</b> Les deux onglets restent séparés parce que
+    <code class="ref">Issue / IssueComment</code> et <code class="ref">SupportTicket / SupportMessage</code>
+    ne portent ni les mêmes champs ni les mêmes actions API. Ils sont adaptés vers un même modèle de
+    présentation&nbsp;: liste, header, fil virtualisé et composer ont donc exactement la même géométrie.
+    Seuls les adaptateurs de données et les actions métier diffèrent.</p>
+
+    <p class="note" style="margin-top:14px">
+      <b>Contrat d'adaptation.</b> Une demande fournit <code class="ref">title, requested_by,
+      comments[].kind/channel/delivery/quote</code>&nbsp;; un ticket fournit
+      <code class="ref">subject, contact, channel, messages[].from</code>. Le rendu commun reçoit
+      dans les deux cas un titre, un auteur, une date, un canal et une suite d'éléments sémantiques
+      (message, note, séparation de jour, brouillon, rédaction en cours). Les propriétés riches que
+      l'API Tickets ne transmet pas encore restent optionnelles&nbsp;: absentes en production,
+      présentes uniquement dans la fixture mémoire pour éprouver le visuel futur.
+    </p>
 
     <figure class="slot" id="support-header-reality" style="margin-top:18px">
-      <figcaption><span class="tag">Support</span>
-        <span class="cap">Données réelles : tous les champs présents, 200 agents dans le relevé courant, menu d'assignation ouvert.</span></figcaption>
+      <figcaption><span class="tag">Support · Tickets</span>
+        <span class="cap">Fixture Ticket en mémoire : même rendu que Demandes, schéma Support distinct, menu d'assignation ouvert.</span></figcaption>
+      <div class="chips" style="margin:12px 0 8px">
+        <span class="chip">Demandes (Issue)</span><span class="chip on">Tickets (SupportTicket)</span>
+      </div>
       <div class="support-shell">
         <div class="sup-list">
           <div class="filter-bar">
@@ -1899,8 +1914,8 @@ code.ref {
         <div class="sup-main">
           <div class="sup-head" style="position:relative;z-index:4">
             <div class="sup-head-top">
-              <div class="sup-t">[DÉMO] Fil de démonstration — TOUS les cas d'affichage</div>
-              <button class="quiet-btn" type="button" aria-label="Résumer la demande avec l'IA"><svg><use href="#i-sparkles"/></svg>Résumer</button>
+              <div class="sup-t">[DÉMO TICKET] Fil de démonstration — TOUS les cas d'affichage</div>
+              <button class="quiet-btn" type="button" aria-label="Résumer le ticket avec l'IA"><svg><use href="#i-sparkles"/></svg>Résumer</button>
               <button class="ico-btn" type="button" aria-label="Plus d'actions"><svg><use href="#i-more"/></svg></button>
             </div>
             <div class="sup-meta">
@@ -1926,9 +1941,8 @@ code.ref {
                   <span class="count">200 agents · cardinalité API dynamique ; la liste défile, jamais le header</span>
                 </span>
               </span>
-              <span class="sup-when">ShellDeck (démo) · mis à jour il y a 3 min</span>
+              <span class="sup-when">Bruno · livechat · dernier échange il y a 3 min</span>
               <span class="sup-meta-tag">Fil de démonstration</span>
-              <span class="sup-meta-tag">GitHub #1</span>
             </div>
           </div>
           <div class="dk-body">
@@ -1952,12 +1966,12 @@ code.ref {
           </div>
           <div class="composer-zone" style="padding:10px 16px 14px">
             <div class="composer">
-              <div class="ta ph">Répondre à ACTIV Communication…</div>
+              <div class="ta ph">Répondre à Bruno…</div>
               <div class="foot">
                 <button class="foot-btn" type="button" aria-label="Joindre"><svg><use href="#i-plus"/></svg></button>
                 <button class="foot-btn" type="button"><svg><use href="#i-sparkles"/></svg>Proposer une réponse</button>
                 <span class="spacer"></span>
-                <button class="foot-btn model" type="button">Claude Sonnet<svg><use href="#i-chev-down"/></svg></button>
+                <button class="foot-btn model" type="button">Réponse<svg><use href="#i-chev-down"/></svg></button>
                 <button class="send" type="button" disabled aria-label="Envoyer"><svg><use href="#i-up"/></svg></button>
               </div>
             </div>
