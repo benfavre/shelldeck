@@ -1957,7 +1957,7 @@ code.ref {
                 <button class="foot-btn" type="button" aria-label="Joindre"><svg><use href="#i-plus"/></svg></button>
                 <button class="foot-btn" type="button"><svg><use href="#i-sparkles"/></svg>Proposer une réponse</button>
                 <span class="spacer"></span>
-                <button class="foot-btn model" type="button">Réponse publique<svg><use href="#i-chev-down"/></svg></button>
+                <button class="foot-btn model" type="button">Claude Sonnet<svg><use href="#i-chev-down"/></svg></button>
                 <button class="send" type="button" disabled aria-label="Envoyer"><svg><use href="#i-up"/></svg></button>
               </div>
             </div>
@@ -2033,8 +2033,11 @@ code.ref {
       <b>Et dans le détail&nbsp;:</b> le message perd sa carte et son étiquette d'auteur — le nom en gras
       et l'heure en muet suffisent, comme dans le fil de l'assistant. Statut, priorité et attribution
       cessent d'être des badges décoratifs pour devenir les sélecteurs qu'ils sont déjà côté serveur.
-      Et « Réponse publique » prend, dans le pied, le créneau que l'assistant donne au modèle&nbsp;:
-      c'est la même question — <i>où va ce que j'écris</i>.
+      Dans une demande, le pied conserve le sélecteur du modèle qui alimente « Proposer une réponse »
+      — ici « Claude Sonnet ». Il s'agit d'un vrai réglage partagé avec les paramètres IA, pas d'un
+      sélecteur de destination&nbsp;: l'API Issues n'accepte actuellement que des commentaires publics.
+      Dans un ticket, où l'API Support porte réellement la distinction, le même emplacement peut en
+      revanche choisir « Réponse / Note interne ».
     </p>
     <p class="note" style="margin-top:14px">
       <b>Le header avec la vraie cardinalité.</b> La réponse agents n'est pas une poignée de choix&nbsp;:

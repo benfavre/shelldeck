@@ -2495,130 +2495,120 @@ impl SupportView {
             .into_any_element()
     }
 
-    /// The provider chip for the reply composer — same slot the assistant gives
-    /// its model, same persistence route (Workspace → Settings).
+    /// The model used by "Proposer une réponse". This belongs in the right
+    /// option slot: requests have no alternative delivery destination in the
+    /// current API, while the AI backend is a real user setting.
     fn render_support_ai_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use shelldeck_core::ai::AiBackend;
-        let open = self.ai_backend_menu;
         let model = if self.ai_model.trim().is_empty() {
             self.ai_backend.default_model().to_string()
         } else {
             self.ai_model.trim().to_string()
         };
-        let mut wrap = div().relative().flex().flex_shrink_0().child(
-            div()
-                .id("sup-ai-backend")
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .h(px(26.0))
-                .px(px(6.0))
-                .rounded(px(7.0))
-                .cursor_pointer()
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
-                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                .child(ai_provider_inline(self.ai_backend, &model))
-                .child(
-                    svg()
-                        .path(lucide_path(if open {
-                            "chevron-up"
-                        } else {
-                            "chevron-down"
-                        }))
-                        .size(px(11.0))
-                        .flex_shrink_0()
-                        .text_color(ShellDeckColors::text_muted()),
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.ai_backend_menu = !this.ai_backend_menu;
-                    cx.notify();
-                })),
-        );
-        if open {
-            let current = self.ai_backend;
-            let mut list = div()
-                .id("sup-ai-backend-menu")
-                .w(px(208.0))
-                .p(px(4.0))
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .bg(ShellDeckColors::bg_surface())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(9.0))
-                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
-                    cx.stop_propagation()
-                });
-            for (index, (backend, label)) in [
-                (AiBackend::ClaudeCli, "Claude Code CLI"),
-                (AiBackend::CodexCli, "Codex CLI"),
-                (AiBackend::AiderCli, "Aider CLI"),
-                (AiBackend::OpenAi, "OpenAI API"),
-                (AiBackend::Anthropic, "Anthropic API"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let selected = backend == current;
-                list = list.child(
-                    div()
-                        .id(("sup-ai-opt", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(9.0))
-                        .py(px(7.0))
-                        .rounded(px(7.0))
-                        .cursor_pointer()
-                        .text_size(px(12.0))
-                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(match backend {
-                            AiBackend::ClaudeCli => {
-                                simple_icon("claudecode", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::CodexCli | AiBackend::OpenAi => {
-                                simple_icon("openai", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::Anthropic => {
-                                simple_icon("anthropic", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            _ => lucide_icon("terminal", 14.0, ShellDeckColors::text_primary())
-                                .into_any_element(),
-                        })
-                        .child(div().flex_1().min_w(px(0.0)).child(label))
-                        .when(selected, |el| {
-                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.ai_backend_menu = false;
-                            cx.emit(SupportViewEvent::SelectAiBackend(backend));
-                            cx.notify();
-                        })),
-                );
-            }
-            wrap = wrap.child(
-                deferred(
-                    anchored()
-                        .position_mode(gpui::AnchoredPositionMode::Local)
-                        // Upward, explicitly: this composer sits at the bottom
-                        // of the panel, so there is never room below. Letting
-                        // `snap_to_window` flip it produced a menu that landed
-                        // back on top of its own chip, because the +32 drop was
-                        // still applied after the flip.
-                        .position(point(gpui::px(0.0), gpui::px(-6.0)))
-                        .anchor(gpui::Corner::BottomLeft)
-                        .child(list),
-                )
-                .with_priority(3),
+        let current = self.ai_backend;
+        let trigger = div()
+            .id("sup-ai-backend")
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .h(px(26.0))
+            .px(px(6.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(ai_provider_inline(current, &model))
+            .child(
+                svg()
+                    .path(lucide_path("chevron-down"))
+                    .size(px(11.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
             );
-        }
-        wrap
+        let parent = cx.entity();
+
+        Popover::new("sup-ai-backend-popover")
+            .anchor(Corner::BottomRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(208.0)).flex().flex_col().gap(px(1.0));
+                        for (index, (backend, label)) in [
+                            (AiBackend::ClaudeCli, "Claude Code CLI"),
+                            (AiBackend::CodexCli, "Codex CLI"),
+                            (AiBackend::AiderCli, "Aider CLI"),
+                            (AiBackend::OpenAi, "OpenAI API"),
+                            (AiBackend::Anthropic, "Anthropic API"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let selected = backend == current;
+                            let row_parent = parent.clone();
+                            list = list.child(
+                                div()
+                                    .id(("sup-ai-opt", index))
+                                    .h(px(32.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .px(px(8.0))
+                                    .rounded(px(7.0))
+                                    .cursor_pointer()
+                                    .text_size(px(12.0))
+                                    .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
+                                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                                    .child(match backend {
+                                        AiBackend::ClaudeCli => simple_icon(
+                                            "claudecode",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        AiBackend::CodexCli | AiBackend::OpenAi => simple_icon(
+                                            "openai",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        AiBackend::Anthropic => simple_icon(
+                                            "anthropic",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        _ => lucide_icon(
+                                            "terminal",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                    })
+                                    .child(div().flex_1().min_w(px(0.0)).child(label))
+                                    .when(selected, |row| {
+                                        row.child(lucide_icon(
+                                            "check",
+                                            13.0,
+                                            ShellDeckColors::primary(),
+                                        ))
+                                    })
+                                    .on_click(cx.listener(
+                                        move |_content, _: &ClickEvent, _, cx| {
+                                            row_parent.update(cx, |_this, cx| {
+                                                cx.emit(SupportViewEvent::SelectAiBackend(backend));
+                                            });
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
     }
 
     /// The AI reply card as `.thr-ai-draft` in the mockup — a proposal to
@@ -2725,15 +2715,21 @@ impl SupportView {
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let issue_id = self.issue_selected.clone();
+        let placeholder = self
+            .issue_detail
+            .as_ref()
+            .map(|issue| issue.tenant_name.trim())
+            .filter(|tenant| !tenant.is_empty())
+            .map(|tenant| t!("support.issue.reply_placeholder", tenant = tenant).to_string())
+            .unwrap_or_else(|| t!("support.issue_comment_placeholder").to_string());
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .gap(px(2.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
+            .px(px(16.0))
+            .pt(px(10.0))
+            .pb(px(14.0))
             .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
@@ -2741,14 +2737,6 @@ impl SupportView {
                     cx.propagate();
                 }
             }))
-            .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
-                let issue_id = issue_id.clone().unwrap_or_default();
-                composer.child(div().h(px(0.0)).child(
-                    // Kept as a marker so the `when` arm still has a body; the
-                    // AI action now lives in the composer footer below.
-                    div().id(SharedString::from(format!("issue-ai-anchor-{issue_id}"))),
-                ))
-            })
             .child({
                 // The shared composer, hosting an `Editor` rather than an
                 // `Input`: Support writes replies, not one-liners. Everything
@@ -2762,26 +2750,20 @@ impl SupportView {
                 let mut frame = Composer::with_field(
                     "sup-issue-composer",
                     focus,
-                    composer_editor_field(
-                        &self.composer_state,
-                        t!("support.issue_comment_placeholder").to_string(),
-                        font_family,
-                        cx,
-                    ),
+                    composer_editor_field(&self.composer_state, placeholder, font_family, cx),
                 )
                 // Grey while there is nothing to send, like every other
                 // composer in the app.
                 .commit_enabled(!self.attachment_busy && !empty)
                 .action(
-                    // Icon only. A bordered "Images jointes" button next to a
-                    // plain-text AI action made two different kinds of control
-                    // in the same footer row.
-                    Button::new("issue-attachments-toggle", "")
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .selected(self.attachment_panel_open)
-                        .tooltip(t!("user.requests.attachments.title").to_string())
-                        .icon(IconSource::from("plus"))
+                    IconButton::new("plus")
+                        .variant(if self.attachment_panel_open {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .size(gpui::px(28.0))
+                        .icon_size(gpui::px(14.0))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.attachment_panel_open = !this.attachment_panel_open;
                             cx.notify();
@@ -2799,43 +2781,21 @@ impl SupportView {
                         .child(t!("ai.assistant.hint.newline").to_string()),
                 );
                 if self.ai_reply_enabled {
-                    // Hand-rolled rather than an adabraka `Button`: `ButtonSize::Sm`
-                    // is a fixed 36px with medium weight, which towered over the
-                    // 26px controls beside it. The footer's own scale is 11.5px
-                    // muted (see `.agents/chrome.md` on adabraka's absolute sizes).
                     frame = frame.action(
-                        div()
-                            .id("issue-ai-reply")
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .h(px(26.0))
-                            .px(px(6.0))
-                            .rounded(px(7.0))
-                            .cursor_pointer()
-                            .text_size(px(11.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .hover(|style| {
-                                style
-                                    .bg(ShellDeckColors::hover_bg())
-                                    .text_color(ShellDeckColors::text_primary())
-                            })
-                            .child(
-                                svg()
-                                    .path(lucide_path("sparkles"))
-                                    .size(px(14.0))
-                                    .flex_shrink_0()
-                                    .text_color(ShellDeckColors::text_muted()),
-                            )
-                            .child(t!("ai.workflow.issue_reply").to_string())
-                            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        compact_composer_action(
+                            "issue-ai-reply",
+                            "sparkles",
+                            t!("ai.workflow.issue_reply").to_string(),
+                            !self.issue_ai_pending,
+                        )
+                        .when(!self.issue_ai_pending, |action| {
+                            action.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(SupportViewEvent::SuggestIssueReply(ai_issue_id.clone()));
-                            })),
+                            }))
+                        }),
                     );
-                    // The right-hand slot — where the assistant puts its model —
-                    // holds the provider here too.
-                    frame = frame.option(self.render_support_ai_picker(cx));
                 }
+                frame = frame.option(self.render_support_ai_picker(cx));
                 frame
             })
             .when(self.attachment_panel_open, |composer| {

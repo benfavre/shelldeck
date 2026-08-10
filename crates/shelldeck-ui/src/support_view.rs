@@ -104,6 +104,87 @@ impl SupportFilter {
     ];
 }
 
+/// Shared 26 px footer action used by both Support composers. adabraka's
+/// smallest labeled `Button` is 36 px, which makes the footer taller than the
+/// writing field; the shared Composer deliberately exposes custom action slots
+/// for this denser chrome.
+fn compact_composer_action(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(6.0))
+        .rounded(px(7.0))
+        .text_size(px(11.5))
+        .text_color(ShellDeckColors::text_muted())
+        .when(enabled, |action| {
+            action.cursor_pointer().hover(|style| {
+                style
+                    .bg(ShellDeckColors::hover_bg())
+                    .text_color(ShellDeckColors::text_primary())
+            })
+        })
+        .when(!enabled, |action| action.opacity(0.5))
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(14.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+}
+
+/// Message destination in the ticket Composer option slot. Requests use that
+/// slot for their AI model because their API has no destination choice.
+fn composer_delivery_chip(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    interactive: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(7.0))
+        .rounded(px(7.0))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_muted())
+        .when(interactive, |chip| {
+            chip.cursor_pointer()
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        })
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(12.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+        .when(interactive, |chip| {
+            chip.child(
+                svg()
+                    .path(lucide_path("chevron-down"))
+                    .size(px(11.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+        })
+}
+
 /// Advanced filter option — `value` is `None` for the "all" chip.
 struct AdvChannelOpt {
     value: Option<&'static str>,
@@ -390,7 +471,6 @@ pub struct SupportView {
     /// *which* one — so the reply composer had no way to show or change it.
     ai_backend: shelldeck_core::ai::AiBackend,
     ai_model: String,
-    ai_backend_menu: bool,
     loading: bool,
     error: Option<String>,
     assign_menu_open: bool,
@@ -508,7 +588,6 @@ impl SupportView {
             ai_issue_enabled: false,
             ai_backend: shelldeck_core::ai::AiBackend::Disabled,
             ai_model: String::new(),
-            ai_backend_menu: false,
             loading: false,
             error: None,
             assign_menu_open: false,
@@ -1011,7 +1090,6 @@ impl SupportView {
         if self.ai_backend != backend || self.ai_model != model {
             self.ai_backend = backend;
             self.ai_model = model;
-            self.ai_backend_menu = false;
             cx.notify();
         }
     }

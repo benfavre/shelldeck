@@ -999,6 +999,11 @@ a horizontal overflow menu — and tenant plus relative update time are one
 non-breaking context phrase before optional site/GitHub chips. Every selector
 opens as an anchored overlay; the searchable assignee list is height-bounded
 and virtualized, so even hundreds of agents never change the header height.
+The shared reply composer stays compact at rest and puts attachments plus the
+AI suggestion action in its footer. Requests keep the real AI backend/model
+picker in the right-hand option slot; they do not invent a destination picker
+because the current Issues API has no internal-note field. Tickets use that
+slot as a real reply/internal-note popover because their API supports both.
 
 ### SDUC-459 — A request thread preserves every semantic message state
 
