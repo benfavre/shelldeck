@@ -1,16 +1,60 @@
 use super::thread::{
-    composer_editor_field, human_message, human_message_continuation, markdown_blocks,
-    note as thread_note, ThreadNoteKind,
+    ThreadDeliveryTone, ThreadMessageExtras, ThreadNoteKind, attributed_quote,
+    composer_editor_field, day_separator, delivery_status, human_message,
+    human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
+    typing_indicator,
 };
 use super::*;
 use crate::icons::{ai_provider_inline, simple_icon};
 use adabraka_ui::prelude::Composer;
 
+#[derive(Clone, Copy)]
+enum TimelineGroup {
+    Opening,
+    Comment(usize),
+    Typing(usize),
+    AiDraft,
+    LocalDraft,
+}
+
+fn timeline_day(at: f64) -> Option<chrono::NaiveDate> {
+    chrono::DateTime::from_timestamp_millis(at as i64).map(|value| value.date_naive())
+}
+
+fn timeline_day_label(at: f64) -> String {
+    let Some(day) = timeline_day(at) else {
+        return String::new();
+    };
+    let today = chrono::Utc::now().date_naive();
+    if day == today {
+        t!("support.thread.today").to_string()
+    } else if day == today.pred_opt().unwrap_or(today) {
+        t!("support.thread.yesterday").to_string()
+    } else {
+        day.format("%d/%m/%Y").to_string()
+    }
+}
+
+fn thread_scroll_to_restore(
+    preserve_scroll: bool,
+    old_count: usize,
+    old_scroll: gpui::ListOffset,
+) -> Option<gpui::ListOffset> {
+    (preserve_scroll && old_scroll.item_ix < old_count).then_some(old_scroll)
+}
+
 impl SupportView {
-    pub(super) fn rebuild_issue_thread_cache(&mut self) {
+    pub(super) fn rebuild_issue_thread_cache(&mut self, preserve_scroll: bool) {
+        let old_count = self.issue_thread_list.item_count();
+        let old_scroll = thread_scroll_to_restore(
+            preserve_scroll,
+            old_count,
+            self.issue_thread_list.logical_scroll_top(),
+        );
         let Some(issue) = &self.issue_detail else {
             self.issue_body_blocks.clear();
             self.issue_comment_blocks.clear();
+            self.issue_thread_rows.clear();
             self.issue_thread_list.reset(0);
             return;
         };
@@ -27,34 +71,101 @@ impl SupportView {
                 }
             })
             .collect();
-        self.issue_thread_list.reset(self.issue_thread_item_count());
+
+        let mut groups = Vec::new();
+        if !issue.body.trim().is_empty()
+            || !issue.attachments.is_empty()
+            || issue.comments.is_empty()
+        {
+            groups.push((issue.created_at, 0usize, TimelineGroup::Opening));
+        }
+        groups.extend(
+            issue
+                .comments
+                .iter()
+                .enumerate()
+                .map(|(index, comment)| (comment.at, index + 1, TimelineGroup::Comment(index))),
+        );
+        groups.extend(
+            issue
+                .thread_state
+                .typing
+                .iter()
+                .enumerate()
+                .map(|(index, typing)| {
+                    (
+                        typing.at,
+                        issue.comments.len() + index + 1,
+                        TimelineGroup::Typing(index),
+                    )
+                }),
+        );
+        if self.issue_ai_draft.is_some() {
+            let at = issue
+                .thread_state
+                .suggested_reply
+                .as_ref()
+                .map(|draft| draft.at)
+                .filter(|at| *at > 0.0)
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64);
+            groups.push((at, usize::MAX - 1, TimelineGroup::AiDraft));
+        }
+        if let Some(draft) = issue
+            .thread_state
+            .local_draft
+            .as_ref()
+            .filter(|draft| !draft.body.trim().is_empty())
+        {
+            groups.push((draft.at, usize::MAX, TimelineGroup::LocalDraft));
+        }
+        groups.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        let mut rows = Vec::new();
+        let mut previous_day = None;
+        for (at, _, group) in groups {
+            let day = timeline_day(at);
+            if previous_day.is_some() && day.is_some() && day != previous_day {
+                rows.push(IssueThreadRow::Day { at });
+            }
+            if day.is_some() {
+                previous_day = day;
+            }
+
+            match group {
+                TimelineGroup::Opening => {
+                    let count = self.issue_body_blocks.len().max(1);
+                    rows.extend((0..count).map(|block| IssueThreadRow::Opening {
+                        block,
+                        last: block + 1 == count,
+                    }));
+                }
+                TimelineGroup::Comment(comment) => {
+                    let count = if issue.comments[comment].is_note() {
+                        1
+                    } else {
+                        self.issue_comment_blocks[comment].len().max(1)
+                    };
+                    rows.extend((0..count).map(|block| IssueThreadRow::Comment {
+                        comment,
+                        block,
+                        first: block == 0,
+                        last: block + 1 == count,
+                    }));
+                }
+                TimelineGroup::Typing(index) => rows.push(IssueThreadRow::Typing { index }),
+                TimelineGroup::AiDraft => rows.push(IssueThreadRow::AiDraft),
+                TimelineGroup::LocalDraft => rows.push(IssueThreadRow::LocalDraft),
+            }
+        }
+        self.issue_thread_rows = rows;
+        self.issue_thread_list.reset(self.issue_thread_rows.len());
+        if let Some(scroll) = old_scroll {
+            self.issue_thread_list.scroll_to(scroll);
+        }
     }
 
     fn issue_thread_item_count(&self) -> usize {
-        let Some(issue) = &self.issue_detail else {
-            return 0;
-        };
-        let opening = if !issue.body.trim().is_empty() {
-            self.issue_body_blocks.len().max(1)
-        } else if !issue.attachments.is_empty() || issue.comments.is_empty() {
-            1
-        } else {
-            0
-        };
-        opening
-            + issue
-                .comments
-                .iter()
-                .zip(&self.issue_comment_blocks)
-                .map(|(comment, blocks)| {
-                    if comment.is_note() {
-                        1
-                    } else {
-                        blocks.len().max(1)
-                    }
-                })
-                .sum::<usize>()
-            + usize::from(self.issue_ai_draft.is_some())
+        self.issue_thread_rows.len()
     }
 
     pub(super) fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -451,13 +562,29 @@ impl SupportView {
             c.author.clone()
         };
 
-        let channel = self
-            .issue_detail
-            .as_ref()
-            .and_then(|iss| Self::source_chip_label(&iss.source))
-            .map(SharedString::from);
+        let channel = if c.channel.trim().is_empty() {
+            self.issue_detail
+                .as_ref()
+                .and_then(|iss| Self::source_chip_label(&iss.source))
+                .map(SharedString::from)
+        } else {
+            Some(SharedString::from(c.channel.clone()))
+        };
         let attachments = (last && !c.attachments.is_empty())
             .then(|| self.render_issue_attachment_links(&c.attachments, cx));
+        let group = SharedString::from(format!("issue-message-{}", c.id));
+        let extras = ThreadMessageExtras {
+            quote: first
+                .then(|| {
+                    c.quote
+                        .as_ref()
+                        .map(|quote| attributed_quote(quote.author.clone(), quote.body.clone()))
+                })
+                .flatten(),
+            delivery: last.then(|| self.render_issue_delivery(c, cx)).flatten(),
+            actions: first.then(|| self.render_issue_message_actions(c, cx)),
+            group: Some(group),
+        };
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {
             human_message(
@@ -467,16 +594,140 @@ impl SupportView {
                 channel,
                 body,
                 attachments,
+                extras,
                 font_size,
             )
         } else {
-            human_message_continuation(body, attachments, font_size)
+            human_message_continuation(body, attachments, extras, font_size)
+        }
+    }
+
+    fn render_issue_message_actions(
+        &self,
+        comment: &shelldeck_core::config::issues::IssueComment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let reply_entity = entity.clone();
+        let ai_entity = entity.clone();
+        let focus = self.composer_state.read(cx).focus_handle(cx);
+        let author = comment.author.clone();
+        let quoted = comment.body.clone();
+        let reply_id = SharedString::from(format!("issue-reply-{}", comment.id));
+        let copy_id = SharedString::from(format!("issue-copy-{}", comment.id));
+        let ai_id = SharedString::from(format!("issue-ai-rewrite-{}", comment.id));
+        let issue_id = self.issue_selected.clone().unwrap_or_default();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child(message_action(
+                reply_id,
+                "reply",
+                t!("support.thread.reply").to_string(),
+                move |_, window, cx| {
+                    let author = author.clone();
+                    let quoted = quoted.clone();
+                    reply_entity.update(cx, |this, cx| {
+                        let current = this.composer_state.read(cx).content().to_string();
+                        let prefix = format!("> {} : {}\n\n", author, quoted);
+                        let next = if current.trim().is_empty() {
+                            prefix
+                        } else {
+                            format!("{}{}", prefix, current)
+                        };
+                        this.composer_state
+                            .update(cx, |state, cx| state.set_content(&next, cx));
+                    });
+                    window.focus(&focus);
+                },
+            ))
+            .child(message_action(
+                copy_id,
+                "copy",
+                t!("support.thread.copy").to_string(),
+                {
+                    let body = comment.body.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
+                    }
+                },
+            ))
+            .when(self.ai_issue_enabled, |actions| {
+                actions.child(message_action(
+                    ai_id,
+                    "sparkles",
+                    t!("support.thread.rewrite_ai").to_string(),
+                    move |_, _, cx| {
+                        ai_entity.update(cx, |_, cx| {
+                            cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+                        });
+                    },
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn render_issue_delivery(
+        &self,
+        comment: &shelldeck_core::config::issues::IssueComment,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let delivery = comment.delivery.as_ref()?;
+        let channel = if delivery.channel.trim().is_empty() {
+            if comment.channel.trim().is_empty() {
+                "support"
+            } else {
+                comment.channel.as_str()
+            }
+        } else {
+            delivery.channel.as_str()
+        };
+        if delivery.status == "failed" {
+            let entity = cx.entity();
+            let issue_id = self.issue_selected.clone().unwrap_or_default();
+            let comment_id = comment.id.clone();
+            let retry = message_action(
+                SharedString::from(format!("issue-retry-{}", comment.id)),
+                "rotate-ccw",
+                t!("support.thread.retry").to_string(),
+                move |_, _, cx| {
+                    entity.update(cx, |_, cx| {
+                        cx.emit(SupportViewEvent::RetryIssueComment {
+                            issue_id: issue_id.clone(),
+                            comment_id: comment_id.clone(),
+                        });
+                    });
+                },
+            );
+            let label = if delivery.error.trim().is_empty() {
+                t!("support.thread.send_failed").to_string()
+            } else {
+                delivery.error.clone()
+            };
+            Some(delivery_status(
+                label,
+                ThreadDeliveryTone::Error,
+                Some(retry),
+            ))
+        } else {
+            let label = if delivery.status == "read" && delivery.at > 0.0 {
+                t!(
+                    "support.thread.sent_read",
+                    channel = channel,
+                    when = rel_time(delivery.at)
+                )
+                .to_string()
+            } else {
+                t!("support.thread.sent", channel = channel).to_string()
+            };
+            Some(delivery_status(label, ThreadDeliveryTone::Success, None))
         }
     }
 
     fn render_issue_thread_item(
         &self,
-        mut index: usize,
+        index: usize,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -485,21 +736,20 @@ impl SupportView {
         let Some(issue) = &self.issue_detail else {
             return div().into_any_element();
         };
+        let Some(row) = self.issue_thread_rows.get(index).cloned() else {
+            return div().into_any_element();
+        };
         let font_size = px(12.5).to_pixels(window.rem_size());
-
-        if !issue.body.trim().is_empty() {
-            let count = self.issue_body_blocks.len().max(1);
-            if index < count {
-                let first = index == 0;
-                let last = index + 1 == count;
+        let (content, bottom) = match row {
+            IssueThreadRow::Opening { block, last } => {
                 let body = self
                     .issue_body_blocks
-                    .get(index)
+                    .get(block)
                     .cloned()
                     .unwrap_or_else(|| SharedString::from(issue.body.clone()));
                 let attachments = (last && !issue.attachments.is_empty())
                     .then(|| self.render_issue_attachment_links(&issue.attachments, cx));
-                let content = if first {
+                let content = if block == 0 {
                     human_message(
                         if issue.requested_by.trim().is_empty() {
                             t!("support.issue.description").to_string()
@@ -511,92 +761,78 @@ impl SupportView {
                         Self::source_chip_label(&issue.source).map(SharedString::from),
                         body,
                         attachments,
+                        ThreadMessageExtras::default(),
                         font_size,
                     )
                 } else {
-                    human_message_continuation(body, attachments, font_size)
-                };
-                return div()
-                    .w_full()
-                    .pb(px(if last { object_bottom } else { 8.0 }))
-                    .child(content)
-                    .into_any_element();
-            }
-            index -= count;
-        } else if !issue.attachments.is_empty() || issue.comments.is_empty() {
-            if index == 0 {
-                let content = if !issue.attachments.is_empty() {
-                    human_message(
-                        if issue.requested_by.trim().is_empty() {
-                            t!("support.issue.description").to_string()
-                        } else {
-                            issue.requested_by.clone()
-                        },
-                        false,
-                        issue.created_at,
-                        Self::source_chip_label(&issue.source).map(SharedString::from),
-                        SharedString::from(""),
-                        Some(self.render_issue_attachment_links(&issue.attachments, cx)),
+                    human_message_continuation(
+                        body,
+                        attachments,
+                        ThreadMessageExtras::default(),
                         font_size,
                     )
-                } else {
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("support.empty.comments").to_string())
-                        .into_any_element()
                 };
-                return div()
-                    .w_full()
-                    .pb(px(object_bottom))
-                    .child(content)
-                    .into_any_element();
+                (content, if last { object_bottom } else { 8.0 })
             }
-            index -= 1;
-        }
-
-        for (comment, blocks) in issue.comments.iter().zip(&self.issue_comment_blocks) {
-            if comment.is_note() {
-                if index == 0 {
-                    return div()
-                        .w_full()
-                        .pb(px(object_bottom))
-                        .child(self.render_issue_note(comment, window))
-                        .into_any_element();
-                }
-                index -= 1;
-                continue;
-            }
-
-            let count = blocks.len().max(1);
-            if index < count {
-                let first = index == 0;
-                let last = index + 1 == count;
-                let body = blocks
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| SharedString::from(comment.body.clone()));
-                return div()
-                    .w_full()
-                    .pb(px(if last { object_bottom } else { 8.0 }))
-                    .child(
+            IssueThreadRow::Comment {
+                comment,
+                block,
+                first,
+                last,
+            } => {
+                let comment_index = comment;
+                let comment = &issue.comments[comment_index];
+                if comment.is_note() {
+                    (
+                        self.render_issue_note(comment, window).into_any_element(),
+                        object_bottom,
+                    )
+                } else {
+                    let body = self.issue_comment_blocks[comment_index]
+                        .get(block)
+                        .cloned()
+                        .unwrap_or_else(|| SharedString::from(comment.body.clone()));
+                    (
                         self.render_issue_comment_segment(comment, body, first, last, window, cx),
+                        if last { object_bottom } else { 8.0 },
                     )
-                    .into_any_element();
+                }
             }
-            index -= count;
-        }
-
-        if index == 0 {
-            if let Some(draft) = &self.issue_ai_draft {
-                return div()
-                    .w_full()
-                    .pb(px(object_bottom))
-                    .child(self.render_issue_ai_draft_card(draft.body.clone(), cx))
-                    .into_any_element();
+            IssueThreadRow::Day { at } => (day_separator(timeline_day_label(at)), 14.0),
+            IssueThreadRow::Typing { index } => {
+                let author = issue
+                    .thread_state
+                    .typing
+                    .get(index)
+                    .map(|typing| typing.author.clone())
+                    .unwrap_or_default();
+                (typing_indicator(author), object_bottom)
             }
-        }
-        div().into_any_element()
+            IssueThreadRow::AiDraft => {
+                let Some(draft) = &self.issue_ai_draft else {
+                    return div().into_any_element();
+                };
+                (
+                    self.render_issue_ai_draft_card(draft.body.clone(), draft.model.clone(), cx)
+                        .into_any_element(),
+                    object_bottom,
+                )
+            }
+            IssueThreadRow::LocalDraft => {
+                let body = issue
+                    .thread_state
+                    .local_draft
+                    .as_ref()
+                    .map(|draft| draft.body.clone())
+                    .unwrap_or_default();
+                (local_draft(body), object_bottom)
+            }
+        };
+        div()
+            .w_full()
+            .pb(px(bottom))
+            .child(content)
+            .into_any_element()
     }
 
     /// One system note (`status`, `system` or `github`), rendered as the
@@ -2054,7 +2290,18 @@ impl SupportView {
     /// The AI reply card as `.thr-ai-draft` in the mockup — a proposal to
     /// review, not a keystroke. It sits above the composer so `Publier`
     /// prepends into the user's current text (whatever they had is preserved).
-    fn render_issue_ai_draft_card(&self, body: String, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_issue_ai_draft_card(
+        &self,
+        body: String,
+        model: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let issue_id = self.issue_selected.clone().unwrap_or_default();
+        let title = if model.trim().is_empty() {
+            t!("support.issue.ai_draft").to_string()
+        } else {
+            t!("support.issue.ai_draft_model", model = model).to_string()
+        };
         div()
             .flex()
             .flex_col()
@@ -2076,7 +2323,7 @@ impl SupportView {
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::primary())
                     .child(lucide_icon("sparkles", 12.0, ShellDeckColors::primary()))
-                    .child(t!("support.issue.ai_draft").to_string()),
+                    .child(title),
             )
             .child(
                 div()
@@ -2093,6 +2340,27 @@ impl SupportView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
+                    .child(
+                        Button::new(
+                            "issue-ai-regenerate",
+                            t!("support.issue.ai_regenerate").to_string(),
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("rotate-ccw"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+                        })),
+                    )
+                    .child(
+                        Button::new("issue-ai-edit", t!("support.issue.ai_edit").to_string())
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .icon(IconSource::from("pencil"))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(SupportViewEvent::PublishIssueAiDraft);
+                            })),
+                    )
                     .child(div().flex_1())
                     .child(
                         Button::new(
@@ -2239,5 +2507,37 @@ impl SupportView {
             .when(self.attachment_panel_open, |composer| {
                 composer.child(self.render_attachment_picker(cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thread_scroll_to_restore;
+
+    // SDTEST-1599 — a periodic detail refresh may rebuild measured timeline
+    // rows, but it restores an active reading position. A new selection and a
+    // reader already pinned to the bottom intentionally keep bottom alignment.
+    #[test]
+    fn thread_refresh_preserves_reading_position_but_not_new_or_bottom_threads() {
+        let reading = gpui::ListOffset {
+            item_ix: 4,
+            offset_in_item: gpui::px(7.0),
+        };
+        let restored = thread_scroll_to_restore(true, 13, reading).unwrap();
+        assert_eq!(restored.item_ix, 4);
+        assert_eq!(restored.offset_in_item, gpui::px(7.0));
+
+        assert!(thread_scroll_to_restore(false, 13, reading).is_none());
+        assert!(
+            thread_scroll_to_restore(
+                true,
+                13,
+                gpui::ListOffset {
+                    item_ix: 13,
+                    offset_in_item: gpui::px(0.0),
+                },
+            )
+            .is_none()
+        );
     }
 }

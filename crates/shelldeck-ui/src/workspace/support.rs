@@ -213,6 +213,17 @@ impl Workspace {
                 body,
                 attachments,
             } => self.comment_issue_with_images(id, body, attachments, cx),
+            SupportViewEvent::RetryIssueComment {
+                issue_id,
+                comment_id,
+            } => {
+                tracing::info!(%issue_id, %comment_id, "Issue delivery retry requested before API support");
+                self.show_toast(
+                    t!("toast.issue.retry_unavailable").to_string(),
+                    ToastLevel::Info,
+                    cx,
+                );
+            }
             SupportViewEvent::ImportAttachmentUrl { url, generation } => {
                 cx.spawn(async move |this, cx: &mut AsyncApp| {
                     let result = cx

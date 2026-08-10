@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **101**
+Total markers in code: **102**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -609,6 +609,19 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — the opt-in density is generic enough to
   propose upstream.
 
+### SDPATCH-031 — Markdown task lists render actual checkboxes
+
+- **Files / symbols**:
+  - `src/display/rich_text.rs` — `render_list_items`
+- **Markers**:
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-031 — task-list markers are real disabled`
+- **Why**: Pulldown already preserves task-list state, but the rich renderer
+  reduced it to the literal strings `[x]` and `[ ]`. Conversation Markdown is
+  expected to distinguish completed and pending operational checks at a
+  glance, so task rows now reuse adabraka's themed disabled `Checkbox` while
+  ordinary ordered/unordered markers stay unchanged.
+- **Upstream status**: not filed yet — generic Markdown fidelity improvement.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -700,6 +713,8 @@ carries no marker of its own — see its entry).
 - **2026-08-10** — added SDPATCH-030: opt-in compact Markdown spacing for
   virtualized conversation threads. 7 new markers; current code marker count
   is 101.
+- **2026-08-10** — added SDPATCH-031: Markdown task lists use the shared
+  checkbox component. 1 new marker; current code marker count is 102.
 
 ## Retired patches
 

@@ -1,6 +1,6 @@
 use super::thread::{
-    composer_editor_field, human_message, human_message_continuation, markdown_blocks,
-    note as thread_note, ThreadNoteKind,
+    ThreadMessageExtras, ThreadNoteKind, composer_editor_field, human_message,
+    human_message_continuation, markdown_blocks, note as thread_note,
 };
 use super::*;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
@@ -871,10 +871,11 @@ impl SupportView {
                 (!channel.trim().is_empty()).then(|| SharedString::from(channel.to_string())),
                 body,
                 attachments,
+                ThreadMessageExtras::default(),
                 font_size,
             )
         } else {
-            human_message_continuation(body, attachments, font_size)
+            human_message_continuation(body, attachments, ThreadMessageExtras::default(), font_size)
         }
     }
 

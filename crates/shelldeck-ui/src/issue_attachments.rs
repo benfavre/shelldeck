@@ -7,12 +7,12 @@ use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::{
-    black, div, img, white, AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat,
-    KeyDownEvent, ObjectFit, Render, SharedString, Window,
+    AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat, KeyDownEvent, ObjectFit,
+    Render, SharedString, Window, black, div, img, white,
 };
 use shelldeck_core::config::cloud_account;
 use shelldeck_core::config::issues::{
-    IssueAttachment, IssueAttachmentUpload, ISSUE_ATTACHMENT_MAX_BYTES,
+    ISSUE_ATTACHMENT_MAX_BYTES, IssueAttachment, IssueAttachmentUpload,
 };
 use std::path::Path;
 use std::process::Command;
@@ -232,9 +232,38 @@ pub fn render_stored_attachment_gallery(
         let delete = on_delete.clone();
         let has_delete = delete.is_some();
         let is_image = attachment.content_type.starts_with("image/");
+        let is_link = attachment.content_type == "text/uri-list";
+        let link_target = if attachment.viewer_url.trim().is_empty() {
+            attachment.url.clone()
+        } else {
+            attachment.viewer_url.clone()
+        };
         let attachment_id = attachment.id.clone();
 
         let mut card = if is_image {
+            let preview = if image_url.trim().is_empty() {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(lucide_icon("eye", 24.0, ShellDeckColors::text_muted()))
+                    .into_any_element()
+            } else {
+                img(SharedString::from(image_url))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .with_fallback(|| {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(lucide_icon("eye", 24.0, ShellDeckColors::text_muted()))
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            };
             div()
                 .id(ElementId::from(SharedString::from(format!(
                     "{id_prefix}-{}",
@@ -255,24 +284,7 @@ pub fn render_stored_attachment_gallery(
                         .border_color(ShellDeckColors::primary().opacity(0.55))
                         .bg(ShellDeckColors::hover_bg())
                 })
-                .child(
-                    img(SharedString::from(image_url))
-                        .size_full()
-                        .object_fit(ObjectFit::Cover)
-                        .with_fallback(|| {
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(lucide_icon(
-                                    "eye",
-                                    24.0,
-                                    ShellDeckColors::text_muted(),
-                                ))
-                                .into_any_element()
-                        }),
-                )
+                .child(preview)
                 .child(
                     div()
                         .absolute()
@@ -297,13 +309,18 @@ pub fn render_stored_attachment_gallery(
                 )
                 .on_click(move |_, _, cx| open(index, cx))
         } else {
-            let kind = attachment
-                .content_type
-                .split('/')
-                .next_back()
-                .filter(|value| !value.is_empty())
-                .unwrap_or("fichier")
-                .to_ascii_uppercase();
+            let kind = if is_link {
+                t!("support.thread.external_link").to_string()
+            } else {
+                let mime = attachment
+                    .content_type
+                    .split('/')
+                    .next_back()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("fichier")
+                    .to_ascii_uppercase();
+                format!("{} · {}", mime, display_bytes(attachment.bytes as usize))
+            };
             div()
                 .id(ElementId::from(SharedString::from(format!(
                     "{id_prefix}-{}",
@@ -322,6 +339,11 @@ pub fn render_stored_attachment_gallery(
                 .border_1()
                 .border_color(ShellDeckColors::border())
                 .bg(ShellDeckColors::bg_primary())
+                .when(is_link && !link_target.is_empty(), |card| {
+                    card.cursor_pointer()
+                        .hover(|style| style.border_color(ShellDeckColors::primary().opacity(0.55)))
+                        .on_click(move |_, _, cx| cx.open_url(&link_target))
+                })
                 .child(
                     div()
                         .size(px(24.0))
@@ -332,7 +354,11 @@ pub fn render_stored_attachment_gallery(
                         .rounded(px(5.0))
                         .bg(ShellDeckColors::bg_surface())
                         .child(lucide_icon(
-                            "scroll-text",
+                            if is_link {
+                                "external-link"
+                            } else {
+                                "scroll-text"
+                            },
                             13.0,
                             ShellDeckColors::primary(),
                         )),
@@ -354,11 +380,7 @@ pub fn render_stored_attachment_gallery(
                             div()
                                 .text_size(px(10.0))
                                 .text_color(ShellDeckColors::text_muted())
-                                .child(format!(
-                                    "{} · {}",
-                                    kind,
-                                    display_bytes(attachment.bytes as usize)
-                                )),
+                                .child(kind),
                         ),
                 )
         };

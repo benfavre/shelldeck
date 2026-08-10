@@ -1626,7 +1626,7 @@ code.ref {
 
     <figure class="slot" style="margin-top:18px">
       <figcaption><span class="tag">Support · fil complet</span>
-        <span class="cap">Onze cas dans un seul fil, aux dimensions du tiroir support.</span></figcaption>
+        <span class="cap">Treize cas dans un seul fil, aux dimensions du tiroir support.</span></figcaption>
       <div class="dock" style="width:640px;height:auto">
         <div class="thr">
 
@@ -1796,8 +1796,8 @@ code.ref {
       <b>Ce que ce banc décide.</b> Les <b>notes</b> gardent un cadre teinté par nature — <span style="color:var(--page-text)">changement de statut, note système, activité GitHub, dispatch fleet</span> — parce que ce sont des objets d'une autre nature qu'une réponse ; les déshabiller les rendait indistinguables. Les <b>réponses humaines</b> sont en prose, sans cadre. Le <b>canal</b> (slack, email, github) est un tag discret&nbsp;: le staff a besoin de savoir où la réponse est allée. Le <b>statut d'envoi</b> tient sur une ligne muette sous MA réponse — vert pour livré, rouge pour échoué, absent quand ce n'est pas moi. Les <b>brouillons</b> ne se confondent pas avec les messages&nbsp;: pointillé pour mon brouillon local, cadre primary pour un brouillon IA à relire.
     </p>
     <p class="note" style="margin-top:14px">
-      <b>Ce qu'on n'a PAS encore, côté serveur, et qui n'apparaîtra donc que dans le proto tant que la source ne le donne pas&nbsp;:</b>
-      les cases à cocher dans le corps (<code class="ref">- [ ]</code> non parsé aujourd'hui), le rendu Markdown riche des commentaires (traité comme du plain-text avec <code class="ref">\\n</code>), le canal d'origine par commentaire (nous n'avons que la source de la demande), le statut de lecture (« lu il y a 32 min ») et l'indicateur « en train de rédiger » (aucun événement live côté <code class="ref">bext</code>). Les cases 3-avec-lu, 7-avec-cases, 10-typing sont <em>ce que la refonte pourrait montrer</em> quand ces informations remonteront ; jusque-là elles ne s'afficheront pas.
+      <b>Ce qui est prêt côté client avant que le serveur ne le fournisse&nbsp;:</b>
+      le rendu Markdown riche et les cases à cocher sont déjà pris en charge à partir du corps existant. Le canal par commentaire, la citation structurée, le statut d'envoi/lecture, l'indicateur de rédaction et les brouillons synchronisés disposent maintenant de champs optionnels tolérants à l'absence. La démo injecte les <b>treize cas</b> pour valider le rendu complet&nbsp;; en production, chaque élément reste simplement absent tant que <code class="ref">bext</code> ne transmet pas la donnée correspondante.
     </p>
 
     <h3 class="sub-h">Demandes et tickets — mode Support</h3>

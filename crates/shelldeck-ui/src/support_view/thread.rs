@@ -7,6 +7,7 @@
 use crate::i18n::rel_time;
 use crate::icons::lucide_icon;
 use crate::scale::px;
+use crate::t;
 use crate::theme::ShellDeckColors;
 use adabraka_ui::components::editor::{Editor, EditorState};
 use adabraka_ui::prelude::Markdown;
@@ -22,6 +23,20 @@ pub(super) enum ThreadNoteKind {
     Github,
     Dispatch,
     Internal,
+}
+
+#[derive(Default)]
+pub(super) struct ThreadMessageExtras {
+    pub quote: Option<AnyElement>,
+    pub delivery: Option<AnyElement>,
+    pub actions: Option<AnyElement>,
+    pub group: Option<SharedString>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ThreadDeliveryTone {
+    Success,
+    Error,
 }
 
 fn styled_body(
@@ -126,6 +141,159 @@ fn looks_like_markdown(body: &str) -> bool {
         })
 }
 
+pub(super) fn attributed_quote(
+    author: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+) -> AnyElement {
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .pl(px(10.0))
+        .py(px(4.0))
+        .border_l(px(2.0))
+        .border_color(ShellDeckColors::border())
+        .text_size(px(11.5))
+        .line_height(relative(1.45))
+        .text_color(ShellDeckColors::text_muted())
+        .child(
+            div()
+                .whitespace_normal()
+                .child(t!("support.thread.reply_to", author = author.into()).to_string()),
+        )
+        .child(div().whitespace_normal().italic().child(body.into()))
+        .into_any_element()
+}
+
+pub(super) fn delivery_status(
+    label: impl Into<SharedString>,
+    tone: ThreadDeliveryTone,
+    retry: Option<AnyElement>,
+) -> AnyElement {
+    let color = match tone {
+        ThreadDeliveryTone::Success => ShellDeckColors::text_muted(),
+        ThreadDeliveryTone::Error => ShellDeckColors::error(),
+    };
+    let icon_color = match tone {
+        ThreadDeliveryTone::Success => ShellDeckColors::success(),
+        ThreadDeliveryTone::Error => ShellDeckColors::error(),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .mt(px(4.0))
+        .text_size(px(10.0))
+        .text_color(color)
+        .child(lucide_icon(
+            if matches!(tone, ThreadDeliveryTone::Success) {
+                "check"
+            } else {
+                "circle-alert"
+            },
+            12.0,
+            icon_color,
+        ))
+        .child(label.into())
+        .children(retry)
+        .into_any_element()
+}
+
+pub(super) fn day_separator(label: impl Into<SharedString>) -> AnyElement {
+    let line = || {
+        div()
+            .flex_1()
+            .min_w(px(12.0))
+            .h(px(1.0))
+            .bg(ShellDeckColors::border())
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .my(px(4.0))
+        .text_size(px(10.0))
+        .tracking_widest()
+        .text_color(ShellDeckColors::text_muted())
+        .child(line())
+        .child(label.into())
+        .child(line())
+        .into_any_element()
+}
+
+pub(super) fn typing_indicator(author: impl Into<SharedString>) -> AnyElement {
+    let dots = div()
+        .flex()
+        .items_center()
+        .gap(px(3.0))
+        .children((0..3).map(|_| {
+            div()
+                .size(px(5.0))
+                .rounded_full()
+                .bg(ShellDeckColors::text_muted().opacity(0.55))
+        }));
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_muted())
+        .child(dots)
+        .child(t!("support.thread.typing", author = author.into()).to_string())
+        .into_any_element()
+}
+
+pub(super) fn local_draft(body: impl Into<SharedString>) -> AnyElement {
+    div()
+        .ml_auto()
+        .max_w(relative(1.0))
+        .min_w(px(0.0))
+        .px(px(11.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_dashed()
+        .border_color(ShellDeckColors::border())
+        .text_size(px(12.0))
+        .line_height(relative(1.45))
+        .text_color(ShellDeckColors::text_muted())
+        .child(t!("support.thread.local_draft", body = body.into()).to_string())
+        .into_any_element()
+}
+
+/// Compact contextual action used only inside a message's hover toolbar.
+/// adabraka's smallest labeled Button is 36 px high, which is taller than the
+/// 18 px identity row this toolbar overlays, so this one-off density needs a
+/// shared thread primitive instead of a regular Button.
+pub(super) fn message_action(
+    id: impl Into<ElementId>,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .h(px(22.0))
+        .px(px(6.0))
+        .rounded(px(5.0))
+        .bg(ShellDeckColors::bg_surface())
+        .border_1()
+        .border_color(ShellDeckColors::border())
+        .cursor_pointer()
+        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        .child(lucide_icon(icon, 11.0, ShellDeckColors::text_muted()))
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(ShellDeckColors::text_muted())
+                .child(label.into()),
+        )
+        .on_click(on_click)
+        .into_any_element()
+}
+
 /// The Editor-backed field shared by both Support composers. The placeholder
 /// lives in this wrapper instead of inside `Editor`: the editor's own absolute
 /// placeholder is painted inside its scroll viewport and disappeared when the
@@ -187,6 +355,7 @@ pub(super) fn human_message(
     channel: Option<impl Into<SharedString>>,
     body: impl Into<SharedString>,
     attachments: Option<AnyElement>,
+    mut extras: ThreadMessageExtras,
     base_font_size: Pixels,
 ) -> AnyElement {
     let body: SharedString = body.into();
@@ -242,18 +411,42 @@ pub(super) fn human_message(
         );
     }
 
+    let group = extras
+        .group
+        .take()
+        .unwrap_or_else(|| SharedString::from("thread-message"));
     let mut message = div()
+        .relative()
+        .group(group.clone())
         .flex()
         .flex_col()
         .gap(px(6.0))
         .w_full()
         .max_w(px(560.0))
         .min_w(px(0.0))
-        .child(head)
-        .child(markdown_body(body, base_font_size));
+        .child(head);
+
+    if let Some(quote) = extras.quote.take() {
+        message = message.child(quote);
+    }
+    message = message.child(markdown_body(body, base_font_size));
 
     if let Some(attachments) = attachments {
         message = message.child(attachments);
+    }
+    if let Some(delivery) = extras.delivery.take() {
+        message = message.child(delivery);
+    }
+    if let Some(actions) = extras.actions.take() {
+        message = message.child(
+            div()
+                .absolute()
+                .top(px(-4.0))
+                .right(px(0.0))
+                .opacity(0.0)
+                .group_hover(group, |style| style.opacity(1.0))
+                .child(actions),
+        );
     }
 
     message.into_any_element()
@@ -264,6 +457,7 @@ pub(super) fn human_message(
 pub(super) fn human_message_continuation(
     body: impl Into<SharedString>,
     attachments: Option<AnyElement>,
+    mut extras: ThreadMessageExtras,
     base_font_size: Pixels,
 ) -> AnyElement {
     let mut message = div()
@@ -276,6 +470,9 @@ pub(super) fn human_message_continuation(
         .child(markdown_body(body.into(), base_font_size));
     if let Some(attachments) = attachments {
         message = message.child(attachments);
+    }
+    if let Some(delivery) = extras.delivery.take() {
+        message = message.child(delivery);
     }
     message.into_any_element()
 }

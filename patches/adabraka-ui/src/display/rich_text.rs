@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
+use crate::components::checkbox::{Checkbox, CheckboxSize};
 use crate::components::code_block::CodeBlock;
 use crate::components::separator::Separator;
 use crate::components::text::TextVariant;
@@ -744,16 +745,26 @@ fn render_list_items(
         *block_idx += 1;
         let idx = *block_idx;
 
-        let bullet = if let Some(checked) = item.checked {
-            if checked {
-                SharedString::from("[x] ")
-            } else {
-                SharedString::from("[ ] ")
-            }
-        } else if ordered {
-            SharedString::from(format!("{}. ", start + i as u64))
+        // ShellDeck patch: SDPATCH-031 — task-list markers are real disabled
+        // checkboxes instead of the plain-text strings `[x]` and `[ ]`.
+        let marker = if let Some(checked) = item.checked {
+            Checkbox::new(ElementId::Name(
+                format!("{}-task-{}", id_prefix, idx).into(),
+            ))
+            .size(CheckboxSize::Sm)
+            .checked(checked)
+            .disabled(true)
+            .into_any_element()
         } else {
-            SharedString::from("\u{2022} ")
+            div()
+                .text_size(base_size)
+                .text_color(theme.tokens.muted_foreground)
+                .child(if ordered {
+                    SharedString::from(format!("{}. ", start + i as u64))
+                } else {
+                    SharedString::from("\u{2022} ")
+                })
+                .into_any_element()
         };
 
         let id = ElementId::Name(format!("{}-li-{}", id_prefix, idx).into());
@@ -766,14 +777,7 @@ fn render_list_items(
             // ShellDeck patch: SDPATCH-030 — list rows in chat use the
             // prototype's tighter 2 px cadence.
             .mb(px(if compact { 2.0 } else { 4.0 }))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(24.0))
-                    .text_size(base_size)
-                    .text_color(theme.tokens.muted_foreground)
-                    .child(bullet),
-            )
+            .child(div().flex_shrink_0().w(px(24.0)).child(marker))
             // ShellDeck patch: SDPATCH-027 — list text must be the flex child
             // that shrinks so GPUI receives a definite width and wraps it.
             .child(

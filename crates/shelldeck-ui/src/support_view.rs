@@ -16,8 +16,8 @@ use crate::attachment_annotator::AttachmentAnnotator;
 use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::issue_attachments::{
-    capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    AttachmentDraft, AttachmentLightbox, capture_region, draft_from_clipboard_image,
+    render_attachment_draft_gallery, render_stored_attachment_gallery,
 };
 use crate::scale::px;
 use adabraka_ui::components::avatar::{Avatar, AvatarSize};
@@ -40,7 +40,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use shelldeck_core::config::issues::{
-    Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
+    ISSUE_ATTACHMENT_MAX_COUNT, Issue, IssueAttachment, IssueInstance,
 };
 use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
@@ -208,6 +208,31 @@ enum AttachmentDeleteTarget {
     },
 }
 
+/// Flattened rows consumed by GPUI's variable-height list. Timeline objects
+/// stay semantic here so day boundaries and transient future API state do not
+/// have to masquerade as comments.
+#[derive(Debug, Clone)]
+enum IssueThreadRow {
+    Opening {
+        block: usize,
+        last: bool,
+    },
+    Comment {
+        comment: usize,
+        block: usize,
+        first: bool,
+        last: bool,
+    },
+    Day {
+        at: f64,
+    },
+    Typing {
+        index: usize,
+    },
+    AiDraft,
+    LocalDraft,
+}
+
 /// Requests the view raises for the workspace to service (all network).
 #[derive(Debug, Clone)]
 pub enum SupportViewEvent {
@@ -263,6 +288,12 @@ pub enum SupportViewEvent {
         id: String,
         body: String,
         attachments: Vec<AttachmentDraft>,
+    },
+    /// Reserved for the future resend endpoint. The current API exposes the
+    /// failed delivery state but has no idempotent retry operation yet.
+    RetryIssueComment {
+        issue_id: String,
+        comment_id: String,
     },
     ImportAttachmentUrl {
         url: String,
@@ -422,6 +453,7 @@ pub struct SupportView {
     /// comment. The variable-height GPUI list renders only visible blocks.
     issue_body_blocks: Vec<SharedString>,
     issue_comment_blocks: Vec<Vec<SharedString>>,
+    issue_thread_rows: Vec<IssueThreadRow>,
     issue_thread_list: ListState,
     focus_handle: FocusHandle,
     /// Parsed Markdown blocks and variable-height list state for tickets.
@@ -509,6 +541,7 @@ impl SupportView {
             capture_annotator: None,
             issue_body_blocks: Vec::new(),
             issue_comment_blocks: Vec::new(),
+            issue_thread_rows: Vec::new(),
             issue_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
             focus_handle: cx.focus_handle(),
             ticket_message_blocks: Vec::new(),
@@ -562,6 +595,7 @@ impl SupportView {
         self.issue_detail = None;
         self.issue_body_blocks.clear();
         self.issue_comment_blocks.clear();
+        self.issue_thread_rows.clear();
         self.issue_thread_list.reset(0);
         self.ticket_message_blocks.clear();
         self.ticket_thread_list.reset(0);
@@ -578,6 +612,16 @@ impl SupportView {
 
     pub fn set_issue_detail(&mut self, detail: Option<Issue>, cx: &mut Context<Self>) {
         let next_id = detail.as_ref().map(|issue| issue.id.as_str());
+        let same_issue = next_id == self.issue_selected.as_deref();
+        let detail_changed = self.issue_detail.as_ref() != detail.as_ref();
+        let seeded_ai_draft = detail
+            .as_ref()
+            .and_then(|issue| issue.thread_state.suggested_reply.as_ref())
+            .filter(|draft| !draft.body.trim().is_empty())
+            .map(|draft| AiDraft {
+                body: draft.body.clone(),
+                model: draft.model.clone(),
+            });
         if next_id != self.issue_selected.as_deref() {
             self.attachment_generation = self.attachment_generation.wrapping_add(1);
             self.attachment_busy = false;
@@ -585,14 +629,16 @@ impl SupportView {
             self.attachment_panel_open = false;
             self.attachment_url_open = false;
             self.capture_annotator = None;
-            self.issue_ai_draft = None;
+            self.issue_ai_draft = seeded_ai_draft;
             self.reset_composer(cx);
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
         }
         self.issue_detail = detail;
-        self.rebuild_issue_thread_cache();
+        if detail_changed {
+            self.rebuild_issue_thread_cache(same_issue);
+        }
         self.issue_popover_menu = None;
         self.issue_status_menu = false;
         self.issue_assign_menu = false;
@@ -999,9 +1045,12 @@ impl SupportView {
         if text.is_empty() {
             self.issue_ai_draft = None;
         } else {
-            self.issue_ai_draft = Some(AiDraft { body: text });
+            self.issue_ai_draft = Some(AiDraft {
+                body: text,
+                model: self.ai_model.clone(),
+            });
         }
-        self.rebuild_issue_thread_cache();
+        self.rebuild_issue_thread_cache(true);
         cx.notify();
     }
 
@@ -1009,7 +1058,7 @@ impl SupportView {
         self.issue_ai_pending = pending;
         if pending {
             self.issue_ai_draft = None;
-            self.rebuild_issue_thread_cache();
+            self.rebuild_issue_thread_cache(true);
         }
         cx.notify();
     }
@@ -1020,7 +1069,7 @@ impl SupportView {
         let Some(draft) = self.issue_ai_draft.take() else {
             return;
         };
-        self.rebuild_issue_thread_cache();
+        self.rebuild_issue_thread_cache(true);
         let current = self.composer_state.read(cx).content().trim().to_string();
         let merged = if current.is_empty() {
             draft.body
@@ -1035,7 +1084,7 @@ impl SupportView {
 
     pub fn discard_issue_ai_draft(&mut self, cx: &mut Context<Self>) {
         self.issue_ai_draft = None;
-        self.rebuild_issue_thread_cache();
+        self.rebuild_issue_thread_cache(true);
         cx.notify();
     }
 
@@ -1490,6 +1539,7 @@ pub(crate) fn priority_badge(p: &str) -> Badge {
 #[derive(Debug, Clone)]
 pub struct AiDraft {
     pub body: String,
+    pub model: String,
 }
 
 pub(crate) fn issue_status_label(s: &str) -> String {

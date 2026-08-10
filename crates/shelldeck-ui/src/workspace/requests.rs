@@ -485,8 +485,12 @@ impl Workspace {
         if !staff {
             return;
         }
-        use shelldeck_core::config::issues::{IssueAttachment, IssueComment, IssueGithub};
-        let now = chrono::Utc::now().timestamp_millis() as f64;
+        use shelldeck_core::config::issues::{
+            IssueAttachment, IssueComment, IssueCommentDelivery, IssueCommentQuote, IssueGithub,
+            IssueThreadDraft, IssueThreadState, IssueTyping,
+        };
+        static SHOWCASE_NOW: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+        let now = *SHOWCASE_NOW.get_or_init(|| chrono::Utc::now().timestamp_millis() as f64);
         let m = |mins: f64| now - mins * 60_000.0;
         let comment = |kind: &str, author: &str, body: &str, mins: f64| IssueComment {
             id: format!("fake-{}-{}", kind, mins as i64),
@@ -494,6 +498,9 @@ impl Workspace {
             body: body.to_string(),
             kind: kind.to_string(),
             at: m(mins),
+            channel: String::new(),
+            quote: None,
+            delivery: None,
             attachments: Vec::new(),
         };
         let showcase = Issue {
@@ -509,26 +516,34 @@ impl Workspace {
             requested_by: "Bruno".to_string(),
             assignee: "Karim".to_string(),
             comment_count: 8,
-            attachment_count: 1,
+            attachment_count: 3,
             github: Some(IssueGithub {
                 url: "https://github.com/shelldeck/demo/issues/1".to_string(),
                 number: 1,
                 state: "open".to_string(),
             }),
             job_count: 1,
-            created_at: m(180.0),
-            updated_at: m(0.5),
+            created_at: m(3_100.0),
+            updated_at: m(0.05),
             body: "Depuis hier, les vidéos uploadées sur WatchMe ne se lisent plus. L'upload aboutit, la miniature apparaît, mais le lecteur reste noir. Ça touche les trois comptes qu'on a testés — plus de détails dans le lien.".to_string(),
             comments: vec![
                 // 1 · note statut
-                comment("status", "Karim", "Karim a fait passer la demande d'À traiter à En cours.", 168.0),
-                // 2 · réponse staff (moi) — courte
+                comment("status", "Karim", "Karim a fait passer la demande d'À traiter à En cours.", 3_050.0),
+                // 2 · réponse staff (moi) — image + statut lu
                 IssueComment {
                     id: "fake-c-2".to_string(),
                     author: "Karim".to_string(),
-                    body: "J'ai reproduit sur video-12. Le transcodage part mais s'arrête à 40 % — le disque de media-01 est plein. Voici l'écran df -h :".to_string(),
+                    body: "J'ai reproduit sur `video-12`. Le transcodage part mais s'arrête à 40 % — le disque de `media-01` est plein. Voici l'écran `df -h` :".to_string(),
                     kind: "comment".to_string(),
-                    at: m(150.0),
+                    at: m(3_000.0),
+                    channel: "slack".to_string(),
+                    quote: None,
+                    delivery: Some(IssueCommentDelivery {
+                        status: "read".to_string(),
+                        channel: "slack".to_string(),
+                        at: m(32.0),
+                        error: String::new(),
+                    }),
                     attachments: vec![IssueAttachment {
                         id: "fake-a-1".to_string(),
                         share_id: "".to_string(),
@@ -540,51 +555,122 @@ impl Workspace {
                         width: Some(640),
                         height: Some(180),
                         created_by: "Karim".to_string(),
-                        created_at: m(150.0),
+                        created_at: m(3_000.0),
                     }],
                 },
                 // 3 · note GitHub
-                comment("github", "Karim", "Liée à webdesign29/activ#3007 — « Lecteur vidéo bloqué après transcodage »", 130.0),
-                // 4 · réponse client — corps long avec liens
-                comment(
-                    "comment",
-                    "Bruno",
-                    "Merci, c'est aligné avec ce qu'on voit côté prod. On a mis en place la rotation nocturne, le disque est redescendu à 62 %. Est-ce qu'on peut relancer la file ? Détails ici https://docs.activ-com.fr/ops/media/backfill",
-                    120.0,
-                ),
-                // 5 · réponse staff — corps avec sauts de ligne
-                comment(
-                    "comment",
-                    "Karim",
-                    "File relancée. Trois garde-fous posés :\n- Alerte disque à 80 %\n- Nettoyage nocturne des .tmp de transcodage\n- Reprise automatique après échec 5xx\n\nLe dernier est en cours de review.",
-                    90.0,
-                ),
-                // 6 · réponse client — un mot très long qui doit wrap
-                comment(
-                    "comment",
-                    "Bruno",
-                    "Super. J'ai aussi laissé un mémo interne : https://internal.activ-com.fr/wiki/pages/watchme-incident-2026-08-transcodage-file-disque-plein-postmortem",
-                    45.0,
-                ),
-                // 7 · note système : dispatché
-                comment("system", "Karim", "Dispatché vers fleet · media-01 — script backfill-video-queue", 30.0),
-                // 8 · réponse staff — vide / attente
-                comment("comment", "Karim", "Je vérifie le rattrapage et je reviens.", 5.0),
+                comment("github", "Karim", "Liée à webdesign29/activ#3007 — « Lecteur vidéo bloqué après transcodage »", 2_940.0),
+                // 4 · réponse client — citation + lien, le changement de jour
+                // est dérivé de ce timestamp par le renderer.
+                IssueComment {
+                    id: "fake-c-quote".to_string(),
+                    author: "Bruno".to_string(),
+                    body: "Merci, c'est aligné avec ce qu'on voit côté prod. On a mis en place la rotation nocturne, le disque est redescendu à 62 %. Est-ce qu'on peut relancer la file ? Détails ici https://docs.activ-com.fr/ops/media/backfill".to_string(),
+                    kind: "comment".to_string(),
+                    at: m(1_400.0),
+                    channel: "slack".to_string(),
+                    quote: Some(IssueCommentQuote {
+                        author: "Karim".to_string(),
+                        body: "Voici l'écran df -h".to_string(),
+                    }),
+                    delivery: None,
+                    attachments: Vec::new(),
+                },
+                // 5 · réponse staff — Markdown riche + statut envoyé.
+                IssueComment {
+                    id: "fake-c-rich".to_string(),
+                    author: "Karim".to_string(),
+                    body: "File relancée. J'ai posé trois garde-fous :\n\n## Vérifications\n\n- [x] Alerte disque à 80 %\n- [x] Nettoyage nocturne des `.tmp` de transcodage\n- [ ] Reprise automatique après échec 5xx\n\nLe dernier est en cours de review, PR :\n\n```text\ngit diff --stat HEAD~1\n apps/media/src/queue.rs  | 44 +++++++++\n apps/media/src/retry.rs  | 12 +--\n```".to_string(),
+                    kind: "comment".to_string(),
+                    at: m(1_300.0),
+                    channel: "slack".to_string(),
+                    quote: None,
+                    delivery: Some(IssueCommentDelivery {
+                        status: "sent".to_string(),
+                        channel: "slack".to_string(),
+                        at: m(1_295.0),
+                        error: String::new(),
+                    }),
+                    attachments: Vec::new(),
+                },
+                // 6 · pièces jointes multiples sans corps : fichier + URL.
+                IssueComment {
+                    id: "fake-c-attachments".to_string(),
+                    author: "Bruno".to_string(),
+                    body: String::new(),
+                    kind: "comment".to_string(),
+                    at: m(1_200.0),
+                    channel: "email".to_string(),
+                    quote: None,
+                    delivery: None,
+                    attachments: vec![
+                        IssueAttachment {
+                            id: "fake-a-pdf".to_string(),
+                            share_id: String::new(),
+                            url: String::new(),
+                            viewer_url: String::new(),
+                            filename: "rapport-incident-2026-08.pdf".to_string(),
+                            content_type: "application/pdf".to_string(),
+                            bytes: 219_136,
+                            width: None,
+                            height: None,
+                            created_by: "Bruno".to_string(),
+                            created_at: m(1_200.0),
+                        },
+                        IssueAttachment {
+                            id: "fake-a-link".to_string(),
+                            share_id: String::new(),
+                            url: "https://watchme.video/status".to_string(),
+                            viewer_url: "https://watchme.video/status".to_string(),
+                            filename: "watchme.video/status".to_string(),
+                            content_type: "text/uri-list".to_string(),
+                            bytes: 0,
+                            width: None,
+                            height: None,
+                            created_by: "Bruno".to_string(),
+                            created_at: m(1_200.0),
+                        },
+                    ],
+                },
+                // 7 · note système : dispatché.
+                comment("system", "Karim", "Dispatché vers fleet · media-01 — script backfill-video-queue", 40.0),
+                // 8 · dernier envoi : échec + action de retry réservée à la
+                // future route idempotente.
+                IssueComment {
+                    id: "fake-c-failed".to_string(),
+                    author: "Karim".to_string(),
+                    body: "Je viens de relancer, laissez-moi 5 minutes.".to_string(),
+                    kind: "comment".to_string(),
+                    at: m(0.1),
+                    channel: "slack".to_string(),
+                    quote: None,
+                    delivery: Some(IssueCommentDelivery {
+                        status: "failed".to_string(),
+                        channel: "slack".to_string(),
+                        at: m(0.1),
+                        error: "Échec d'envoi".to_string(),
+                    }),
+                    attachments: Vec::new(),
+                },
             ],
-            attachments: vec![IssueAttachment {
-                id: "fake-a-issue".to_string(),
-                share_id: "".to_string(),
-                url: "".to_string(),
-                viewer_url: "".to_string(),
-                filename: "rapport-incident-2026-08.pdf".to_string(),
-                content_type: "application/pdf".to_string(),
-                bytes: 219_136,
-                width: None,
-                height: None,
-                created_by: "Bruno".to_string(),
-                created_at: m(180.0),
-            }],
+            attachments: Vec::new(),
             job_ids: vec!["fake-job-1".to_string()],
+            thread_state: IssueThreadState {
+                typing: vec![IssueTyping {
+                    author: "Ludo".to_string(),
+                    at: m(0.5),
+                }],
+                suggested_reply: Some(IssueThreadDraft {
+                    body: "Bonjour Bruno, la file est relancée, disque à 62 % après rotation. Je surveille jusqu'à ce que le rattrapage soit fini — il devrait être bouclé d'ici deux heures. Je reviens vers vous à ce moment.".to_string(),
+                    model: "Claude Sonnet".to_string(),
+                    at: m(0.4),
+                }),
+                local_draft: Some(IssueThreadDraft {
+                    body: "Je vérifie le pipeline transcodage et je reviens vers toi…".to_string(),
+                    model: String::new(),
+                    at: m(0.3),
+                }),
+            },
         };
         // En tête de liste : la démo saute aux yeux, et une fixture SANS body
         // ne s'affiche jamais que dans la liste — ici on met tout, corps ET
@@ -670,22 +756,24 @@ impl Workspace {
         if self.issues_relevant() {
             self.refresh_issues(cx);
             if self._issues_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(15))
-                        .await;
-                    let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.issues_relevant() {
-                                ws.refresh_issues(cx);
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if !keep {
-                        break;
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(15))
+                            .await;
+                        let keep = this
+                            .update(cx, |ws, cx| {
+                                if ws.issues_relevant() {
+                                    ws.refresh_issues(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
                 });
                 self._issues_poll = Some(task);
@@ -1592,7 +1680,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{issue_list_filter_for_mode, issues, AppMode};
+    use super::{AppMode, issue_list_filter_for_mode, issues};
 
     // SDTEST-1433
     #[test]
