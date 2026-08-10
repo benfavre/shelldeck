@@ -381,6 +381,15 @@ struct AiDiagnosticSequence {
     remaining: VecDeque<String>,
 }
 
+/// Resolve the persisted UI family before it reaches GPUI. On Linux, asking
+/// GPUI for a missing family falls back to the first fallback *face* (regular),
+/// which also discards requested weights such as semibold and bold. Inter is
+/// embedded by adabraka-ui, so it is a stable weighted fallback on every OS.
+fn resolve_ui_font_family(configured: &str, cx: &App) -> Option<String> {
+    let resolved = crate::settings::normalize_ui_font_family(configured, cx);
+    (resolved != "System Default").then_some(resolved)
+}
+
 pub struct Workspace {
     connections: Vec<Connection>,
     store: ConnectionStore,
@@ -434,8 +443,9 @@ pub struct Workspace {
     companion_shortcut_statuses: CompanionShortcutStatuses,
     sidebar_visible: bool,
     sidebar_width: f32,
-    /// Application UI font family ("System Default" means no override).
-    ui_font_family: String,
+    /// Available application UI family, with missing configured fonts resolved
+    /// to the embedded Inter family so requested font weights remain intact.
+    resolved_ui_font_family: Option<String>,
     /// Application UI base font size in pixels.
     ui_font_size: f32,
     window_active: bool,
@@ -758,6 +768,21 @@ impl Workspace {
         store: ConnectionStore,
         ai: WorkspaceAiBindings,
     ) -> Self {
+        let mut config = config;
+        let normalized_ui_font =
+            crate::settings::normalize_ui_font_family(&config.general.ui_font_family, cx);
+        if normalized_ui_font != config.general.ui_font_family {
+            tracing::warn!(
+                configured = %config.general.ui_font_family,
+                resolved = %normalized_ui_font,
+                "Configured UI font is unavailable; persisting the rendered fallback"
+            );
+            config.general.ui_font_family = normalized_ui_font;
+            if let Err(error) = config.save() {
+                tracing::error!(%error, "Failed to persist resolved UI font family");
+            }
+        }
+
         let WorkspaceAiBindings {
             assistant: ai_dock_assistant,
             tasks: ai_tasks,
@@ -847,7 +872,7 @@ impl Workspace {
             ed.apply_editor_config(&editor_cfg, cx);
         });
         let auto_update_enabled = config.general.auto_update;
-        let ui_font_family = config.general.ui_font_family.clone();
+        let resolved_ui_font_family = resolve_ui_font_family(&config.general.ui_font_family, cx);
         let ui_font_size = config.general.ui_font_size;
         let initial_sidebar_width = config.general.sidebar_width;
 
@@ -1180,7 +1205,7 @@ impl Workspace {
             companion_shortcut_statuses: CompanionShortcutStatuses::default(),
             sidebar_visible: true,
             sidebar_width: initial_sidebar_width,
-            ui_font_family,
+            resolved_ui_font_family,
             ui_font_size,
             window_active: true,
             recent_activity,

@@ -218,27 +218,37 @@ pub fn render_stored_attachment_gallery(
     on_open: impl Fn(usize, &mut App) + Clone + 'static,
     on_delete: Option<AttachmentDeleteCallback>,
 ) -> AnyElement {
-    let mut gallery = div().flex().flex_wrap().gap(px(8.0)).pt(px(4.0));
+    let mut gallery = div()
+        .flex()
+        .flex_wrap()
+        .items_start()
+        .gap(px(6.0))
+        .pt(px(2.0));
 
     for (index, attachment) in attachments.iter().enumerate() {
         let image_url = attachment.url.clone();
         let filename = attachment.filename.clone();
         let open = on_open.clone();
         let delete = on_delete.clone();
+        let has_delete = delete.is_some();
+        let is_image = attachment.content_type.starts_with("image/");
+        let attachment_id = attachment.id.clone();
 
-        gallery = gallery.child(
+        let mut card = if is_image {
             div()
                 .id(ElementId::from(SharedString::from(format!(
                     "{id_prefix}-{}",
-                    attachment.id
+                    attachment_id
                 ))))
                 .relative()
-                .w(px(148.0))
+                .w(px(120.0))
+                .h(px(90.0))
+                .flex_shrink_0()
                 .overflow_hidden()
-                .rounded(px(8.0))
+                .rounded(px(6.0))
                 .border_1()
                 .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_primary())
+                .bg(ShellDeckColors::bg_surface())
                 .cursor_pointer()
                 .hover(|style| {
                     style
@@ -246,37 +256,36 @@ pub fn render_stored_attachment_gallery(
                         .bg(ShellDeckColors::hover_bg())
                 })
                 .child(
-                    div()
-                        .w_full()
-                        .h(px(92.0))
-                        .overflow_hidden()
-                        .bg(ShellDeckColors::bg_surface())
-                        .child(
-                            img(SharedString::from(image_url))
+                    img(SharedString::from(image_url))
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .with_fallback(|| {
+                            div()
                                 .size_full()
-                                .object_fit(ObjectFit::Cover)
-                                .with_fallback(|| {
-                                    div()
-                                        .size_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(lucide_icon(
-                                            "eye",
-                                            24.0,
-                                            ShellDeckColors::text_muted(),
-                                        ))
-                                        .into_any_element()
-                                }),
-                        ),
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(lucide_icon(
+                                    "eye",
+                                    24.0,
+                                    ShellDeckColors::text_muted(),
+                                ))
+                                .into_any_element()
+                        }),
                 )
                 .child(
                     div()
+                        .absolute()
+                        .left(px(5.0))
+                        .right(px(5.0))
+                        .bottom(px(5.0))
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .px(px(8.0))
-                        .py(px(6.0))
+                        .px(px(5.0))
+                        .py(px(3.0))
+                        .rounded(px(4.0))
+                        .bg(ShellDeckColors::bg_primary().opacity(0.88))
                         .text_size(px(11.0))
                         .text_color(ShellDeckColors::text_primary())
                         .child(div().flex_1().min_w(px(0.0)).truncate().child(filename))
@@ -286,35 +295,101 @@ pub fn render_stored_attachment_gallery(
                             ShellDeckColors::text_muted(),
                         )),
                 )
-                .when_some(delete, |el, delete| {
-                    el.child(
-                        div()
-                            .id(ElementId::from(SharedString::from(format!(
-                                "{id_prefix}-delete-{}",
-                                attachment.id
-                            ))))
-                            .absolute()
-                            .top(px(6.0))
-                            .right(px(6.0))
-                            .size(px(26.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(7.0))
-                            .bg(black().opacity(0.72))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(ShellDeckColors::error()))
-                            .child(lucide_icon("trash-2", 13.0, white()))
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                delete(index, cx);
-                            }),
-                    )
-                })
-                .on_click(move |_, _, cx| {
-                    open(index, cx);
-                }),
-        );
+                .on_click(move |_, _, cx| open(index, cx))
+        } else {
+            let kind = attachment
+                .content_type
+                .split('/')
+                .next_back()
+                .filter(|value| !value.is_empty())
+                .unwrap_or("fichier")
+                .to_ascii_uppercase();
+            div()
+                .id(ElementId::from(SharedString::from(format!(
+                    "{id_prefix}-{}",
+                    attachment_id
+                ))))
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .max_w(px(260.0))
+                .min_w(px(0.0))
+                .px(px(9.0))
+                .py(px(6.0))
+                .when(has_delete, |card| card.pr(px(34.0)))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(ShellDeckColors::border())
+                .bg(ShellDeckColors::bg_primary())
+                .child(
+                    div()
+                        .size(px(24.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.0))
+                        .bg(ShellDeckColors::bg_surface())
+                        .child(lucide_icon(
+                            "scroll-text",
+                            13.0,
+                            ShellDeckColors::primary(),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(ShellDeckColors::text_primary())
+                                .child(filename),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(ShellDeckColors::text_muted())
+                                .child(format!(
+                                    "{} · {}",
+                                    kind,
+                                    display_bytes(attachment.bytes as usize)
+                                )),
+                        ),
+                )
+        };
+
+        if let Some(delete) = delete {
+            card = card.child(
+                div()
+                    .id(ElementId::from(SharedString::from(format!(
+                        "{id_prefix}-delete-{}",
+                        attachment.id
+                    ))))
+                    .absolute()
+                    .top(px(5.0))
+                    .right(px(5.0))
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .bg(black().opacity(0.72))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::error()))
+                    .child(lucide_icon("trash-2", 11.0, white()))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        delete(index, cx);
+                    }),
+            );
+        }
+
+        gallery = gallery.child(card);
     }
 
     gallery.into_any_element()

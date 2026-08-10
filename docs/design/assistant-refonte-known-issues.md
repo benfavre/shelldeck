@@ -1,5 +1,9 @@
 # Refonte assistant / support — ce que je n'ai PAS su corriger
 
+> **Prototype de référence** : [`docs/design/assistant-refonte.html`](assistant-refonte.html)
+> — ouvrir dans un navigateur. C'est la cible visuelle de toute cette passe ;
+> les noms de classes cités plus bas (`.thr-ai-draft`, …) viennent de là.
+
 Ce fichier existe pour être honnête. Beaucoup de tours de développement se sont
 enchaînés sans que l'écran change réellement, ou que la correction promise soit
 visible. Voici, sans enrobage, ce qui reste cassé au moment où on ferme cette

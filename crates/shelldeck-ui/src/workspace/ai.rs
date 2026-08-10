@@ -159,7 +159,7 @@ impl Workspace {
     }
 
     pub fn companion_ui_font_family(&self) -> Option<String> {
-        (self.ui_font_family != "System Default").then(|| self.ui_font_family.clone())
+        self.resolved_ui_font_family.clone()
     }
 
     /// Keep a single conversation editor active when the standalone Dock is

@@ -5,7 +5,9 @@ use gpui::*;
 
 use crate::display::rich_text::LinkClickHandler;
 #[cfg(feature = "markdown")]
-use crate::display::rich_text::{render_blocks, ListItem, RichBlock, RichInline, TableAlignment};
+use crate::display::rich_text::{
+    render_blocks, render_blocks_compact, ListItem, RichBlock, RichInline, TableAlignment,
+};
 #[cfg(feature = "markdown")]
 use crate::theme::use_theme;
 
@@ -15,6 +17,9 @@ pub struct Markdown {
     source: SharedString,
     base_font_size: Option<Pixels>,
     on_link_click: Option<LinkClickHandler>,
+    // ShellDeck patch: SDPATCH-030 — chat-sized Markdown follows compact
+    // prose rhythm and does not leave document margins after its last block.
+    compact: bool,
 }
 
 impl Markdown {
@@ -24,11 +29,19 @@ impl Markdown {
             source: source.into(),
             base_font_size: None,
             on_link_click: None,
+            compact: false,
         }
     }
 
     pub fn base_font_size(mut self, size: Pixels) -> Self {
         self.base_font_size = Some(size);
+        self
+    }
+
+    // ShellDeck patch: SDPATCH-030 — opt into the thread/note block spacing
+    // without changing Markdown's document-oriented default rendering.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 
@@ -86,7 +99,13 @@ impl RenderOnce for Markdown {
         let base_size = self.base_font_size.unwrap_or(px(14.0));
 
         let blocks = parse_markdown_with_urls(&self.source);
-        let elements = render_blocks(&blocks, base_size, &self.on_link_click, "md");
+        // ShellDeck patch: SDPATCH-030 — select compact margins only for
+        // explicit chat consumers; HTML and regular Markdown stay unchanged.
+        let elements = if self.compact {
+            render_blocks_compact(&blocks, base_size, &self.on_link_click, "md")
+        } else {
+            render_blocks(&blocks, base_size, &self.on_link_click, "md")
+        };
 
         self.base
             .flex()

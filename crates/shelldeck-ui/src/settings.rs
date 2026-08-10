@@ -35,6 +35,38 @@ const MONOSPACE_FONTS: &[&str] = &[
     "Consolas",
 ];
 
+/// Cross-platform shortlist for the application UI. Platform-specific faces
+/// are only shown when GPUI can actually resolve them; Inter is embedded by
+/// adabraka-ui and is therefore the stable fallback on every platform.
+const UI_FONT_FAMILIES: &[&str] = &[
+    "Inter",
+    "SF Pro Text",
+    "Segoe UI",
+    "Ubuntu",
+    "Roboto",
+    "JetBrains Mono",
+    "Fira Code",
+];
+
+fn font_family_is_available(family: &str, available: &[String]) -> bool {
+    available
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(family))
+}
+
+pub(crate) fn normalize_ui_font_family(configured: &str, cx: &App) -> String {
+    if configured == "System Default" {
+        return configured.to_string();
+    }
+
+    let available = cx.text_system().all_font_names();
+    if font_family_is_available(configured, &available) {
+        configured.to_string()
+    } else {
+        adabraka_ui::fonts::UI_FONT_FAMILY.to_string()
+    }
+}
+
 const EDITOR_TAB_SIZES: &[usize] = &[2, 4, 8];
 
 fn apply_character_choice(appearance: &mut ClippyAppearanceConfig, id: &str) {
@@ -2947,25 +2979,21 @@ fn build_ui_font_family_select(
     let system_default_label: SharedString = t!("settings.general.font.system_default")
         .to_string()
         .into();
-    let fonts: &[&str] = &[
-        "System Default",
-        "Inter",
-        "SF Pro Text",
-        "Segoe UI",
-        "Ubuntu",
-        "Roboto",
-        "JetBrains Mono",
-        "Fira Code",
-    ];
+    let available = cx.text_system().all_font_names();
+    let fonts = std::iter::once("System Default").chain(
+        UI_FONT_FAMILIES
+            .iter()
+            .copied()
+            .filter(|name| font_family_is_available(name, &available)),
+    );
     let entries: Vec<(SharedString, SharedString)> = fonts
-        .iter()
         .map(|name| {
-            let label: SharedString = if *name == "System Default" {
+            let label: SharedString = if name == "System Default" {
                 system_default_label.clone()
             } else {
-                SharedString::from(*name)
+                SharedString::from(name)
             };
-            (SharedString::from(*name), label)
+            (SharedString::from(name), label)
         })
         .collect();
     build_string_field_select(

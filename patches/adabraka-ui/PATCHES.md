@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **75**
+Total markers in code: **101**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -583,6 +583,32 @@ carries no marker of its own — see its entry).
   `workspace/request_views.rs`). The chevron change is unrelated and stays.
 - **Upstream status**: not filed yet — generic.
 
+### SDPATCH-030 — Compact Markdown block rhythm for conversation threads
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `Markdown`, `Markdown::compact`, `Markdown::render`
+  - `src/display/rich_text.rs` — `render_blocks_compact`, `render_block`,
+    `render_list_items`, `render_table`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — chat-sized Markdown follows compact`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — opt into the thread/note block spacing`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — select compact margins only for`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — thread prose needs 8 px block rhythm and no`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact headings use the thread`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — list rows in chat use the`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact tables participate in the same`
+- **Why**: The generic Markdown renderer uses document margins: every
+  paragraph, list, table and code block leaves 12 px below itself and headings
+  add up to 24 px above. Support threads virtualize large messages one block at
+  a time, so those document margins accumulated with each list item's own
+  spacing and also left an unexplained tail before note metadata and the reply
+  composer. The opt-in compact mode follows the conversation prototype's 8 px
+  prose cadence, 10/4 px heading rhythm, 2 px list-row cadence, and removes the
+  last block's bottom margin. The existing document rendering remains the
+  default for every other consumer.
+- **Upstream status**: not filed yet — the opt-in density is generic enough to
+  propose upstream.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -671,6 +697,9 @@ carries no marker of its own — see its entry).
 - **2026-08-06** — added SDPATCH-028: `InputVariant::Bare` plus the shared
   `Composer` component. 10 new markers (6 in `input.rs`, 2 in `textarea.rs`,
   1 in `composer.rs`, 1 in `prelude.rs`). Marker count 30 → 40.
+- **2026-08-10** — added SDPATCH-030: opt-in compact Markdown spacing for
+  virtualized conversation threads. 7 new markers; current code marker count
+  is 101.
 
 ## Retired patches
 

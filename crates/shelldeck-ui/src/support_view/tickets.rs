@@ -1,6 +1,54 @@
+use super::thread::{
+    composer_editor_field, human_message, human_message_continuation, markdown_blocks,
+    note as thread_note, ThreadNoteKind,
+};
 use super::*;
+use adabraka_ui::prelude::{Composer, ComposerCommit};
 
 impl SupportView {
+    pub(super) fn rebuild_ticket_thread_cache(&mut self) {
+        let Some(ticket) = &self.detail else {
+            self.ticket_message_blocks.clear();
+            self.ticket_thread_list.reset(0);
+            return;
+        };
+        self.ticket_message_blocks = ticket
+            .messages
+            .iter()
+            .map(|message| {
+                if message.is_note() {
+                    Vec::new()
+                } else {
+                    markdown_blocks(&message.text)
+                }
+            })
+            .collect();
+        self.ticket_thread_list
+            .reset(self.ticket_thread_item_count());
+    }
+
+    fn ticket_thread_item_count(&self) -> usize {
+        let Some(ticket) = &self.detail else {
+            return 0;
+        };
+        if ticket.messages.is_empty() {
+            1
+        } else {
+            ticket
+                .messages
+                .iter()
+                .zip(&self.ticket_message_blocks)
+                .map(|(message, blocks)| {
+                    if message.is_note() {
+                        1
+                    } else {
+                        blocks.len().max(1)
+                    }
+                })
+                .sum()
+        }
+    }
+
     pub(super) fn render_jean_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut strip = div()
             .flex()
@@ -766,31 +814,17 @@ impl SupportView {
         row
     }
 
-    pub(super) fn render_message(
+    fn render_message_segment(
         &self,
         msg: &SupportMessage,
         me: &SupportMe,
+        channel: &str,
+        body: SharedString,
+        first: bool,
+        last: bool,
+        window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let (bg, align_end, label) = if msg.is_note() {
-            (
-                ShellDeckColors::warning().opacity(0.12),
-                false,
-                t!("support.note_internal").to_string(),
-            )
-        } else if msg.is_customer() {
-            (
-                ShellDeckColors::bg_surface(),
-                false,
-                t!("support.bubble.client").to_string(),
-            )
-        } else {
-            (
-                ShellDeckColors::primary().opacity(0.12),
-                true,
-                t!("support.bubble.agent").to_string(),
-            )
-        };
+    ) -> AnyElement {
         // Fallback for the sender label: `msg.name` first (Manage API sets
         // it for messages typed from the web dashboard), then — for
         // agent-side messages with no name — the currently signed-in
@@ -818,81 +852,98 @@ impl SupportView {
                     None
                 }
             })
-            .unwrap_or(label);
-
-        // Bubble: `max_w(560)` caps the pill width; leaving the width
-        // otherwise unconstrained lets the flex parent (`justify_end` on
-        // the wrap when this is an agent-side message) push the bubble to
-        // the correct edge. `min_w_0` + `w_full` on the text child were
-        // added earlier to force horizontal wrap, but they made the bubble
-        // stretch past its cap and broke the right-alignment for agent
-        // messages — reverted to the pre-SDPATCH-011-hotfix layout.
-        let mut bubble = div()
-            .max_w(px(560.0))
-            .rounded(px(8.0))
-            .bg(bg)
-            .border_1()
-            .border_color(ShellDeckColors::border())
-            .px(px(10.0))
-            .py(px(7.0))
-            .flex()
-            .flex_col()
-            .gap(px(3.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(who),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(rel_time(msg.at)),
-                    ),
-            )
-            .child({
-                // Split by hard newlines and give each line its own div
-                // with a `max_w`. gpui's text element uses
-                // `available_space.width` as `wrap_width` when the parent
-                // constrains it; `max_w` on a per-line wrapper feeds a
-                // Definite width down to `shape_text` so long lines wrap
-                // to the right height, while short lines' wrappers stay
-                // as narrow as their content. Result: bubble auto-sizes
-                // to the widest actual line, capped at max_w, with a
-                // correct measured height (no more bleed past the border).
-                let mut body = div()
-                    .flex()
-                    .flex_col()
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary());
-                for line in msg.text.split('\n') {
-                    let display: SharedString = if line.is_empty() {
-                        " ".into()
-                    } else {
-                        line.to_string().into()
-                    };
-                    body = body.child(div().max_w(px(540.0)).child(display));
+            .unwrap_or_else(|| {
+                if msg.is_customer() {
+                    t!("support.bubble.client").to_string()
+                } else {
+                    t!("support.bubble.agent").to_string()
                 }
-                body
             });
-        if !msg.attachments.is_empty() {
-            bubble = bubble.child(self.render_issue_attachment_links(&msg.attachments, cx));
+
+        let attachments = (last && !msg.attachments.is_empty())
+            .then(|| self.render_issue_attachment_links(&msg.attachments, cx));
+        let font_size = px(12.5).to_pixels(window.rem_size());
+        if first {
+            human_message(
+                who,
+                !msg.is_customer(),
+                msg.at,
+                (!channel.trim().is_empty()).then(|| SharedString::from(channel.to_string())),
+                body,
+                attachments,
+                font_size,
+            )
+        } else {
+            human_message_continuation(body, attachments, font_size)
+        }
+    }
+
+    fn render_ticket_thread_item(
+        &self,
+        mut index: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let final_item = index + 1 == self.ticket_thread_item_count();
+        let object_bottom = if final_item { 18.0 } else { 20.0 };
+        let Some(ticket) = &self.detail else {
+            return div().into_any_element();
+        };
+        if ticket.messages.is_empty() {
+            return div()
+                .w_full()
+                .pb(px(object_bottom))
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(t!("support.empty.messages").to_string())
+                .into_any_element();
         }
 
-        let mut wrap = div().w_full().flex();
-        if align_end {
-            wrap = wrap.justify_end();
+        for (message, blocks) in ticket.messages.iter().zip(&self.ticket_message_blocks) {
+            if message.is_note() {
+                if index == 0 {
+                    return div()
+                        .w_full()
+                        .pb(px(object_bottom))
+                        .child(thread_note(
+                            message.text.clone(),
+                            message.name.clone(),
+                            message.at,
+                            ThreadNoteKind::Internal,
+                            px(11.5).to_pixels(window.rem_size()),
+                        ))
+                        .into_any_element();
+                }
+                index -= 1;
+                continue;
+            }
+
+            let count = blocks.len().max(1);
+            if index < count {
+                let first = index == 0;
+                let last = index + 1 == count;
+                let body = blocks
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| SharedString::from(message.text.clone()));
+                return div()
+                    .w_full()
+                    .pb(px(if last { object_bottom } else { 8.0 }))
+                    .child(self.render_message_segment(
+                        message,
+                        &self.me,
+                        &ticket.channel,
+                        body,
+                        first,
+                        last,
+                        window,
+                        cx,
+                    ))
+                    .into_any_element();
+            }
+            index -= count;
         }
-        wrap.child(bubble)
+        div().into_any_element()
     }
 
     pub(super) fn action_button(
@@ -1294,6 +1345,7 @@ impl SupportView {
         let header = div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(px(6.0))
             .px(px(16.0))
             .py(px(12.0))
@@ -1367,44 +1419,31 @@ impl SupportView {
             .child(meta_row)
             .child(self.render_header_subpanels(&ticket, cx));
 
-        // Messages (scrollable). Subtle background tint so the thread reads
-        // as a distinct "conversation surface", separate from the white
-        // header + action bar chrome. `bg_surface` is the same token adabraka
-        // uses for card bodies — light-mode = warm cream, dark-mode = darker
-        // panel, so the contrast stays gentle in both themes. `track_scroll`
-        // wires the ScrollHandle that `set_detail` calls `scroll_to_bottom`
-        // on, so opening a ticket lands on the newest message.
-        let mut messages = div()
-            .id("support-messages")
-            .flex_1()
-            // `min_h_0` on a flex_1 child is what actually lets the pane
-            // shrink below its content height and enable overflow_y_scroll;
-            // without it the tall content pushes the whole conversation
-            // column past the composer.
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.messages_scroll)
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .px(px(14.0))
-            .pt(px(14.0))
-            // Extra bottom padding so scroll_to_bottom leaves visible air
-            // between the last bubble and the action bar's top border.
-            .pb(px(20.0))
-            .bg(ShellDeckColors::bg_surface());
-        if ticket.messages.is_empty() {
-            messages = messages.child(
+        // Variable-height native list: only visible Markdown blocks are
+        // parsed, laid out and painted while bottom alignment keeps the chat
+        // on its latest exchange when opened.
+        let entity = cx.entity();
+        let messages = list(
+            self.ticket_thread_list.clone(),
+            move |index, window, app| {
+                let item = entity.update(app, |this, cx| {
+                    this.render_ticket_thread_item(index, window, cx)
+                });
+                // GPUI's native list does not inset rows with padding styled
+                // on the list itself. Each virtual row owns the 18 px thread
+                // gutter; only the first row owns the 16 px leading inset.
                 div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.messages").to_string()),
-            );
-        } else {
-            for m in &ticket.messages {
-                messages = messages.child(self.render_message(m, &self.me, cx));
-            }
-        }
+                    .w_full()
+                    .px(px(18.0))
+                    .pt(px(if index == 0 { 16.0 } else { 0.0 }))
+                    .child(item)
+                    .into_any_element()
+            },
+        )
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .bg(ShellDeckColors::bg_surface());
 
         div()
             .flex_1()
@@ -1418,6 +1457,7 @@ impl SupportView {
             // against the action bar. Same idiom as parent uses at line
             // 1762.
             .min_h(px(0.0))
+            .overflow_hidden()
             .child(header)
             .child(messages)
             .child(self.render_composer(&tid, cx))
@@ -1747,37 +1787,12 @@ impl SupportView {
             })
     }
 
-    pub(super) fn render_attachment_toggle(
-        &self,
-        id: &'static str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let label = if self.attachment_drafts.is_empty() {
-            t!("user.requests.attachments.title").to_string()
-        } else {
-            format!(
-                "{} ({})",
-                t!("user.requests.attachments.title"),
-                self.attachment_drafts.len()
-            )
-        };
-        Button::new(id, label)
-            .size(ButtonSize::Sm)
-            .variant(ButtonVariant::Outline)
-            .selected(self.attachment_panel_open)
-            .icon(IconSource::from("upload"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.attachment_panel_open = !this.attachment_panel_open;
-                cx.notify();
-            }))
-    }
-
     pub(super) fn render_composer(
         &self,
         _ticket_id: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = adabraka_ui::theme::use_theme();
+        let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let is_note = self.compose_note;
         let toggle =
             |label: &str, icon: &'static str, active: bool, note: bool, cx: &mut Context<Self>| {
@@ -1822,15 +1837,11 @@ impl SupportView {
         let note_label = t!("support.note_internal").to_string();
         let ai_enabled = self.ai_reply_enabled && !is_note;
 
-        // 2-row composer: (1) mode toggle Réponse / Note interne (small
-        // chips), (2) the Input widget flex_1 with the send button pinned
-        // to its right so the reply flow reads as a single line. Previously
-        // the send button sat on its own row below the Input, adding an
-        // otherwise pointless third row of chrome.
         div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .flex_shrink_0()
+            .gap(px(2.0))
             .px(px(14.0))
             .py(px(10.0))
             .border_t_1()
@@ -1842,80 +1853,75 @@ impl SupportView {
                     cx.propagate();
                 }
             }))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(toggle(&reply_label, "reply", !is_note, false, cx))
-                    .child(toggle(&note_label, "sticky-note", is_note, true, cx))
-                    .when(ai_enabled, |row| {
-                        row.child(
-                            Button::new(
-                                "support-ai-reply",
-                                t!("ai.workflow.support_reply").to_string(),
+            .child({
+                let focus = self.composer_state.read(cx).focus_handle(cx);
+                let empty = self.composer_state.read(cx).content().trim().is_empty();
+                let send_entity = cx.entity();
+                let mut frame = Composer::with_field(
+                    "support-ticket-composer",
+                    focus,
+                    composer_editor_field(&self.composer_state, placeholder, font_family, cx),
+                )
+                .context(toggle(&reply_label, "reply", !is_note, false, cx))
+                .context(toggle(&note_label, "sticky-note", is_note, true, cx))
+                .commit(if is_note {
+                    ComposerCommit::Labeled(t!("support.compose.add_note").to_string().into())
+                } else {
+                    ComposerCommit::Send
+                })
+                .commit_enabled(!self.attachment_busy && !empty)
+                .action(
+                    Button::new("support-attachments-toggle", "")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .selected(self.attachment_panel_open)
+                        .tooltip(if self.attachment_drafts.is_empty() {
+                            t!("user.requests.attachments.title").to_string()
+                        } else {
+                            format!(
+                                "{} ({})",
+                                t!("user.requests.attachments.title"),
+                                self.attachment_drafts.len()
                             )
-                            .variant(ButtonVariant::Ai)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("sparkles"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(id) = this.selected_id.clone() {
-                                    cx.emit(SupportViewEvent::SuggestReply(id));
-                                }
-                            })),
+                        })
+                        .icon(IconSource::from("plus"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.attachment_panel_open = !this.attachment_panel_open;
+                            cx.notify();
+                        })),
+                )
+                .on_commit(move |cx| {
+                    send_entity.update(cx, |this, cx| this.send_composer(cx));
+                })
+                .footnote(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .child(t!("ai.assistant.hint.send").to_string())
+                        .child(t!("ai.assistant.hint.newline").to_string()),
+                );
+
+                if ai_enabled {
+                    frame = frame.action(
+                        Button::new(
+                            "support-ai-reply",
+                            t!("ai.workflow.support_reply").to_string(),
                         )
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .h(px(80.0))
-                            .overflow_hidden()
-                            .child(
-                                Editor::new(&self.composer_state)
-                                    .placeholder(placeholder)
-                                    .font_family(theme.tokens.font_family.clone())
-                                    .min_lines(4)
-                                    .max_lines(4)
-                                    .show_horizontal_scrollbar(false)
-                                    .current_line_color(transparent_black()),
-                            ),
-                    )
-                    .when(self.attachment_panel_open, |composer| {
-                        composer.child(self.render_attachment_picker(cx))
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(self.render_attachment_toggle("support-attachments-toggle", cx))
-                            .child(
-                                Button::new(
-                                    "support-send",
-                                    if is_note {
-                                        t!("support.compose.add_note").to_string()
-                                    } else {
-                                        t!("support.send").to_string()
-                                    },
-                                )
-                                .variant(ButtonVariant::Default)
-                                .size(ButtonSize::Sm)
-                                .icon(IconSource::from("send"))
-                                .disabled(self.attachment_busy)
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.send_composer(cx);
-                                    },
-                                )),
-                            ),
-                    ),
-            )
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("sparkles"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(id) = this.selected_id.clone() {
+                                cx.emit(SupportViewEvent::SuggestReply(id));
+                            }
+                        })),
+                    );
+                }
+                frame
+            })
+            .when(self.attachment_panel_open, |composer| {
+                composer.child(self.render_attachment_picker(cx))
+            })
     }
 }

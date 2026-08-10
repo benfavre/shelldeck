@@ -347,8 +347,8 @@ impl Render for Workspace {
         // cascades to every child view; "System Default" leaves GPUI's
         // default font untouched. (UI scale is driven by the rem size set at
         // the top of render.)
-        if self.ui_font_family != "System Default" {
-            root = root.font_family(self.ui_font_family.clone());
+        if let Some(font_family) = &self.resolved_ui_font_family {
+            root = root.font_family(font_family.clone());
         }
 
         // Window chrome: clip children to the root so the custom titlebar and

@@ -612,10 +612,7 @@ impl Workspace {
                     ws.issues_instances = list.instances.clone();
                     // Fixture staff-only : n'affecte que la liste EN MÉMOIRE,
                     // rien n'est envoyé à Manage, rien n'est persisté.
-                    Self::inject_thread_showcase(
-                        &mut ws.issues_list,
-                        ws.issues_staff,
-                    );
+                    Self::inject_thread_showcase(&mut ws.issues_list, ws.issues_staff);
                     ws.push_issues_to_support(cx);
                     cx.notify();
                 }
@@ -647,7 +644,7 @@ impl Workspace {
         self.support.update(cx, |v, cx| {
             v.set_account(&acc_name, &acc_email);
             v.set_issues(issues, staff, instances);
-            v.set_issue_detail(detail);
+            v.set_issue_detail(detail, cx);
             cx.notify();
         });
     }
@@ -703,12 +700,7 @@ impl Workspace {
         // et un toast erroné. On prend la version qu'on a déjà en mémoire.
         if id == Self::FAKE_SHOWCASE_ID {
             self.issue_selected = Some(id.clone());
-            if let Some(iss) = self
-                .issues_list
-                .iter()
-                .find(|i| i.id == id)
-                .cloned()
-            {
+            if let Some(iss) = self.issues_list.iter().find(|i| i.id == id).cloned() {
                 self.issue_detail = Some(iss);
             }
             self.push_issues_to_support(cx);

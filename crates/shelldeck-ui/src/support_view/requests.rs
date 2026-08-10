@@ -1,8 +1,62 @@
+use super::thread::{
+    composer_editor_field, human_message, human_message_continuation, markdown_blocks,
+    note as thread_note, ThreadNoteKind,
+};
 use super::*;
-use adabraka_ui::prelude::Composer;
 use crate::icons::{ai_provider_inline, simple_icon};
+use adabraka_ui::prelude::Composer;
 
 impl SupportView {
+    pub(super) fn rebuild_issue_thread_cache(&mut self) {
+        let Some(issue) = &self.issue_detail else {
+            self.issue_body_blocks.clear();
+            self.issue_comment_blocks.clear();
+            self.issue_thread_list.reset(0);
+            return;
+        };
+
+        self.issue_body_blocks = markdown_blocks(&issue.body);
+        self.issue_comment_blocks = issue
+            .comments
+            .iter()
+            .map(|comment| {
+                if comment.is_note() {
+                    Vec::new()
+                } else {
+                    markdown_blocks(&comment.body)
+                }
+            })
+            .collect();
+        self.issue_thread_list.reset(self.issue_thread_item_count());
+    }
+
+    fn issue_thread_item_count(&self) -> usize {
+        let Some(issue) = &self.issue_detail else {
+            return 0;
+        };
+        let opening = if !issue.body.trim().is_empty() {
+            self.issue_body_blocks.len().max(1)
+        } else if !issue.attachments.is_empty() || issue.comments.is_empty() {
+            1
+        } else {
+            0
+        };
+        opening
+            + issue
+                .comments
+                .iter()
+                .zip(&self.issue_comment_blocks)
+                .map(|(comment, blocks)| {
+                    if comment.is_note() {
+                        1
+                    } else {
+                        blocks.len().max(1)
+                    }
+                })
+                .sum::<usize>()
+            + usize::from(self.issue_ai_draft.is_some())
+    }
+
     pub(super) fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let header = div()
             .flex()
@@ -56,7 +110,7 @@ impl SupportView {
                         .placeholder(t!("support.issues.search").to_string())
                         .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
                         .on_enter({
-                                                move |value, cx| {
+                            move |value, cx| {
                                 let q = value.to_string();
                                 entity.update(cx, |this, cx| {
                                     this.issues_filter.q = q;
@@ -327,18 +381,13 @@ impl SupportView {
                             .items_center()
                             .gap(px(4.0))
                             .flex_shrink_0()
-                            .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded_full()
-                                    .bg(status_dot),
-                            )
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(status_dot))
                             .child(issue_status_label(&iss.status)),
                     )
-                    .when(iss.priority != "normal" && !iss.priority.trim().is_empty(), |el| {
-                        el.child(div().flex_shrink_0().child(priority_badge(&iss.priority)))
-                    })
+                    .when(
+                        iss.priority != "normal" && !iss.priority.trim().is_empty(),
+                        |el| el.child(div().flex_shrink_0().child(priority_badge(&iss.priority))),
+                    )
                     .child(div().flex_1().min_w(px(0.0)).truncate().child(meta))
                     .when(!when.is_empty(), |el| {
                         el.child(div().flex_shrink_0().child(when.clone()))
@@ -382,26 +431,15 @@ impl SupportView {
             )
     }
 
-    /// Chat-style bubble for one request comment. Mirrors the ticket bubble
-    /// (`render_message`): per-line `max_w` on the body so long lines wrap
-    /// with a Definite width (GPUI doesn't wrap otherwise), and the author's
-    /// side of the thread — mine right, others left, notes flush left with a
-    /// warning tint. Same containment fixes an earlier overlap where a wall
-    /// of dashes in a description would bleed past the bubble border.
-    pub(super) fn render_issue_comment(
+    fn render_issue_comment_segment(
         &self,
         c: &shelldeck_core::config::issues::IssueComment,
+        body: SharedString,
+        first: bool,
+        last: bool,
+        window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // System notes are of a different nature than a reply: `kind` on the
-        // wire is one of "status" | "system" | "github". Each gets its own
-        // tinted frame — stripping them all the way down would make a status
-        // change indistinguishable from a message.
-        if c.is_note() {
-            return self.render_issue_note(c).into_any_element();
-        }
-        // Human reply: prose on the surface, no card, per the mockup's rule
-        // "reading measure, not a form field".
+    ) -> AnyElement {
         let author_matches_me = !c.author.trim().is_empty() && {
             let a = c.author.trim().to_ascii_lowercase();
             (!self.account_name_lc.is_empty() && a == self.account_name_lc)
@@ -413,67 +451,152 @@ impl SupportView {
             c.author.clone()
         };
 
-        let mut head = div()
-            .flex()
-            .items_baseline()
-            .flex_wrap()
-            .gap(px(7.0))
-            .child(
-                // BOLD (700), pas SEMIBOLD (600). Sur Inter chargé, les deux
-                // graisses existent, mais SEMIBOLD à 12 px sur du texte muet
-                // par-dessus a un contraste trop faible pour se lire comme du
-                // gras — le nom devient invisible dans la ligne. BOLD à 12.5
-                // rétablit le rôle de l'auteur en tant que titre du message.
-                div()
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(if author_matches_me {
-                        ShellDeckColors::primary()
-                    } else {
-                        ShellDeckColors::text_primary()
-                    })
-                    .child(label),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(rel_time(c.at)),
-            );
-        // The channel the request came in on — same value as `iss.source`. Not
-        // per-comment yet (the server does not split it that way), but the
-        // slot exists in the layout so it will not need re-shuffling later.
-        if let Some(chan) = self
+        let channel = self
             .issue_detail
             .as_ref()
             .and_then(|iss| Self::source_chip_label(&iss.source))
-        {
-            head = head.child(
-                div()
-                    .flex_shrink_0()
-                    .h(px(18.0))
-                    .px(px(6.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::bg_surface())
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(chan.to_string()),
-            );
+            .map(SharedString::from);
+        let attachments = (last && !c.attachments.is_empty())
+            .then(|| self.render_issue_attachment_links(&c.attachments, cx));
+        let font_size = px(12.5).to_pixels(window.rem_size());
+        if first {
+            human_message(
+                label,
+                author_matches_me,
+                c.at,
+                channel,
+                body,
+                attachments,
+                font_size,
+            )
+        } else {
+            human_message_continuation(body, attachments, font_size)
+        }
+    }
+
+    fn render_issue_thread_item(
+        &self,
+        mut index: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let final_item = index + 1 == self.issue_thread_item_count();
+        let object_bottom = if final_item { 18.0 } else { 20.0 };
+        let Some(issue) = &self.issue_detail else {
+            return div().into_any_element();
+        };
+        let font_size = px(12.5).to_pixels(window.rem_size());
+
+        if !issue.body.trim().is_empty() {
+            let count = self.issue_body_blocks.len().max(1);
+            if index < count {
+                let first = index == 0;
+                let last = index + 1 == count;
+                let body = self
+                    .issue_body_blocks
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| SharedString::from(issue.body.clone()));
+                let attachments = (last && !issue.attachments.is_empty())
+                    .then(|| self.render_issue_attachment_links(&issue.attachments, cx));
+                let content = if first {
+                    human_message(
+                        if issue.requested_by.trim().is_empty() {
+                            t!("support.issue.description").to_string()
+                        } else {
+                            issue.requested_by.clone()
+                        },
+                        false,
+                        issue.created_at,
+                        Self::source_chip_label(&issue.source).map(SharedString::from),
+                        body,
+                        attachments,
+                        font_size,
+                    )
+                } else {
+                    human_message_continuation(body, attachments, font_size)
+                };
+                return div()
+                    .w_full()
+                    .pb(px(if last { object_bottom } else { 8.0 }))
+                    .child(content)
+                    .into_any_element();
+            }
+            index -= count;
+        } else if !issue.attachments.is_empty() || issue.comments.is_empty() {
+            if index == 0 {
+                let content = if !issue.attachments.is_empty() {
+                    human_message(
+                        if issue.requested_by.trim().is_empty() {
+                            t!("support.issue.description").to_string()
+                        } else {
+                            issue.requested_by.clone()
+                        },
+                        false,
+                        issue.created_at,
+                        Self::source_chip_label(&issue.source).map(SharedString::from),
+                        SharedString::from(""),
+                        Some(self.render_issue_attachment_links(&issue.attachments, cx)),
+                        font_size,
+                    )
+                } else {
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(ShellDeckColors::text_muted())
+                        .child(t!("support.empty.comments").to_string())
+                        .into_any_element()
+                };
+                return div()
+                    .w_full()
+                    .pb(px(object_bottom))
+                    .child(content)
+                    .into_any_element();
+            }
+            index -= 1;
         }
 
-        let mut bubble = div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .max_w(px(560.0))
-            .min_w(px(0.0))
-            .child(head)
-            .child(Self::render_body_lines(&c.body, ShellDeckColors::text_primary()));
-        if !c.attachments.is_empty() {
-            bubble = bubble.child(self.render_issue_attachment_links(&c.attachments, cx));
+        for (comment, blocks) in issue.comments.iter().zip(&self.issue_comment_blocks) {
+            if comment.is_note() {
+                if index == 0 {
+                    return div()
+                        .w_full()
+                        .pb(px(object_bottom))
+                        .child(self.render_issue_note(comment, window))
+                        .into_any_element();
+                }
+                index -= 1;
+                continue;
+            }
+
+            let count = blocks.len().max(1);
+            if index < count {
+                let first = index == 0;
+                let last = index + 1 == count;
+                let body = blocks
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| SharedString::from(comment.body.clone()));
+                return div()
+                    .w_full()
+                    .pb(px(if last { object_bottom } else { 8.0 }))
+                    .child(
+                        self.render_issue_comment_segment(comment, body, first, last, window, cx),
+                    )
+                    .into_any_element();
+            }
+            index -= count;
         }
-        bubble.into_any_element()
+
+        if index == 0 {
+            if let Some(draft) = &self.issue_ai_draft {
+                return div()
+                    .w_full()
+                    .pb(px(object_bottom))
+                    .child(self.render_issue_ai_draft_card(draft.body.clone(), cx))
+                    .into_any_element();
+            }
+        }
+        div().into_any_element()
     }
 
     /// One system note (`status`, `system` or `github`), rendered as the
@@ -482,74 +605,29 @@ impl SupportView {
     fn render_issue_note(
         &self,
         c: &shelldeck_core::config::issues::IssueComment,
+        window: &Window,
     ) -> impl IntoElement {
-        let (icon, border, bg) = match c.kind.as_str() {
-            "status" => (
-                "check",
-                ShellDeckColors::primary().opacity(0.30),
-                ShellDeckColors::primary().opacity(0.08),
-            ),
-            "github" => (
-                "git-branch",
-                ShellDeckColors::border(),
-                ShellDeckColors::bg_surface(),
-            ),
-            _ => (
-                "info",
-                ShellDeckColors::warning().opacity(0.30),
-                ShellDeckColors::warning().opacity(0.10),
-            ),
+        let kind = match c.kind.as_str() {
+            "status" => ThreadNoteKind::Status,
+            "github" => ThreadNoteKind::Github,
+            // The current wire schema has no separate dispatch kind. Detect
+            // the server-authored dispatch wording so the existing event gets
+            // the green runtime treatment from the prototype.
+            "system" if c.body.trim_start().starts_with("Dispatch") => ThreadNoteKind::Dispatch,
+            _ => ThreadNoteKind::System,
         };
         let actor = if c.author.trim().is_empty() {
             None
         } else {
             Some(c.author.clone())
         };
-        div()
-            .flex()
-            .items_start()
-            .gap(px(10.0))
-            .max_w(px(560.0))
-            .min_w(px(0.0))
-            .p(px(9.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(22.0))
-                    .h(px(22.0))
-                    .rounded(px(5.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(lucide_icon(icon, 13.0, ShellDeckColors::text_muted())),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(px(11.5))
-                    .line_height(relative(1.4))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(Self::render_body_lines(
-                        &c.body,
-                        ShellDeckColors::text_primary(),
-                    ))
-                    .child(
-                        div()
-                            .mt(px(2.0))
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(match actor {
-                                Some(a) => format!("{} · {}", rel_time(c.at), a),
-                                None => rel_time(c.at),
-                            }),
-                    ),
-            )
+        thread_note(
+            c.body.clone(),
+            actor,
+            c.at,
+            kind,
+            px(11.5).to_pixels(window.rem_size()),
+        )
     }
 
     /// Split a plain-text body into lines and stack them. `line_height` MUST
@@ -597,7 +675,7 @@ impl SupportView {
         }
     }
 
-        pub(super) fn render_issue_attachment_links(
+    pub(super) fn render_issue_attachment_links(
         &self,
         attachments: &[IssueAttachment],
         cx: &mut Context<Self>,
@@ -1747,6 +1825,7 @@ impl SupportView {
         let header = div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(px(6.0))
             .px(px(16.0))
             .py(px(12.0))
@@ -1813,100 +1892,25 @@ impl SupportView {
             .child(meta_row)
             .child(self.render_issue_header_subpanels(&iss, cx));
 
-        let mut thread = div()
-            .id("sup-issue-thread")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.issues_scroll)
-            .flex()
-            .flex_col()
-            // 16px : à 8 la carte statut collait à la miniature du dessus
-            // et donnait l'impression d'une superposition.
-            .gap(px(16.0))
-            .px(px(14.0))
-            .pt(px(14.0))
-            .pb(px(20.0))
-            .bg(ShellDeckColors::bg_surface());
-
-        if !iss.body.trim().is_empty() {
-            // The opening message is prose, like every reply below it. It used
-            // to be an adabraka `Card` with a framed author tag — which is why
-            // stripping `render_issue_comment` alone left this one boxed: it
-            // never went through that function.
-            thread = thread.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .w_full()
-                    .max_w(px(560.0))
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_baseline()
-                            .gap(px(7.0))
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(if iss.requested_by.trim().is_empty() {
-                                        t!("support.issue.description").to_string()
-                                    } else {
-                                        iss.requested_by.clone()
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(px(10.5))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(rel_time(iss.created_at)),
-                            ),
-                    )
-                    .child({
-                        let mut body = div()
-                            .flex()
-                            .flex_col()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .text_size(px(12.5))
-                            .text_color(ShellDeckColors::text_primary());
-                        for line in iss.body.split('\n') {
-                            let line = if line.is_empty() { " " } else { line };
-                            body = body.child(
-                                div()
-                                    .w_full()
-                                    .min_w(px(0.0))
-                                    .line_height(relative(1.62))
-                                    .child(line.to_string()),
-                            );
-                        }
-                        body
-                    })
-                    // Pièces jointes DANS le bloc du message : elles suivent
-                    // l'auteur au lieu de flotter entre l'ouverture et la note
-                    // statut qui vient après (où elles semblaient poser dessus).
-                    .when(!iss.attachments.is_empty(), |el| {
-                        el.child(self.render_issue_attachment_links(&iss.attachments, cx))
-                    }),
-            );
-        } else if iss.comments.is_empty() && iss.attachments.is_empty() {
-            thread = thread.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.comments").to_string()),
-            );
-        } else if !iss.attachments.is_empty() {
-            // Pas de corps mais des pièces jointes : on garde le rendu séparé.
-            thread = thread.child(self.render_issue_attachment_links(&iss.attachments, cx));
-        }
-        for c in &iss.comments {
-            thread = thread.child(self.render_issue_comment(c, cx));
-        }
+        let entity = cx.entity();
+        let thread = list(self.issue_thread_list.clone(), move |index, window, app| {
+            let item = entity.update(app, |this, cx| {
+                this.render_issue_thread_item(index, window, cx)
+            });
+            // Native `list` lays its rows outside the Styled padding carried by
+            // the list element itself. Put the thread gutter on every virtual
+            // row so prose and cards never sit against the pane separator.
+            div()
+                .w_full()
+                .px(px(18.0))
+                .pt(px(if index == 0 { 16.0 } else { 0.0 }))
+                .child(item)
+                .into_any_element()
+        })
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .bg(ShellDeckColors::bg_surface());
 
         div()
             .flex_1()
@@ -1914,6 +1918,7 @@ impl SupportView {
             .flex_col()
             .min_w(px(0.0))
             .min_h(px(0.0))
+            .overflow_hidden()
             .child(header)
             .child(thread)
             .child(self.render_issue_composer(cx))
@@ -1946,7 +1951,11 @@ impl SupportView {
                 .child(ai_provider_inline(self.ai_backend, &model))
                 .child(
                     svg()
-                        .path(lucide_path(if open { "chevron-up" } else { "chevron-down" }))
+                        .path(lucide_path(if open {
+                            "chevron-up"
+                        } else {
+                            "chevron-down"
+                        }))
                         .size(px(11.0))
                         .flex_shrink_0()
                         .text_color(ShellDeckColors::text_muted()),
@@ -2045,14 +2054,14 @@ impl SupportView {
     /// The AI reply card as `.thr-ai-draft` in the mockup — a proposal to
     /// review, not a keystroke. It sits above the composer so `Publier`
     /// prepends into the user's current text (whatever they had is preserved).
-    fn render_issue_ai_draft_card(
-        &self,
-        body: String,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_issue_ai_draft_card(&self, body: String, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
+            .w_full()
+            .max_w(px(560.0))
+            .min_w(px(0.0))
+            .overflow_hidden()
             .gap(px(8.0))
             .p(px(11.0))
             .rounded(px(10.0))
@@ -2074,7 +2083,10 @@ impl SupportView {
                     .text_size(px(12.5))
                     .line_height(relative(1.55))
                     .text_color(ShellDeckColors::text_primary())
-                    .child(Self::render_body_lines(&body, ShellDeckColors::text_primary())),
+                    .child(Self::render_body_lines(
+                        &body,
+                        ShellDeckColors::text_primary(),
+                    )),
             )
             .child(
                 div()
@@ -2083,35 +2095,38 @@ impl SupportView {
                     .gap(px(8.0))
                     .child(div().flex_1())
                     .child(
-                        Button::new("issue-ai-discard", t!("support.issue.ai_discard").to_string())
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(SupportViewEvent::DiscardIssueAiDraft);
-                            })),
+                        Button::new(
+                            "issue-ai-discard",
+                            t!("support.issue.ai_discard").to_string(),
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(SupportViewEvent::DiscardIssueAiDraft);
+                        })),
                     )
                     .child(
-                        Button::new("issue-ai-publish", t!("support.issue.ai_publish").to_string())
-                            .variant(ButtonVariant::Ai)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("arrow-up"))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(SupportViewEvent::PublishIssueAiDraft);
-                            })),
+                        Button::new(
+                            "issue-ai-publish",
+                            t!("support.issue.ai_publish").to_string(),
+                        )
+                        .variant(ButtonVariant::Ai)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("arrow-up"))
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(SupportViewEvent::PublishIssueAiDraft);
+                        })),
                     ),
             )
     }
 
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = adabraka_ui::theme::use_theme();
+        let font_family = adabraka_ui::theme::use_theme().tokens.font_family.clone();
         let issue_id = self.issue_selected.clone();
-        let ai_draft_card = self
-            .issue_ai_draft
-            .as_ref()
-            .map(|draft| self.render_issue_ai_draft_card(draft.body.clone(), cx));
         div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(px(2.0))
             .px(px(14.0))
             .py(px(10.0))
@@ -2124,7 +2139,6 @@ impl SupportView {
                     cx.propagate();
                 }
             }))
-            .children(ai_draft_card)
             .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
                 let issue_id = issue_id.clone().unwrap_or_default();
                 composer.child(div().h(px(0.0)).child(
@@ -2146,33 +2160,12 @@ impl SupportView {
                 let mut frame = Composer::with_field(
                     "sup-issue-composer",
                     focus,
-                    div()
-                        .w_full()
-                        .min_w(px(0.0))
-                        // Two lines, not four: the field grows with what you
-                        // write instead of reserving an empty box.
-                        .h(px(54.0))
-                        // Vertical breathing room. Without it the caret sits
-                        // flush against the frame's top border — the collision
-                        // `.agents/spacing.md` calls blocking.
-                        .pt(px(8.0))
-                        .pb(px(4.0))
-                        .px(px(8.0))
-                        .overflow_hidden()
-                        .child(
-                            // `show_border(false)`: the `Composer` frame owns
-                            // the border and the focus ring. Left on, the editor
-                            // drew a second frame inside the first — the exact
-                            // thing this component exists to prevent.
-                            Editor::new(&self.composer_state)
-                                .placeholder(t!("support.issue_comment_placeholder").to_string())
-                                .font_family(theme.tokens.font_family.clone())
-                                .show_border(false)
-                                .min_lines(2)
-                                .max_lines(2)
-                                .show_horizontal_scrollbar(false)
-                                .current_line_color(transparent_black()),
-                        ),
+                    composer_editor_field(
+                        &self.composer_state,
+                        t!("support.issue_comment_placeholder").to_string(),
+                        font_family,
+                        cx,
+                    ),
                 )
                 // Grey while there is nothing to send, like every other
                 // composer in the app.

@@ -8,6 +8,7 @@
 mod home;
 mod issue_filters;
 mod requests;
+mod thread;
 mod ticket_filters;
 mod tickets;
 
@@ -23,7 +24,7 @@ use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
-use adabraka_ui::components::editor::{Editor, EditorState, Paste as EditorPaste};
+use adabraka_ui::components::editor::{EditorState, Paste as EditorPaste};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -417,13 +418,17 @@ pub struct SupportView {
     attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     /// Annotation editor opened after an interactive area capture.
     capture_annotator: Option<Entity<AttachmentAnnotator>>,
-    issues_scroll: ScrollHandle,
+    /// Parsed top-level Markdown blocks for the opening request and each
+    /// comment. The variable-height GPUI list renders only visible blocks.
+    issue_body_blocks: Vec<SharedString>,
+    issue_comment_blocks: Vec<Vec<SharedString>>,
+    issue_thread_list: ListState,
     focus_handle: FocusHandle,
-    /// Scroll handle for the messages pane. `set_detail` calls
-    /// `scroll_to_bottom()` on it so opening a ticket lands the reader on
-    /// the latest message (the classic chat/messaging behavior), not on
-    /// the top of the history.
-    messages_scroll: ScrollHandle,
+    /// Parsed Markdown blocks and variable-height list state for tickets.
+    /// Bottom alignment opens on the latest exchange without rendering the
+    /// complete history.
+    ticket_message_blocks: Vec<Vec<SharedString>>,
+    ticket_thread_list: ListState,
 }
 
 impl SupportView {
@@ -502,9 +507,12 @@ impl SupportView {
             confirm_attachment_delete: None,
             attachment_lightbox: None,
             capture_annotator: None,
-            issues_scroll: ScrollHandle::new(),
+            issue_body_blocks: Vec::new(),
+            issue_comment_blocks: Vec::new(),
+            issue_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
             focus_handle: cx.focus_handle(),
-            messages_scroll: ScrollHandle::new(),
+            ticket_message_blocks: Vec::new(),
+            ticket_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
         }
     }
 
@@ -552,6 +560,11 @@ impl SupportView {
         self.detail = None;
         self.issue_selected = None;
         self.issue_detail = None;
+        self.issue_body_blocks.clear();
+        self.issue_comment_blocks.clear();
+        self.issue_thread_list.reset(0);
+        self.ticket_message_blocks.clear();
+        self.ticket_thread_list.reset(0);
         self.popover_menu = None;
         self.priority_menu_open = false;
         self.assign_menu_open = false;
@@ -563,7 +576,7 @@ impl SupportView {
         self.confirm_issue_delete = None;
     }
 
-    pub fn set_issue_detail(&mut self, detail: Option<Issue>) {
+    pub fn set_issue_detail(&mut self, detail: Option<Issue>, cx: &mut Context<Self>) {
         let next_id = detail.as_ref().map(|issue| issue.id.as_str());
         if next_id != self.issue_selected.as_deref() {
             self.attachment_generation = self.attachment_generation.wrapping_add(1);
@@ -572,17 +585,19 @@ impl SupportView {
             self.attachment_panel_open = false;
             self.attachment_url_open = false;
             self.capture_annotator = None;
+            self.issue_ai_draft = None;
+            self.reset_composer(cx);
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
         }
         self.issue_detail = detail;
+        self.rebuild_issue_thread_cache();
         self.issue_popover_menu = None;
         self.issue_status_menu = false;
         self.issue_assign_menu = false;
         self.issue_dispatch_menu = false;
         self.issue_priority_menu_open = false;
-        self.issues_scroll.scroll_to_bottom();
     }
 
     /// Feed the JeanClaude strip (workspace pushes this from the cached state).
@@ -697,6 +712,7 @@ impl SupportView {
         }
         self.selected_id = Some(ticket.id.clone());
         self.detail = Some(ticket);
+        self.rebuild_ticket_thread_cache();
         self.popover_menu = None;
         self.priority_menu_open = false;
         self.assign_menu_open = false;
@@ -704,9 +720,6 @@ impl SupportView {
         self.clear_attachment_drafts(cx);
         self.loading = false;
         self.error = None;
-        // Land on the latest message — every chat / messaging UX defaults
-        // to bottom-of-thread on open, not top.
-        self.messages_scroll.scroll_to_bottom();
     }
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
@@ -988,6 +1001,7 @@ impl SupportView {
         } else {
             self.issue_ai_draft = Some(AiDraft { body: text });
         }
+        self.rebuild_issue_thread_cache();
         cx.notify();
     }
 
@@ -995,6 +1009,7 @@ impl SupportView {
         self.issue_ai_pending = pending;
         if pending {
             self.issue_ai_draft = None;
+            self.rebuild_issue_thread_cache();
         }
         cx.notify();
     }
@@ -1005,6 +1020,7 @@ impl SupportView {
         let Some(draft) = self.issue_ai_draft.take() else {
             return;
         };
+        self.rebuild_issue_thread_cache();
         let current = self.composer_state.read(cx).content().trim().to_string();
         let merged = if current.is_empty() {
             draft.body
@@ -1019,6 +1035,7 @@ impl SupportView {
 
     pub fn discard_issue_ai_draft(&mut self, cx: &mut Context<Self>) {
         self.issue_ai_draft = None;
+        self.rebuild_issue_thread_cache();
         cx.notify();
     }
 
