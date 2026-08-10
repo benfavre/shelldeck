@@ -52,7 +52,9 @@ impl MacDisplay {
                 return self.global_bounds();
             };
             let visible_frame = NSScreen::visibleFrame(screen);
-            let primary_frame = NSScreen::frame(NSScreen::screens(nil).objectAtIndex(0));
+            let screens = NSScreen::screens(nil);
+            let primary_screen = cocoa::foundation::NSArray::objectAtIndex(screens, 0);
+            let primary_frame = NSScreen::frame(primary_screen);
             Bounds {
                 origin: point(
                     px(visible_frame.origin.x as f32),
