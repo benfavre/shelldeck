@@ -703,10 +703,9 @@ impl Workspace {
                 .border_1()
                 .border_color(ShellDeckColors::border())
                 .rounded(px(9.0))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    |_e, _window, cx: &mut App| cx.stop_propagation(),
-                );
+                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+                    cx.stop_propagation()
+                });
             for (index, (backend, label)) in [
                 (AiBackend::ClaudeCli, "Claude Code CLI"),
                 (AiBackend::CodexCli, "Codex CLI"),
@@ -729,9 +728,7 @@ impl Workspace {
                         .rounded(px(7.0))
                         .cursor_pointer()
                         .text_size(px(12.0))
-                        .when(selected, |el| {
-                            el.bg(ShellDeckColors::selected_bg())
-                        })
+                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
                         // The provider marks, same as on the closed chip:
                         // recognising the Claude or OpenAI logo is faster than
@@ -754,11 +751,7 @@ impl Workspace {
                         })
                         .child(div().flex_1().min_w(px(0.0)).child(label))
                         .when(selected, |el| {
-                            el.child(lucide_icon(
-                                "check",
-                                13.0,
-                                ShellDeckColors::primary(),
-                            ))
+                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.issue_ai_backend_menu = false;
@@ -810,9 +803,7 @@ impl Workspace {
             .and_then(|id| {
                 self.site_directory
                     .as_ref()
-                    .and_then(|directory| {
-                        directory.sites.iter().find(|site| site.site_id == id)
-                    })
+                    .and_then(|directory| directory.sites.iter().find(|site| site.site_id == id))
                     .map(|site| site.display_label())
             })
             .unwrap_or_else(|| t!("user.requests.site_none").to_string());
@@ -900,7 +891,9 @@ impl Workspace {
                     .rounded_full()
                     .bg(priority_dot),
             )
-            .child(crate::support_view::priority_label(&self.issue_new_priority))
+            .child(crate::support_view::priority_label(
+                &self.issue_new_priority,
+            ))
             .child(
                 svg()
                     .path(lucide_path(if self.issue_priority_menu {
@@ -1109,7 +1102,9 @@ impl Workspace {
                 let selected = current == p;
                 list = list.child(
                     div()
-                        .id(ElementId::from(SharedString::from(format!("iss-np-opt-{p}"))))
+                        .id(ElementId::from(SharedString::from(format!(
+                            "iss-np-opt-{p}"
+                        ))))
                         .flex()
                         .items_center()
                         .gap(px(8.0))
@@ -1141,7 +1136,6 @@ impl Workspace {
                 .with_priority(3),
             );
         }
-
 
         // Title and body share one frame, like a mail composer: the `Composer`
         // owns the border and the focus ring, so both fields are `Bare`.
@@ -1318,64 +1312,55 @@ impl Workspace {
         // Create. It is one object now — the same `Composer` the assistant
         // uses, with site and priority as context chips and the title in the
         // frame above the body.
-        let ai_naming =
-            self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
+        let ai_naming = self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
         let attachments_open =
             self.issue_attachments_open || !self.issue_new_attachments.is_empty();
         let attachment_count = self.issue_new_attachments.len();
 
-        let mut composer = Composer::new("user-new-request-composer", &self.issue_body_state)
-            .placeholder(t!("user.requests.body_placeholder").to_string())
-            .min_rows(5)
-            .max_rows(14)
-            .commit(ComposerCommit::Labeled(
-                t!("user.requests.create").to_string().into(),
-            ))
-            // Site and priority describe the request, not its wording: they
-            // belong in the context row, where the assistant puts its own.
-            .context(site_chip)
-            .context(prio_row)
-            // Title and body inside one frame, separated by a hairline.
-            .lead(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().px(px(2.0)).pt(px(4.0)).child(title_input))
-                    .child(
-                        div()
-                            .h(px(1.0))
-                            .mx(px(12.0))
-                            .bg(ShellDeckColors::border()),
-                    ),
-            )
-            .action(
-                Button::new("iss-attach", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("plus"))
-                    .tooltip(t!("user.requests.attachments.title").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.issue_attachments_open = !this.issue_attachments_open;
-                        cx.notify();
-                    })),
-            )
-            .on_commit({
-                let entity = cx.entity();
-                move |cx| {
-                    entity.update(cx, |this, cx| this.submit_new_request(cx));
-                }
-            })
-            .footnote(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(if attachment_count == 0 {
+        let mut composer =
+            Composer::new("user-new-request-composer", &self.issue_body_state)
+                .placeholder(t!("user.requests.body_placeholder").to_string())
+                .min_rows(5)
+                .max_rows(14)
+                .commit(ComposerCommit::Labeled(
+                    t!("user.requests.create").to_string().into(),
+                ))
+                // Site and priority describe the request, not its wording: they
+                // belong in the context row, where the assistant puts its own.
+                .context(site_chip)
+                .context(prio_row)
+                // Title and body inside one frame, separated by a hairline.
+                .lead(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().px(px(2.0)).pt(px(4.0)).child(title_input))
+                        .child(div().h(px(1.0)).mx(px(12.0)).bg(ShellDeckColors::border())),
+                )
+                .action(
+                    Button::new("iss-attach", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .icon(IconSource::from("plus"))
+                        .tooltip(t!("user.requests.attachments.title").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.issue_attachments_open = !this.issue_attachments_open;
+                            cx.notify();
+                        })),
+                )
+                .on_commit({
+                    let entity = cx.entity();
+                    move |cx| {
+                        entity.update(cx, |this, cx| this.submit_new_request(cx));
+                    }
+                })
+                .footnote(div().flex().items_center().gap(px(6.0)).child(
+                    if attachment_count == 0 {
                         t!("user.requests.attachments.none").to_string()
                     } else {
                         t!("user.requests.attachments.count", count = attachment_count).to_string()
-                    }),
-            );
+                    },
+                ));
         if ai_naming {
             composer = composer.action(
                 Button::new("request-ai-name", "")

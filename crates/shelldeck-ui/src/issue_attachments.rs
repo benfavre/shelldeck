@@ -7,12 +7,12 @@ use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat, KeyDownEvent, ObjectFit,
-    Render, SharedString, Window, black, div, img, white,
+    black, div, img, white, AnyElement, App, Context, ElementId, FocusHandle, Image, ImageFormat,
+    KeyDownEvent, ObjectFit, Render, SharedString, Window,
 };
 use shelldeck_core::config::cloud_account;
 use shelldeck_core::config::issues::{
-    ISSUE_ATTACHMENT_MAX_BYTES, IssueAttachment, IssueAttachmentUpload,
+    IssueAttachment, IssueAttachmentUpload, ISSUE_ATTACHMENT_MAX_BYTES,
 };
 use std::path::Path;
 use std::process::Command;

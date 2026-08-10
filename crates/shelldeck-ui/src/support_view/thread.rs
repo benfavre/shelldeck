@@ -480,16 +480,26 @@ pub(super) fn message_action(
 /// A human-authored message in the thread. The author's colour identifies our
 /// own voice; alignment and framing deliberately do not, so both Support data
 /// sources read as one continuous conversation.
+pub(super) struct HumanMessageMeta {
+    pub author: SharedString,
+    pub mine: bool,
+    pub at: f64,
+    pub channel: Option<SharedString>,
+}
+
 pub(super) fn human_message(
-    author: impl Into<SharedString>,
-    mine: bool,
-    at: f64,
-    channel: Option<impl Into<SharedString>>,
+    meta: HumanMessageMeta,
     body: impl Into<SharedString>,
     attachments: Option<AnyElement>,
     mut extras: ThreadMessageExtras,
     base_font_size: Pixels,
 ) -> AnyElement {
+    let HumanMessageMeta {
+        author,
+        mine,
+        at,
+        channel,
+    } = meta;
     let body: SharedString = body.into();
     let identity = div()
         .flex()
@@ -508,7 +518,7 @@ pub(super) fn human_message(
                 } else {
                     ShellDeckColors::text_primary()
                 })
-                .child(author.into()),
+                .child(author),
         )
         .child(
             div()
@@ -539,7 +549,7 @@ pub(super) fn human_message(
                 .text_size(px(10.0))
                 .line_height(relative(1.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child(channel.into()),
+                .child(channel),
         );
     }
 

@@ -2,8 +2,8 @@ use super::thread::{
     ai_draft_card, attributed_quote, day_separator, delivery_status, human_message,
     human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
     thread_header_picker, thread_picker_option_row, thread_priority_color, thread_status_color,
-    timeline_day, timeline_day_label, typing_indicator, ThreadDeliveryTone, ThreadMessageExtras,
-    ThreadNoteKind,
+    timeline_day, timeline_day_label, typing_indicator, HumanMessageMeta, ThreadDeliveryTone,
+    ThreadMessageExtras, ThreadNoteKind,
 };
 use super::*;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
@@ -907,8 +907,6 @@ impl SupportView {
     fn render_message_segment(
         &self,
         msg: &SupportMessage,
-        me: &SupportMe,
-        channel: &str,
         body: SharedString,
         first: bool,
         last: bool,
@@ -927,11 +925,11 @@ impl SupportView {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
                 if !msg.is_note() && !msg.is_customer() {
-                    let name = me.name.trim();
+                    let name = self.me.name.trim();
                     if !name.is_empty() {
                         Some(name.to_string())
                     } else {
-                        let email = me.email.trim();
+                        let email = self.me.email.trim();
                         if !email.is_empty() {
                             Some(email.to_string())
                         } else {
@@ -953,7 +951,10 @@ impl SupportView {
         let attachments = (last && !msg.attachments.is_empty())
             .then(|| self.render_issue_attachment_links(&msg.attachments, cx));
         let channel = if msg.channel.trim().is_empty() {
-            channel
+            self.detail
+                .as_ref()
+                .map(|ticket| ticket.channel.as_str())
+                .unwrap_or_default()
         } else {
             msg.channel.as_str()
         };
@@ -975,10 +976,13 @@ impl SupportView {
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {
             human_message(
-                who,
-                !msg.is_customer(),
-                msg.at,
-                (!channel.trim().is_empty()).then(|| SharedString::from(channel.to_string())),
+                HumanMessageMeta {
+                    author: who.into(),
+                    mine: !msg.is_customer(),
+                    at: msg.at,
+                    channel: (!channel.trim().is_empty())
+                        .then(|| SharedString::from(channel.to_string())),
+                },
                 body,
                 attachments,
                 extras,
@@ -1241,16 +1245,7 @@ impl SupportView {
                         .cloned()
                         .unwrap_or_else(|| SharedString::from(message.text.clone()));
                     (
-                        self.render_message_segment(
-                            message,
-                            &self.me,
-                            &ticket.channel,
-                            body,
-                            first,
-                            last,
-                            window,
-                            cx,
-                        ),
+                        self.render_message_segment(message, body, first, last, window, cx),
                         if last { object_bottom } else { 8.0 },
                     )
                 }
@@ -2155,8 +2150,7 @@ impl SupportView {
         let mut context_label = context.join(" · ");
         if last_at > 0.0 {
             context_label.push(' ');
-            context_label
-                .push_str(&t!("support.last_exchange", time = rel_time(last_at)).to_string());
+            context_label.push_str(t!("support.last_exchange", time = rel_time(last_at)).as_ref());
         }
 
         let mut meta_row = div()
