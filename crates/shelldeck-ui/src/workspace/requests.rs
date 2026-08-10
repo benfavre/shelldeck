@@ -756,24 +756,22 @@ impl Workspace {
         if self.issues_relevant() {
             self.refresh_issues(cx);
             if self._issues_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(15))
-                            .await;
-                        let keep = this
-                            .update(cx, |ws, cx| {
-                                if ws.issues_relevant() {
-                                    ws.refresh_issues(cx);
-                                    true
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-                        if !keep {
-                            break;
-                        }
+                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(15))
+                        .await;
+                    let keep = this
+                        .update(cx, |ws, cx| {
+                            if ws.issues_relevant() {
+                                ws.refresh_issues(cx);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !keep {
+                        break;
                     }
                 });
                 self._issues_poll = Some(task);
@@ -1680,7 +1678,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppMode, issue_list_filter_for_mode, issues};
+    use super::{issue_list_filter_for_mode, issues, AppMode};
 
     // SDTEST-1433
     #[test]

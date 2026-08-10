@@ -2,8 +2,8 @@ use super::thread::{
     ai_draft_card, attributed_quote, day_separator, delivery_status, human_message,
     human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
     thread_header_picker, thread_picker_option_row, thread_priority_color, thread_status_color,
-    timeline_day, timeline_day_label, typing_indicator, ThreadDeliveryTone, ThreadMessageExtras,
-    ThreadNoteKind,
+    timeline_day, timeline_day_label, typing_indicator, HumanMessageMeta, ThreadDeliveryTone,
+    ThreadMessageExtras, ThreadNoteKind,
 };
 use super::*;
 use crate::icons::{ai_provider_inline, simple_icon};
@@ -571,10 +571,12 @@ impl SupportView {
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {
             human_message(
-                label,
-                author_matches_me,
-                c.at,
-                channel,
+                HumanMessageMeta {
+                    author: label.into(),
+                    mine: author_matches_me,
+                    at: c.at,
+                    channel,
+                },
                 body,
                 attachments,
                 extras,
@@ -734,14 +736,16 @@ impl SupportView {
                     .then(|| self.render_issue_attachment_links(&issue.attachments, cx));
                 let content = if block == 0 {
                     human_message(
-                        if issue.requested_by.trim().is_empty() {
-                            t!("support.issue.description").to_string()
-                        } else {
-                            issue.requested_by.clone()
+                        HumanMessageMeta {
+                            author: if issue.requested_by.trim().is_empty() {
+                                t!("support.issue.description").to_string().into()
+                            } else {
+                                issue.requested_by.clone().into()
+                            },
+                            mine: false,
+                            at: issue.created_at,
+                            channel: Self::source_chip_label(&issue.source).map(SharedString::from),
                         },
-                        false,
-                        issue.created_at,
-                        Self::source_chip_label(&issue.source).map(SharedString::from),
                         body,
                         attachments,
                         ThreadMessageExtras::default(),

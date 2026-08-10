@@ -1167,18 +1167,14 @@ mod tests {
         let requests = seen.lock().unwrap();
         assert!(requests[0].contains("\"action\":\"attachment-ticket\""));
         assert!(requests[0].contains("\"bytes\":16"));
-        assert!(
-            requests[1]
-                .to_ascii_lowercase()
-                .contains("content-type: multipart/form-data")
-        );
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data"));
         assert!(requests[1].contains("name=\"file\""));
         assert!(requests[1].contains("filename=\"capture.png\""));
-        assert!(
-            requests[1]
-                .to_ascii_lowercase()
-                .contains(&format!("authorization: bearer {}", "a".repeat(64)))
-        );
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {}", "a".repeat(64))));
     }
 
     #[test]

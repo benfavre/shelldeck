@@ -2571,77 +2571,77 @@ impl Render for AiAssistantView {
             composer = composer.max_w(px(624.0)).mx_auto().w_full();
         }
         let mut assistant_composer = Composer::new("ai-composer", &self.prompt_state)
-                .placeholder(t!("ai.assistant.placeholder").to_string())
-                .min_rows(2)
-                .max_rows(8)
-                .disabled(self.loading || !self.available)
-                // The context left the header: it now rides with the message,
-                // where it is visible next to what it will be sent with.
-                // Placeholders, on purpose: the affordances are drawn now so
-                // the footer has its final shape, but attachments and targeting
-                // are not implemented yet. They carry no click handler and are
-                // rendered `disabled`, so nothing pretends to work.
-                .action(
-                    Button::new("ai-composer-attach", "")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("plus"))
-                        .tooltip(t!("ai.composer.attach_soon").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
-                        })),
-                )
-                .action(
-                    Button::new("ai-composer-target", "")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("at-sign"))
-                        .tooltip(t!("ai.composer.target_soon").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
-                        })),
-                )
-                // The model moves out of the header and into the footer, where
-                // every reference app puts it.
-                // The chip is a picker: Settings already lets you switch
-                // provider, so the surface that uses it should too.
-                .option(
-                    div()
-                        .id("ai-backend-picker")
-                        .flex()
-                        .items_center()
-                        .gap(px(3.0))
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(ai_provider_inline(self.backend, &model))
-                        .child(
-                            svg()
-                                .path(lucide_path("chevron-down"))
-                                .size(gpui::px(11.0))
-                                .mr(gpui::px(4.0))
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.backend_menu_open = !this.backend_menu_open;
-                            cx.notify();
-                        })),
-                )
-                .on_commit(submit)
-                // Pushed to the right edge under the frame, as in the mockup:
-                // the left of that row is reserved for surface-specific
-                // settings (the execution mode), so the keyboard hints sit
-                // opposite them and stay opposite even when that side is empty.
-                .footnote(
-                    div()
-                        .flex()
-                        .w_full()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(9.0))
-                        .child(t!("ai.assistant.hint.send").to_string())
-                        .child(t!("ai.assistant.hint.newline").to_string()),
-                );
+            .placeholder(t!("ai.assistant.placeholder").to_string())
+            .min_rows(2)
+            .max_rows(8)
+            .disabled(self.loading || !self.available)
+            // The context left the header: it now rides with the message,
+            // where it is visible next to what it will be sent with.
+            // Placeholders, on purpose: the affordances are drawn now so
+            // the footer has its final shape, but attachments and targeting
+            // are not implemented yet. They carry no click handler and are
+            // rendered `disabled`, so nothing pretends to work.
+            .action(
+                Button::new("ai-composer-attach", "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("plus"))
+                    .tooltip(t!("ai.composer.attach_soon").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
+                    })),
+            )
+            .action(
+                Button::new("ai-composer-target", "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("at-sign"))
+                    .tooltip(t!("ai.composer.target_soon").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
+                    })),
+            )
+            // The model moves out of the header and into the footer, where
+            // every reference app puts it.
+            // The chip is a picker: Settings already lets you switch
+            // provider, so the surface that uses it should too.
+            .option(
+                div()
+                    .id("ai-backend-picker")
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .child(ai_provider_inline(self.backend, &model))
+                    .child(
+                        svg()
+                            .path(lucide_path("chevron-down"))
+                            .size(gpui::px(11.0))
+                            .mr(gpui::px(4.0))
+                            .text_color(ShellDeckColors::text_muted()),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.backend_menu_open = !this.backend_menu_open;
+                        cx.notify();
+                    })),
+            )
+            .on_commit(submit)
+            // Pushed to the right edge under the frame, as in the mockup:
+            // the left of that row is reserved for surface-specific
+            // settings (the execution mode), so the keyboard hints sit
+            // opposite them and stay opposite even when that side is empty.
+            .footnote(
+                div()
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(9.0))
+                    .child(t!("ai.assistant.hint.send").to_string())
+                    .child(t!("ai.assistant.hint.newline").to_string()),
+            );
         if !self.context_dropped {
             assistant_composer = assistant_composer
                 // Removable, as the mockup asks: you can see what leaves with
@@ -2663,11 +2663,7 @@ impl Render for AiAssistantView {
                         .bg(ShellDeckColors::bg_surface())
                         .text_size(px(10.5))
                         .text_color(ShellDeckColors::text_muted())
-                        .child(lucide_icon(
-                            "sparkles",
-                            11.0,
-                            ShellDeckColors::text_muted(),
-                        ))
+                        .child(lucide_icon("sparkles", 11.0, ShellDeckColors::text_muted()))
                         .child(div().truncate().child(self.context.title.clone()))
                         .child(
                             div()
