@@ -256,6 +256,12 @@ code.ref {
 }
 .ico-btn:hover { background: var(--p-hover); color: var(--p-text); }
 .ico-btn svg { width: 15px; height: 15px; }
+.quiet-btn {
+  height: 26px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px;
+  border-radius: 6px; color: var(--p-muted); font-size: 10.5px; font-weight: 500;
+}
+.quiet-btn:hover { background: var(--p-hover); color: var(--p-text); }
+.quiet-btn svg { width: 13px; height: 13px; }
 /* la seule chose qui reste des onglets : un compteur discret */
 .task-pill {
   display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px;
@@ -668,7 +674,51 @@ code.ref {
 .sup-t { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sup-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.sup-when { font-size: 10.5px; color: var(--p-muted); }
+.sup-when { font-size: 10.5px; color: var(--p-muted); white-space: nowrap; }
+.sup-meta-tag {
+  display: inline-flex; align-items: center; height: 24px; max-width: 180px; padding: 0 9px;
+  border: 1px solid var(--p-border); border-radius: 999px; color: var(--p-muted);
+  font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.prio.open { background: var(--p-accent); }
+.prio.triage { background: var(--p-muted); }
+.prio.work, .prio.high { background: var(--p-warning); }
+.prio.blocked, .prio.urgent { background: var(--p-error); }
+.prio.done { background: var(--p-success); }
+.prio.low { background: var(--p-muted); }
+.selector-bench {
+  display: grid; grid-template-columns: 190px 190px minmax(300px, 1fr); gap: 14px;
+  align-items: start; padding: 16px; border: 1px solid var(--p-border); border-radius: 10px;
+  background: var(--p-bg);
+}
+.selector-case { min-width: 0; }
+.selector-case > h4 { margin: 0 0 3px; font-size: 11.5px; font-weight: 600; }
+.selector-case > p { margin: 0 0 9px; min-height: 28px; color: var(--p-muted); font-size: 10px; line-height: 1.35; }
+.pick-menu.static { position: static; width: 100%; box-sizing: border-box; }
+.pick-menu.static .opt .check { margin-left: auto; color: var(--p-accent); font-weight: 700; }
+@media (max-width: 900px) { .selector-bench { grid-template-columns: 1fr; } }
+.pick-menu.assign {
+  width: 320px; padding: 6px; gap: 4px;
+}
+.pick-menu.assign .assign-pinned { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.pick-menu.assign .assign-pinned .opt { min-width: 0; }
+.pick-menu.assign .assign-list {
+  max-height: 214px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px;
+  padding-top: 4px; border-top: 1px solid var(--p-border);
+  scrollbar-width: thin;
+}
+.pick-menu.assign .opt { min-height: 31px; cursor: pointer; }
+.pick-menu.assign .opt svg { width: 12px; height: 12px; flex: 0 0 auto; color: var(--p-muted); }
+.pick-menu.assign .opt .agent { min-width: 0; flex: 1 1 auto; }
+.pick-menu.assign .opt .agent b {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; font-weight: 500;
+}
+.pick-menu.assign .opt .agent small {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--p-muted); font-size: 9.5px;
+}
+.pick-menu.assign .count { padding: 4px 7px 1px; color: var(--p-muted); font-size: 9.5px; }
 /* message support : pas de carte, pas d'étiquette encadrée */
 .sup-msg .sup-who { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .sup-msg .sup-time { font-weight: 400; color: var(--p-muted); font-size: 10.5px; margin-left: 7px; }
@@ -891,6 +941,7 @@ code.ref {
 <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
 <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></symbol>
 <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 7 5 9 9 5"/><polyline points="3 16 5 18 9 14"/><line x1="13" y1="7" x2="21" y2="7"/><line x1="13" y1="17" x2="21" y2="17"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
 <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></symbol>
 <symbol id="i-arrow-ur" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></symbol>
 <symbol id="i-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.8-.9L3 20.5l1.5-4.5A8.4 8.4 0 0 1 3.6 12a8.4 8.4 0 0 1 8.4-8.4h.5A8.4 8.4 0 0 1 21 11.5z"/></symbol>
@@ -1805,9 +1856,9 @@ code.ref {
     par ses propres métadonnées&nbsp;; dans le détail, le message est une carte à étiquette d'auteur et
     la zone de réponse est éclatée en trois blocs.</p>
 
-    <figure class="slot" style="margin-top:18px">
+    <figure class="slot" id="support-header-reality" style="margin-top:18px">
       <figcaption><span class="tag">Support</span>
-        <span class="cap">Liste 340 px. Le titre prend toute la première ligne, les métadonnées passent dessous.</span></figcaption>
+        <span class="cap">Données réelles : tous les champs présents, 200 agents dans le relevé courant, menu d'assignation ouvert.</span></figcaption>
       <div class="support-shell">
         <div class="sup-list">
           <div class="filter-bar">
@@ -1846,17 +1897,38 @@ code.ref {
           </div>
         </div>
         <div class="sup-main">
-          <div class="sup-head">
+          <div class="sup-head" style="position:relative;z-index:4">
             <div class="sup-head-top">
-              <div class="sup-t">Échec de lecture vidéo après upload sur WatchMe</div>
-              <button class="ico-btn" type="button" aria-label="Détails"><svg><use href="#i-file"/></svg></button>
-              <button class="ico-btn" type="button" aria-label="Plus"><svg><use href="#i-list"/></svg></button>
+              <div class="sup-t">[DÉMO] Fil de démonstration — TOUS les cas d'affichage</div>
+              <button class="quiet-btn" type="button" aria-label="Résumer la demande avec l'IA"><svg><use href="#i-sparkles"/></svg>Résumer</button>
+              <button class="ico-btn" type="button" aria-label="Plus d'actions"><svg><use href="#i-more"/></svg></button>
             </div>
             <div class="sup-meta">
-              <span class="pick"><span class="prio a"></span>À traiter <svg class="cv"><use href="#i-chev-down"/></svg></span>
-              <span class="pick"><span class="prio n"></span>Normale <svg class="cv"><use href="#i-chev-down"/></svg></span>
-              <span class="pick"><svg><use href="#i-at"/></svg>Non attribué <svg class="cv"><use href="#i-chev-down"/></svg></span>
-              <span class="sup-when">ACTIV Communication · mis à jour il y a 2 j</span>
+              <span class="pick picker"><span class="prio work"></span>En cours <svg class="cv"><use href="#i-chev-down"/></svg></span>
+              <span class="pick picker"><span class="prio high"></span>Haute <svg class="cv"><use href="#i-chev-down"/></svg></span>
+              <span class="pick-wrap">
+                <span class="pick picker"><svg><use href="#i-at"/></svg>Karim <svg class="cv"><use href="#i-chev-down"/></svg></span>
+                <span class="pick-menu assign">
+                  <span class="msearch"><svg><use href="#i-search"/></svg>Rechercher un agent…</span>
+                  <span class="assign-pinned">
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>Non attribué</b></span></span>
+                    <span class="opt on"><svg><use href="#i-at"/></svg><span class="agent"><b>Moi · Karim</b></span></span>
+                  </span>
+                  <span class="assign-list">
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>Audrey Morvan Pêle</b><small>audrey.morvan@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>A-Marie et Christophe MENARD</b><small>a-marie.menard@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ADELAIDE GUEDAS</b><small>adelaide.guedas@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ADELINE LAUNAY</b><small>adeline.launay@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ALEXANDRA OLIVIER</b><small>alexandra.olivier@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ALINE LEBOUC</b><small>aline.lebouc@inklura.fr</small></span></span>
+                    <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>AMANDINE LE GALLAIS</b><small>amandine.legallais@inklura.fr</small></span></span>
+                  </span>
+                  <span class="count">200 agents · cardinalité API dynamique ; la liste défile, jamais le header</span>
+                </span>
+              </span>
+              <span class="sup-when">ShellDeck (démo) · mis à jour il y a 3 min</span>
+              <span class="sup-meta-tag">Fil de démonstration</span>
+              <span class="sup-meta-tag">GitHub #1</span>
             </div>
           </div>
           <div class="dk-body">
@@ -1897,6 +1969,59 @@ code.ref {
       </div>
     </figure>
 
+    <figure class="slot" style="margin-top:18px">
+      <figcaption><span class="tag">Header · sélecteurs</span>
+        <span class="cap">Chaque contrôle fermé puis ouvert, avec les valeurs et la cardinalité réelles de l'API.</span></figcaption>
+      <div class="selector-bench">
+        <div class="selector-case">
+          <h4>Statut · 6 valeurs</h4>
+          <p>Une étape de traitement, pas un niveau de gravité.</p>
+          <span class="pick picker"><span class="prio work"></span>En cours <svg class="cv"><use href="#i-chev-down"/></svg></span>
+          <span class="pick-menu static">
+            <span class="opt"><span class="prio open"></span>À traiter</span>
+            <span class="opt"><span class="prio triage"></span>En analyse</span>
+            <span class="opt on"><span class="prio work"></span>En cours <span class="check">✓</span></span>
+            <span class="opt"><span class="prio blocked"></span>Bloquée</span>
+            <span class="opt"><span class="prio done"></span>Terminée</span>
+            <span class="opt"><span class="prio done"></span>Clôturée</span>
+          </span>
+        </div>
+
+        <div class="selector-case">
+          <h4>Priorité · 4 valeurs</h4>
+          <p>La couleur exprime l'urgence sans transformer le contrôle en gros badge.</p>
+          <span class="pick picker"><span class="prio high"></span>Haute <svg class="cv"><use href="#i-chev-down"/></svg></span>
+          <span class="pick-menu static">
+            <span class="opt"><span class="prio low"></span>Basse</span>
+            <span class="opt"><span class="prio open"></span>Normale</span>
+            <span class="opt on"><span class="prio high"></span>Haute <span class="check">✓</span></span>
+            <span class="opt"><span class="prio urgent"></span>Urgente</span>
+          </span>
+        </div>
+
+        <div class="selector-case">
+          <h4>Assignation · 200 agents ici</h4>
+          <p>Deux choix stables épinglés, puis une recherche sur nom et email dans une liste bornée.</p>
+          <span class="pick picker"><svg><use href="#i-at"/></svg>Karim <svg class="cv"><use href="#i-chev-down"/></svg></span>
+          <span class="pick-menu assign static">
+            <span class="msearch"><svg><use href="#i-search"/></svg>Rechercher un agent…</span>
+            <span class="assign-pinned">
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>Non attribué</b></span></span>
+              <span class="opt on"><svg><use href="#i-at"/></svg><span class="agent"><b>Moi · Karim</b></span><span class="check">✓</span></span>
+            </span>
+            <span class="assign-list">
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>Audrey Morvan Pêle</b><small>audrey.morvan@inklura.fr</small></span></span>
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>A-Marie et Christophe MENARD</b><small>a-marie.menard@inklura.fr</small></span></span>
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ADELAIDE GUEDAS</b><small>adelaide.guedas@inklura.fr</small></span></span>
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ADELINE LAUNAY</b><small>adeline.launay@inklura.fr</small></span></span>
+              <span class="opt"><svg><use href="#i-at"/></svg><span class="agent"><b>ALEXANDRA OLIVIER</b><small>alexandra.olivier@inklura.fr</small></span></span>
+            </span>
+            <span class="count">200 agents · résultats filtrés et virtualisés côté application</span>
+          </span>
+        </div>
+      </div>
+    </figure>
+
     <p class="note">
       <b>Trois corrections dans la liste.</b> Le titre passe sur sa propre ligne et récupère les 340 px
       au lieu de ~110&nbsp;; le statut devient un point coloré suivi de son mot, ce qui économise la
@@ -1910,6 +2035,25 @@ code.ref {
       cessent d'être des badges décoratifs pour devenir les sélecteurs qu'ils sont déjà côté serveur.
       Et « Réponse publique » prend, dans le pied, le créneau que l'assistant donne au modèle&nbsp;:
       c'est la même question — <i>où va ce que j'écris</i>.
+    </p>
+    <p class="note" style="margin-top:14px">
+      <b>Le header avec la vraie cardinalité.</b> La réponse agents n'est pas une poignée de choix&nbsp;:
+      elle en contient 200 dans le relevé courant (169 dans le précédent)&nbsp;: cette cardinalité est dynamique.
+      Le sélecteur fermé n'affiche que l'assigné courant. Ouvert, il devient
+      un menu <b>superposé</b> de 320&nbsp;px avec recherche, « Non attribué » et « Moi » épinglés, puis une
+      liste bornée à 214&nbsp;px qui défile. Les agents ne sont jamais rendus en chips dans le flux&nbsp;:
+      le header garde strictement la même hauteur et le fil ne bouge pas. Les données factuelles suivent
+      l'ordre de leur source&nbsp;: statut, priorité, assigné, tenant + mise à jour, puis site et GitHub quand
+      ces deux champs existent. Chaque bloc se replie entier à la ligne&nbsp;; aucune date ni aucun nom ne se
+      coupe au milieu.
+    </p>
+    <p class="note" style="margin-top:14px">
+      <b>Deux actions, deux intentions lisibles.</b> L'étincelle accompagnée de «&nbsp;Résumer&nbsp;» lance
+      explicitement le résumé IA&nbsp;; elle n'est ni un document ni un bouton «&nbsp;Détails&nbsp;». L'ellipse
+      horizontale ouvre les seules actions secondaires encore pertinentes&nbsp;: triage IA, dispatch,
+      création ou synchronisation GitHub et suppression selon les droits et les données disponibles.
+      Statut, priorité et assignation n'y sont pas répétés puisqu'ils se modifient directement dans leurs
+      trois sélecteurs du header.
     </p>
   </section>
 

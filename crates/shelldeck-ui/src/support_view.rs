@@ -32,6 +32,7 @@ use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::display::card::Card;
+use adabraka_ui::overlays::popover::{Popover, PopoverContent};
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
@@ -430,14 +431,14 @@ pub struct SupportView {
     /// cramped popover.
     issues_assignee_modal_open: bool,
     issues_assignee_search_state: Entity<InputState>,
+    /// Search state for the compact header assignee popover. Kept separate
+    /// from the advanced-filter modal so opening either picker cannot leak a
+    /// query into the other.
+    issue_assignee_search_state: Entity<InputState>,
     issues_search_state: Entity<InputState>,
     issue_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
-    issue_status_menu: bool,
-    issue_assign_menu: bool,
-    issue_dispatch_menu: bool,
-    issue_priority_menu_open: bool,
     /// Kebab menu anchor for a request. Carries the issue id + click position
     /// so both the list-row kebab (works without opening the detail) and the
     /// detail-header kebab share the same popover machinery.
@@ -526,14 +527,11 @@ impl SupportView {
             issues_filter_modal_open: false,
             issues_assignee_modal_open: false,
             issues_assignee_search_state: cx.new(InputState::new),
+            issue_assignee_search_state: cx.new(InputState::new),
             issues_search_state: cx.new(InputState::new),
             issue_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
-            issue_status_menu: false,
-            issue_assign_menu: false,
-            issue_dispatch_menu: false,
-            issue_priority_menu_open: false,
             issue_popover_menu: None,
             confirm_issue_delete: None,
             confirm_attachment_delete: None,
@@ -603,10 +601,6 @@ impl SupportView {
         self.priority_menu_open = false;
         self.assign_menu_open = false;
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
         self.confirm_issue_delete = None;
     }
 
@@ -640,10 +634,6 @@ impl SupportView {
             self.rebuild_issue_thread_cache(same_issue);
         }
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
     }
 
     /// Feed the JeanClaude strip (workspace pushes this from the cached state).

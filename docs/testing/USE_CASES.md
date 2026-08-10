@@ -991,7 +991,14 @@ must never surface another requester's title in the User dashboard.
 
 `SupportView` gains a `Requests` tab distinct from Tickets, with a
 staff bar exposing status / priority / assign / dispatch / github when
-the user is `issues_staff`.
+the user is `issues_staff`. In the selected-request header, status, priority,
+and assignee are compact semantic selectors (colored state dots and an `@`
+marker), not decorative filled badges. The title keeps its own line, two quiet
+actions remain at the right edge — an explicit, labeled AI summary action and
+a horizontal overflow menu — and tenant plus relative update time are one
+non-breaking context phrase before optional site/GitHub chips. Every selector
+opens as an anchored overlay; the searchable assignee list is height-bounded
+and virtualized, so even hundreds of agents never change the header height.
 
 ### SDUC-459 — A request thread preserves every semantic message state
 
