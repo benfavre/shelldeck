@@ -160,6 +160,17 @@ where
         ts: f64,
         #[serde(default)]
         attachments: Vec<IssueAttachment>,
+        // Optional forward-compatible conversation metadata. The current
+        // Support API does not emit these fields yet; ShellDeck's in-memory
+        // visual fixture does, and future servers can adopt them piecemeal.
+        #[serde(default, deserialize_with = "de_nullable_string")]
+        kind: String,
+        #[serde(default, deserialize_with = "de_nullable_string")]
+        channel: String,
+        #[serde(default)]
+        quote: Option<SupportMessageQuote>,
+        #[serde(default)]
+        delivery: Option<SupportMessageDelivery>,
     }
     let raw = Raw::deserialize(deserializer)?;
     let at = coalesce_timestamp(&[
@@ -191,7 +202,37 @@ where
         at,
         name: raw.name.or(raw.author),
         attachments: raw.attachments,
+        kind: raw.kind,
+        channel: raw.channel,
+        quote: raw.quote,
+        delivery: raw.delivery,
     })
+}
+
+/// Optional rich reply metadata. These types intentionally belong to the
+/// Support API model rather than reusing `IssueComment*`: Tickets and Requests
+/// remain independent wire schemas even though the UI adapts both to the same
+/// conversation primitives.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportMessageQuote {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub author: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportMessageDelivery {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub status: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub channel: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -203,6 +244,17 @@ pub struct SupportMessage {
     pub name: Option<String>,
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,
+    /// Optional semantic kind (`comment`, `status`, `system`, `github`,
+    /// `dispatch`, `internal`). Absent on today's API responses.
+    #[serde(default)]
+    pub kind: String,
+    /// Per-message channel override; falls back to `SupportTicket.channel`.
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub quote: Option<SupportMessageQuote>,
+    #[serde(default)]
+    pub delivery: Option<SupportMessageDelivery>,
 }
 
 impl<'de> Deserialize<'de> for SupportMessage {
@@ -220,6 +272,47 @@ impl SupportMessage {
     }
     pub fn is_note(&self) -> bool {
         self.from.eq_ignore_ascii_case("note")
+            || matches!(
+                self.kind.as_str(),
+                "status" | "system" | "github" | "dispatch" | "internal" | "note"
+            )
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportTyping {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub author: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportThreadDraft {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub body: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub model: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportThreadState {
+    #[serde(default)]
+    pub typing: Vec<SupportTyping>,
+    #[serde(default)]
+    pub suggested_reply: Option<SupportThreadDraft>,
+    #[serde(default)]
+    pub local_draft: Option<SupportThreadDraft>,
+}
+
+impl SupportThreadState {
+    pub fn is_empty(&self) -> bool {
+        self.typing.is_empty() && self.suggested_reply.is_none() && self.local_draft.is_none()
     }
 }
 
@@ -267,6 +360,10 @@ pub struct SupportTicket {
     /// Present only in the `?action=ticket` detail response.
     #[serde(default)]
     pub messages: Vec<SupportMessage>,
+    /// Optional transient conversation state. The current endpoint omits it;
+    /// defaults keep every existing payload compatible until the API grows.
+    #[serde(default)]
+    pub thread_state: SupportThreadState,
 }
 
 impl SupportTicket {
@@ -678,6 +775,49 @@ mod tests {
         // Unknown `from` is neither customer nor note → rendered agent-side.
         assert!(!t.messages[3].is_customer());
         assert!(!t.messages[3].is_note());
+    }
+
+    #[test]
+    fn parses_optional_rich_ticket_thread_fields_without_coupling_to_issues() {
+        let json = r#"{"ticket":{
+          "id":"rich","channel":"livechat",
+          "messages":[{
+            "from":"agent","text":"réponse","at":1786352400000,
+            "kind":"comment","channel":"email",
+            "quote":{"author":"Alice","body":"message initial"},
+            "delivery":{"status":"read","channel":"email","at":"2026-08-10T10:00:00Z"}
+          }],
+          "threadState":{
+            "typing":[{"author":"Alice","at":1786352400000}],
+            "suggestedReply":{"body":"Suggestion","model":"Claude Sonnet","at":1786352400000},
+            "localDraft":{"body":"Brouillon","at":1786352400000}
+          }
+        }}"#;
+        let parsed: TicketResponse = serde_json::from_str(json).expect("rich ticket fields parse");
+        let message = &parsed.ticket.messages[0];
+        assert_eq!(message.channel, "email");
+        assert_eq!(message.quote.as_ref().unwrap().author, "Alice");
+        assert_eq!(message.delivery.as_ref().unwrap().status, "read");
+        assert_eq!(parsed.ticket.thread_state.typing[0].author, "Alice");
+        assert_eq!(
+            parsed
+                .ticket
+                .thread_state
+                .suggested_reply
+                .as_ref()
+                .unwrap()
+                .model,
+            "Claude Sonnet"
+        );
+        assert!(!parsed.ticket.thread_state.is_empty());
+
+        let legacy: TicketResponse = serde_json::from_str(
+            r#"{"ticket":{"id":"legacy","messages":[{"from":"contact","text":"hi","at":1}]}}"#,
+        )
+        .expect("legacy payload still parses");
+        assert!(legacy.ticket.thread_state.is_empty());
+        assert!(legacy.ticket.messages[0].quote.is_none());
+        assert!(legacy.ticket.messages[0].delivery.is_none());
     }
 
     #[test]

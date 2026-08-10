@@ -991,7 +991,35 @@ must never surface another requester's title in the User dashboard.
 
 `SupportView` gains a `Requests` tab distinct from Tickets, with a
 staff bar exposing status / priority / assign / dispatch / github when
-the user is `issues_staff`.
+the user is `issues_staff`. In the selected-request header, status, priority,
+and assignee are compact semantic selectors (colored state dots and an `@`
+marker), not decorative filled badges. The title keeps its own line, two quiet
+actions remain at the right edge — an explicit, labeled AI summary action and
+a horizontal overflow menu — and tenant plus relative update time are one
+non-breaking context phrase before optional site/GitHub chips. Every selector
+opens as an anchored overlay; the searchable assignee list is height-bounded
+and virtualized, so even hundreds of agents never change the header height.
+The shared reply composer stays compact at rest and puts attachments plus the
+AI suggestion action in its footer. Requests keep the real AI backend/model
+picker in the right-hand option slot; they do not invent a destination picker
+because the current Issues API has no internal-note field. Tickets use that
+slot as a real reply/internal-note popover because their API supports both.
+
+### SDUC-459 — A request thread preserves every semantic message state
+
+The Support request detail renders one chronological, virtualized timeline for
+the opening message, human comments, status/GitHub/fleet notes, day separators,
+rich Markdown (including disabled task checkboxes and code), attachment-only
+messages, attributed quotes, external links, delivery/read/failure states,
+live typing, an AI suggestion, a local draft, and retry affordance. Message
+actions stay contextual and never turn an AI suggestion into a sent reply
+without explicit review. Periodic issue refreshes must preserve the reader's
+virtual-list position instead of snapping the thread back to its newest item.
+
+The wire contract is additive and future-ready: per-comment `channel`, `quote`,
+and `delivery`, plus issue-level `thread_state`, are optional and default empty
+so payloads from the current Manage API remain valid. The local demo fixture
+contains all thirteen states even while production omits unavailable data.
 
 ---
 
@@ -2057,6 +2085,10 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-10** — Added SDUC-459 and SDTEST-1598/1599 for the complete semantic
+  Support-request timeline. The demo exercises all thirteen prototype cases;
+  optional future API fields default empty for backward compatibility, and
+  polling preserves the reader's virtual-list position.
 - **2026-08-06** — Windows-portability wave: added SDUC-455 (the
   `[terminal] default_shell` field is honored for new local terminals and
   splits — it was dead — with the platform-correct shell fallback chain and a

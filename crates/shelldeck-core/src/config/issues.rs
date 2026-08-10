@@ -48,7 +48,7 @@ where
     })
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct IssueGithub {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub url: String,
@@ -58,7 +58,64 @@ pub struct IssueGithub {
     pub state: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+/// Optional reply context supplied by future timeline-capable issue APIs.
+/// Older Manage responses omit it and continue to deserialize unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct IssueCommentQuote {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub author: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub body: String,
+}
+
+/// Delivery state for an outbound human comment. `status` is currently one of
+/// `sent | read | failed`; unknown future values remain safely renderable.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct IssueCommentDelivery {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub status: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub channel: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub error: String,
+}
+
+/// Ephemeral collaborator presence. It is deliberately part of the optional
+/// thread state so a future realtime/poll response can populate the same UI
+/// without changing the stable comment schema.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct IssueTyping {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub author: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+}
+
+/// Suggested or locally persisted reply shown inside the timeline but not yet
+/// sent. The server may omit these; ShellDeck can also produce them locally.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct IssueThreadDraft {
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub body: String,
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub model: String,
+    #[serde(default, deserialize_with = "de_flex_millis")]
+    pub at: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct IssueThreadState {
+    #[serde(default)]
+    pub typing: Vec<IssueTyping>,
+    #[serde(default)]
+    pub suggested_reply: Option<IssueThreadDraft>,
+    #[serde(default)]
+    pub local_draft: Option<IssueThreadDraft>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct IssueComment {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub id: String,
@@ -71,6 +128,13 @@ pub struct IssueComment {
     pub kind: String,
     #[serde(default, deserialize_with = "de_flex_millis")]
     pub at: f64,
+    /// Per-comment origin when supplied. Falls back to the issue source.
+    #[serde(default, deserialize_with = "de_nullable_string")]
+    pub channel: String,
+    #[serde(default)]
+    pub quote: Option<IssueCommentQuote>,
+    #[serde(default)]
+    pub delivery: Option<IssueCommentDelivery>,
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,
 }
@@ -81,7 +145,7 @@ impl IssueComment {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct IssueAttachment {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub id: String,
@@ -109,7 +173,7 @@ pub struct IssueAttachment {
 
 /// An issue. Slim in the list response; the `?action=issue` detail adds `body`,
 /// `comments`, and `job_ids` (defaulted empty otherwise).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct Issue {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub id: String,
@@ -157,6 +221,10 @@ pub struct Issue {
     pub attachments: Vec<IssueAttachment>,
     #[serde(default)]
     pub job_ids: Vec<String>,
+    /// Optional transient/presentation state. Existing APIs omit this field;
+    /// the demo and future timeline responses can exercise it immediately.
+    #[serde(default)]
+    pub thread_state: IssueThreadState,
 }
 
 impl Issue {
@@ -850,9 +918,14 @@ mod tests {
         "github":{"url":"https://github.com/o/r/issues/7","number":7,"state":"open"},
         "created_at":"2026-07-02T20:00:00.000Z", "updated_at":"2026-07-02T20:30:00.000Z",
         "body":"le hero est cassé", "job_ids":["j1"],
+        "thread_state":{
+          "typing":[{"author":"Ludo","at":"2026-07-02T20:12:00.000Z"}],
+          "suggested_reply":{"body":"Réponse proposée","model":"Claude Sonnet","at":"2026-07-02T20:13:00.000Z"},
+          "local_draft":{"body":"Réponse locale","at":"2026-07-02T20:14:00.000Z"}
+        },
         "attachments":[{"id":"a1","share_id":"sh1","url":"https://share.inklura.fr/u/a1.png","viewer_url":"https://share.inklura.fr/s/a1","filename":"hero.png","content_type":"image/png","bytes":42,"created_by":"ben","created_at":"2026-07-02T20:04:00.000Z"}],
         "comments":[
-          {"id":"c1","author":"ben","body":"des détails","kind":"comment","at":"2026-07-02T20:05:00.000Z","attachments":[{"id":"a2","url":"https://share.inklura.fr/u/a2.webp","filename":"detail.webp","content_type":"image/webp","bytes":84,"created_at":"2026-07-02T20:05:00.000Z"}]},
+          {"id":"c1","author":"ben","body":"des détails","kind":"comment","at":"2026-07-02T20:05:00.000Z","channel":"slack","quote":{"author":"Karim","body":"texte cité"},"delivery":{"status":"read","channel":"slack","at":"2026-07-02T20:06:00.000Z"},"attachments":[{"id":"a2","url":"https://share.inklura.fr/u/a2.webp","filename":"detail.webp","content_type":"image/webp","bytes":84,"created_at":"2026-07-02T20:05:00.000Z"}]},
           {"id":"c2","author":"système","body":"statut → in_progress","kind":"status","at":"2026-07-02T20:10:00.000Z"}
         ] }
     }"#;
@@ -887,9 +960,43 @@ mod tests {
         assert_eq!(iss.attachments.len(), 1);
         assert_eq!(iss.attachments[0].filename, "hero.png");
         assert_eq!(iss.comments[0].attachments.len(), 1);
+        assert_eq!(iss.comments[0].channel, "slack");
+        assert_eq!(iss.comments[0].quote.as_ref().unwrap().author, "Karim");
+        assert_eq!(iss.comments[0].delivery.as_ref().unwrap().status, "read");
         assert!(!iss.comments[0].is_note());
         assert!(iss.comments[1].is_note()); // "status" kind
+        assert_eq!(iss.thread_state.typing[0].author, "Ludo");
+        assert_eq!(
+            iss.thread_state.suggested_reply.as_ref().unwrap().model,
+            "Claude Sonnet"
+        );
+        assert_eq!(
+            iss.thread_state.local_draft.as_ref().unwrap().body,
+            "Réponse locale"
+        );
         assert_eq!(iss.job_ids, vec!["j1".to_string()]);
+    }
+
+    // SDTEST-1598 — The richer thread contract is deliberately additive.
+    // Manage does not expose these fields yet, so current production payloads
+    // must continue to deserialize with empty/default thread metadata.
+    #[test]
+    fn detail_future_thread_fields_default_when_absent() {
+        let mut payload: serde_json::Value = serde_json::from_str(DETAIL_FIXTURE).unwrap();
+        let issue = payload["issue"].as_object_mut().unwrap();
+        issue.remove("thread_state");
+        let comment = issue["comments"][0].as_object_mut().unwrap();
+        comment.remove("channel");
+        comment.remove("quote");
+        comment.remove("delivery");
+
+        let issue: Issue = serde_json::from_value(payload["issue"].clone()).unwrap();
+        assert!(issue.thread_state.typing.is_empty());
+        assert!(issue.thread_state.suggested_reply.is_none());
+        assert!(issue.thread_state.local_draft.is_none());
+        assert!(issue.comments[0].channel.is_empty());
+        assert!(issue.comments[0].quote.is_none());
+        assert!(issue.comments[0].delivery.is_none());
     }
 
     #[test]

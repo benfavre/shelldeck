@@ -20,6 +20,7 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
 once_cell = { workspace = true }
+pulldown-cmark = { workspace = true }
 tempfile = { workspace = true }
 image = { workspace = true }
 open = "5"

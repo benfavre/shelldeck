@@ -517,7 +517,8 @@ impl Workspace {
                     terminal.set_sidebar_width(total);
                 });
                 // Apply application UI font (cascades to all child views on re-render)
-                self.ui_font_family = self.app_config.general.ui_font_family.clone();
+                self.resolved_ui_font_family =
+                    resolve_ui_font_family(&self.app_config.general.ui_font_family, cx);
                 self.ui_font_size = self.app_config.general.ui_font_size;
                 // The file editor now has its own persisted preferences
                 // (font, tab size, line numbers, wrap, blink…). Apply the full

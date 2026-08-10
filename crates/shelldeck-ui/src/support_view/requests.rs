@@ -1,8 +1,156 @@
+use super::thread::{
+    ai_draft_card, attributed_quote, day_separator, delivery_status, human_message,
+    human_message_continuation, local_draft, markdown_blocks, message_action, note as thread_note,
+    thread_header_picker, thread_picker_option_row, thread_priority_color, thread_status_color,
+    timeline_day, timeline_day_label, typing_indicator, HumanMessageMeta, ThreadDeliveryTone,
+    ThreadMessageExtras, ThreadNoteKind,
+};
 use super::*;
-use adabraka_ui::prelude::Composer;
 use crate::icons::{ai_provider_inline, simple_icon};
+use adabraka_ui::prelude::{tooltip, Composer};
+
+#[derive(Clone, Copy)]
+enum TimelineGroup {
+    Opening,
+    Comment(usize),
+    Typing(usize),
+    AiDraft,
+    LocalDraft,
+}
+
+fn thread_scroll_to_restore(
+    preserve_scroll: bool,
+    old_count: usize,
+    old_scroll: gpui::ListOffset,
+) -> Option<gpui::ListOffset> {
+    (preserve_scroll && old_scroll.item_ix < old_count).then_some(old_scroll)
+}
 
 impl SupportView {
+    pub(super) fn rebuild_issue_thread_cache(&mut self, preserve_scroll: bool) {
+        let old_count = self.issue_thread_list.item_count();
+        let old_scroll = thread_scroll_to_restore(
+            preserve_scroll,
+            old_count,
+            self.issue_thread_list.logical_scroll_top(),
+        );
+        let Some(issue) = &self.issue_detail else {
+            self.issue_body_blocks.clear();
+            self.issue_comment_blocks.clear();
+            self.issue_thread_rows.clear();
+            self.issue_thread_list.reset(0);
+            return;
+        };
+
+        self.issue_body_blocks = markdown_blocks(&issue.body);
+        self.issue_comment_blocks = issue
+            .comments
+            .iter()
+            .map(|comment| {
+                if comment.is_note() {
+                    Vec::new()
+                } else {
+                    markdown_blocks(&comment.body)
+                }
+            })
+            .collect();
+
+        let mut groups = Vec::new();
+        if !issue.body.trim().is_empty()
+            || !issue.attachments.is_empty()
+            || issue.comments.is_empty()
+        {
+            groups.push((issue.created_at, 0usize, TimelineGroup::Opening));
+        }
+        groups.extend(
+            issue
+                .comments
+                .iter()
+                .enumerate()
+                .map(|(index, comment)| (comment.at, index + 1, TimelineGroup::Comment(index))),
+        );
+        groups.extend(
+            issue
+                .thread_state
+                .typing
+                .iter()
+                .enumerate()
+                .map(|(index, typing)| {
+                    (
+                        typing.at,
+                        issue.comments.len() + index + 1,
+                        TimelineGroup::Typing(index),
+                    )
+                }),
+        );
+        if self.issue_ai_draft.is_some() {
+            let at = issue
+                .thread_state
+                .suggested_reply
+                .as_ref()
+                .map(|draft| draft.at)
+                .filter(|at| *at > 0.0)
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64);
+            groups.push((at, usize::MAX - 1, TimelineGroup::AiDraft));
+        }
+        if let Some(draft) = issue
+            .thread_state
+            .local_draft
+            .as_ref()
+            .filter(|draft| !draft.body.trim().is_empty())
+        {
+            groups.push((draft.at, usize::MAX, TimelineGroup::LocalDraft));
+        }
+        groups.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        let mut rows = Vec::new();
+        let mut previous_day = None;
+        for (at, _, group) in groups {
+            let day = timeline_day(at);
+            if previous_day.is_some() && day.is_some() && day != previous_day {
+                rows.push(IssueThreadRow::Day { at });
+            }
+            if day.is_some() {
+                previous_day = day;
+            }
+
+            match group {
+                TimelineGroup::Opening => {
+                    let count = self.issue_body_blocks.len().max(1);
+                    rows.extend((0..count).map(|block| IssueThreadRow::Opening {
+                        block,
+                        last: block + 1 == count,
+                    }));
+                }
+                TimelineGroup::Comment(comment) => {
+                    let count = if issue.comments[comment].is_note() {
+                        1
+                    } else {
+                        self.issue_comment_blocks[comment].len().max(1)
+                    };
+                    rows.extend((0..count).map(|block| IssueThreadRow::Comment {
+                        comment,
+                        block,
+                        first: block == 0,
+                        last: block + 1 == count,
+                    }));
+                }
+                TimelineGroup::Typing(index) => rows.push(IssueThreadRow::Typing { index }),
+                TimelineGroup::AiDraft => rows.push(IssueThreadRow::AiDraft),
+                TimelineGroup::LocalDraft => rows.push(IssueThreadRow::LocalDraft),
+            }
+        }
+        self.issue_thread_rows = rows;
+        self.issue_thread_list.reset(self.issue_thread_rows.len());
+        if let Some(scroll) = old_scroll {
+            self.issue_thread_list.scroll_to(scroll);
+        }
+    }
+
+    fn issue_thread_item_count(&self) -> usize {
+        self.issue_thread_rows.len()
+    }
+
     pub(super) fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let header = div()
             .flex()
@@ -56,7 +204,7 @@ impl SupportView {
                         .placeholder(t!("support.issues.search").to_string())
                         .prefix(lucide_icon("search", 12.0, ShellDeckColors::text_muted()))
                         .on_enter({
-                                                move |value, cx| {
+                            move |value, cx| {
                                 let q = value.to_string();
                                 entity.update(cx, |this, cx| {
                                     this.issues_filter.q = q;
@@ -327,18 +475,13 @@ impl SupportView {
                             .items_center()
                             .gap(px(4.0))
                             .flex_shrink_0()
-                            .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded_full()
-                                    .bg(status_dot),
-                            )
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(status_dot))
                             .child(issue_status_label(&iss.status)),
                     )
-                    .when(iss.priority != "normal" && !iss.priority.trim().is_empty(), |el| {
-                        el.child(div().flex_shrink_0().child(priority_badge(&iss.priority)))
-                    })
+                    .when(
+                        iss.priority != "normal" && !iss.priority.trim().is_empty(),
+                        |el| el.child(div().flex_shrink_0().child(priority_badge(&iss.priority))),
+                    )
                     .child(div().flex_1().min_w(px(0.0)).truncate().child(meta))
                     .when(!when.is_empty(), |el| {
                         el.child(div().flex_shrink_0().child(when.clone()))
@@ -382,26 +525,15 @@ impl SupportView {
             )
     }
 
-    /// Chat-style bubble for one request comment. Mirrors the ticket bubble
-    /// (`render_message`): per-line `max_w` on the body so long lines wrap
-    /// with a Definite width (GPUI doesn't wrap otherwise), and the author's
-    /// side of the thread — mine right, others left, notes flush left with a
-    /// warning tint. Same containment fixes an earlier overlap where a wall
-    /// of dashes in a description would bleed past the bubble border.
-    pub(super) fn render_issue_comment(
+    fn render_issue_comment_segment(
         &self,
         c: &shelldeck_core::config::issues::IssueComment,
+        body: SharedString,
+        first: bool,
+        last: bool,
+        window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // System notes are of a different nature than a reply: `kind` on the
-        // wire is one of "status" | "system" | "github". Each gets its own
-        // tinted frame — stripping them all the way down would make a status
-        // change indistinguishable from a message.
-        if c.is_note() {
-            return self.render_issue_note(c).into_any_element();
-        }
-        // Human reply: prose on the surface, no card, per the mockup's rule
-        // "reading measure, not a form field".
+    ) -> AnyElement {
         let author_matches_me = !c.author.trim().is_empty() && {
             let a = c.author.trim().to_ascii_lowercase();
             (!self.account_name_lc.is_empty() && a == self.account_name_lc)
@@ -413,67 +545,281 @@ impl SupportView {
             c.author.clone()
         };
 
-        let mut head = div()
-            .flex()
-            .items_baseline()
-            .flex_wrap()
-            .gap(px(7.0))
-            .child(
-                // BOLD (700), pas SEMIBOLD (600). Sur Inter chargé, les deux
-                // graisses existent, mais SEMIBOLD à 12 px sur du texte muet
-                // par-dessus a un contraste trop faible pour se lire comme du
-                // gras — le nom devient invisible dans la ligne. BOLD à 12.5
-                // rétablit le rôle de l'auteur en tant que titre du message.
-                div()
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(if author_matches_me {
-                        ShellDeckColors::primary()
-                    } else {
-                        ShellDeckColors::text_primary()
-                    })
-                    .child(label),
+        let channel = if c.channel.trim().is_empty() {
+            self.issue_detail
+                .as_ref()
+                .and_then(|iss| Self::source_chip_label(&iss.source))
+                .map(SharedString::from)
+        } else {
+            Some(SharedString::from(c.channel.clone()))
+        };
+        let attachments = (last && !c.attachments.is_empty())
+            .then(|| self.render_issue_attachment_links(&c.attachments, cx));
+        let group = SharedString::from(format!("issue-message-{}", c.id));
+        let extras = ThreadMessageExtras {
+            quote: first
+                .then(|| {
+                    c.quote
+                        .as_ref()
+                        .map(|quote| attributed_quote(quote.author.clone(), quote.body.clone()))
+                })
+                .flatten(),
+            delivery: last.then(|| self.render_issue_delivery(c, cx)).flatten(),
+            actions: first.then(|| self.render_issue_message_actions(c, cx)),
+            group: Some(group),
+        };
+        let font_size = px(12.5).to_pixels(window.rem_size());
+        if first {
+            human_message(
+                HumanMessageMeta {
+                    author: label.into(),
+                    mine: author_matches_me,
+                    at: c.at,
+                    channel,
+                },
+                body,
+                attachments,
+                extras,
+                font_size,
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.5))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(rel_time(c.at)),
-            );
-        // The channel the request came in on — same value as `iss.source`. Not
-        // per-comment yet (the server does not split it that way), but the
-        // slot exists in the layout so it will not need re-shuffling later.
-        if let Some(chan) = self
-            .issue_detail
-            .as_ref()
-            .and_then(|iss| Self::source_chip_label(&iss.source))
-        {
-            head = head.child(
-                div()
-                    .flex_shrink_0()
-                    .h(px(18.0))
-                    .px(px(6.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::bg_surface())
-                    .text_size(px(10.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(chan.to_string()),
-            );
+        } else {
+            human_message_continuation(body, attachments, extras, font_size)
         }
+    }
 
-        let mut bubble = div()
+    fn render_issue_message_actions(
+        &self,
+        comment: &shelldeck_core::config::issues::IssueComment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let reply_entity = entity.clone();
+        let ai_entity = entity.clone();
+        let focus = self.composer_state.read(cx).focus_handle(cx);
+        let author = comment.author.clone();
+        let quoted = comment.body.clone();
+        let reply_id = SharedString::from(format!("issue-reply-{}", comment.id));
+        let copy_id = SharedString::from(format!("issue-copy-{}", comment.id));
+        let ai_id = SharedString::from(format!("issue-ai-rewrite-{}", comment.id));
+        let issue_id = self.issue_selected.clone().unwrap_or_default();
+        div()
             .flex()
-            .flex_col()
+            .items_center()
             .gap(px(4.0))
-            .max_w(px(560.0))
-            .min_w(px(0.0))
-            .child(head)
-            .child(Self::render_body_lines(&c.body, ShellDeckColors::text_primary()));
-        if !c.attachments.is_empty() {
-            bubble = bubble.child(self.render_issue_attachment_links(&c.attachments, cx));
+            .child(message_action(
+                reply_id,
+                "reply",
+                t!("support.thread.reply").to_string(),
+                move |_, window, cx| {
+                    let author = author.clone();
+                    let quoted = quoted.clone();
+                    reply_entity.update(cx, |this, cx| {
+                        let current = this.composer_state.read(cx).content().to_string();
+                        let prefix = format!("> {} : {}\n\n", author, quoted);
+                        let next = if current.trim().is_empty() {
+                            prefix
+                        } else {
+                            format!("{}{}", prefix, current)
+                        };
+                        this.composer_state
+                            .update(cx, |state, cx| state.replace_content(next, cx));
+                    });
+                    window.focus(&focus);
+                },
+            ))
+            .child(message_action(
+                copy_id,
+                "copy",
+                t!("support.thread.copy").to_string(),
+                {
+                    let body = comment.body.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
+                    }
+                },
+            ))
+            .when(self.ai_issue_enabled, |actions| {
+                actions.child(message_action(
+                    ai_id,
+                    "sparkles",
+                    t!("support.thread.rewrite_ai").to_string(),
+                    move |_, _, cx| {
+                        ai_entity.update(cx, |_, cx| {
+                            cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+                        });
+                    },
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn render_issue_delivery(
+        &self,
+        comment: &shelldeck_core::config::issues::IssueComment,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let delivery = comment.delivery.as_ref()?;
+        let channel = if delivery.channel.trim().is_empty() {
+            if comment.channel.trim().is_empty() {
+                "support"
+            } else {
+                comment.channel.as_str()
+            }
+        } else {
+            delivery.channel.as_str()
+        };
+        if delivery.status == "failed" {
+            let entity = cx.entity();
+            let issue_id = self.issue_selected.clone().unwrap_or_default();
+            let comment_id = comment.id.clone();
+            let retry = message_action(
+                SharedString::from(format!("issue-retry-{}", comment.id)),
+                "rotate-ccw",
+                t!("support.thread.retry").to_string(),
+                move |_, _, cx| {
+                    entity.update(cx, |_, cx| {
+                        cx.emit(SupportViewEvent::RetryIssueComment {
+                            issue_id: issue_id.clone(),
+                            comment_id: comment_id.clone(),
+                        });
+                    });
+                },
+            );
+            let label = if delivery.error.trim().is_empty() {
+                t!("support.thread.send_failed").to_string()
+            } else {
+                delivery.error.clone()
+            };
+            Some(delivery_status(
+                label,
+                ThreadDeliveryTone::Error,
+                Some(retry),
+            ))
+        } else {
+            let label = if delivery.status == "read" && delivery.at > 0.0 {
+                t!(
+                    "support.thread.sent_read",
+                    channel = channel,
+                    when = rel_time(delivery.at)
+                )
+                .to_string()
+            } else {
+                t!("support.thread.sent", channel = channel).to_string()
+            };
+            Some(delivery_status(label, ThreadDeliveryTone::Success, None))
         }
-        bubble.into_any_element()
+    }
+
+    fn render_issue_thread_item(
+        &self,
+        index: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let final_item = index + 1 == self.issue_thread_item_count();
+        let object_bottom = if final_item { 18.0 } else { 20.0 };
+        let Some(issue) = &self.issue_detail else {
+            return div().into_any_element();
+        };
+        let Some(row) = self.issue_thread_rows.get(index).cloned() else {
+            return div().into_any_element();
+        };
+        let font_size = px(12.5).to_pixels(window.rem_size());
+        let (content, bottom) = match row {
+            IssueThreadRow::Opening { block, last } => {
+                let body = self
+                    .issue_body_blocks
+                    .get(block)
+                    .cloned()
+                    .unwrap_or_else(|| SharedString::from(issue.body.clone()));
+                let attachments = (last && !issue.attachments.is_empty())
+                    .then(|| self.render_issue_attachment_links(&issue.attachments, cx));
+                let content = if block == 0 {
+                    human_message(
+                        HumanMessageMeta {
+                            author: if issue.requested_by.trim().is_empty() {
+                                t!("support.issue.description").to_string().into()
+                            } else {
+                                issue.requested_by.clone().into()
+                            },
+                            mine: false,
+                            at: issue.created_at,
+                            channel: Self::source_chip_label(&issue.source).map(SharedString::from),
+                        },
+                        body,
+                        attachments,
+                        ThreadMessageExtras::default(),
+                        font_size,
+                    )
+                } else {
+                    human_message_continuation(
+                        body,
+                        attachments,
+                        ThreadMessageExtras::default(),
+                        font_size,
+                    )
+                };
+                (content, if last { object_bottom } else { 8.0 })
+            }
+            IssueThreadRow::Comment {
+                comment,
+                block,
+                first,
+                last,
+            } => {
+                let comment_index = comment;
+                let comment = &issue.comments[comment_index];
+                if comment.is_note() {
+                    (
+                        self.render_issue_note(comment, window).into_any_element(),
+                        object_bottom,
+                    )
+                } else {
+                    let body = self.issue_comment_blocks[comment_index]
+                        .get(block)
+                        .cloned()
+                        .unwrap_or_else(|| SharedString::from(comment.body.clone()));
+                    (
+                        self.render_issue_comment_segment(comment, body, first, last, window, cx),
+                        if last { object_bottom } else { 8.0 },
+                    )
+                }
+            }
+            IssueThreadRow::Day { at } => (day_separator(timeline_day_label(at)), 14.0),
+            IssueThreadRow::Typing { index } => {
+                let author = issue
+                    .thread_state
+                    .typing
+                    .get(index)
+                    .map(|typing| typing.author.clone())
+                    .unwrap_or_default();
+                (typing_indicator(author), object_bottom)
+            }
+            IssueThreadRow::AiDraft => {
+                let Some(draft) = &self.issue_ai_draft else {
+                    return div().into_any_element();
+                };
+                (
+                    self.render_issue_ai_draft_card(draft.body.clone(), draft.model.clone(), cx)
+                        .into_any_element(),
+                    object_bottom,
+                )
+            }
+            IssueThreadRow::LocalDraft => {
+                let body = issue
+                    .thread_state
+                    .local_draft
+                    .as_ref()
+                    .map(|draft| draft.body.clone())
+                    .unwrap_or_default();
+                (local_draft(body), object_bottom)
+            }
+        };
+        div()
+            .w_full()
+            .pb(px(bottom))
+            .child(content)
+            .into_any_element()
     }
 
     /// One system note (`status`, `system` or `github`), rendered as the
@@ -482,107 +828,29 @@ impl SupportView {
     fn render_issue_note(
         &self,
         c: &shelldeck_core::config::issues::IssueComment,
+        window: &Window,
     ) -> impl IntoElement {
-        let (icon, border, bg) = match c.kind.as_str() {
-            "status" => (
-                "check",
-                ShellDeckColors::primary().opacity(0.30),
-                ShellDeckColors::primary().opacity(0.08),
-            ),
-            "github" => (
-                "git-branch",
-                ShellDeckColors::border(),
-                ShellDeckColors::bg_surface(),
-            ),
-            _ => (
-                "info",
-                ShellDeckColors::warning().opacity(0.30),
-                ShellDeckColors::warning().opacity(0.10),
-            ),
+        let kind = match c.kind.as_str() {
+            "status" => ThreadNoteKind::Status,
+            "github" => ThreadNoteKind::Github,
+            // The current wire schema has no separate dispatch kind. Detect
+            // the server-authored dispatch wording so the existing event gets
+            // the green runtime treatment from the prototype.
+            "system" if c.body.trim_start().starts_with("Dispatch") => ThreadNoteKind::Dispatch,
+            _ => ThreadNoteKind::System,
         };
         let actor = if c.author.trim().is_empty() {
             None
         } else {
             Some(c.author.clone())
         };
-        div()
-            .flex()
-            .items_start()
-            .gap(px(10.0))
-            .max_w(px(560.0))
-            .min_w(px(0.0))
-            .p(px(9.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(22.0))
-                    .h(px(22.0))
-                    .rounded(px(5.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(lucide_icon(icon, 13.0, ShellDeckColors::text_muted())),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(px(11.5))
-                    .line_height(relative(1.4))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(Self::render_body_lines(
-                        &c.body,
-                        ShellDeckColors::text_primary(),
-                    ))
-                    .child(
-                        div()
-                            .mt(px(2.0))
-                            .text_size(px(10.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(match actor {
-                                Some(a) => format!("{} · {}", rel_time(c.at), a),
-                                None => rel_time(c.at),
-                            }),
-                    ),
-            )
-    }
-
-    /// Split a plain-text body into lines and stack them. `line_height` MUST
-    /// sit on each child (a factor on the flex parent leaves the child boxes
-    /// at raw font height and they overlap vertically — the exact defect the
-    /// last release shipped).
-    fn render_body_lines(body: &str, color: Hsla) -> impl IntoElement {
-        // `whitespace_normal` + `min_w(0)` + `overflow_hidden` per line: without
-        // this, long words (Slack meta URLs, GitHub links) render on a single
-        // unbounded line and paint OVER whatever the layout put beside them —
-        // which is what produced the earlier overlap where the request body
-        // ran through the system-note cards.
-        let mut wrap = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .text_size(px(12.5))
-            .text_color(color);
-        for line in body.split('\n') {
-            let line = if line.is_empty() { " " } else { line };
-            wrap = wrap.child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_normal()
-                    .line_height(relative(1.62))
-                    .child(line.to_string()),
-            );
-        }
-        wrap
+        thread_note(
+            c.body.clone(),
+            actor,
+            c.at,
+            kind,
+            px(11.5).to_pixels(window.rem_size()),
+        )
     }
 
     /// Human-readable chip for `iss.source`. Returns `None` for values that do
@@ -597,7 +865,7 @@ impl SupportView {
         }
     }
 
-        pub(super) fn render_issue_attachment_links(
+    pub(super) fn render_issue_attachment_links(
         &self,
         attachments: &[IssueAttachment],
         cx: &mut Context<Self>,
@@ -685,12 +953,33 @@ impl SupportView {
         let id = iss.id.clone();
         let mut items = Vec::new();
 
+        // The prototype keeps only two quiet header actions. Triage remains
+        // available here instead of occupying a third outlined icon button.
+        if self.ai_issue_enabled && self.issues_staff {
+            let triage_id = id.clone();
+            items.push(
+                PopoverMenuItem::new(
+                    "iss-menu-ai-triage",
+                    t!("ai.workflow.issue_triage").to_string(),
+                )
+                .icon("sparkles")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_issue_popover_menu(cx);
+                            cx.emit(SupportViewEvent::TriageIssue(triage_id.clone()));
+                        });
+                    }
+                }),
+            );
+        }
+
         if self.issues_staff {
-            let include_dispatch = !self.issue_instances.is_empty();
-            items.extend(Self::staff_triage_items(
+            items.extend(Self::staff_secondary_items(
                 iss,
                 &id,
-                include_dispatch,
+                &self.issue_instances,
                 &entity,
             ));
         }
@@ -720,87 +1009,51 @@ impl SupportView {
         items
     }
 
-    /// Staff-only triage entries (status / priority / assign-me / dispatch /
-    /// GitHub sync-or-push) for the issue kebab. Split out so the guard is
-    /// unambiguous — inlined, the closing `}` of the `if self.issues_staff`
-    /// block was easy to misread as unconditional code.
-    ///
-    /// `include_dispatch` is a caller-side gate on `issue_instances` (only
-    /// staff with at least one reachable runtime can dispatch).
-    pub(super) fn staff_triage_items(
+    /// Staff-only secondary actions for the issue overflow menu. Status,
+    /// priority and assignment intentionally do not appear here: their values
+    /// are the direct selectors in the header. Each available runtime gets a
+    /// concrete dispatch entry so choosing it never opens an inline panel that
+    /// changes the header height.
+    pub(super) fn staff_secondary_items(
         iss: &Issue,
         id: &str,
-        include_dispatch: bool,
+        instances: &[IssueInstance],
         entity: &Entity<SupportView>,
     ) -> Vec<PopoverMenuItem> {
         let mut items = Vec::new();
-        items.push(
-            PopoverMenuItem::new("iss-menu-status", t!("support.menu.status").to_string())
-                .icon("filter")
-                .on_click({
-                    let entity = entity.clone();
-                    move |_, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.close_issue_popover_menu(cx);
-                            this.issue_status_menu = true;
-                            this.issue_priority_menu_open = false;
-                            this.issue_dispatch_menu = false;
-                            cx.notify();
-                        });
-                    }
-                }),
-        );
-        items.push(
-            PopoverMenuItem::new("iss-menu-priority", t!("support.menu.priority").to_string())
-                .icon("flag")
-                .on_click({
-                    let entity = entity.clone();
-                    move |_, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.close_issue_popover_menu(cx);
-                            this.issue_priority_menu_open = true;
-                            this.issue_status_menu = false;
-                            this.issue_dispatch_menu = false;
-                            cx.notify();
-                        });
-                    }
-                }),
-        );
-
-        let aid = id.to_string();
-        items.push(
-            PopoverMenuItem::new("iss-menu-assign", t!("support.menu.assign_me").to_string())
-                .icon("user-check")
-                .on_click({
-                    let entity = entity.clone();
-                    move |_, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.close_issue_popover_menu(cx);
-                            cx.emit(SupportViewEvent::IssueAssign {
-                                id: aid.clone(),
-                                assignee: "me".to_string(),
-                            });
-                        });
-                    }
-                }),
-        );
-
-        if include_dispatch {
+        for instance in instances {
+            let dispatch_id = id.to_string();
+            let instance_id = instance.id.clone();
+            let duplicate_name = instances
+                .iter()
+                .filter(|candidate| candidate.name.eq_ignore_ascii_case(&instance.name))
+                .count()
+                > 1;
+            let target = if duplicate_name {
+                let short_id = instance.id.chars().take(8).collect::<String>();
+                format!("{} · {short_id}", instance.name)
+            } else {
+                instance.name.clone()
+            };
+            let label = t!("support.menu.dispatch_to", name = target).to_string();
             items.push(
-                PopoverMenuItem::new("iss-menu-dispatch", t!("support.menu.dispatch").to_string())
-                    .icon("server")
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_issue_popover_menu(cx);
-                                this.issue_dispatch_menu = true;
-                                this.issue_status_menu = false;
-                                this.issue_priority_menu_open = false;
-                                cx.notify();
+                PopoverMenuItem::new(
+                    SharedString::from(format!("iss-menu-dispatch-{}", instance.id)),
+                    label,
+                )
+                .icon("server")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_issue_popover_menu(cx);
+                            cx.emit(SupportViewEvent::IssueDispatch {
+                                id: dispatch_id.clone(),
+                                instance_id: instance_id.clone(),
                             });
-                        }
-                    }),
+                        });
+                    }
+                }),
             );
         }
 
@@ -1512,130 +1765,397 @@ impl SupportView {
     ) -> impl IntoElement {
         let entity = cx.entity();
         let items = self.build_issue_menu_items(iss, entity.clone());
-        PopoverMenu::new(pos, items).on_close({
-            let entity = entity.clone();
-            move |_, cx| {
-                entity.update(cx, |this, cx| {
-                    this.close_issue_popover_menu(cx);
-                });
-            }
-        })
+        PopoverMenu::new(pos, items)
+            .max_height(gpui::px(360.0))
+            .on_close({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.close_issue_popover_menu(cx);
+                    });
+                }
+            })
     }
 
-    pub(super) fn render_issue_header_subpanels(
-        &self,
-        iss: &Issue,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_issue_status_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
+        let trigger = thread_header_picker(
+            "iss-detail-status",
+            div()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(thread_status_color(&iss.status)),
+            issue_status_label(&iss.status),
+            self.issues_staff,
+        );
         if !self.issues_staff {
-            return div().into_any_element();
-        }
-        if !self.issue_status_menu && !self.issue_priority_menu_open && !self.issue_dispatch_menu {
-            return div().into_any_element();
+            return trigger;
         }
 
-        let id = iss.id.clone();
-        let mut panel = div().flex().flex_col().gap(px(6.0)).pt(px(4.0));
+        let parent = cx.entity();
+        let issue_id = iss.id.clone();
+        let current = iss.status.clone();
+        Popover::new("iss-detail-status-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                let issue_id = issue_id.clone();
+                let current = current.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(176.0)).flex().flex_col().gap(px(2.0));
+                        for status in [
+                            "open",
+                            "triaging",
+                            "in_progress",
+                            "blocked",
+                            "done",
+                            "closed",
+                        ] {
+                            let row_parent = parent.clone();
+                            let row_issue_id = issue_id.clone();
+                            let marker = div()
+                                .size(px(7.0))
+                                .flex_shrink_0()
+                                .rounded_full()
+                                .bg(thread_status_color(status));
+                            list = list.child(
+                                thread_picker_option_row(
+                                    format!("iss-status-option-{status}").into(),
+                                    marker,
+                                    issue_status_label(status),
+                                    None,
+                                    current == status,
+                                )
+                                .on_click(cx.listener(
+                                    move |_content, _: &ClickEvent, _, cx| {
+                                        row_parent.update(cx, |_this, cx| {
+                                            cx.emit(SupportViewEvent::IssueStatus {
+                                                id: row_issue_id.clone(),
+                                                status: status.to_string(),
+                                            });
+                                        });
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
 
-        if self.issue_status_menu {
-            let mut row = div().flex().flex_wrap().items_center().gap(px(6.0));
-            for s in [
-                "open",
-                "triaging",
-                "in_progress",
-                "blocked",
-                "done",
-                "closed",
-            ] {
-                let sid = id.clone();
-                let active = iss.status == s;
-                let mut chip = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "iss-schip-{s}"
-                    ))))
-                    .p(px(2.0))
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_2()
-                    .child(issue_status_badge(s))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.issue_status_menu = false;
-                        cx.emit(SupportViewEvent::IssueStatus {
-                            id: sid.clone(),
-                            status: s.to_string(),
-                        });
-                    }));
-                if active {
-                    chip = chip.border_color(ShellDeckColors::primary());
+    fn render_issue_priority_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
+        let trigger = thread_header_picker(
+            "iss-detail-priority",
+            div()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(thread_priority_color(&iss.priority)),
+            priority_label(&iss.priority),
+            self.issues_staff,
+        );
+        if !self.issues_staff {
+            return trigger;
+        }
+
+        let parent = cx.entity();
+        let issue_id = iss.id.clone();
+        let current = iss.priority.clone();
+        Popover::new("iss-detail-priority-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                let issue_id = issue_id.clone();
+                let current = current.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(176.0)).flex().flex_col().gap(px(2.0));
+                        for priority in ["low", "normal", "high", "urgent"] {
+                            let row_parent = parent.clone();
+                            let row_issue_id = issue_id.clone();
+                            let marker = div()
+                                .size(px(7.0))
+                                .flex_shrink_0()
+                                .rounded_full()
+                                .bg(thread_priority_color(priority));
+                            list = list.child(
+                                thread_picker_option_row(
+                                    format!("iss-priority-option-{priority}").into(),
+                                    marker,
+                                    priority_label(priority),
+                                    None,
+                                    current == priority,
+                                )
+                                .on_click(cx.listener(
+                                    move |_content, _: &ClickEvent, _, cx| {
+                                        row_parent.update(cx, |_this, cx| {
+                                            cx.emit(SupportViewEvent::IssuePriority {
+                                                id: row_issue_id.clone(),
+                                                priority: priority.to_string(),
+                                            });
+                                        });
+                                        cx.emit(DismissEvent);
+                                    },
+                                )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
+    }
+
+    fn render_issue_assignee_picker(&self, iss: &Issue, cx: &mut Context<Self>) -> AnyElement {
+        let trigger = thread_header_picker(
+            "iss-detail-assignee",
+            lucide_icon("at-sign", 11.0, ShellDeckColors::text_muted()),
+            self.assignee_label(&iss.assignee),
+            self.issues_staff,
+        );
+        if !self.issues_staff {
+            return trigger;
+        }
+
+        let mut agents = Vec::<HeaderAssigneeOption>::new();
+        for agent in &self.agents {
+            if agent.email.trim().is_empty()
+                || agents
+                    .iter()
+                    .any(|known| known.email.eq_ignore_ascii_case(&agent.email))
+            {
+                continue;
+            }
+            agents.push(HeaderAssigneeOption {
+                value: agent.email.clone(),
+                label: if agent.name.trim().is_empty() {
+                    agent.email.clone()
                 } else {
-                    chip = chip.border_color(gpui::transparent_black()).opacity(0.55);
-                }
-                row = row.child(chip);
-            }
-            panel = panel.child(row);
+                    agent.name.clone()
+                },
+                email: agent.email.clone(),
+            });
         }
+        agents.sort_by_key(|agent| agent.label.to_lowercase());
 
-        if self.issue_priority_menu_open {
-            let mut row = div().flex().flex_wrap().items_center().gap(px(6.0));
-            for p in ["low", "normal", "high", "urgent"] {
-                let pid = id.clone();
-                let active = iss.priority == p;
-                let mut chip = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "iss-pchip-{p}"
-                    ))))
-                    .p(px(2.0))
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_2()
-                    .child(priority_badge(p))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.issue_priority_menu_open = false;
-                        cx.emit(SupportViewEvent::IssuePriority {
-                            id: pid.clone(),
-                            priority: p.to_string(),
-                        });
-                    }));
-                if active {
-                    chip = chip.border_color(ShellDeckColors::primary());
-                } else {
-                    chip = chip.border_color(gpui::transparent_black()).opacity(0.55);
-                }
-                row = row.child(chip);
-            }
-            panel = panel.child(row);
-        }
+        let total = agents.len();
+        let parent = cx.entity();
+        let issue_id = iss.id.clone();
+        let current = iss.assignee.clone();
+        let me_name = self.me.name.clone();
+        let me_email = self.me.email.clone();
+        let search = self.issue_assignee_search_state.clone();
+        let search_placeholder = t!("support.issues.assignee.picker.search").to_string();
+        let empty_label = t!("support.assignee.none").to_string();
+        let me_label = if me_name.trim().is_empty() {
+            t!("support.assignee.me").to_string()
+        } else {
+            format!("{} · {me_name}", t!("support.assignee.me"))
+        };
 
-        if self.issue_dispatch_menu {
-            let mut list = div()
-                .id("iss-dispatch-list")
-                .w_full()
-                .max_h(px(160.0))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap(px(2.0));
-            for inst in &self.issue_instances {
-                let did = id.clone();
-                let iid = inst.id.clone();
-                list = list.child(self.action_button(
-                    "iss-disp-inst",
-                    format!("{} ({})", inst.name, inst.status),
-                    Some("server"),
-                    cx,
-                    move |this, cx| {
-                        this.issue_dispatch_menu = false;
-                        cx.emit(SupportViewEvent::IssueDispatch {
-                            id: did.clone(),
-                            instance_id: iid.clone(),
-                        });
-                    },
-                ));
-            }
-            panel = panel.child(list);
-        }
+        Popover::new("iss-detail-assignee-popover")
+            .trigger(trigger)
+            .content(move |window, cx| {
+                search.update(cx, InputState::reset);
+                let parent = parent.clone();
+                let issue_id = issue_id.clone();
+                let current = current.clone();
+                let me_name = me_name.clone();
+                let me_email = me_email.clone();
+                let search = search.clone();
+                let search_placeholder = search_placeholder.clone();
+                let empty_label = empty_label.clone();
+                let me_label = me_label.clone();
+                let agents = agents.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let query = search.read(cx).content().trim().to_lowercase();
+                        let filtered = agents
+                            .iter()
+                            .filter(|agent| {
+                                query.is_empty()
+                                    || agent.label.to_lowercase().contains(&query)
+                                    || agent.email.to_lowercase().contains(&query)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let filtered_count = filtered.len();
+                        let count_label = if query.is_empty() {
+                            t!("support.issue.assignee_count", count = total).to_string()
+                        } else {
+                            t!(
+                                "support.issue.assignee_count_filtered",
+                                filtered = filtered_count,
+                                total = total
+                            )
+                            .to_string()
+                        };
+                        let list_height = px((filtered_count.clamp(1, 5) as f32) * 40.0);
+                        let filtered = Rc::new(filtered);
+                        let content_entity = cx.entity();
 
-        panel.into_any_element()
+                        let none_active = current.trim().is_empty();
+                        let me_active = current.eq_ignore_ascii_case("me")
+                            || (!me_email.trim().is_empty()
+                                && current.eq_ignore_ascii_case(&me_email))
+                            || (!me_name.trim().is_empty()
+                                && current.eq_ignore_ascii_case(&me_name));
+
+                        let none_parent = parent.clone();
+                        let none_issue_id = issue_id.clone();
+                        let me_parent = parent.clone();
+                        let me_issue_id = issue_id.clone();
+                        let rows_parent = parent.clone();
+                        let rows_issue_id = issue_id.clone();
+                        let rows_current = current.clone();
+                        let rows = filtered.clone();
+
+                        div()
+                            .w(px(320.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .child(
+                                Input::new(&search)
+                                    .size(InputSize::Sm)
+                                    .placeholder(search_placeholder.clone())
+                                    .on_change(move |_, cx| {
+                                        content_entity.update(cx, |_content, cx| cx.notify());
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .child(
+                                        thread_picker_option_row(
+                                            "iss-assignee-none".into(),
+                                            lucide_icon(
+                                                "at-sign",
+                                                12.0,
+                                                ShellDeckColors::text_muted(),
+                                            ),
+                                            empty_label.clone(),
+                                            None,
+                                            none_active,
+                                        )
+                                        .on_click(cx.listener(
+                                            move |_content, _: &ClickEvent, _, cx| {
+                                                none_parent.update(cx, |_this, cx| {
+                                                    cx.emit(SupportViewEvent::IssueAssign {
+                                                        id: none_issue_id.clone(),
+                                                        assignee: String::new(),
+                                                    });
+                                                });
+                                                cx.emit(DismissEvent);
+                                            },
+                                        )),
+                                    )
+                                    .child(
+                                        thread_picker_option_row(
+                                            "iss-assignee-me".into(),
+                                            lucide_icon(
+                                                "at-sign",
+                                                12.0,
+                                                ShellDeckColors::text_muted(),
+                                            ),
+                                            me_label.clone(),
+                                            None,
+                                            me_active,
+                                        )
+                                        .on_click(cx.listener(
+                                            move |_content, _: &ClickEvent, _, cx| {
+                                                me_parent.update(cx, |_this, cx| {
+                                                    cx.emit(SupportViewEvent::IssueAssign {
+                                                        id: me_issue_id.clone(),
+                                                        assignee: "me".to_string(),
+                                                    });
+                                                });
+                                                cx.emit(DismissEvent);
+                                            },
+                                        )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(4.0))
+                                    .border_t_1()
+                                    .border_color(ShellDeckColors::border())
+                                    .child(if filtered_count == 0 {
+                                        div()
+                                            .h(px(40.0))
+                                            .flex()
+                                            .items_center()
+                                            .px(px(8.0))
+                                            .text_size(px(11.0))
+                                            .text_color(ShellDeckColors::text_muted())
+                                            .child(t!("support.issues.assignee.no_match").to_string())
+                                            .into_any_element()
+                                    } else {
+                                        uniform_list(
+                                            "issue-header-assignee-options",
+                                            filtered_count,
+                                            cx.processor(move |_content, range: Range<usize>, _window, cx| {
+                                                range
+                                                    .filter_map(|index| {
+                                                        rows.get(index)
+                                                            .cloned()
+                                                            .map(|agent| (index, agent))
+                                                    })
+                                                    .map(|(index, agent)| {
+                                                        let active = rows_current.eq_ignore_ascii_case(&agent.value)
+                                                            || rows_current.eq_ignore_ascii_case(&agent.label);
+                                                        let row_parent = rows_parent.clone();
+                                                        let row_issue_id = rows_issue_id.clone();
+                                                        let value = agent.value.clone();
+                                                        thread_picker_option_row(
+                                                            format!("iss-assignee-agent-{index}").into(),
+                                                            lucide_icon(
+                                                                "at-sign",
+                                                                12.0,
+                                                                ShellDeckColors::text_muted(),
+                                                            ),
+                                                            agent.label,
+                                                            Some(agent.email.into()),
+                                                            active,
+                                                        )
+                                                        .h(px(40.0))
+                                                        .on_click(cx.listener(
+                                                            move |_content, _: &ClickEvent, _, cx| {
+                                                                row_parent.update(cx, |_this, cx| {
+                                                                    cx.emit(SupportViewEvent::IssueAssign {
+                                                                        id: row_issue_id.clone(),
+                                                                        assignee: value.clone(),
+                                                                    });
+                                                                });
+                                                                cx.emit(DismissEvent);
+                                                            },
+                                                        ))
+                                                        .into_any_element()
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            }),
+                                        )
+                                        .h(list_height)
+                                        .w_full()
+                                        .into_any_element()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .text_size(px(9.5))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(count_label),
+                            )
+                            .into_any_element()
+                    })
+                })
+            })
+            .into_any_element()
     }
 
     pub(super) fn render_issue_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1643,90 +2163,37 @@ impl SupportView {
             return self.render_empty_issue_detail().into_any_element();
         };
 
-        let assignee = assignee_display(&iss.assignee, None);
         // The badges ARE the triggers. The status and priority pickers already
         // existed — buried in the kebab, two clicks away (⋮ → Statut → choose).
         // The thing you want to change is right there on screen; making it the
         // button is the whole point of the mockup's `[• À traiter ⌄]`.
         // Non-staff still get plain badges: no chevron, no click.
-        let staff = self.issues_staff;
+        let mut context = Vec::new();
+        if !iss.tenant_name.trim().is_empty() {
+            context.push(iss.tenant_name.clone());
+        }
+        if iss.updated_at > 0.0 {
+            context.push(t!("support.issue.updated", when = rel_time(iss.updated_at)).to_string());
+        }
+
         let mut meta_row = div()
             .flex()
             .items_center()
             .flex_wrap()
-            .gap(px(8.0))
-            .child(
+            .gap(px(6.0))
+            .child(self.render_issue_status_picker(&iss, cx))
+            .child(self.render_issue_priority_picker(&iss, cx))
+            .child(self.render_issue_assignee_picker(&iss, cx));
+        if !context.is_empty() {
+            meta_row = meta_row.child(
                 div()
-                    .id("iss-detail-status")
-                    .flex()
-                    .items_center()
-                    .gap(px(3.0))
-                    .rounded(px(6.0))
-                    .when(staff, |el| {
-                        el.cursor_pointer()
-                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                    })
-                    .child(issue_status_badge(&iss.status))
-                    .when(staff, |el| {
-                        el.child(
-                            svg()
-                                .path(lucide_path("chevron-down"))
-                                .size(px(11.0))
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if !this.issues_staff {
-                            return;
-                        }
-                        this.issue_status_menu = true;
-                        this.issue_priority_menu_open = false;
-                        this.issue_dispatch_menu = false;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("iss-detail-priority")
-                    .flex()
-                    .items_center()
-                    .gap(px(3.0))
-                    .rounded(px(6.0))
-                    .when(staff, |el| {
-                        el.cursor_pointer()
-                            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                    })
-                    .child(priority_badge(&iss.priority))
-                    .when(staff, |el| {
-                        el.child(
-                            svg()
-                                .path(lucide_path("chevron-down"))
-                                .size(px(11.0))
-                                .text_color(ShellDeckColors::text_muted()),
-                        )
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        if !this.issues_staff {
-                            return;
-                        }
-                        this.issue_priority_menu_open = true;
-                        this.issue_status_menu = false;
-                        this.issue_dispatch_menu = false;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .text_size(px(11.0))
                     .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.assigned_to", name = assignee).to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(iss.tenant_name.clone()),
+                    .child(context.join(" · ")),
             );
+        }
         if let Some(label) = iss.site_label.as_ref().filter(|l| !l.trim().is_empty()) {
             meta_row = meta_row.child(Badge::new(label.clone()).variant(BadgeVariant::Outline));
         }
@@ -1735,21 +2202,14 @@ impl SupportView {
                 Badge::new(format!("GitHub #{}", g.number)).variant(BadgeVariant::Secondary),
             );
         }
-        if iss.updated_at > 0.0 {
-            meta_row = meta_row.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(format!("· mis à jour {}", rel_time(iss.updated_at))),
-            );
-        }
 
         let header = div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .flex_shrink_0()
+            .gap(px(8.0))
             .px(px(16.0))
-            .py(px(12.0))
+            .py(px(10.0))
             .border_b_1()
             .border_color(ShellDeckColors::border())
             .child(
@@ -1761,41 +2221,39 @@ impl SupportView {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
-                            .text_size(px(16.0))
+                            .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
                             .child(iss.title.clone()),
                     )
-                    .when(self.ai_issue_enabled, |row| {
+                    .child({
                         let summary_id = iss.id.clone();
-                        row.child(
-                            Button::new("issue-ai-summary", "")
-                                .variant(ButtonVariant::Ai)
-                                .size(ButtonSize::Sm)
-                                .tooltip(t!("ai.workflow.issue_summary").to_string())
-                                .icon(IconSource::from("info"))
-                                .on_click(cx.listener(move |_, _, _, cx| {
+                        tooltip(
+                            Button::new(
+                                "issue-ai-summary",
+                                t!("support.issue.summarize").to_string(),
+                            )
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .h(px(28.0))
+                            .px(px(8.0))
+                            .icon(IconSource::from("sparkles"))
+                            .disabled(!self.ai_issue_enabled)
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
                                     cx.emit(SupportViewEvent::SummarizeIssue(summary_id.clone()));
-                                })),
-                        )
-                    })
-                    .when(self.ai_issue_enabled && self.issues_staff, |row| {
-                        let triage_id = iss.id.clone();
-                        row.child(
-                            Button::new("issue-ai-triage", "")
-                                .variant(ButtonVariant::Ai)
-                                .size(ButtonSize::Sm)
-                                .tooltip(t!("ai.workflow.issue_triage").to_string())
-                                .icon(IconSource::from("flag"))
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(SupportViewEvent::TriageIssue(triage_id.clone()));
-                                })),
+                                },
+                            )),
+                            t!("ai.workflow.issue_summary").to_string(),
                         )
                     })
                     .child({
                         let entity = cx.entity();
                         let iid = iss.id.clone();
-                        IconButton::new("ellipsis-vertical")
+                        // Keep the IconButton itself as the hit target. The
+                        // generic tooltip wrapper creates a separate relative
+                        // hit-test node here and swallowed the header click.
+                        IconButton::new("ellipsis")
                             .variant(ButtonVariant::Ghost)
                             .size(gpui::px(28.0))
                             .icon_size(gpui::px(14.0))
@@ -1810,103 +2268,27 @@ impl SupportView {
                             })
                     }),
             )
-            .child(meta_row)
-            .child(self.render_issue_header_subpanels(&iss, cx));
+            .child(meta_row);
 
-        let mut thread = div()
-            .id("sup-issue-thread")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.issues_scroll)
-            .flex()
-            .flex_col()
-            // 16px : à 8 la carte statut collait à la miniature du dessus
-            // et donnait l'impression d'une superposition.
-            .gap(px(16.0))
-            .px(px(14.0))
-            .pt(px(14.0))
-            .pb(px(20.0))
-            .bg(ShellDeckColors::bg_surface());
-
-        if !iss.body.trim().is_empty() {
-            // The opening message is prose, like every reply below it. It used
-            // to be an adabraka `Card` with a framed author tag — which is why
-            // stripping `render_issue_comment` alone left this one boxed: it
-            // never went through that function.
-            thread = thread.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .w_full()
-                    .max_w(px(560.0))
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_baseline()
-                            .gap(px(7.0))
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(ShellDeckColors::text_primary())
-                                    .child(if iss.requested_by.trim().is_empty() {
-                                        t!("support.issue.description").to_string()
-                                    } else {
-                                        iss.requested_by.clone()
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(px(10.5))
-                                    .text_color(ShellDeckColors::text_muted())
-                                    .child(rel_time(iss.created_at)),
-                            ),
-                    )
-                    .child({
-                        let mut body = div()
-                            .flex()
-                            .flex_col()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .text_size(px(12.5))
-                            .text_color(ShellDeckColors::text_primary());
-                        for line in iss.body.split('\n') {
-                            let line = if line.is_empty() { " " } else { line };
-                            body = body.child(
-                                div()
-                                    .w_full()
-                                    .min_w(px(0.0))
-                                    .line_height(relative(1.62))
-                                    .child(line.to_string()),
-                            );
-                        }
-                        body
-                    })
-                    // Pièces jointes DANS le bloc du message : elles suivent
-                    // l'auteur au lieu de flotter entre l'ouverture et la note
-                    // statut qui vient après (où elles semblaient poser dessus).
-                    .when(!iss.attachments.is_empty(), |el| {
-                        el.child(self.render_issue_attachment_links(&iss.attachments, cx))
-                    }),
-            );
-        } else if iss.comments.is_empty() && iss.attachments.is_empty() {
-            thread = thread.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.comments").to_string()),
-            );
-        } else if !iss.attachments.is_empty() {
-            // Pas de corps mais des pièces jointes : on garde le rendu séparé.
-            thread = thread.child(self.render_issue_attachment_links(&iss.attachments, cx));
-        }
-        for c in &iss.comments {
-            thread = thread.child(self.render_issue_comment(c, cx));
-        }
+        let entity = cx.entity();
+        let thread = list(self.issue_thread_list.clone(), move |index, window, app| {
+            let item = entity.update(app, |this, cx| {
+                this.render_issue_thread_item(index, window, cx)
+            });
+            // Native `list` lays its rows outside the Styled padding carried by
+            // the list element itself. Put the thread gutter on every virtual
+            // row so prose and cards never sit against the pane separator.
+            div()
+                .w_full()
+                .px(px(18.0))
+                .pt(px(if index == 0 { 16.0 } else { 0.0 }))
+                .child(item)
+                .into_any_element()
+        })
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .bg(ShellDeckColors::bg_surface());
 
         div()
             .flex_1()
@@ -1914,132 +2296,127 @@ impl SupportView {
             .flex_col()
             .min_w(px(0.0))
             .min_h(px(0.0))
+            .overflow_hidden()
             .child(header)
             .child(thread)
             .child(self.render_issue_composer(cx))
             .into_any_element()
     }
 
-    /// The provider chip for the reply composer — same slot the assistant gives
-    /// its model, same persistence route (Workspace → Settings).
+    /// The model used by "Proposer une réponse". This belongs in the right
+    /// option slot: requests have no alternative delivery destination in the
+    /// current API, while the AI backend is a real user setting.
     fn render_support_ai_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use shelldeck_core::ai::AiBackend;
-        let open = self.ai_backend_menu;
         let model = if self.ai_model.trim().is_empty() {
             self.ai_backend.default_model().to_string()
         } else {
             self.ai_model.trim().to_string()
         };
-        let mut wrap = div().relative().flex().flex_shrink_0().child(
-            div()
-                .id("sup-ai-backend")
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .h(px(26.0))
-                .px(px(6.0))
-                .rounded(px(7.0))
-                .cursor_pointer()
-                .text_size(px(11.0))
-                .text_color(ShellDeckColors::text_muted())
-                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                .child(ai_provider_inline(self.ai_backend, &model))
-                .child(
-                    svg()
-                        .path(lucide_path(if open { "chevron-up" } else { "chevron-down" }))
-                        .size(px(11.0))
-                        .flex_shrink_0()
-                        .text_color(ShellDeckColors::text_muted()),
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.ai_backend_menu = !this.ai_backend_menu;
-                    cx.notify();
-                })),
-        );
-        if open {
-            let current = self.ai_backend;
-            let mut list = div()
-                .id("sup-ai-backend-menu")
-                .w(px(208.0))
-                .p(px(4.0))
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .bg(ShellDeckColors::bg_surface())
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .rounded(px(9.0))
-                .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
-                    cx.stop_propagation()
-                });
-            for (index, (backend, label)) in [
-                (AiBackend::ClaudeCli, "Claude Code CLI"),
-                (AiBackend::CodexCli, "Codex CLI"),
-                (AiBackend::AiderCli, "Aider CLI"),
-                (AiBackend::OpenAi, "OpenAI API"),
-                (AiBackend::Anthropic, "Anthropic API"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let selected = backend == current;
-                list = list.child(
-                    div()
-                        .id(("sup-ai-opt", index))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(9.0))
-                        .py(px(7.0))
-                        .rounded(px(7.0))
-                        .cursor_pointer()
-                        .text_size(px(12.0))
-                        .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
-                        .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                        .child(match backend {
-                            AiBackend::ClaudeCli => {
-                                simple_icon("claudecode", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::CodexCli | AiBackend::OpenAi => {
-                                simple_icon("openai", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::Anthropic => {
-                                simple_icon("anthropic", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            _ => lucide_icon("terminal", 14.0, ShellDeckColors::text_primary())
-                                .into_any_element(),
-                        })
-                        .child(div().flex_1().min_w(px(0.0)).child(label))
-                        .when(selected, |el| {
-                            el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.ai_backend_menu = false;
-                            cx.emit(SupportViewEvent::SelectAiBackend(backend));
-                            cx.notify();
-                        })),
-                );
-            }
-            wrap = wrap.child(
-                deferred(
-                    anchored()
-                        .position_mode(gpui::AnchoredPositionMode::Local)
-                        // Upward, explicitly: this composer sits at the bottom
-                        // of the panel, so there is never room below. Letting
-                        // `snap_to_window` flip it produced a menu that landed
-                        // back on top of its own chip, because the +32 drop was
-                        // still applied after the flip.
-                        .position(point(gpui::px(0.0), gpui::px(-6.0)))
-                        .anchor(gpui::Corner::BottomLeft)
-                        .child(list),
-                )
-                .with_priority(3),
+        let current = self.ai_backend;
+        let trigger = div()
+            .id("sup-ai-backend")
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .h(px(26.0))
+            .px(px(6.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(ShellDeckColors::text_muted())
+            .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+            .child(ai_provider_inline(current, &model))
+            .child(
+                svg()
+                    .path(lucide_path("chevron-down"))
+                    .size(px(11.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
             );
-        }
-        wrap
+        let parent = cx.entity();
+
+        Popover::new("sup-ai-backend-popover")
+            .anchor(Corner::BottomRight)
+            .trigger(trigger)
+            .content(move |window, cx| {
+                let parent = parent.clone();
+                cx.new(move |content_cx| {
+                    PopoverContent::new(window, content_cx, move |_window, cx| {
+                        let mut list = div().w(px(208.0)).flex().flex_col().gap(px(1.0));
+                        for (index, (backend, label)) in [
+                            (AiBackend::ClaudeCli, "Claude Code CLI"),
+                            (AiBackend::CodexCli, "Codex CLI"),
+                            (AiBackend::AiderCli, "Aider CLI"),
+                            (AiBackend::OpenAi, "OpenAI API"),
+                            (AiBackend::Anthropic, "Anthropic API"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let selected = backend == current;
+                            let row_parent = parent.clone();
+                            list = list.child(
+                                div()
+                                    .id(("sup-ai-opt", index))
+                                    .h(px(32.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .px(px(8.0))
+                                    .rounded(px(7.0))
+                                    .cursor_pointer()
+                                    .text_size(px(12.0))
+                                    .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
+                                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                                    .child(match backend {
+                                        AiBackend::ClaudeCli => simple_icon(
+                                            "claudecode",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        AiBackend::CodexCli | AiBackend::OpenAi => simple_icon(
+                                            "openai",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        AiBackend::Anthropic => simple_icon(
+                                            "anthropic",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                        _ => lucide_icon(
+                                            "terminal",
+                                            14.0,
+                                            ShellDeckColors::text_primary(),
+                                        )
+                                        .into_any_element(),
+                                    })
+                                    .child(div().flex_1().min_w(px(0.0)).child(label))
+                                    .when(selected, |row| {
+                                        row.child(lucide_icon(
+                                            "check",
+                                            13.0,
+                                            ShellDeckColors::primary(),
+                                        ))
+                                    })
+                                    .on_click(cx.listener(
+                                        move |_content, _: &ClickEvent, _, cx| {
+                                            row_parent.update(cx, |_this, cx| {
+                                                cx.emit(SupportViewEvent::SelectAiBackend(backend));
+                                            });
+                                            cx.emit(DismissEvent);
+                                        },
+                                    )),
+                            );
+                        }
+                        list.into_any_element()
+                    })
+                })
+            })
     }
 
     /// The AI reply card as `.thr-ai-draft` in the mockup — a proposal to
@@ -2048,203 +2425,174 @@ impl SupportView {
     fn render_issue_ai_draft_card(
         &self,
         body: String,
+        model: String,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .p(px(11.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(ShellDeckColors::primary().opacity(0.40))
-            .bg(ShellDeckColors::primary().opacity(0.08))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::primary())
-                    .child(lucide_icon("sparkles", 12.0, ShellDeckColors::primary()))
-                    .child(t!("support.issue.ai_draft").to_string()),
+    ) -> AnyElement {
+        let issue_id = self.issue_selected.clone().unwrap_or_default();
+        let title = if model.trim().is_empty() {
+            t!("support.issue.ai_draft").to_string()
+        } else {
+            t!("support.issue.ai_draft_model", model = model).to_string()
+        };
+        let leading = vec![
+            Button::new(
+                "issue-ai-regenerate",
+                t!("support.issue.ai_regenerate").to_string(),
             )
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .line_height(relative(1.55))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(Self::render_body_lines(&body, ShellDeckColors::text_primary())),
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("rotate-ccw"))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.emit(SupportViewEvent::SuggestIssueReply(issue_id.clone()));
+            }))
+            .into_any_element(),
+            Button::new("issue-ai-edit", t!("support.issue.ai_edit").to_string())
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .icon(IconSource::from("pencil"))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(SupportViewEvent::PublishIssueAiDraft);
+                }))
+                .into_any_element(),
+        ];
+        let trailing = vec![
+            Button::new(
+                "issue-ai-discard",
+                t!("support.issue.ai_discard").to_string(),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("issue-ai-discard", t!("support.issue.ai_discard").to_string())
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(SupportViewEvent::DiscardIssueAiDraft);
-                            })),
-                    )
-                    .child(
-                        Button::new("issue-ai-publish", t!("support.issue.ai_publish").to_string())
-                            .variant(ButtonVariant::Ai)
-                            .size(ButtonSize::Sm)
-                            .icon(IconSource::from("arrow-up"))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(SupportViewEvent::PublishIssueAiDraft);
-                            })),
-                    ),
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(SupportViewEvent::DiscardIssueAiDraft);
+            }))
+            .into_any_element(),
+            Button::new(
+                "issue-ai-publish",
+                t!("support.issue.ai_publish").to_string(),
             )
+            .variant(ButtonVariant::Ai)
+            .size(ButtonSize::Sm)
+            .icon(IconSource::from("arrow-up"))
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(SupportViewEvent::PublishIssueAiDraft);
+            }))
+            .into_any_element(),
+        ];
+        ai_draft_card(title, body, leading, trailing)
     }
 
     pub(super) fn render_issue_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = adabraka_ui::theme::use_theme();
         let issue_id = self.issue_selected.clone();
-        let ai_draft_card = self
-            .issue_ai_draft
+        let placeholder = self
+            .issue_detail
             .as_ref()
-            .map(|draft| self.render_issue_ai_draft_card(draft.body.clone(), cx));
+            .map(|issue| issue.tenant_name.trim())
+            .filter(|tenant| !tenant.is_empty())
+            .map(|tenant| t!("support.issue.reply_placeholder", tenant = tenant).to_string())
+            .unwrap_or_else(|| t!("support.issue_comment_placeholder").to_string());
         div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(px(2.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
-            .on_action(cx.listener(|this, _: &EditorPaste, _, cx| {
+            .px(px(16.0))
+            .pt(px(10.0))
+            .pb(px(14.0))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_attachment(cx) {
                     cx.stop_propagation();
                 } else {
                     cx.propagate();
                 }
             }))
-            .children(ai_draft_card)
-            .when(self.ai_issue_enabled && issue_id.is_some(), |composer| {
-                let issue_id = issue_id.clone().unwrap_or_default();
-                composer.child(div().h(px(0.0)).child(
-                    // Kept as a marker so the `when` arm still has a body; the
-                    // AI action now lives in the composer footer below.
-                    div().id(SharedString::from(format!("issue-ai-anchor-{issue_id}"))),
-                ))
-            })
             .child({
-                // The shared composer, hosting an `Editor` rather than an
-                // `Input`: Support writes replies, not one-liners. Everything
-                // that used to sit loose around the field — the AI suggestion
-                // above it, the attachment toggle and Send below — is now in the
-                // frame's footer, in the order every other surface uses.
-                let focus = self.composer_state.read(cx).focus_handle(cx);
+                // The shared Composer owns its multiline Input and therefore
+                // one min/max measurement, one viewport and one scroll state.
                 let send_entity = cx.entity();
                 let ai_issue_id = issue_id.clone().unwrap_or_default();
                 let empty = self.composer_state.read(cx).content().trim().is_empty();
-                let mut frame = Composer::with_field(
-                    "sup-issue-composer",
-                    focus,
-                    div()
-                        .w_full()
-                        .min_w(px(0.0))
-                        // Two lines, not four: the field grows with what you
-                        // write instead of reserving an empty box.
-                        .h(px(54.0))
-                        // Vertical breathing room. Without it the caret sits
-                        // flush against the frame's top border — the collision
-                        // `.agents/spacing.md` calls blocking.
-                        .pt(px(8.0))
-                        .pb(px(4.0))
-                        .px(px(8.0))
-                        .overflow_hidden()
-                        .child(
-                            // `show_border(false)`: the `Composer` frame owns
-                            // the border and the focus ring. Left on, the editor
-                            // drew a second frame inside the first — the exact
-                            // thing this component exists to prevent.
-                            Editor::new(&self.composer_state)
-                                .placeholder(t!("support.issue_comment_placeholder").to_string())
-                                .font_family(theme.tokens.font_family.clone())
-                                .show_border(false)
-                                .min_lines(2)
-                                .max_lines(2)
-                                .show_horizontal_scrollbar(false)
-                                .current_line_color(transparent_black()),
-                        ),
-                )
-                // Grey while there is nothing to send, like every other
-                // composer in the app.
-                .commit_enabled(!self.attachment_busy && !empty)
-                .action(
-                    // Icon only. A bordered "Images jointes" button next to a
-                    // plain-text AI action made two different kinds of control
-                    // in the same footer row.
-                    Button::new("issue-attachments-toggle", "")
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .selected(self.attachment_panel_open)
-                        .tooltip(t!("user.requests.attachments.title").to_string())
-                        .icon(IconSource::from("plus"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.attachment_panel_open = !this.attachment_panel_open;
-                            cx.notify();
-                        })),
-                )
-                .on_commit(move |cx| {
-                    send_entity.update(cx, |this, cx| this.send_composer(cx));
-                })
-                .footnote(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.0))
-                        .child(t!("ai.assistant.hint.send").to_string())
-                        .child(t!("ai.assistant.hint.newline").to_string()),
-                );
-                if self.ai_reply_enabled {
-                    // Hand-rolled rather than an adabraka `Button`: `ButtonSize::Sm`
-                    // is a fixed 36px with medium weight, which towered over the
-                    // 26px controls beside it. The footer's own scale is 11.5px
-                    // muted (see `.agents/chrome.md` on adabraka's absolute sizes).
-                    frame = frame.action(
+                let mut frame = Composer::new("sup-issue-composer", &self.composer_state)
+                    .placeholder(placeholder)
+                    .min_rows(1)
+                    .max_rows(7)
+                    // Grey while there is nothing to send, like every other
+                    // composer in the app.
+                    .commit_enabled(!self.attachment_busy && !empty)
+                    .action(
+                        IconButton::new("plus")
+                            .variant(if self.attachment_panel_open {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .size(gpui::px(28.0))
+                            .icon_size(gpui::px(14.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.attachment_panel_open = !this.attachment_panel_open;
+                                cx.notify();
+                            })),
+                    )
+                    .on_commit(move |cx| {
+                        send_entity.update(cx, |this, cx| this.send_composer(cx));
+                    })
+                    .footnote(
                         div()
-                            .id("issue-ai-reply")
                             .flex()
                             .items_center()
-                            .gap(px(5.0))
-                            .h(px(26.0))
-                            .px(px(6.0))
-                            .rounded(px(7.0))
-                            .cursor_pointer()
-                            .text_size(px(11.5))
-                            .text_color(ShellDeckColors::text_muted())
-                            .hover(|style| {
-                                style
-                                    .bg(ShellDeckColors::hover_bg())
-                                    .text_color(ShellDeckColors::text_primary())
-                            })
-                            .child(
-                                svg()
-                                    .path(lucide_path("sparkles"))
-                                    .size(px(14.0))
-                                    .flex_shrink_0()
-                                    .text_color(ShellDeckColors::text_muted()),
-                            )
-                            .child(t!("ai.workflow.issue_reply").to_string())
-                            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                cx.emit(SupportViewEvent::SuggestIssueReply(ai_issue_id.clone()));
-                            })),
+                            .gap(px(9.0))
+                            .child(t!("ai.assistant.hint.send").to_string())
+                            .child(t!("ai.assistant.hint.newline").to_string()),
                     );
-                    // The right-hand slot — where the assistant puts its model —
-                    // holds the provider here too.
-                    frame = frame.option(self.render_support_ai_picker(cx));
+                if self.ai_reply_enabled {
+                    frame = frame.action(
+                        compact_composer_action(
+                            "issue-ai-reply",
+                            "sparkles",
+                            t!("ai.workflow.issue_reply").to_string(),
+                            !self.issue_ai_pending,
+                        )
+                        .when(!self.issue_ai_pending, |action| {
+                            action.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                cx.emit(SupportViewEvent::SuggestIssueReply(ai_issue_id.clone()));
+                            }))
+                        }),
+                    );
                 }
+                frame = frame.option(self.render_support_ai_picker(cx));
                 frame
             })
             .when(self.attachment_panel_open, |composer| {
                 composer.child(self.render_attachment_picker(cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thread_scroll_to_restore;
+
+    // SDTEST-1599 — a periodic detail refresh may rebuild measured timeline
+    // rows, but it restores an active reading position. A new selection and a
+    // reader already pinned to the bottom intentionally keep bottom alignment.
+    #[test]
+    fn thread_refresh_preserves_reading_position_but_not_new_or_bottom_threads() {
+        let reading = gpui::ListOffset {
+            item_ix: 4,
+            offset_in_item: gpui::px(7.0),
+        };
+        let restored = thread_scroll_to_restore(true, 13, reading).unwrap();
+        assert_eq!(restored.item_ix, 4);
+        assert_eq!(restored.offset_in_item, gpui::px(7.0));
+
+        assert!(thread_scroll_to_restore(false, 13, reading).is_none());
+        assert!(thread_scroll_to_restore(
+            true,
+            13,
+            gpui::ListOffset {
+                item_ix: 13,
+                offset_in_item: gpui::px(0.0),
+            },
+        )
+        .is_none());
     }
 }

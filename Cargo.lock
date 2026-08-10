@@ -7537,6 +7537,7 @@ dependencies = [
  "once_cell",
  "open",
  "parking_lot",
+ "pulldown-cmark",
  "ropey",
  "rust-i18n",
  "serde_json",

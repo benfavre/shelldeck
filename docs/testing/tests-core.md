@@ -302,6 +302,7 @@ Existing: **0 tests**.
 |---|---|---|---|---|
 | SDTEST-290 | `issues.rs::parse_list` | SDUC-220 | Green | |
 | SDTEST-291 | `issues.rs::parse_detail` | SDUC-221 | Green | |
+| SDTEST-1598 | `issues.rs::detail_future_thread_fields_default_when_absent` | SDUC-459 | Green | Current Manage payloads remain parseable when optional comment channel/quote/delivery and issue thread-state fields are absent; every future field defaults empty. |
 | SDTEST-292 | `issues.rs::create_and_comment_bodies` | SDUC-222, SDUC-223 | Green | |
 | SDTEST-293 | `issues.rs::staff_actions_surface_403` | SDUC-225 | Green | |
 | SDTEST-294 | `issues.rs::missing_bearer_surfaces_401` | SDUC-226 | Green | |

@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
+use crate::components::checkbox::{Checkbox, CheckboxSize};
 use crate::components::code_block::CodeBlock;
 use crate::components::separator::Separator;
 use crate::components::text::TextVariant;
@@ -427,11 +428,41 @@ pub fn render_blocks(
     on_link_click: &Option<LinkClickHandler>,
     id_prefix: &str,
 ) -> Vec<AnyElement> {
+    render_blocks_with_density(blocks, base_size, on_link_click, id_prefix, false)
+}
+
+// ShellDeck patch: SDPATCH-030 — thread prose needs 8 px block rhythm and no
+// trailing document margin, while the existing renderer remains the default.
+pub fn render_blocks_compact(
+    blocks: &[RichBlock],
+    base_size: Pixels,
+    on_link_click: &Option<LinkClickHandler>,
+    id_prefix: &str,
+) -> Vec<AnyElement> {
+    render_blocks_with_density(blocks, base_size, on_link_click, id_prefix, true)
+}
+
+fn render_blocks_with_density(
+    blocks: &[RichBlock],
+    base_size: Pixels,
+    on_link_click: &Option<LinkClickHandler>,
+    id_prefix: &str,
+    compact: bool,
+) -> Vec<AnyElement> {
     let mut elements = Vec::new();
     let mut block_idx = 0u32;
 
-    for block in blocks {
-        let el = render_block(block, base_size, on_link_click, id_prefix, &mut block_idx);
+    for (position, block) in blocks.iter().enumerate() {
+        let el = render_block(
+            block,
+            base_size,
+            on_link_click,
+            id_prefix,
+            &mut block_idx,
+            compact,
+            position == 0,
+            position + 1 == blocks.len(),
+        );
         elements.push(el);
     }
 
@@ -444,6 +475,9 @@ fn render_block(
     on_link_click: &Option<LinkClickHandler>,
     id_prefix: &str,
     block_idx: &mut u32,
+    compact: bool,
+    first: bool,
+    last: bool,
 ) -> AnyElement {
     let theme = use_theme();
     *block_idx += 1;
@@ -453,7 +487,14 @@ fn render_block(
         RichBlock::Paragraph(inlines) => {
             let id = ElementId::Name(format!("{}-p-{}", id_prefix, idx).into());
             let el = render_inline_element(inlines, base_size, on_link_click, Some(id));
-            div().mb(px(12.0)).child(el).into_any_element()
+            div()
+                .mb(if compact {
+                    px(if last { 0.0 } else { 8.0 })
+                } else {
+                    px(12.0)
+                })
+                .child(el)
+                .into_any_element()
         }
 
         RichBlock::Heading { level, content } => {
@@ -469,17 +510,27 @@ fn render_block(
             let weight = variant.weight();
             let id = ElementId::Name(format!("{}-h{}-{}", id_prefix, level, idx).into());
 
-            let top_margin = match level {
-                1 => px(24.0),
-                2 => px(20.0),
-                3 => px(16.0),
-                _ => px(12.0),
+            // ShellDeck patch: SDPATCH-030 — compact headings use the thread
+            // prototype's 10/4 rhythm and never indent the first/last edge.
+            let top_margin = if compact {
+                px(if first { 0.0 } else { 10.0 })
+            } else {
+                match level {
+                    1 => px(24.0),
+                    2 => px(20.0),
+                    3 => px(16.0),
+                    _ => px(12.0),
+                }
             };
 
             let el = render_inline_element(content, size, on_link_click, Some(id));
             div()
                 .mt(top_margin)
-                .mb(px(8.0))
+                .mb(if compact {
+                    px(if last { 0.0 } else { 4.0 })
+                } else {
+                    px(8.0)
+                })
                 .font_weight(weight)
                 .child(el)
                 .into_any_element()
@@ -492,18 +543,35 @@ fn render_block(
             if let Some(lang) = language {
                 cb = cb.language(lang.clone());
             }
-            div().mb(px(12.0)).child(cb).into_any_element()
+            div()
+                .mb(if compact {
+                    px(if last { 0.0 } else { 8.0 })
+                } else {
+                    px(12.0)
+                })
+                .child(cb)
+                .into_any_element()
         }
 
         RichBlock::BlockQuote(inner_blocks) => {
-            let children = render_blocks(inner_blocks, base_size, on_link_click, id_prefix);
+            let children = render_blocks_with_density(
+                inner_blocks,
+                base_size,
+                on_link_click,
+                id_prefix,
+                compact,
+            );
             div()
-                .mb(px(12.0))
-                .pl(px(16.0))
-                .border_l(px(4.0))
+                .mb(if compact {
+                    px(if last { 0.0 } else { 8.0 })
+                } else {
+                    px(12.0)
+                })
+                .pl(px(if compact { 10.0 } else { 16.0 }))
+                .border_l(px(if compact { 2.0 } else { 4.0 }))
                 .border_color(theme.tokens.border)
                 .bg(theme.tokens.muted.opacity(0.15))
-                .py(px(4.0))
+                .py(px(if compact { 3.0 } else { 4.0 }))
                 .text_color(theme.tokens.muted_foreground)
                 .children(children)
                 .into_any_element()
@@ -518,8 +586,16 @@ fn render_block(
                 block_idx,
                 false,
                 1,
+                compact,
             );
-            div().mb(px(12.0)).children(children).into_any_element()
+            div()
+                .mb(if compact {
+                    px(if last { 0.0 } else { 8.0 })
+                } else {
+                    px(12.0)
+                })
+                .children(children)
+                .into_any_element()
         }
 
         RichBlock::OrderedList { start, items } => {
@@ -531,8 +607,16 @@ fn render_block(
                 block_idx,
                 true,
                 *start,
+                compact,
             );
-            div().mb(px(12.0)).children(children).into_any_element()
+            div()
+                .mb(if compact {
+                    px(if last { 0.0 } else { 8.0 })
+                } else {
+                    px(12.0)
+                })
+                .children(children)
+                .into_any_element()
         }
 
         RichBlock::Table {
@@ -547,15 +631,34 @@ fn render_block(
             on_link_click,
             id_prefix,
             block_idx,
+            compact,
+            last,
         ),
 
         RichBlock::HorizontalRule => div()
-            .my(px(16.0))
+            .mt(px(if compact && first {
+                0.0
+            } else if compact {
+                8.0
+            } else {
+                16.0
+            }))
+            .mb(px(if compact && last {
+                0.0
+            } else if compact {
+                8.0
+            } else {
+                16.0
+            }))
             .child(Separator::new())
             .into_any_element(),
 
         RichBlock::Image { alt: _, url } => div()
-            .mb(px(12.0))
+            .mb(if compact {
+                px(if last { 0.0 } else { 8.0 })
+            } else {
+                px(12.0)
+            })
             .child(img(SharedString::from(url.clone())).max_w(px(600.0)))
             .into_any_element(),
     }
@@ -633,6 +736,7 @@ fn render_list_items(
     block_idx: &mut u32,
     ordered: bool,
     start: u64,
+    compact: bool,
 ) -> Vec<AnyElement> {
     let theme = use_theme();
     let mut elements = Vec::new();
@@ -641,16 +745,26 @@ fn render_list_items(
         *block_idx += 1;
         let idx = *block_idx;
 
-        let bullet = if let Some(checked) = item.checked {
-            if checked {
-                SharedString::from("[x] ")
-            } else {
-                SharedString::from("[ ] ")
-            }
-        } else if ordered {
-            SharedString::from(format!("{}. ", start + i as u64))
+        // ShellDeck patch: SDPATCH-031 — task-list markers are real disabled
+        // checkboxes instead of the plain-text strings `[x]` and `[ ]`.
+        let marker = if let Some(checked) = item.checked {
+            Checkbox::new(ElementId::Name(
+                format!("{}-task-{}", id_prefix, idx).into(),
+            ))
+            .size(CheckboxSize::Sm)
+            .checked(checked)
+            .disabled(true)
+            .into_any_element()
         } else {
-            SharedString::from("\u{2022} ")
+            div()
+                .text_size(base_size)
+                .text_color(theme.tokens.muted_foreground)
+                .child(if ordered {
+                    SharedString::from(format!("{}. ", start + i as u64))
+                } else {
+                    SharedString::from("\u{2022} ")
+                })
+                .into_any_element()
         };
 
         let id = ElementId::Name(format!("{}-li-{}", id_prefix, idx).into());
@@ -660,15 +774,10 @@ fn render_list_items(
             .flex()
             .flex_row()
             .pl(px(20.0))
-            .mb(px(4.0))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(24.0))
-                    .text_size(base_size)
-                    .text_color(theme.tokens.muted_foreground)
-                    .child(bullet),
-            )
+            // ShellDeck patch: SDPATCH-030 — list rows in chat use the
+            // prototype's tighter 2 px cadence.
+            .mb(px(if compact { 2.0 } else { 4.0 }))
+            .child(div().flex_shrink_0().w(px(24.0)).child(marker))
             // ShellDeck patch: SDPATCH-027 — list text must be the flex child
             // that shrinks so GPUI receives a definite width and wraps it.
             .child(
@@ -690,6 +799,7 @@ fn render_list_items(
                 block_idx,
                 false,
                 1,
+                compact,
             );
             elements.push(div().pl(px(20.0)).children(children).into_any_element());
         }
@@ -706,6 +816,8 @@ fn render_table(
     on_link_click: &Option<LinkClickHandler>,
     id_prefix: &str,
     block_idx: &mut u32,
+    compact: bool,
+    last: bool,
 ) -> AnyElement {
     let theme = use_theme();
     let col_count = headers.len();
@@ -713,8 +825,14 @@ fn render_table(
         return div().into_any_element();
     }
 
+    // ShellDeck patch: SDPATCH-030 — compact tables participate in the same
+    // 8 px block cadence and leave no tail before thread metadata.
     let mut table = div()
-        .mb(px(12.0))
+        .mb(if compact {
+            px(if last { 0.0 } else { 8.0 })
+        } else {
+            px(12.0)
+        })
         .w_full()
         .rounded(theme.tokens.radius_sm)
         .border_1()

@@ -385,6 +385,7 @@ parallel `cargo test`.
 | SDTEST-1595 | `main.rs::xrandr_geometry_preserves_each_monitor_origin` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `xrandr`-parsed monitor bounds keep every monitor's true origin. `xrandr`/`xprop` are optional runtime soft deps: spawn errors, non-zero exits and unparseable output warn and fall back to GPUI display bounds. |
 | SDTEST-1596 | `main.rs::x11_workarea_excludes_the_system_toolbar` | SDUC-448, SDUC-449 | Green | Back-labelled 2026-08-06. `_NET_WORKAREA` (via `xprop`) excludes panels/taskbars from the roaming area; absence degrades to full display bounds. |
 | SDTEST-1597 | SDPATCH-113 X11 external-window filter — compile-check only (`cargo check -p adabraka-gpui`) | SDUC-449 | Yellow | The EWMH dock/menu/toolbar/tooltip/popup-menu/dropdown-menu/splash/notification/utility + `WM_TRANSIENT_FOR` exclusions in the vendored fork have no runnable test: a live X server would be required, and the fork's own tests are not executed by the workspace test command (same limitation as SDTEST-1573). |
+| SDTEST-1599 | `support_view::requests::tests::thread_refresh_preserves_reading_position_but_not_new_or_bottom_threads` | SDUC-459 | Green | Poll-driven rebuilds restore an active virtual-list offset; a newly selected thread and a reader already at the bottom retain bottom alignment. |
 
 ### `shelldeck-ui/server_sync_view.rs` — file-browser breadcrumbs
 

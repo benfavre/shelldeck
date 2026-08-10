@@ -8,6 +8,7 @@
 mod home;
 mod issue_filters;
 mod requests;
+mod thread;
 mod ticket_filters;
 mod tickets;
 
@@ -19,11 +20,9 @@ use crate::issue_attachments::{
     render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
 };
 use crate::scale::px;
-use adabraka_ui::components::avatar::{Avatar, AvatarSize};
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::checkbox::Checkbox;
 use adabraka_ui::components::confirm_dialog::Dialog as UiDialog;
-use adabraka_ui::components::editor::{Editor, EditorState, Paste as EditorPaste};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -31,6 +30,7 @@ use adabraka_ui::components::label::Label;
 use adabraka_ui::components::select::{Select, SelectOption};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::display::card::Card;
+use adabraka_ui::overlays::popover::{Popover, PopoverContent};
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
@@ -42,7 +42,7 @@ use shelldeck_core::config::issues::{
     Issue, IssueAttachment, IssueInstance, ISSUE_ATTACHMENT_MAX_COUNT,
 };
 use shelldeck_core::config::manage_support::{
-    SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportTicket,
+    SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportMessageDelivery, SupportTicket,
 };
 
 use crate::t;
@@ -55,6 +55,10 @@ pub enum SupportSection {
     Tickets,
     Requests,
 }
+
+/// Staff-only in-memory Ticket fixture. Shared by Workspace injection and the
+/// view so demo interactions never fall through to a nonexistent Manage row.
+pub(crate) const SUPPORT_TICKET_SHOWCASE_ID: &str = "fake-ticket-thread-showcase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportFilter {
@@ -100,6 +104,87 @@ impl SupportFilter {
         SupportFilter::Breaching,
         SupportFilter::Closed,
     ];
+}
+
+/// Shared 26 px footer action used by both Support composers. adabraka's
+/// smallest labeled `Button` is 36 px, which makes the footer taller than the
+/// writing field; the shared Composer deliberately exposes custom action slots
+/// for this denser chrome.
+fn compact_composer_action(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(6.0))
+        .rounded(px(7.0))
+        .text_size(px(11.5))
+        .text_color(ShellDeckColors::text_muted())
+        .when(enabled, |action| {
+            action.cursor_pointer().hover(|style| {
+                style
+                    .bg(ShellDeckColors::hover_bg())
+                    .text_color(ShellDeckColors::text_primary())
+            })
+        })
+        .when(!enabled, |action| action.opacity(0.5))
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(14.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+}
+
+/// Message destination in the ticket Composer option slot. Requests use that
+/// slot for their AI model because their API has no destination choice.
+fn composer_delivery_chip(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    interactive: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.0))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(7.0))
+        .rounded(px(7.0))
+        .text_size(px(11.0))
+        .text_color(ShellDeckColors::text_muted())
+        .when(interactive, |chip| {
+            chip.cursor_pointer()
+                .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+        })
+        .child(
+            svg()
+                .path(lucide_path(icon))
+                .size(px(12.0))
+                .flex_shrink_0()
+                .text_color(ShellDeckColors::text_muted()),
+        )
+        .child(label.into())
+        .when(interactive, |chip| {
+            chip.child(
+                svg()
+                    .path(lucide_path("chevron-down"))
+                    .size(px(11.0))
+                    .flex_shrink_0()
+                    .text_color(ShellDeckColors::text_muted()),
+            )
+        })
 }
 
 /// Advanced filter option — `value` is `None` for the "all" chip.
@@ -207,6 +292,60 @@ enum AttachmentDeleteTarget {
     },
 }
 
+/// Flattened rows consumed by GPUI's variable-height list. Timeline objects
+/// stay semantic here so day boundaries and transient future API state do not
+/// have to masquerade as comments.
+#[derive(Debug, Clone)]
+enum IssueThreadRow {
+    Opening {
+        block: usize,
+        last: bool,
+    },
+    Comment {
+        comment: usize,
+        block: usize,
+        first: bool,
+        last: bool,
+    },
+    Day {
+        at: f64,
+    },
+    Typing {
+        index: usize,
+    },
+    AiDraft,
+    LocalDraft,
+}
+
+/// Ticket-side adapter rows. The source remains `SupportMessage`; this merely
+/// normalises its timeline shape to the same semantic objects rendered for
+/// Requests without coupling the two API models.
+#[derive(Debug, Clone)]
+enum TicketThreadRow {
+    Empty,
+    Message {
+        message: usize,
+        block: usize,
+        first: bool,
+        last: bool,
+    },
+    Day {
+        at: f64,
+    },
+    Typing {
+        index: usize,
+    },
+    AiDraft,
+    LocalDraft,
+}
+
+#[derive(Clone)]
+struct HeaderAssigneeOption {
+    value: String,
+    label: String,
+    email: String,
+}
+
 /// Requests the view raises for the workspace to service (all network).
 #[derive(Debug, Clone)]
 pub enum SupportViewEvent {
@@ -262,6 +401,12 @@ pub enum SupportViewEvent {
         id: String,
         body: String,
         attachments: Vec<AttachmentDraft>,
+    },
+    /// Reserved for the future resend endpoint. The current API exposes the
+    /// failed delivery state but has no idempotent retry operation yet.
+    RetryIssueComment {
+        issue_id: String,
+        comment_id: String,
     },
     ImportAttachmentUrl {
         url: String,
@@ -334,7 +479,7 @@ pub struct SupportView {
     /// Assignee picker inside the filter dialog (adabraka-ui `Select`).
     assignee_draft_select: Entity<Select<String>>,
     /// Full editor state backing ticket replies and request comments.
-    composer_state: Entity<EditorState>,
+    composer_state: Entity<InputState>,
     /// Pending AI reply (issue only, for now). Kept OUT of `composer_state` so
     /// it does not shove aside what the user was writing — the mockup shows it
     /// as a distinct card above the composer, with Publier / Modifier /
@@ -357,11 +502,8 @@ pub struct SupportView {
     /// *which* one — so the reply composer had no way to show or change it.
     ai_backend: shelldeck_core::ai::AiBackend,
     ai_model: String,
-    ai_backend_menu: bool,
     loading: bool,
     error: Option<String>,
-    assign_menu_open: bool,
-    priority_menu_open: bool,
     /// Popover menu for ticket actions (header kebab or list row).
     popover_menu: Option<(SupportMenuKind, Point<Pixels>)>,
     // JeanClaude strip (fed by the workspace when Jean config is present).
@@ -398,14 +540,14 @@ pub struct SupportView {
     /// cramped popover.
     issues_assignee_modal_open: bool,
     issues_assignee_search_state: Entity<InputState>,
+    /// Search state for the compact header assignee popover. Kept separate
+    /// from the advanced-filter modal so opening either picker cannot leak a
+    /// query into the other.
+    issue_assignee_search_state: Entity<InputState>,
     issues_search_state: Entity<InputState>,
     issue_instances: Vec<IssueInstance>,
     issue_detail: Option<Issue>,
     issue_selected: Option<String>,
-    issue_status_menu: bool,
-    issue_assign_menu: bool,
-    issue_dispatch_menu: bool,
-    issue_priority_menu_open: bool,
     /// Kebab menu anchor for a request. Carries the issue id + click position
     /// so both the list-row kebab (works without opening the detail) and the
     /// detail-header kebab share the same popover machinery.
@@ -417,13 +559,19 @@ pub struct SupportView {
     attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     /// Annotation editor opened after an interactive area capture.
     capture_annotator: Option<Entity<AttachmentAnnotator>>,
-    issues_scroll: ScrollHandle,
+    /// Parsed top-level Markdown blocks for the opening request and each
+    /// comment. The variable-height GPUI list renders only visible blocks.
+    issue_body_blocks: Vec<SharedString>,
+    issue_comment_blocks: Vec<Vec<SharedString>>,
+    issue_thread_rows: Vec<IssueThreadRow>,
+    issue_thread_list: ListState,
     focus_handle: FocusHandle,
-    /// Scroll handle for the messages pane. `set_detail` calls
-    /// `scroll_to_bottom()` on it so opening a ticket lands the reader on
-    /// the latest message (the classic chat/messaging behavior), not on
-    /// the top of the history.
-    messages_scroll: ScrollHandle,
+    /// Parsed Markdown blocks and variable-height list state for tickets.
+    /// Bottom alignment opens on the latest exchange without rendering the
+    /// complete history.
+    ticket_message_blocks: Vec<Vec<SharedString>>,
+    ticket_thread_rows: Vec<TicketThreadRow>,
+    ticket_thread_list: ListState,
 }
 
 impl SupportView {
@@ -431,6 +579,7 @@ impl SupportView {
         let parent = cx.entity();
         let assignee_draft_select =
             Self::build_assignee_draft_select(None, &[], parent.clone(), cx);
+        let composer_state = cx.new(|cx| InputState::new(cx).multi_line(true));
         Self {
             tickets: Vec::new(),
             counts: SupportCounts::default(),
@@ -454,11 +603,7 @@ impl SupportView {
             assignee_draft_select,
             issue_ai_draft: None,
             issue_ai_pending: false,
-            composer_state: cx.new(|cx| {
-                let mut state = EditorState::new(cx);
-                state.show_line_numbers = false;
-                state
-            }),
+            composer_state,
             attachment_url_state: cx.new(InputState::new),
             attachment_url_open: false,
             attachment_drafts: Vec::new(),
@@ -470,11 +615,8 @@ impl SupportView {
             ai_issue_enabled: false,
             ai_backend: shelldeck_core::ai::AiBackend::Disabled,
             ai_model: String::new(),
-            ai_backend_menu: false,
             loading: false,
             error: None,
-            assign_menu_open: false,
-            priority_menu_open: false,
             popover_menu: None,
             jean_available: false,
             jean_pending: Vec::new(),
@@ -489,22 +631,24 @@ impl SupportView {
             issues_filter_modal_open: false,
             issues_assignee_modal_open: false,
             issues_assignee_search_state: cx.new(InputState::new),
+            issue_assignee_search_state: cx.new(InputState::new),
             issues_search_state: cx.new(InputState::new),
             issue_instances: Vec::new(),
             issue_detail: None,
             issue_selected: None,
-            issue_status_menu: false,
-            issue_assign_menu: false,
-            issue_dispatch_menu: false,
-            issue_priority_menu_open: false,
             issue_popover_menu: None,
             confirm_issue_delete: None,
             confirm_attachment_delete: None,
             attachment_lightbox: None,
             capture_annotator: None,
-            issues_scroll: ScrollHandle::new(),
+            issue_body_blocks: Vec::new(),
+            issue_comment_blocks: Vec::new(),
+            issue_thread_rows: Vec::new(),
+            issue_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
             focus_handle: cx.focus_handle(),
-            messages_scroll: ScrollHandle::new(),
+            ticket_message_blocks: Vec::new(),
+            ticket_thread_rows: Vec::new(),
+            ticket_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
         }
     }
 
@@ -552,19 +696,30 @@ impl SupportView {
         self.detail = None;
         self.issue_selected = None;
         self.issue_detail = None;
+        self.issue_body_blocks.clear();
+        self.issue_comment_blocks.clear();
+        self.issue_thread_rows.clear();
+        self.issue_thread_list.reset(0);
+        self.ticket_message_blocks.clear();
+        self.ticket_thread_rows.clear();
+        self.ticket_thread_list.reset(0);
         self.popover_menu = None;
-        self.priority_menu_open = false;
-        self.assign_menu_open = false;
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
         self.confirm_issue_delete = None;
     }
 
-    pub fn set_issue_detail(&mut self, detail: Option<Issue>) {
+    pub fn set_issue_detail(&mut self, detail: Option<Issue>, cx: &mut Context<Self>) {
         let next_id = detail.as_ref().map(|issue| issue.id.as_str());
+        let same_issue = next_id == self.issue_selected.as_deref();
+        let detail_changed = self.issue_detail.as_ref() != detail.as_ref();
+        let seeded_ai_draft = detail
+            .as_ref()
+            .and_then(|issue| issue.thread_state.suggested_reply.as_ref())
+            .filter(|draft| !draft.body.trim().is_empty())
+            .map(|draft| AiDraft {
+                body: draft.body.clone(),
+                model: draft.model.clone(),
+            });
         if next_id != self.issue_selected.as_deref() {
             self.attachment_generation = self.attachment_generation.wrapping_add(1);
             self.attachment_busy = false;
@@ -572,17 +727,17 @@ impl SupportView {
             self.attachment_panel_open = false;
             self.attachment_url_open = false;
             self.capture_annotator = None;
+            self.issue_ai_draft = seeded_ai_draft;
+            self.reset_composer(cx);
         }
         if let Some(d) = &detail {
             self.issue_selected = Some(d.id.clone());
         }
         self.issue_detail = detail;
+        if detail_changed {
+            self.rebuild_issue_thread_cache(same_issue);
+        }
         self.issue_popover_menu = None;
-        self.issue_status_menu = false;
-        self.issue_assign_menu = false;
-        self.issue_dispatch_menu = false;
-        self.issue_priority_menu_open = false;
-        self.issues_scroll.scroll_to_bottom();
     }
 
     /// Feed the JeanClaude strip (workspace pushes this from the cached state).
@@ -639,8 +794,10 @@ impl SupportView {
             if let Some(updated) = self.tickets.iter().find(|t| &t.id == id).cloned() {
                 if let Some(detail) = &mut self.detail {
                     let messages = std::mem::take(&mut detail.messages);
+                    let thread_state = std::mem::take(&mut detail.thread_state);
                     *detail = SupportTicket {
                         messages,
+                        thread_state,
                         ..updated
                     };
                 }
@@ -674,13 +831,27 @@ impl SupportView {
         } else {
             Vec::new()
         };
-        let ticket = if !preserved_msgs.is_empty() {
-            SupportTicket {
-                messages: preserved_msgs,
-                ..ticket
-            }
+        let preserved_thread_state = if ticket.thread_state.is_empty() {
+            self.detail
+                .as_ref()
+                .filter(|d| d.id == ticket.id)
+                .map(|d| d.thread_state.clone())
+                .unwrap_or_default()
         } else {
-            ticket
+            Default::default()
+        };
+        let ticket = SupportTicket {
+            messages: if preserved_msgs.is_empty() {
+                ticket.messages.clone()
+            } else {
+                preserved_msgs
+            },
+            thread_state: if preserved_thread_state.is_empty() {
+                ticket.thread_state.clone()
+            } else {
+                preserved_thread_state
+            },
+            ..ticket
         };
         // Merge the updated slim ticket into the list too (keeping any
         // messages we may have cached alongside).
@@ -690,28 +861,30 @@ impl SupportView {
             } else {
                 existing.messages.clone()
             };
+            let thread_state = if ticket.thread_state.is_empty() {
+                existing.thread_state.clone()
+            } else {
+                ticket.thread_state.clone()
+            };
             *existing = SupportTicket {
                 messages: msgs,
+                thread_state,
                 ..ticket.clone()
             };
         }
         self.selected_id = Some(ticket.id.clone());
         self.detail = Some(ticket);
+        self.rebuild_ticket_thread_cache();
         self.popover_menu = None;
-        self.priority_menu_open = false;
-        self.assign_menu_open = false;
         self.reset_composer(cx);
         self.clear_attachment_drafts(cx);
         self.loading = false;
         self.error = None;
-        // Land on the latest message — every chat / messaging UX defaults
-        // to bottom-of-thread on open, not top.
-        self.messages_scroll.scroll_to_bottom();
     }
 
     fn reset_composer(&self, cx: &mut Context<Self>) {
         self.composer_state.update(cx, |s, cx| {
-            s.set_content("", cx);
+            s.reset(cx);
         });
     }
 
@@ -962,7 +1135,6 @@ impl SupportView {
         if self.ai_backend != backend || self.ai_model != model {
             self.ai_backend = backend;
             self.ai_model = model;
-            self.ai_backend_menu = false;
             cx.notify();
         }
     }
@@ -986,8 +1158,12 @@ impl SupportView {
         if text.is_empty() {
             self.issue_ai_draft = None;
         } else {
-            self.issue_ai_draft = Some(AiDraft { body: text });
+            self.issue_ai_draft = Some(AiDraft {
+                body: text,
+                model: self.ai_model.clone(),
+            });
         }
+        self.rebuild_issue_thread_cache(true);
         cx.notify();
     }
 
@@ -995,6 +1171,7 @@ impl SupportView {
         self.issue_ai_pending = pending;
         if pending {
             self.issue_ai_draft = None;
+            self.rebuild_issue_thread_cache(true);
         }
         cx.notify();
     }
@@ -1005,6 +1182,7 @@ impl SupportView {
         let Some(draft) = self.issue_ai_draft.take() else {
             return;
         };
+        self.rebuild_issue_thread_cache(true);
         let current = self.composer_state.read(cx).content().trim().to_string();
         let merged = if current.is_empty() {
             draft.body
@@ -1012,20 +1190,21 @@ impl SupportView {
             format!("{}\n\n{}", current, draft.body)
         };
         self.composer_state.update(cx, |state, cx| {
-            state.set_content(&merged, cx);
+            state.replace_content(merged, cx);
         });
         cx.notify();
     }
 
     pub fn discard_issue_ai_draft(&mut self, cx: &mut Context<Self>) {
         self.issue_ai_draft = None;
+        self.rebuild_issue_thread_cache(true);
         cx.notify();
     }
 
     pub fn set_composer_draft(&mut self, text: String, cx: &mut Context<Self>) {
         self.compose_note = false;
         self.composer_state
-            .update(cx, |state, cx| state.set_content(&text, cx));
+            .update(cx, |state, cx| state.replace_content(text, cx));
         cx.notify();
     }
 
@@ -1433,19 +1612,6 @@ pub(crate) fn status_label(s: &str) -> String {
     }
 }
 
-/// Support ticket status rendered as a color-coded adabraka `Badge`.
-/// `open` = Default (primary, "à faire"), `pending` = Warning (waiting on
-/// the customer), `closed` = Outline (calm, done).
-pub(crate) fn status_badge(s: &str) -> Badge {
-    let variant = match s {
-        "open" => BadgeVariant::Default,
-        "pending" => BadgeVariant::Warning,
-        "closed" => BadgeVariant::Outline,
-        _ => BadgeVariant::Secondary,
-    };
-    Badge::new(status_label(s)).variant(variant)
-}
-
 pub(crate) fn priority_label(p: &str) -> String {
     match p {
         "low" => t!("support.priority.low").to_string(),
@@ -1473,6 +1639,7 @@ pub(crate) fn priority_badge(p: &str) -> Badge {
 #[derive(Debug, Clone)]
 pub struct AiDraft {
     pub body: String,
+    pub model: String,
 }
 
 pub(crate) fn issue_status_label(s: &str) -> String {
