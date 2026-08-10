@@ -156,7 +156,7 @@ fn external_window_snapshot(hwnd: HWND) -> Option<ExternalWindow> {
 }
 
 fn is_visible_external_window(hwnd: HWND, own_windows: &[HWND]) -> bool {
-    unsafe { IsWindow(hwnd).as_bool() }
+    (unsafe { IsWindow(Some(hwnd)).as_bool() })
         && !own_windows.iter().any(|own_window| own_window == &hwnd)
         && unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
         && unsafe { GetWindow(hwnd, GW_OWNER).is_err() }
@@ -903,7 +903,7 @@ impl Platform for WindowsPlatform {
 
     // ShellDeck patch: target one Win32 HWND directly for attached companion following.
     fn external_window(&self, id: ExternalWindowId) -> Option<ExternalWindow> {
-        let hwnd = HWND(id.raw() as isize);
+        let hwnd = HWND(id.raw() as *mut core::ffi::c_void);
         let mut own_windows = self
             .raw_window_handles
             .read()

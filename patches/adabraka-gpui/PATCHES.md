@@ -321,7 +321,9 @@ only, out of the src/-scoped marker convention.)
   visibility/iconic/owner/toolwindow/DWM cloaking/fullscreen filters, excluding
   ShellDeck-owned HWNDs and returning the raw HWND pointer value; its companion
   geometry uses native global desktop coordinates so per-window DPI scaling
-  cannot overlap monitors, and can re-check one HWND directly. macOS uses CoreGraphics'
+  cannot overlap monitors, and can re-check one HWND directly. The targeted
+  lookup reconstructs the pointer-backed `HWND` and passes it as `Some(hwnd)`
+  to the nullable Windows 0.61 API. macOS uses CoreGraphics'
   on-screen window list with desktop elements excluded, keeps only normal layer-0
   windows, returns `kCGWindowNumber`, and drops fullscreen-like display-covering
   windows; targeted lookup uses `kCGWindowListOptionIncludingWindow` with the
@@ -382,7 +384,9 @@ only, out of the src/-scoped marker convention.)
   to avoid mixed-DPI virtual monitor overlap. `logical_work_area` remains in
   normal GPUI logical coordinates for `WindowOptions::window_bounds` and other
   creation-time APIs. Per-display work areas use Win32 `rcWork`, macOS
-  `NSScreen.visibleFrame` converted to GPUI's global top-left space, and X11
+  `NSScreen.visibleFrame` converted to GPUI's global top-left space (with
+  fully-qualified `NSArray::objectAtIndex` access so the Cocoa trait resolves
+  without an ambient import), and X11
   EWMH `_NET_WORKAREA` intersected with the root/display bounds; Wayland,
   headless, and test backends inherit the safe full-bounds fallback.
   Windows overlay windows also gain `WS_EX_NOACTIVATE` and non-activating show
