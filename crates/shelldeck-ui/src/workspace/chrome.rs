@@ -493,7 +493,7 @@ impl Workspace {
         // This element owns the titlebar background, so it must own the
         // floating window's top radius as well.
         if !is_maximized {
-            titlebar = titlebar.rounded_t(use_theme().tokens.radius_lg);
+            titlebar = titlebar.rounded_t(use_theme().tokens.radius_xl);
         }
         titlebar
             .border_b_1()

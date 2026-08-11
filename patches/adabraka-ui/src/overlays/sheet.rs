@@ -199,6 +199,7 @@ impl Render for Sheet {
         let theme = use_theme();
         let has_header =
             self.title.is_some() || self.description.is_some() || self.show_close_button;
+        let has_footer = self.footer.is_some();
         let sheet_size = self.get_sheet_size();
         let user_style = self.style.clone();
         let assistant = self.variant == SheetVariant::Assistant;
@@ -237,6 +238,17 @@ impl Render for Sheet {
                         spread_radius: px(0.0),
                         inset: false,
                     }])
+                    // ShellDeck patch: SDPATCH-032 — rounded Sheet chrome must
+                    // be owned by every opaque surface that reaches a corner.
+                    // GPUI does not reliably propagate a parent's curved clip
+                    // through those descendants, which otherwise repaint the
+                    // corner as a small rectangle.
+                    .when(assistant, |panel| {
+                        panel
+                            .rounded_tr(theme.tokens.radius_xl)
+                            .rounded_br(theme.tokens.radius_xl)
+                            .overflow_hidden()
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, _| {})
                     .when(self.side == SheetSide::Right, |this: Div| {
                         this.absolute()
@@ -282,6 +294,8 @@ impl Render for Sheet {
                                 .pb(if assistant { px(14.0) } else { px(20.0) })
                                 .when(assistant, |header| {
                                     header.bg(theme.tokens.primary.opacity(0.06))
+                                        .rounded_tr(theme.tokens.radius_xl)
+                                        .overflow_hidden()
                                 })
                                 .border_b_1()
                                 .border_color(if assistant {
@@ -361,7 +375,17 @@ impl Render for Sheet {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .when(assistant, |body| {
-                                    body.bg(theme.tokens.primary.opacity(0.015))
+                                    let body = body.bg(theme.tokens.primary.opacity(0.015));
+                                    let body = if has_header {
+                                        body
+                                    } else {
+                                        body.rounded_tr(theme.tokens.radius_xl)
+                                    };
+                                    if has_footer {
+                                        body
+                                    } else {
+                                        body.rounded_br(theme.tokens.radius_xl)
+                                    }
                                 })
                                 .child(content),
                         )
@@ -376,7 +400,17 @@ impl Render for Sheet {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .when(assistant, |body| {
-                                    body.bg(theme.tokens.primary.opacity(0.015))
+                                    let body = body.bg(theme.tokens.primary.opacity(0.015));
+                                    let body = if has_header {
+                                        body
+                                    } else {
+                                        body.rounded_tr(theme.tokens.radius_xl)
+                                    };
+                                    if has_footer {
+                                        body
+                                    } else {
+                                        body.rounded_br(theme.tokens.radius_xl)
+                                    }
                                 })
                                 .child(factory()),
                         )
@@ -393,6 +427,8 @@ impl Render for Sheet {
                                 .py(px(16.0))
                                 .when(assistant, |footer| {
                                     footer.bg(theme.tokens.primary.opacity(0.04))
+                                        .rounded_br(theme.tokens.radius_xl)
+                                        .overflow_hidden()
                                 })
                                 .border_t_1()
                                 .border_color(theme.tokens.border)

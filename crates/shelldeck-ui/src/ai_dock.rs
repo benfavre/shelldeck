@@ -145,7 +145,7 @@ impl Render for AiDockView {
         // stays flush with the screen on the right; its GPUI chrome only rounds
         // the two exposed corners on the left.
         window.set_client_inset(gpui::px(5.0));
-        let corner_radius = use_theme().tokens.radius_lg;
+        let corner_radius = use_theme().tokens.radius_xl;
         let escape_assistant = self.assistant.clone();
 
         let mut root = div()

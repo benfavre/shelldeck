@@ -2309,6 +2309,13 @@ impl Render for AiAssistantView {
             .border_b_1()
             .border_color(ShellDeckColors::border());
         if in_sheet {
+            // This opaque row reaches the native top-right corner. Like the
+            // User-home hero artwork, it must own the curve itself because a
+            // GPUI parent clip alone can leave a rectangular paint remnant.
+            conversation_header = conversation_header
+                .rounded_tr(use_theme().tokens.radius_xl)
+                .overflow_hidden()
+                .bg(ShellDeckColors::bg_primary());
             conversation_header = conversation_header.child(
                 Button::new("ai-toggle-history", "")
                     .variant(ButtonVariant::Ghost)
@@ -2453,7 +2460,7 @@ impl Render for AiAssistantView {
             conversation_header = conversation_header
                 // GPUI does not propagate rounded clipping through opaque
                 // children, so the surface touching the window corner owns it.
-                .rounded_tl(use_theme().tokens.radius_lg)
+                .rounded_tl(use_theme().tokens.radius_xl)
                 .bg(ShellDeckColors::bg_primary())
                 .child(
                     Button::new("ai-dock-hide", "")
@@ -2596,12 +2603,19 @@ impl Render for AiAssistantView {
             // Opaque: without it the scrolled thread shows through the padding
             // around the frame and reads as if it ran under the composer.
             .bg(ShellDeckColors::bg_primary());
-        // The Dock's composer is the opaque surface touching the exposed
-        // bottom-left window corner. Parent rounding cannot mask it in GPUI,
-        // so it must carry the same radius itself. The Sheet remains square at
-        // this level because its host owns the sheet chrome.
-        if self.host == AiHost::Dock {
-            composer = composer.rounded_bl(use_theme().tokens.radius_lg);
+        // This opaque surface owns whichever exterior bottom corner it can
+        // reach. With the Sheet history open, the main column is narrower than
+        // the 624px cap, so the composer becomes full-width and otherwise
+        // repaints the host's bottom-right curve as a rectangle.
+        match self.host {
+            AiHost::Dock => {
+                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+            }
+            AiHost::Sheet => {
+                composer = composer
+                    .rounded_br(use_theme().tokens.radius_xl)
+                    .overflow_hidden();
+            }
         }
         if let Some(error) = &self.error {
             composer = composer.child(

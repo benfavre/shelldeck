@@ -1440,7 +1440,11 @@ one-line turns keep a compact width, while long or structured Markdown is
 capped at 88% of the reading column and receives a definite layout width so
 every wrapped line contributes to the bubble height instead of being clipped.
 Assistant responses remain unframed prose, and both roles use compact
-conversation block spacing without a document-style trailing margin.
+conversation block spacing without a document-style trailing margin. In the
+main window, the right-side Assistant Sheet preserves the floating window's
+top-right and bottom-right 12 px `radius_xl`; the complete overlay is clipped once at
+the host boundary so no dim-backdrop wedge appears between the panel and those
+outer client corners.
 
 ### SDUC-415 — AI context and API privacy boundaries
 
@@ -2103,7 +2107,10 @@ viewport rather than its exact alpha silhouette.
   collapse to one character per line. The assistant remains unframed prose and
   compact Markdown removes the trailing document margin from both roles. The
   composer's attachment/target actions are also injected once regardless of
-  whether its context chip is visible, instead of duplicating both icons.
+  whether its context chip is visible, instead of duplicating both icons. The
+  main-window Assistant Sheet now also preserves the window's two right-hand
+  12 px `radius_xl` corners instead of painting a square panel over them or exposing
+  a second, darker inner corner.
 - **2026-08-11** — Amended SDUC-434: the screen-edge AI Dock now mirrors the
   floating main window's client inset and theme radius on its two exposed left
   corners while keeping its right edge square. Its 56 px activity rail is now
