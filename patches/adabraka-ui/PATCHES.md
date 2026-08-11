@@ -633,6 +633,22 @@ carries no marker of its own — see its entry).
   ordinary ordered/unordered markers stay unchanged.
 - **Upstream status**: not filed yet — generic Markdown fidelity improvement.
 
+### SDPATCH-032 — Assistant Sheet corner owners preserve the host curve
+
+- **Files / symbols**:
+  - `src/overlays/sheet.rs` — `Sheet::render`
+- **Markers**:
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — rounded Sheet chrome must`
+- **Why**: GPUI does not reliably propagate a rounded overflow clip through
+  every opaque descendant. Assistant Sheets touch the floating window's right
+  edge, so their panel, header, body, and optional footer could repaint the
+  top-right or bottom-right corner as a small rectangle even when the Workspace
+  overlay itself was rounded. Each opaque surface that actually reaches an
+  exterior corner now owns the matching `radius_xl`; internal boundaries stay
+  square when a header or footer occupies that edge.
+- **Upstream status**: not filed yet — the behavior is generic, but the
+  Assistant variant and its outer-window geometry are ShellDeck-specific.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -732,6 +748,9 @@ carries no marker of its own — see its entry).
   is 101.
 - **2026-08-10** — added SDPATCH-031: Markdown task lists use the shared
   checkbox component. 1 new marker; current code marker count is 102.
+- **2026-08-11** — added SDPATCH-032: every opaque Assistant Sheet surface
+  that reaches an exterior corner owns the 12 px curve. 1 new marker; current
+  code marker count is 103.
 
 ## Retired patches
 

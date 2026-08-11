@@ -355,13 +355,14 @@ impl Render for Workspace {
         // status bar follow the window's rounded corners. When floating (not
         // maximized) draw a 1px frame inside the 5px client inset; when
         // maximized the window is edge-to-edge with square corners and no
-        // frame. The floating radius matches the standard Card component.
+        // frame. The floating radius follows the 12px outer-chrome radius in
+        // the assistant prototype, not the smaller standard Card radius.
         root = root.overflow_hidden();
         if is_maximized {
             root = root.rounded(px(0.0));
         } else {
             root = root
-                .rounded(use_theme().tokens.radius_lg)
+                .rounded(use_theme().tokens.radius_xl)
                 .border_1()
                 .border_color(ShellDeckColors::border());
         }
@@ -632,7 +633,19 @@ impl Render for Workspace {
         root = root.child(self.command_palette.clone());
 
         if let Some(sheet) = &self.ai_sheet {
-            root = root.child(sheet.clone());
+            // Clip the complete overlay once at the host boundary. Rounding
+            // the Sheet panel itself reveals the dim backdrop as a small dark
+            // wedge between two slightly different corner geometries.
+            let corner_radius = use_theme().tokens.radius_xl;
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_tr(corner_radius)
+                    .rounded_br(corner_radius)
+                    .overflow_hidden()
+                    .child(sheet.clone()),
+            );
         }
         if let Some(sheet) = &self.ai_workflow_sheet {
             root = root.child(sheet.clone());

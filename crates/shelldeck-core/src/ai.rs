@@ -1314,6 +1314,8 @@ pub struct AiConversation {
 }
 
 impl AiConversation {
+    const TITLE_MAX_CHARS: usize = 56;
+
     pub fn new(surface: AiSurface, context_title: impl Into<String>) -> Self {
         let context_title = context_title.into();
         let now = Utc::now();
@@ -1332,7 +1334,7 @@ impl AiConversation {
     pub fn push(&mut self, role: AiChatRole, content: impl Into<String>) {
         let content = content.into();
         if self.messages.is_empty() && role == AiChatRole::User {
-            self.title = content.chars().take(56).collect();
+            self.title = Self::title_from_first_message(&content);
         }
         self.messages.push(AiChatMessage::new(role, content));
         if self.messages.len() > AiConversationStore::MAX_MESSAGES {
@@ -1340,6 +1342,44 @@ impl AiConversation {
             self.messages.drain(..excess);
         }
         self.updated_at = Utc::now();
+    }
+
+    fn title_from_first_message(content: &str) -> String {
+        let mut chars = content.chars();
+        let mut title = chars
+            .by_ref()
+            .take(Self::TITLE_MAX_CHARS)
+            .collect::<String>();
+        if chars.next().is_some() {
+            title.push('…');
+        }
+        title
+    }
+
+    /// Older stores contain the first 56 characters without any truncation
+    /// marker. Repair that presentation lazily from the retained first user
+    /// message so existing conversations gain the same ellipsis as new ones.
+    pub fn display_title(&self) -> String {
+        if self.title.ends_with('…') {
+            return self.title.clone();
+        }
+        let Some(first_user_message) = self
+            .messages
+            .iter()
+            .find(|message| message.role == AiChatRole::User)
+        else {
+            return self.title.clone();
+        };
+        let mut chars = first_user_message.content.chars();
+        let legacy_title = chars
+            .by_ref()
+            .take(Self::TITLE_MAX_CHARS)
+            .collect::<String>();
+        if chars.next().is_some() && self.title == legacy_title {
+            format!("{}…", self.title)
+        } else {
+            self.title.clone()
+        }
     }
 }
 
@@ -2079,6 +2119,24 @@ mod tests {
 
         assert_eq!(loaded, vec![conversation]);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conversation_titles_mark_new_and_legacy_truncation_with_an_ellipsis() {
+        let long_message = "é".repeat(AiConversation::TITLE_MAX_CHARS + 12);
+        let mut conversation = AiConversation::new(AiSurface::Global, "Global");
+        conversation.push(AiChatRole::User, long_message.clone());
+
+        assert_eq!(conversation.title.chars().count(), 57);
+        assert!(conversation.title.ends_with('…'));
+        assert_eq!(conversation.display_title(), conversation.title);
+
+        conversation.title = long_message
+            .chars()
+            .take(AiConversation::TITLE_MAX_CHARS)
+            .collect();
+        assert!(conversation.display_title().ends_with('…'));
+        assert_eq!(conversation.display_title().chars().count(), 57);
     }
 
     #[test]
