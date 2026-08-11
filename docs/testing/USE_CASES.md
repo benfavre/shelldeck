@@ -1435,7 +1435,12 @@ executes a terminal command, mutates a request, or overwrites a script from an
 AI response. In the durable assistant conversation, both user and assistant
 message bodies render Markdown structure—including headings, emphasis, lists,
 links, code blocks, and tables—while the assistant copy action preserves the
-original source text.
+original source text. User messages form right-aligned surface bubbles: short
+one-line turns keep a compact width, while long or structured Markdown is
+capped at 88% of the reading column and receives a definite layout width so
+every wrapped line contributes to the bubble height instead of being clipped.
+Assistant responses remain unframed prose, and both roles use compact
+conversation block spacing without a document-style trailing margin.
 
 ### SDUC-415 — AI context and API privacy boundaries
 
@@ -1678,7 +1683,14 @@ growing the surrounding screen or typing off-screen.
 The system-tray menu can create, hide, show and focus one Assistant Dock without
 making the main ShellDeck window visible. The 480 px Dock is anchored to the
 right edge for the display height, has no native titlebar, and
-cannot be moved, resized or minimized. Repeated invocations reuse the existing
+cannot be moved, resized or minimized. Its exposed top-left and bottom-left
+corners use the same theme radius as the floating main window; both right
+corners remain square so the Dock stays visually fused to the screen edge.
+Its 56 px activity rail is a full-height sibling of the 424 px conversation
+column. The single 44 px conversation header is therefore confined to the
+left column and contains only the thread title and hide action; reopening
+ShellDeck remains available once, in the rail's bottom toolbox.
+Repeated invocations reuse the existing
 Dock rather than creating duplicates. Closing the Dock hides it and keeps an
 in-flight request alive. Reopening it re-prepares the same Global context
 *without* invalidating the pending request gate — the reply still lands with
@@ -1719,9 +1731,9 @@ including zero/one/many counter forms and the empty pinned-connections row,
 follows the selected French or English UI locale. A live language change
 republishes the tray snapshot so every desktop backend updates the native menu
 immediately. Counters and pinned connections follow the same owner-thread
-snapshot path. The Dock toolbar
-uses keyboard-focusable buttons with visible localized names and tooltips;
-Escape remains an explicit hide action. On macOS, the tray uses a dedicated
+snapshot path. The Dock header and rail toolbox use keyboard-focusable controls
+with visible localized names or tooltips; Escape remains an explicit hide
+action. On macOS, the tray uses a dedicated
 36 px black-and-alpha Monolith mark as an AppKit template image, so the system
 controls its light, dark, pressed, and accessibility appearance. Linux and
 Windows retain the colored app icon.
@@ -2085,6 +2097,21 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-11** — Amended SDUC-414 and the pending SDTEST-1425 contract: Dock
+  user bubbles now receive a definite compact-or-88%-capped width before
+  Markdown layout, preventing both single-line clipping and GPUI's min-content
+  collapse to one character per line. The assistant remains unframed prose and
+  compact Markdown removes the trailing document margin from both roles. The
+  composer's attachment/target actions are also injected once regardless of
+  whether its context chip is visible, instead of duplicating both icons.
+- **2026-08-11** — Amended SDUC-434: the screen-edge AI Dock now mirrors the
+  floating main window's client inset and theme radius on its two exposed left
+  corners while keeping its right edge square. Its 56 px activity rail is now
+  the full-height sibling shown in the prototype instead of starting below a
+  duplicate host toolbar; the 44 px header is confined to the conversation
+  column and « Ouvrir ShellDeck » lives only in the bottom toolbox. The existing
+  SDTEST-1392 Linux runtime smoke was repeated with composite/window captures to
+  verify both the curved pixels and this two-column hierarchy.
 - **2026-08-10** — Added SDUC-459 and SDTEST-1598/1599 for the complete semantic
   Support-request timeline. The demo exercises all thirteen prototype cases;
   optional future API fields default empty for backward compatibility, and
