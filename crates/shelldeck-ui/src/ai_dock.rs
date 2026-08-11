@@ -1,7 +1,6 @@
-use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
+use adabraka_ui::prelude::use_theme;
 use gpui::prelude::*;
-use gpui::{div, AnyWindowHandle, Context, Entity, Render, Subscription, Window};
+use gpui::{div, Context, Entity, Render, Subscription, Window};
 
 use crate::ai_assistant::AiAssistantView;
 use crate::scale::px;
@@ -98,10 +97,11 @@ pub fn tray_counter_ai_tasks(n: usize) -> String {
 /// The actual conversation surface remains `AiAssistantView`, shared with the
 /// Workspace so requests, conversations and tasks survive while this window is
 /// hidden. The native window has no system chrome and cannot move or resize;
-/// this wrapper supplies its only close control.
+/// this wrapper owns only the native-window lifecycle and exposed corners. The
+/// shared assistant view supplies the Dock's single header inside its content
+/// column, leaving the activity rail full-height as specified by the prototype.
 pub struct AiDockView {
     assistant: Entity<AiAssistantView>,
-    main_window: AnyWindowHandle,
     font_family: Option<String>,
     activation_armed: bool,
     _activation_sub: Subscription,
@@ -110,7 +110,6 @@ pub struct AiDockView {
 impl AiDockView {
     pub fn new(
         assistant: Entity<AiAssistantView>,
-        main_window: AnyWindowHandle,
         font_family: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -128,7 +127,6 @@ impl AiDockView {
         });
         Self {
             assistant,
-            main_window,
             font_family,
             activation_armed: false,
             _activation_sub: activation_sub,
@@ -142,76 +140,13 @@ impl AiDockView {
 }
 
 impl Render for AiDockView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main_window = self.main_window;
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Match the floating main window's native client geometry. The Dock
+        // stays flush with the screen on the right; its GPUI chrome only rounds
+        // the two exposed corners on the left.
+        window.set_client_inset(gpui::px(5.0));
+        let corner_radius = use_theme().tokens.radius_xl;
         let escape_assistant = self.assistant.clone();
-        // The single chrome row for this window. The view no longer draws one
-        // of its own, so this must name the thread rather than the app: a
-        // constant "Assistant ShellDeck" said nothing about what was on screen
-        // and cost a whole 44px row to say it.
-        let title = self.assistant.read(cx).active_title();
-        let toolbar = div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .h(px(44.0))
-            .px(px(12.0))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(title),
-            )
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(18.0))
-                    .flex_shrink_0()
-                    .bg(ShellDeckColors::border()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .flex_shrink_0()
-                    .child(
-                        // Icon-only: three spelled-out labels ate most of a
-                        // 480px row. The tooltip keeps them named.
-                        Button::new("ai-dock-open-shelldeck", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .tooltip(t!("ai.dock.open_shelldeck").to_string())
-                            .icon(IconSource::from("external-link"))
-                            .on_click(move |_, dock_window, cx| {
-                                if let Err(error) = main_window.update(cx, |_, main_window, _| {
-                                    main_window.show_window();
-                                    main_window.activate_window();
-                                }) {
-                                    tracing::warn!(
-                                        error = %error,
-                                        "AI Dock could not activate the main window"
-                                    );
-                                }
-                                dock_window.remove_window();
-                            }),
-                    )
-                    .child(
-                        Button::new("ai-dock-hide", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .tooltip(t!("ai.dock.hide").to_string())
-                            .icon(IconSource::from("x"))
-                            .on_click(|_, window, _| window.remove_window()),
-                    ),
-            );
 
         let mut root = div()
             .id("ai-dock-root")
@@ -221,6 +156,12 @@ impl Render for AiDockView {
             .min_w_0()
             .min_h(px(0.0))
             .overflow_hidden()
+            .rounded_tl(corner_radius)
+            .rounded_bl(corner_radius)
+            .border_l_1()
+            .border_t_1()
+            .border_b_1()
+            .border_color(ShellDeckColors::border())
             .bg(ShellDeckColors::bg_primary())
             .capture_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key.eq_ignore_ascii_case("escape")
@@ -230,7 +171,6 @@ impl Render for AiDockView {
                     cx.stop_propagation();
                 }
             })
-            .child(toolbar)
             .child(
                 div()
                     .flex()

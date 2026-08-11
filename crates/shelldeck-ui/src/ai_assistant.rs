@@ -5,8 +5,8 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer,
-    Markdown, Spinner, SpinnerSize, SpinnerVariant,
+    scrollable_vertical, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
+    Composer, Markdown, Spinner, SpinnerSize, SpinnerVariant,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -88,6 +88,25 @@ pub enum AiHost {
     /// The screen-edge Dock window — history swaps the panel and the rail is
     /// the only navigation.
     Dock,
+}
+
+/// The Sheet itself is 780 absolute pixels wide, but its conversation column
+/// loses the scaled 240px history rail when that rail is visible. Bubble
+/// shaping needs that effective width up front because GPUI cannot recover a
+/// wrapped height from an oversized definite child after flex layout clips it.
+fn sheet_message_reading_width(
+    viewport_width: Pixels,
+    history_open: bool,
+    history_width: Pixels,
+    thread_cap: Pixels,
+) -> Pixels {
+    let visible_sheet_width = viewport_width.min(gpui::px(780.0));
+    let conversation_width = if history_open {
+        (visible_sheet_width - history_width).max(gpui::px(0.0))
+    } else {
+        visible_sheet_width
+    };
+    conversation_width.min(thread_cap)
 }
 
 /// What the panel is showing. The rail selects one of these; there is no
@@ -347,12 +366,10 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    /// Title of the thread on screen, so a host that draws the single chrome
-    /// row can name it. The Dock's toolbar uses this instead of a constant
-    /// "Assistant ShellDeck", which said nothing about what you were reading.
+    /// Title of the thread on screen, used by the host-specific header.
     pub fn active_title(&self) -> String {
         self.active_conversation()
-            .map(|conversation| conversation.title.clone())
+            .map(AiConversation::display_title)
             .unwrap_or_else(|| t!("ai.history.new").to_string())
     }
 
@@ -961,7 +978,25 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    fn render_history(&self, as_column: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_history(
+        &self,
+        as_column: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The text element itself needs a definite pixel width for GPUI to
+        // shape an ellipsis. A flex-only width is measured as max-content and
+        // then hard-clipped by the row after the two fixed 36px buttons.
+        let panel_width = if as_column {
+            px(240.0).to_pixels(window.rem_size())
+        } else {
+            window.viewport_size().width - gpui::px(56.0)
+        };
+        // list padding 16 + row padding 16 + two 4px gaps, all scaled; then
+        // the two adabraka Sm icon buttons, which stay absolute 36px each.
+        let history_text_width =
+            (panel_width - px(40.0).to_pixels(window.rem_size()) - gpui::px(72.0))
+                .max(gpui::px(0.0));
         let mut list = div().flex().flex_col().gap(px(3.0)).p(px(8.0));
         let mut conversations = self
             .conversations
@@ -989,6 +1024,8 @@ impl AiAssistantView {
             let delete_id = id;
             let selected = self.active_conversation == Some(id);
             let updated = crate::i18n::rel_time(conversation.updated_at.timestamp_millis() as f64);
+            let display_title = conversation.display_title();
+            let history_meta = format!("{} · {updated}", conversation.context_title);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("ai-conversation-{id}")))
@@ -1004,7 +1041,8 @@ impl AiAssistantView {
                     .child(
                         div()
                             .id(SharedString::from(format!("ai-conversation-open-{id}")))
-                            .flex_1()
+                            .w(history_text_width)
+                            .flex_shrink_0()
                             .min_w_0()
                             .overflow_hidden()
                             .cursor_pointer()
@@ -1013,24 +1051,29 @@ impl AiAssistantView {
                             }))
                             .child(
                                 div()
-                                    .truncate()
+                                    .w(history_text_width)
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(conversation.title),
+                                    .child(display_title),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(4.0))
+                                    .w(history_text_width)
                                     .min_w_0()
-                                    .truncate()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(conversation.context_title)
-                                    .child("·")
-                                    .child(updated),
+                                    .child(history_meta),
                             ),
                     )
                     .child(
@@ -1486,16 +1529,26 @@ impl AiAssistantView {
         if self.host == AiHost::Sheet {
             thread = thread.max_w(px(600.0)).mx_auto();
         }
+        // GPUI cannot derive wrapped height from `width: auto` plus a
+        // percentage max-width in one measurement pass. Long/structured user
+        // messages therefore receive the prototype's definite 88% width;
+        // short one-line messages receive an explicit compact width.
+        let reading_width = match self.host {
+            AiHost::Dock => window.viewport_size().width - gpui::px(56.0),
+            AiHost::Sheet => sheet_message_reading_width(
+                window.viewport_size().width,
+                self.history_open,
+                px(240.0).to_pixels(window.rem_size()),
+                px(600.0).to_pixels(window.rem_size()),
+            ),
+        };
+        let user_bubble_width =
+            (reading_width - px(36.0).to_pixels(window.rem_size())).max(gpui::px(0.0)) * 0.88;
         if let Some(conversation) = self.active_conversation() {
             for message in &conversation.messages {
                 let is_user = message.role == AiChatRole::User;
                 let message_id = message.id;
                 let content = message.content.clone();
-                let markdown = Markdown::new(content.clone())
-                    .base_font_size(px(12.5).to_pixels(window.rem_size()))
-                    .w_full()
-                    .min_w_0()
-                    .whitespace_normal();
 
                 if is_user {
                     // The user's turn is the only one that carries a block, and
@@ -1504,26 +1557,72 @@ impl AiAssistantView {
                     // flex child fills the row and silently cancels
                     // `justify_end`, which is exactly why the previous version
                     // never aligned anything despite asking for it.
-                    thread = thread.child(
-                        div().flex().w_full().justify_end().child(
-                            div()
-                                .id(SharedString::from(format!("ai-message-{message_id}")))
-                                .max_w(relative(0.88))
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .px(px(12.0))
-                                .py(px(9.0))
-                                .rounded(px(12.0))
-                                .rounded_br(px(3.0))
-                                .bg(ShellDeckColors::bg_surface())
-                                .text_color(ShellDeckColors::text_primary())
-                                .child(markdown),
-                        ),
-                    );
+                    let markdown = Markdown::new(content.clone())
+                        .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        // Conversation blocks follow the prototype's compact
+                        // rhythm and leave no document-style tail margin.
+                        .compact()
+                        .min_w_0()
+                        .whitespace_normal();
+                    let structured = content.lines().any(|line| {
+                        let line = line.trim_start();
+                        line.starts_with("# ")
+                            || line.starts_with("## ")
+                            || line.starts_with("> ")
+                            || line.starts_with("- ")
+                            || line.starts_with("* ")
+                            || line.starts_with("```")
+                            || line.starts_with('|')
+                    });
+                    let longest_line = content
+                        .lines()
+                        .map(|line| line.chars().count())
+                        .max()
+                        .unwrap_or(0) as f32;
+                    // A definite width is mandatory for correct wrapped height
+                    // in GPUI. Estimate only the compact one-line width; any
+                    // overflow still wraps safely because layout now knows the
+                    // width before shaping. Structured Markdown uses the full
+                    // cap so lists/tables/code never collapse to min-content.
+                    let compact_text_width = if longest_line > 0.0 {
+                        (longest_line * 6.5).max(18.0)
+                    } else {
+                        0.0
+                    };
+                    let compact_width = px(compact_text_width + 24.0)
+                        .to_pixels(window.rem_size())
+                        .min(user_bubble_width);
+                    let bubble_width = if structured {
+                        user_bubble_width
+                    } else {
+                        compact_width
+                    };
+                    let bubble = div()
+                        .id(SharedString::from(format!("ai-message-{message_id}")))
+                        .flex()
+                        .flex_col()
+                        .ml_auto()
+                        .w(bubble_width)
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .px(px(12.0))
+                        .py(px(9.0))
+                        .rounded(px(12.0))
+                        .rounded_br(px(3.0))
+                        .bg(ShellDeckColors::bg_surface())
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(markdown);
+                    thread = thread.child(bubble);
                 } else {
                     // The assistant answers in prose on the surface: no frame, no
                     // fill, no role label. Its metadata sits underneath, quiet —
                     // not as a permanent button in a card header.
+                    let markdown = Markdown::new(content.clone())
+                        .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        .compact()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal();
                     thread = thread.child(
                         div()
                             .id(SharedString::from(format!("ai-message-{message_id}")))
@@ -2242,13 +2341,12 @@ impl Render for AiAssistantView {
                     || matches!(task.status, AiTaskStatus::Ready | AiTaskStatus::Pending)
             })
             .count();
-        let active_title = self
-            .active_conversation()
-            .map(|conversation| conversation.title.clone())
-            .unwrap_or_else(|| t!("ai.history.new").to_string());
-        // The single chrome row. In the Sheet the adabraka `Sheet` draws no
-        // header of its own any more (no title, no close button => `has_header`
-        // is false), so this row is the whole chrome and carries the close.
+        let active_title = self.active_title();
+        // The single chrome row. In the Dock it belongs to the 424px content
+        // column, not to the 480px window: the 56px rail is its full-height
+        // sibling. In the Sheet the adabraka `Sheet` draws no header of its own
+        // (no title, no close button => `has_header` is false), so this row is
+        // the whole chrome and carries the close.
         let in_sheet = self.host == AiHost::Sheet;
         let mut conversation_header = div()
             .flex()
@@ -2260,6 +2358,13 @@ impl Render for AiAssistantView {
             .border_b_1()
             .border_color(ShellDeckColors::border());
         if in_sheet {
+            // This opaque row reaches the native top-right corner. Like the
+            // User-home hero artwork, it must own the curve itself because a
+            // GPUI parent clip alone can leave a rectangular paint remnant.
+            conversation_header = conversation_header
+                .rounded_tr(use_theme().tokens.radius_xl)
+                .overflow_hidden()
+                .bg(ShellDeckColors::bg_primary());
             conversation_header = conversation_header.child(
                 Button::new("ai-toggle-history", "")
                     .variant(ButtonVariant::Ghost)
@@ -2284,14 +2389,18 @@ impl Render for AiAssistantView {
             );
         }
         conversation_header = conversation_header.child(
-            div()
-                .truncate()
-                .flex_1()
-                .min_w_0()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(ShellDeckColors::text_primary())
-                .child(active_title),
+            div().flex_1().min_w_0().overflow_hidden().child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(active_title),
+            ),
         );
         if in_sheet {
             // Without a rail, the Sheet needs its own way into — and back out
@@ -2396,6 +2505,24 @@ impl Render for AiAssistantView {
                         .icon(IconSource::from("x"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(AiAssistantEvent::Close))),
                 );
+        } else {
+            // The prototype leaves only the thread title and hide action in
+            // the Dock header. "Ouvrir ShellDeck" lives once in the rail's
+            // bottom toolbox; duplicating it here shifts the rail down and
+            // breaks the two-column hierarchy.
+            conversation_header = conversation_header
+                // GPUI does not propagate rounded clipping through opaque
+                // children, so the surface touching the window corner owns it.
+                .rounded_tl(use_theme().tokens.radius_xl)
+                .bg(ShellDeckColors::bg_primary())
+                .child(
+                    Button::new("ai-dock-hide", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .tooltip(t!("ai.dock.hide").to_string())
+                        .icon(IconSource::from("x"))
+                        .on_click(|_, window, _| window.remove_window()),
+                );
         }
 
         let has_messages = self
@@ -2409,7 +2536,7 @@ impl Render for AiAssistantView {
             .rev()
             .filter(|conversation| !conversation.archived && !conversation.messages.is_empty())
             .take(3)
-            .map(|conversation| (conversation.id, conversation.title.clone()))
+            .map(|conversation| (conversation.id, conversation.display_title()))
             .collect();
 
         let conversation_body = if has_messages {
@@ -2529,6 +2656,20 @@ impl Render for AiAssistantView {
             // Opaque: without it the scrolled thread shows through the padding
             // around the frame and reads as if it ran under the composer.
             .bg(ShellDeckColors::bg_primary());
+        // This opaque surface owns whichever exterior bottom corner it can
+        // reach. With the Sheet history open, the main column is narrower than
+        // the 624px cap, so the composer becomes full-width and otherwise
+        // repaints the host's bottom-right curve as a rectangle.
+        match self.host {
+            AiHost::Dock => {
+                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
+            }
+            AiHost::Sheet => {
+                composer = composer
+                    .rounded_br(use_theme().tokens.radius_xl)
+                    .overflow_hidden();
+            }
+        }
         if let Some(error) = &self.error {
             composer = composer.child(
                 div()
@@ -2577,10 +2718,10 @@ impl Render for AiAssistantView {
             .disabled(self.loading || !self.available)
             // The context left the header: it now rides with the message,
             // where it is visible next to what it will be sent with.
-            // Placeholders, on purpose: the affordances are drawn now so
-            // the footer has its final shape, but attachments and targeting
-            // are not implemented yet. They carry no click handler and are
-            // rendered `disabled`, so nothing pretends to work.
+            // Placeholders, on purpose: the affordances are drawn now so the
+            // footer has its final shape, but attachments and targeting are
+            // not implemented yet. Their handlers only explain that future
+            // availability; they never perform the unavailable operation.
             .action(
                 Button::new("ai-composer-attach", "")
                     .variant(ButtonVariant::Ghost)
@@ -2687,35 +2828,10 @@ impl Render for AiAssistantView {
                                     cx.notify();
                                 })),
                         ),
-                )
-                // Placeholders, on purpose: the affordances are drawn now so
-                // the footer has its final shape, but attachments and targeting
-                // are not implemented yet. They carry no click handler and are
-                // rendered `disabled`, so nothing pretends to work.
-                .action(
-                    Button::new("ai-composer-attach", "")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("plus"))
-                        .tooltip(t!("ai.composer.attach_soon").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
-                        })),
-                )
-                .action(
-                    Button::new("ai-composer-target", "")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("at-sign"))
-                        .tooltip(t!("ai.composer.target_soon").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
-                        })),
                 );
         }
         composer = composer.child(assistant_composer);
 
-        // The header is hoisted to the root: it spans the history column too.
         let chat = div()
             .flex()
             .flex_col()
@@ -2735,6 +2851,7 @@ impl Render for AiAssistantView {
 
         // The two hosts are two different displays, so the assembly diverges
         // here — this is the only place it does.
+        let mut sheet_header = None;
         let body = match self.host {
             // Dock: the rail is the navigation, so the activity owns the whole
             // panel. History replaces the conversation instead of splitting it;
@@ -2744,7 +2861,7 @@ impl Render for AiAssistantView {
                     AiActivity::Chat => chat.into_any_element(),
                     AiActivity::Clippy => self.render_clippy(cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
-                    AiActivity::History => self.render_history(false, cx),
+                    AiActivity::History => self.render_history(false, window, cx),
                 };
                 div()
                     .flex()
@@ -2761,6 +2878,7 @@ impl Render for AiAssistantView {
                             .min_w_0()
                             .min_h(px(0.0))
                             .overflow_hidden()
+                            .child(conversation_header)
                             .child(panel),
                     )
                     .child(self.render_rail(active_tasks, cx))
@@ -2768,6 +2886,8 @@ impl Render for AiAssistantView {
             // Sheet: no rail. 780px has room for the history column beside the
             // conversation, and the header carries the toggle and the tasks.
             AiHost::Sheet => {
+                // The Sheet has no rail, so its header spans the full split.
+                sheet_header = Some(conversation_header);
                 let main = match self.active_tab {
                     AiActivity::Tasks => self.render_tasks(window, cx),
                     AiActivity::Clippy => self.render_clippy(cx),
@@ -2781,7 +2901,7 @@ impl Render for AiAssistantView {
                     .min_w_0()
                     .overflow_hidden();
                 if self.history_open {
-                    split = split.child(self.render_history(true, cx));
+                    split = split.child(self.render_history(true, window, cx));
                 }
                 split.child(
                     div()
@@ -2805,11 +2925,7 @@ impl Render for AiAssistantView {
             .min_h(px(0.0))
             .min_w_0()
             .overflow_hidden()
-            // In the Dock the host draws the single row (see `ai_dock.rs`), so
-            // the view contributes none — stacking both was the whole defect.
-            .when(self.host == AiHost::Sheet, |el| {
-                el.child(conversation_header)
-            })
+            .children(sheet_header)
             .child(body);
 
         if self.account_menu_open {
@@ -3064,8 +3180,8 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_switch_resets, should_auto_import_clippy, validated_clippy_result, AiAssistantView,
-        AiQuickActionMode, AiRequestGate,
+        context_switch_resets, sheet_message_reading_width, should_auto_import_clippy,
+        validated_clippy_result, AiAssistantView, AiQuickActionMode, AiRequestGate,
     };
     use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
 
@@ -3137,6 +3253,26 @@ mod tests {
         );
         assert!(validated_clippy_result("  ".to_string()).is_err());
         assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
+    }
+
+    // SDTEST-1600 — the 240px history column used to leave the message
+    // renderer believing it still owned the Sheet's 600px reading measure.
+    // Definite user bubbles then extended underneath history and lost their
+    // leading text to the split's overflow clip.
+    #[test]
+    fn sheet_message_width_accounts_for_the_visible_history_column() {
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(1210.0), false, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(600.0)
+        );
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(1210.0), true, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(540.0)
+        );
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(600.0), true, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(360.0)
+        );
     }
 
     // SDTEST-1429

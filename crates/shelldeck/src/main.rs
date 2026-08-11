@@ -1358,7 +1358,7 @@ fn open_ai_dock(
     };
 
     match cx.open_window(options, move |window, cx| {
-        cx.new(|cx| AiDockView::new(assistant, main_window, font_family, window, cx))
+        cx.new(|cx| AiDockView::new(assistant, font_family, window, cx))
     }) {
         Ok(handle) => {
             root.update(cx, |root, _| {
