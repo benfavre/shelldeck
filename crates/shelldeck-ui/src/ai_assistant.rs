@@ -90,6 +90,25 @@ pub enum AiHost {
     Dock,
 }
 
+/// The Sheet itself is 780 absolute pixels wide, but its conversation column
+/// loses the scaled 240px history rail when that rail is visible. Bubble
+/// shaping needs that effective width up front because GPUI cannot recover a
+/// wrapped height from an oversized definite child after flex layout clips it.
+fn sheet_message_reading_width(
+    viewport_width: Pixels,
+    history_open: bool,
+    history_width: Pixels,
+    thread_cap: Pixels,
+) -> Pixels {
+    let visible_sheet_width = viewport_width.min(gpui::px(780.0));
+    let conversation_width = if history_open {
+        (visible_sheet_width - history_width).max(gpui::px(0.0))
+    } else {
+        visible_sheet_width
+    };
+    conversation_width.min(thread_cap)
+}
+
 /// What the panel is showing. The rail selects one of these; there is no
 /// second navigation surface. `History` swaps the panel rather than splitting
 /// it — at 424px (the dock minus its rail) a second column would leave the
@@ -350,7 +369,7 @@ impl AiAssistantView {
     /// Title of the thread on screen, used by the host-specific header.
     pub fn active_title(&self) -> String {
         self.active_conversation()
-            .map(|conversation| conversation.title.clone())
+            .map(AiConversation::display_title)
             .unwrap_or_else(|| t!("ai.history.new").to_string())
     }
 
@@ -959,7 +978,25 @@ impl AiAssistantView {
         cx.notify();
     }
 
-    fn render_history(&self, as_column: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_history(
+        &self,
+        as_column: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The text element itself needs a definite pixel width for GPUI to
+        // shape an ellipsis. A flex-only width is measured as max-content and
+        // then hard-clipped by the row after the two fixed 36px buttons.
+        let panel_width = if as_column {
+            px(240.0).to_pixels(window.rem_size())
+        } else {
+            window.viewport_size().width - gpui::px(56.0)
+        };
+        // list padding 16 + row padding 16 + two 4px gaps, all scaled; then
+        // the two adabraka Sm icon buttons, which stay absolute 36px each.
+        let history_text_width =
+            (panel_width - px(40.0).to_pixels(window.rem_size()) - gpui::px(72.0))
+                .max(gpui::px(0.0));
         let mut list = div().flex().flex_col().gap(px(3.0)).p(px(8.0));
         let mut conversations = self
             .conversations
@@ -987,6 +1024,8 @@ impl AiAssistantView {
             let delete_id = id;
             let selected = self.active_conversation == Some(id);
             let updated = crate::i18n::rel_time(conversation.updated_at.timestamp_millis() as f64);
+            let display_title = conversation.display_title();
+            let history_meta = format!("{} · {updated}", conversation.context_title);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("ai-conversation-{id}")))
@@ -1002,7 +1041,8 @@ impl AiAssistantView {
                     .child(
                         div()
                             .id(SharedString::from(format!("ai-conversation-open-{id}")))
-                            .flex_1()
+                            .w(history_text_width)
+                            .flex_shrink_0()
                             .min_w_0()
                             .overflow_hidden()
                             .cursor_pointer()
@@ -1011,24 +1051,29 @@ impl AiAssistantView {
                             }))
                             .child(
                                 div()
-                                    .truncate()
+                                    .w(history_text_width)
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(conversation.title),
+                                    .child(display_title),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(4.0))
+                                    .w(history_text_width)
                                     .min_w_0()
-                                    .truncate()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .text_size(px(10.0))
                                     .text_color(ShellDeckColors::text_muted())
-                                    .child(conversation.context_title)
-                                    .child("·")
-                                    .child(updated),
+                                    .child(history_meta),
                             ),
                     )
                     .child(
@@ -1490,11 +1535,15 @@ impl AiAssistantView {
         // short one-line messages receive an explicit compact width.
         let reading_width = match self.host {
             AiHost::Dock => window.viewport_size().width - gpui::px(56.0),
-            AiHost::Sheet => px(600.0)
-                .to_pixels(window.rem_size())
-                .min(window.viewport_size().width),
+            AiHost::Sheet => sheet_message_reading_width(
+                window.viewport_size().width,
+                self.history_open,
+                px(240.0).to_pixels(window.rem_size()),
+                px(600.0).to_pixels(window.rem_size()),
+            ),
         };
-        let user_bubble_width = (reading_width - px(36.0).to_pixels(window.rem_size())) * 0.88;
+        let user_bubble_width =
+            (reading_width - px(36.0).to_pixels(window.rem_size())).max(gpui::px(0.0)) * 0.88;
         if let Some(conversation) = self.active_conversation() {
             for message in &conversation.messages {
                 let is_user = message.role == AiChatRole::User;
@@ -2340,14 +2389,18 @@ impl Render for AiAssistantView {
             );
         }
         conversation_header = conversation_header.child(
-            div()
-                .truncate()
-                .flex_1()
-                .min_w_0()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(ShellDeckColors::text_primary())
-                .child(active_title),
+            div().flex_1().min_w_0().overflow_hidden().child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(active_title),
+            ),
         );
         if in_sheet {
             // Without a rail, the Sheet needs its own way into — and back out
@@ -2483,7 +2536,7 @@ impl Render for AiAssistantView {
             .rev()
             .filter(|conversation| !conversation.archived && !conversation.messages.is_empty())
             .take(3)
-            .map(|conversation| (conversation.id, conversation.title.clone()))
+            .map(|conversation| (conversation.id, conversation.display_title()))
             .collect();
 
         let conversation_body = if has_messages {
@@ -2808,7 +2861,7 @@ impl Render for AiAssistantView {
                     AiActivity::Chat => chat.into_any_element(),
                     AiActivity::Clippy => self.render_clippy(cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
-                    AiActivity::History => self.render_history(false, cx),
+                    AiActivity::History => self.render_history(false, window, cx),
                 };
                 div()
                     .flex()
@@ -2848,7 +2901,7 @@ impl Render for AiAssistantView {
                     .min_w_0()
                     .overflow_hidden();
                 if self.history_open {
-                    split = split.child(self.render_history(true, cx));
+                    split = split.child(self.render_history(true, window, cx));
                 }
                 split.child(
                     div()
@@ -3127,8 +3180,8 @@ impl Render for AiAssistantView {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_switch_resets, should_auto_import_clippy, validated_clippy_result, AiAssistantView,
-        AiQuickActionMode, AiRequestGate,
+        context_switch_resets, sheet_message_reading_width, should_auto_import_clippy,
+        validated_clippy_result, AiAssistantView, AiQuickActionMode, AiRequestGate,
     };
     use shelldeck_core::ai::{AiContext, AiSurface, CLIPPY_MAX_RESULT_CHARS};
 
@@ -3200,6 +3253,26 @@ mod tests {
         );
         assert!(validated_clippy_result("  ".to_string()).is_err());
         assert!(validated_clippy_result("x".repeat(CLIPPY_MAX_RESULT_CHARS + 1)).is_err());
+    }
+
+    // SDTEST-1600 — the 240px history column used to leave the message
+    // renderer believing it still owned the Sheet's 600px reading measure.
+    // Definite user bubbles then extended underneath history and lost their
+    // leading text to the split's overflow clip.
+    #[test]
+    fn sheet_message_width_accounts_for_the_visible_history_column() {
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(1210.0), false, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(600.0)
+        );
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(1210.0), true, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(540.0)
+        );
+        assert_eq!(
+            sheet_message_reading_width(gpui::px(600.0), true, gpui::px(240.0), gpui::px(600.0)),
+            gpui::px(360.0)
+        );
     }
 
     // SDTEST-1429

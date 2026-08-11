@@ -1441,9 +1441,12 @@ capped at 88% of the reading column and receives a definite layout width so
 every wrapped line contributes to the bubble height instead of being clipped.
 Assistant responses remain unframed prose, and both roles use compact
 conversation block spacing without a document-style trailing margin. In the
-main window, the right-side Assistant Sheet preserves the floating window's
-top-right and bottom-right 12 px `radius_xl`; the complete overlay is clipped once at
-the host boundary so no dim-backdrop wedge appears between the panel and those
+Sheet, opening the 240 px history column reduces that definite bubble measure
+before Markdown shaping, so long turns remain wholly inside the conversation
+viewport instead of extending beneath history. In the main window, the
+right-side Assistant Sheet preserves the floating window's top-right and
+bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
+host boundary so no dim-backdrop wedge appears between the panel and those
 outer client corners.
 
 ### SDUC-415 — AI context and API privacy boundaries
