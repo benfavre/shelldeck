@@ -1297,6 +1297,8 @@ struct PolychromeSprite {
     opacity: f32,
     bounds: Bounds,
     content_mask: Bounds,
+    // ShellDeck patch: separate Cover sampling geometry from rounded mask geometry. See SDPATCH-114.
+    corner_bounds: Bounds,
     corner_radii: Corners,
     tile: AtlasTile,
 }
@@ -1331,7 +1333,8 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     }
 
     let sprite = b_poly_sprites[input.sprite_id];
-    let distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+    // ShellDeck patch: clip against the laid-out image box, not the oversized Cover texture bounds. See SDPATCH-114.
+    let distance = quad_sdf(input.position.xy, sprite.corner_bounds, sprite.corner_radii);
 
     var color = sample;
     if ((sprite.grayscale & 0xFFu) != 0u) {

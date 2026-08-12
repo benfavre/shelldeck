@@ -567,6 +567,7 @@ impl SupportView {
             delivery: last.then(|| self.render_issue_delivery(c, cx)).flatten(),
             actions: first.then(|| self.render_issue_message_actions(c, cx)),
             group: Some(group),
+            link_handler: Some(Self::thread_link_handler(cx)),
         };
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {
@@ -748,14 +749,20 @@ impl SupportView {
                         },
                         body,
                         attachments,
-                        ThreadMessageExtras::default(),
+                        ThreadMessageExtras {
+                            link_handler: Some(Self::thread_link_handler(cx)),
+                            ..Default::default()
+                        },
                         font_size,
                     )
                 } else {
                     human_message_continuation(
                         body,
                         attachments,
-                        ThreadMessageExtras::default(),
+                        ThreadMessageExtras {
+                            link_handler: Some(Self::thread_link_handler(cx)),
+                            ..Default::default()
+                        },
                         font_size,
                     )
                 };

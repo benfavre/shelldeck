@@ -9,14 +9,17 @@ use crate::icons::lucide_icon;
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
+use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
+use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 use pulldown_cmark::{Event, Options, Parser};
 use std::ops::Range;
+use std::rc::Rc;
 
 #[derive(Clone, Copy)]
-pub(super) enum ThreadNoteKind {
+pub(crate) enum ThreadNoteKind {
     Status,
     System,
     Github,
@@ -25,11 +28,182 @@ pub(super) enum ThreadNoteKind {
 }
 
 #[derive(Default)]
-pub(super) struct ThreadMessageExtras {
+pub(crate) struct ThreadMessageExtras {
     pub quote: Option<AnyElement>,
     pub delivery: Option<AnyElement>,
     pub actions: Option<AnyElement>,
     pub group: Option<SharedString>,
+    pub link_handler: Option<ThreadLinkHandler>,
+}
+
+pub(crate) type ThreadLinkHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct ThreadLinkAction {
+    pub url: String,
+    pub position: Point<Pixels>,
+}
+
+fn link_host(url: &str) -> Option<String> {
+    let (_, after_scheme) = url.split_once("://")?;
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if authority.starts_with('[') {
+        authority
+            .strip_prefix('[')?
+            .split_once(']')
+            .map(|(host, _)| host)?
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+pub(crate) fn thread_link_is_internal(url: &str) -> bool {
+    link_host(url).is_some_and(|host| {
+        ["inklura.fr", "bext.dev"]
+            .iter()
+            .any(|root| host == *root || host.ends_with(&format!(".{root}")))
+    })
+}
+
+/// Cursor-anchored confirmation shared by Ticket, Support Request and User
+/// Request threads. Markdown owns link detection/styling; this component owns
+/// the deliberate open/copy decision and the external-domain warning.
+pub(crate) fn thread_link_popover(
+    action: ThreadLinkAction,
+    on_close: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    let on_close = Rc::new(on_close);
+    let external = !thread_link_is_internal(&action.url);
+    let host = link_host(&action.url).unwrap_or_else(|| action.url.clone());
+    let url_for_copy = action.url.clone();
+    let url_for_open = action.url.clone();
+    let close_backdrop = on_close.clone();
+    let close_copy = on_close.clone();
+    let close_open = on_close.clone();
+
+    let card = div()
+        .occlude()
+        .w(px(340.0))
+        .max_w(relative(0.92))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .p(px(12.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(ShellDeckColors::border())
+        .bg(ShellDeckColors::bg_surface())
+        .shadow_lg()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(lucide_icon(
+                    if external {
+                        "triangle-alert"
+                    } else {
+                        "external-link"
+                    },
+                    15.0,
+                    if external {
+                        ShellDeckColors::warning()
+                    } else {
+                        ShellDeckColors::primary()
+                    },
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ShellDeckColors::text_primary())
+                        .child(if external {
+                            t!("support.thread.link.external_title").to_string()
+                        } else {
+                            t!("support.thread.link.internal_title").to_string()
+                        }),
+                ),
+        )
+        .when(external, |card| {
+            card.child(
+                div()
+                    .px(px(9.0))
+                    .py(px(8.0))
+                    .rounded(px(7.0))
+                    .bg(ShellDeckColors::warning().opacity(0.10))
+                    .text_size(px(11.0))
+                    .line_height(relative(1.4))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(t!("support.thread.link.external_warning").to_string()),
+            )
+        })
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ShellDeckColors::text_muted())
+                .child(host),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    Button::new(
+                        "thread-link-copy",
+                        t!("support.thread.link.copy").to_string(),
+                    )
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("copy"))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url_for_copy.clone()));
+                        close_copy(cx);
+                    }),
+                )
+                .child(
+                    Button::new(
+                        "thread-link-open",
+                        t!("support.thread.link.open").to_string(),
+                    )
+                    .variant(ButtonVariant::Default)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("external-link"))
+                    .on_click(move |_, _, cx| {
+                        cx.open_url(&url_for_open);
+                        close_open(cx);
+                    }),
+                ),
+        );
+
+    div()
+        .absolute()
+        .inset_0()
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| close_backdrop(cx))
+        .child(
+            deferred(
+                anchored()
+                    .snap_to_window()
+                    // Keep the action panel above the selected link. Its
+                    // bottom-left corner sits just above the pointer; window
+                    // snapping remains the fallback for links near the top.
+                    .anchor(Corner::BottomLeft)
+                    .position(action.position)
+                    .offset(point(gpui::px(0.0), gpui::px(-8.0)))
+                    .child(card),
+            )
+            .with_priority(10),
+        )
+        .into_any_element()
 }
 
 #[derive(Clone, Copy)]
@@ -243,20 +417,26 @@ pub(super) fn markdown_blocks(source: &str) -> Vec<SharedString> {
     chunks
 }
 
-fn markdown_body(body: SharedString, base_font_size: Pixels) -> Div {
+fn markdown_body(
+    body: SharedString,
+    base_font_size: Pixels,
+    link_handler: Option<ThreadLinkHandler>,
+) -> Div {
+    let mut markdown = Markdown::new(body)
+        .base_font_size(base_font_size)
+        .compact()
+        .w_full()
+        .min_w(px(0.0))
+        .whitespace_normal();
+    if let Some(handler) = link_handler {
+        markdown = markdown.on_link_click(move |url, window, cx| handler(url, window, cx));
+    }
     div()
         .w_full()
         .min_w(px(0.0))
         .overflow_hidden()
         .whitespace_normal()
-        .child(
-            Markdown::new(body)
-                .base_font_size(base_font_size)
-                .compact()
-                .w_full()
-                .min_w(px(0.0))
-                .whitespace_normal(),
-        )
+        .child(markdown)
 }
 
 fn looks_like_markdown(body: &str) -> bool {
@@ -480,14 +660,14 @@ pub(super) fn message_action(
 /// A human-authored message in the thread. The author's colour identifies our
 /// own voice; alignment and framing deliberately do not, so both Support data
 /// sources read as one continuous conversation.
-pub(super) struct HumanMessageMeta {
+pub(crate) struct HumanMessageMeta {
     pub author: SharedString,
     pub mine: bool,
     pub at: f64,
     pub channel: Option<SharedString>,
 }
 
-pub(super) fn human_message(
+pub(crate) fn human_message(
     meta: HumanMessageMeta,
     body: impl Into<SharedString>,
     attachments: Option<AnyElement>,
@@ -571,7 +751,15 @@ pub(super) fn human_message(
     if let Some(quote) = extras.quote.take() {
         message = message.child(quote);
     }
-    message = message.child(markdown_body(body, base_font_size));
+    // Attachment-only messages are valid. Do not manufacture a blank prose
+    // row between their identity and gallery.
+    if !body.trim().is_empty() {
+        message = message.child(markdown_body(
+            body,
+            base_font_size,
+            extras.link_handler.clone(),
+        ));
+    }
 
     if let Some(attachments) = attachments {
         message = message.child(attachments);
@@ -609,7 +797,11 @@ pub(super) fn human_message_continuation(
         .w_full()
         .max_w(px(560.0))
         .min_w(px(0.0))
-        .child(markdown_body(body.into(), base_font_size));
+        .child(markdown_body(
+            body.into(),
+            base_font_size,
+            extras.link_handler.clone(),
+        ));
     if let Some(attachments) = attachments {
         message = message.child(attachments);
     }
@@ -621,7 +813,7 @@ pub(super) fn human_message_continuation(
 
 /// A machine/internal event. Unlike a human answer it keeps a compact tinted
 /// frame because it describes state rather than participating in the prose.
-pub(super) fn note(
+pub(crate) fn note(
     body: impl Into<SharedString>,
     actor: Option<impl Into<SharedString>>,
     at: f64,
@@ -766,7 +958,7 @@ pub(super) fn note(
                 .flex_1()
                 .min_w(px(0.0))
                 .child(if looks_like_markdown(body.as_ref()) {
-                    markdown_body(body.clone(), base_font_size)
+                    markdown_body(body.clone(), base_font_size, None)
                 } else {
                     styled_body(
                         body.as_ref(),
@@ -789,7 +981,7 @@ pub(super) fn note(
 
 #[cfg(test)]
 mod tests {
-    use super::markdown_blocks;
+    use super::{markdown_blocks, thread_link_is_internal};
 
     #[test]
     fn markdown_is_split_on_complete_top_level_blocks() {
@@ -808,5 +1000,25 @@ mod tests {
         let blocks = markdown_blocks("Une seule ligne sans balisage");
         assert_eq!(blocks.as_slice(), &["Une seule ligne sans balisage"]);
         assert!(markdown_blocks("  \n").is_empty());
+    }
+
+    #[test]
+    fn ecosystem_domains_include_subdomains_but_not_suffix_spoofs() {
+        for trusted in [
+            "https://inklura.fr",
+            "https://manage.inklura.fr/ticket/1",
+            "https://cloud.bext.dev/dashboard",
+            "https://site.staging.bext.dev",
+        ] {
+            assert!(thread_link_is_internal(trusted), "{trusted}");
+        }
+        for external in [
+            "https://example.com",
+            "https://inklura.fr.evil.example/phish",
+            "https://fakebext.dev",
+            "mailto:support@inklura.fr",
+        ] {
+            assert!(!thread_link_is_internal(external), "{external}");
+        }
     }
 }

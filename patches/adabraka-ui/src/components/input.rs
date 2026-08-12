@@ -628,11 +628,22 @@ impl RenderOnce for Input {
         }
 
         let (bg_color, border_color, text_color) = if self.disabled {
-            (
-                theme.tokens.muted.opacity(0.5),
-                theme.tokens.border,
-                theme.tokens.muted_foreground,
-            )
+            match self.variant {
+                // ShellDeck patch: SDPATCH-028 — disabling a field must not
+                // resurrect an inner rectangle inside a Composer. Keep Bare
+                // chrome-free in every interaction state; muted text and the
+                // disabled action handlers already communicate the state.
+                InputVariant::Bare => (
+                    gpui::transparent_black(),
+                    gpui::transparent_black(),
+                    theme.tokens.muted_foreground,
+                ),
+                _ => (
+                    theme.tokens.muted.opacity(0.5),
+                    theme.tokens.border,
+                    theme.tokens.muted_foreground,
+                ),
+            }
         } else if self.error {
             match self.variant {
                 InputVariant::Default => (

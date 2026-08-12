@@ -86,6 +86,9 @@ use crate::settings::{
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::support_view::thread::{
+    human_message, note as thread_note, HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind,
+};
 use crate::support_view::{
     issue_status_badge, priority_badge, render_attachment_delete_dialog,
     render_issue_delete_dialog, SupportView, SupportViewEvent,
@@ -570,6 +573,9 @@ pub struct Workspace {
     issue_attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     /// Annotation editor opened after an interactive area capture.
     issue_capture_annotator: Option<Entity<AttachmentAnnotator>>,
+    /// URL selected from the User request conversation, rendered with the
+    /// same action/warning panel as Support tickets and requests.
+    issue_thread_link_action: Option<crate::support_view::thread::ThreadLinkAction>,
     _issues_poll: Option<gpui::Task<()>>,
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
@@ -589,6 +595,9 @@ pub struct Workspace {
     issue_attachment_url_open: bool,
     issue_new_attachments: Vec<AttachmentDraft>,
     issue_comment_attachments: Vec<AttachmentDraft>,
+    /// The detail-sheet attachment controls stay folded behind the shared
+    /// composer's `+`, unless drafts are already present.
+    issue_comment_attachments_open: bool,
     issue_attachment_busy: bool,
     issue_attachment_generation: u64,
     issue_ai_prompt_state: Entity<InputState>,
@@ -1277,6 +1286,7 @@ impl Workspace {
             confirm_attachment_delete: None,
             issue_attachment_lightbox: None,
             issue_capture_annotator: None,
+            issue_thread_link_action: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,
@@ -1285,11 +1295,12 @@ impl Workspace {
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_site_select,
             issue_new_site_id: None,
-            issue_comment_state: cx.new(InputState::new),
+            issue_comment_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_attachment_url_state: cx.new(InputState::new),
             issue_attachment_url_open: false,
             issue_new_attachments: Vec::new(),
             issue_comment_attachments: Vec::new(),
+            issue_comment_attachments_open: false,
             issue_attachment_busy: false,
             issue_attachment_generation: 0,
             issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),

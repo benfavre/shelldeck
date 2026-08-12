@@ -190,6 +190,7 @@ rules loader.
 
 @.agents/cross-platform.md
 @.agents/chrome.md
+@.agents/window-rounding.md
 @.agents/ui-components.md
 @.agents/theming.md
 @.agents/icons.md

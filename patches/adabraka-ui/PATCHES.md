@@ -553,6 +553,7 @@ carries no marker of its own — see its entry).
   - `src/prelude.rs` — re-export
 - **Markers**:
   - `src/components/input.rs:88` — `// ShellDeck patch: SDPATCH-028 — \`Ghost\` still paints a border, a shadow,`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-028 — disabling a field must not`
   - `src/components/input.rs:653` — `// ShellDeck patch: SDPATCH-028 — the host container signals the`
   - `src/components/input.rs:678` — `// ShellDeck patch: SDPATCH-028 — no background, no border; the`
   - `src/components/input.rs:688` — `// ShellDeck patch: SDPATCH-028 — suppresses every chrome affordance`
@@ -574,6 +575,9 @@ carries no marker of its own — see its entry).
   hover border and a focus ring, so nesting it produced a frame inside a frame.
   `Bare` also drops the `font_mono` face every other variant hardcodes: prose
   typed into a composer is not code.
+  The `Bare` contract applies while disabled too: generation/loading may mute
+  the text and block editing, but must not resurrect the nested input's fill or
+  border inside the Composer frame.
 - **Upstream status**: not filed yet. `InputVariant::Bare` is generic and worth
   upstreaming on its own; `Composer` is closer to ShellDeck's own vocabulary.
 
@@ -648,6 +652,37 @@ carries no marker of its own — see its entry).
   square when a header or footer occupies that edge.
 - **Upstream status**: not filed yet — the behavior is generic, but the
   Assistant variant and its outer-window geometry are ShellDeck-specific.
+
+### SDPATCH-033 — Markdown / HTML link callbacks are honored
+
+- **Files / symbols**:
+  - `src/display/rich_text.rs` — `LinkClickHandler`, interactive inline renderers
+  - `src/display/markdown.rs` — `Markdown::on_link_click`
+  - `src/display/html.rs` — `Html::on_link_click`
+- **Markers**:
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-033 — link callbacks must`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-033 — shared by every interactive inline`
+  - `src/display/html.rs` — `// ShellDeck patch: SDPATCH-033 — shared by every interactive inline`
+- **Why**: both public components accepted an `on_link_click` callback, but
+  `rich_text` ignored it and unconditionally called `cx.open_url`. Storing the
+  handler in an `Rc` lets every generated `InteractiveText` block invoke the
+  caller's confirmation/copy UI instead of bypassing it.
+- **Upstream status**: not filed yet — generic callback correctness fix.
+
+### SDPATCH-034 — Bare URLs become interactive Markdown links
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `UrlTrackingBlockBuilder::text`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-034 — chat APIs mostly return bare URLs,`
+- **Why**: ticket and request APIs return ordinary prose containing raw
+  `https://…` spans. pulldown-cmark leaves those spans as plain text unless
+  they use explicit Markdown link syntax. Promoting only HTTP(S) spans to
+  `RichInline::Link` gives raw and authored links identical primary colour,
+  underline, pointing cursor and click handling while leaving code blocks and
+  already-authored links untouched.
+- **Upstream status**: not filed yet — useful opt-in behavior, but automatic
+  linkification may not suit every generic Markdown consumer.
 
 ## Preserved files (do not overwrite on sync)
 
@@ -751,6 +786,10 @@ carries no marker of its own — see its entry).
 - **2026-08-11** — added SDPATCH-032: every opaque Assistant Sheet surface
   that reaches an exterior corner owns the 12 px curve. 1 new marker; current
   code marker count is 103.
+- **2026-08-12** — added SDPATCH-033: Markdown and HTML link callbacks are
+  retained and invoked by every interactive inline. 3 new markers.
+- **2026-08-12** — added SDPATCH-034: bare HTTP(S) spans are promoted to
+  interactive Markdown links. 1 new marker.
 
 ## Retired patches
 

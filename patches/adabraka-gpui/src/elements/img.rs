@@ -472,9 +472,13 @@ impl Element for Img {
                         .corner_radii
                         .to_pixels(window.rem_size())
                         .clamp_radii_for_quad_size(new_bounds.size);
+                    // ShellDeck patch: ObjectFit::Cover expands `new_bounds`
+                    // beyond the element; keep the original layout bounds as
+                    // the rounded mask geometry. See SDPATCH-114.
                     window
                         .paint_image(
                             new_bounds,
+                            bounds,
                             corner_radii,
                             data,
                             layout_state.frame_index,
