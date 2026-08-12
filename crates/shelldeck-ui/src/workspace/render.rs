@@ -646,6 +646,19 @@ impl Render for Workspace {
         // Command palette overlay
         root = root.child(self.command_palette.clone());
 
+        if let Some(action) = self.issue_thread_link_action.clone() {
+            let workspace = _cx.entity();
+            root = root.child(crate::support_view::thread::thread_link_popover(
+                action,
+                move |cx| {
+                    workspace.update(cx, |this, cx| {
+                        this.issue_thread_link_action = None;
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+
         if let Some(sheet) = &self.ai_sheet {
             // Clip the complete overlay once at the host boundary. Rounding
             // the Sheet panel itself reveals the dim backdrop as a small dark

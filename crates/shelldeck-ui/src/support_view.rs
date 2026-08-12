@@ -575,6 +575,9 @@ pub struct SupportView {
     ticket_message_blocks: Vec<Vec<SharedString>>,
     ticket_thread_rows: Vec<TicketThreadRow>,
     ticket_thread_list: ListState,
+    /// Link selected inside either Support conversation. The same cursor-
+    /// anchored action panel serves Tickets and hosted Requests.
+    thread_link_action: Option<thread::ThreadLinkAction>,
 }
 
 impl SupportView {
@@ -652,7 +655,22 @@ impl SupportView {
             ticket_message_blocks: Vec::new(),
             ticket_thread_rows: Vec::new(),
             ticket_thread_list: ListState::new(0, ListAlignment::Bottom, gpui::px(320.0)),
+            thread_link_action: None,
         }
+    }
+
+    fn thread_link_handler(cx: &mut Context<Self>) -> thread::ThreadLinkHandler {
+        let parent = cx.entity();
+        Rc::new(move |url, window, cx| {
+            let action = thread::ThreadLinkAction {
+                url: url.to_string(),
+                position: window.mouse_position(),
+            };
+            parent.update(cx, |this, cx| {
+                this.thread_link_action = Some(action);
+                cx.notify();
+            });
+        })
     }
 
     /// Switch the console section (palette / action shortcut to Demandes).
@@ -664,6 +682,7 @@ impl SupportView {
             self.attachment_panel_open = false;
         }
         self.section = section;
+        self.thread_link_action = None;
     }
 
     pub fn set_issues(&mut self, issues: Vec<Issue>, staff: bool, instances: Vec<IssueInstance>) {
@@ -709,6 +728,7 @@ impl SupportView {
         self.popover_menu = None;
         self.issue_popover_menu = None;
         self.confirm_issue_delete = None;
+        self.thread_link_action = None;
     }
 
     pub fn set_issue_detail(&mut self, detail: Option<Issue>, cx: &mut Context<Self>) {
@@ -1583,6 +1603,16 @@ impl Render for SupportView {
 
         if let Some(annotator) = &self.capture_annotator {
             root = root.child(annotator.clone());
+        }
+
+        if let Some(action) = self.thread_link_action.clone() {
+            let parent = cx.entity();
+            root = root.child(thread::thread_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.thread_link_action = None;
+                    cx.notify();
+                });
+            }));
         }
 
         if let Some(err) = &self.error {

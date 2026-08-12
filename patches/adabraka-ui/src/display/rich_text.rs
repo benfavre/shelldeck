@@ -1,5 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::rc::Rc;
 
 use crate::components::checkbox::{Checkbox, CheckboxSize};
 use crate::components::code_block::CodeBlock;
@@ -301,7 +302,11 @@ impl InlineFlattener {
     }
 }
 
-pub type LinkClickHandler = Box<dyn Fn(&str, &mut Window, &mut App) + 'static>;
+// ShellDeck patch: SDPATCH-033 — link callbacks must survive long enough to
+// be captured by every InteractiveText block produced from one Markdown tree.
+// The previous boxed callback was only borrowed during rendering, so the
+// renderer ignored it and called `cx.open_url` directly instead.
+pub type LinkClickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 
 pub fn render_inlines(
     inlines: &[RichInline],
@@ -330,18 +335,16 @@ pub fn render_inlines(
         let click_ranges: Vec<std::ops::Range<usize>> =
             flattened.links.iter().map(|l| l.range.clone()).collect();
         let link_urls: Vec<String> = flattened.links.iter().map(|l| l.url.clone()).collect();
-        let handler = link_handler.is_some();
-
-        if handler {
+        if let Some(handler) = link_handler.cloned() {
             let urls = link_urls;
             return div()
                 .text_size(base_size)
                 .line_height(relative(1.5))
                 .child(InteractiveText::new(id, styled).on_click(
                     click_ranges,
-                    move |idx, _window, cx| {
+                    move |idx, window, cx| {
                         if let Some(url) = urls.get(idx) {
-                            cx.open_url(url);
+                            handler(url, window, cx);
                         }
                     },
                 ))
@@ -384,16 +387,16 @@ pub fn render_inlines_with_handler(
         let click_ranges: Vec<std::ops::Range<usize>> =
             flattened.links.iter().map(|l| l.range.clone()).collect();
 
-        if let Some(_handler) = on_link_click {
+        if let Some(handler) = on_link_click.clone() {
             let urls: Vec<String> = flattened.links.iter().map(|l| l.url.clone()).collect();
             return div()
                 .text_size(base_size)
                 .line_height(relative(1.5))
                 .child(InteractiveText::new(id, styled).on_click(
                     click_ranges,
-                    move |idx, _window, cx| {
+                    move |idx, window, cx| {
                         if let Some(url) = urls.get(idx) {
-                            cx.open_url(url);
+                            handler(url, window, cx);
                         }
                     },
                 ))
@@ -692,15 +695,15 @@ fn render_inline_element(
             flattened.links.iter().map(|l| l.range.clone()).collect();
         let urls: Vec<String> = flattened.links.iter().map(|l| l.url.clone()).collect();
 
-        if let Some(_handler) = on_link_click {
+        if let Some(handler) = on_link_click.clone() {
             return div()
                 .text_size(base_size)
                 .line_height(relative(1.5))
                 .child(InteractiveText::new(id, styled).on_click(
                     click_ranges,
-                    move |idx, _window, cx| {
+                    move |idx, window, cx| {
                         if let Some(url) = urls.get(idx) {
-                            cx.open_url(url);
+                            handler(url, window, cx);
                         }
                     },
                 ))

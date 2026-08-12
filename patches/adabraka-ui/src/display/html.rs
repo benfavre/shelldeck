@@ -76,7 +76,9 @@ impl Html {
         mut self,
         handler: impl Fn(&str, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_link_click = Some(Box::new(handler));
+        // ShellDeck patch: SDPATCH-033 — shared by every interactive inline
+        // emitted from this HTML document.
+        self.on_link_click = Some(std::rc::Rc::new(handler));
         self
     }
 }

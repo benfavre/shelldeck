@@ -420,6 +420,7 @@ impl Workspace {
         self.user_issue_detail_dismissing = true;
         self.issue_attachment_generation = self.issue_attachment_generation.wrapping_add(1);
         self.issue_capture_annotator = None;
+        self.issue_thread_link_action = None;
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -434,6 +435,7 @@ impl Workspace {
                 ws.issue_attachment_url_open = false;
                 ws.issue_comment_attachments.clear();
                 ws.issue_comment_attachments_open = false;
+                ws.issue_thread_link_action = None;
                 cx.notify();
             });
         })

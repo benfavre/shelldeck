@@ -573,6 +573,9 @@ pub struct Workspace {
     issue_attachment_lightbox: Option<Entity<AttachmentLightbox>>,
     /// Annotation editor opened after an interactive area capture.
     issue_capture_annotator: Option<Entity<AttachmentAnnotator>>,
+    /// URL selected from the User request conversation, rendered with the
+    /// same action/warning panel as Support tickets and requests.
+    issue_thread_link_action: Option<crate::support_view::thread::ThreadLinkAction>,
     _issues_poll: Option<gpui::Task<()>>,
     /// User-mode "Nouvelle demande" + comment composer states — each hosts
     /// an adabraka `Input` widget (real cursor, selection, undo). Focus is
@@ -1283,6 +1286,7 @@ impl Workspace {
             confirm_attachment_delete: None,
             issue_attachment_lightbox: None,
             issue_capture_annotator: None,
+            issue_thread_link_action: None,
             _issues_poll: None,
             user_new_request_sheet_open: false,
             user_new_request_sheet_dismissing: false,

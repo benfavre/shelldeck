@@ -1484,6 +1484,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let font_size = px(12.5).to_pixels(window.rem_size());
+        let link_handler: crate::support_view::thread::ThreadLinkHandler = {
+            let workspace = cx.entity();
+            Rc::new(move |url, window, cx| {
+                let action = crate::support_view::thread::ThreadLinkAction {
+                    url: url.to_string(),
+                    position: window.mouse_position(),
+                };
+                workspace.update(cx, |this, cx| {
+                    this.issue_thread_link_action = Some(action);
+                    cx.notify();
+                });
+            })
+        };
         let account = self.app_config.account.as_ref();
         let author_is_mine = |author: &str| {
             let author = author.trim().to_ascii_lowercase();
@@ -1514,7 +1527,10 @@ impl Workspace {
             },
             iss.body.clone(),
             opening_attachments,
-            ThreadMessageExtras::default(),
+            ThreadMessageExtras {
+                link_handler: Some(link_handler.clone()),
+                ..Default::default()
+            },
             font_size,
         );
 
@@ -1570,7 +1586,10 @@ impl Workspace {
                     },
                     c.body.clone(),
                     attachments,
-                    ThreadMessageExtras::default(),
+                    ThreadMessageExtras {
+                        link_handler: Some(link_handler.clone()),
+                        ..Default::default()
+                    },
                     font_size,
                 ));
             }
