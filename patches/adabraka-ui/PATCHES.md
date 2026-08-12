@@ -553,6 +553,7 @@ carries no marker of its own — see its entry).
   - `src/prelude.rs` — re-export
 - **Markers**:
   - `src/components/input.rs:88` — `// ShellDeck patch: SDPATCH-028 — \`Ghost\` still paints a border, a shadow,`
+  - `src/components/input.rs` — `// ShellDeck patch: SDPATCH-028 — disabling a field must not`
   - `src/components/input.rs:653` — `// ShellDeck patch: SDPATCH-028 — the host container signals the`
   - `src/components/input.rs:678` — `// ShellDeck patch: SDPATCH-028 — no background, no border; the`
   - `src/components/input.rs:688` — `// ShellDeck patch: SDPATCH-028 — suppresses every chrome affordance`
@@ -574,6 +575,9 @@ carries no marker of its own — see its entry).
   hover border and a focus ring, so nesting it produced a frame inside a frame.
   `Bare` also drops the `font_mono` face every other variant hardcodes: prose
   typed into a composer is not code.
+  The `Bare` contract applies while disabled too: generation/loading may mute
+  the text and block editing, but must not resurrect the nested input's fill or
+  border inside the Composer frame.
 - **Upstream status**: not filed yet. `InputVariant::Bare` is generic and worth
   upstreaming on its own; `Composer` is closer to ShellDeck's own vocabulary.
 
