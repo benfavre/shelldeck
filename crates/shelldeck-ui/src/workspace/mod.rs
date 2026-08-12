@@ -86,6 +86,9 @@ use crate::settings::{
 use crate::sidebar::{SidebarEvent, SidebarSection, SidebarView};
 use crate::sites_view::{SitesEvent, SitesView};
 use crate::status_bar::{StatusBar, StatusBarEvent};
+use crate::support_view::thread::{
+    human_message, note as thread_note, HumanMessageMeta, ThreadMessageExtras, ThreadNoteKind,
+};
 use crate::support_view::{
     issue_status_badge, priority_badge, render_attachment_delete_dialog,
     render_issue_delete_dialog, SupportView, SupportViewEvent,
@@ -589,6 +592,9 @@ pub struct Workspace {
     issue_attachment_url_open: bool,
     issue_new_attachments: Vec<AttachmentDraft>,
     issue_comment_attachments: Vec<AttachmentDraft>,
+    /// The detail-sheet attachment controls stay folded behind the shared
+    /// composer's `+`, unless drafts are already present.
+    issue_comment_attachments_open: bool,
     issue_attachment_busy: bool,
     issue_attachment_generation: u64,
     issue_ai_prompt_state: Entity<InputState>,
@@ -1285,11 +1291,12 @@ impl Workspace {
             issue_body_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_site_select,
             issue_new_site_id: None,
-            issue_comment_state: cx.new(InputState::new),
+            issue_comment_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
             issue_attachment_url_state: cx.new(InputState::new),
             issue_attachment_url_open: false,
             issue_new_attachments: Vec::new(),
             issue_comment_attachments: Vec::new(),
+            issue_comment_attachments_open: false,
             issue_attachment_busy: false,
             issue_attachment_generation: 0,
             issue_ai_prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),

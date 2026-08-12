@@ -16,7 +16,7 @@ use pulldown_cmark::{Event, Options, Parser};
 use std::ops::Range;
 
 #[derive(Clone, Copy)]
-pub(super) enum ThreadNoteKind {
+pub(crate) enum ThreadNoteKind {
     Status,
     System,
     Github,
@@ -25,7 +25,7 @@ pub(super) enum ThreadNoteKind {
 }
 
 #[derive(Default)]
-pub(super) struct ThreadMessageExtras {
+pub(crate) struct ThreadMessageExtras {
     pub quote: Option<AnyElement>,
     pub delivery: Option<AnyElement>,
     pub actions: Option<AnyElement>,
@@ -480,14 +480,14 @@ pub(super) fn message_action(
 /// A human-authored message in the thread. The author's colour identifies our
 /// own voice; alignment and framing deliberately do not, so both Support data
 /// sources read as one continuous conversation.
-pub(super) struct HumanMessageMeta {
+pub(crate) struct HumanMessageMeta {
     pub author: SharedString,
     pub mine: bool,
     pub at: f64,
     pub channel: Option<SharedString>,
 }
 
-pub(super) fn human_message(
+pub(crate) fn human_message(
     meta: HumanMessageMeta,
     body: impl Into<SharedString>,
     attachments: Option<AnyElement>,
@@ -571,7 +571,11 @@ pub(super) fn human_message(
     if let Some(quote) = extras.quote.take() {
         message = message.child(quote);
     }
-    message = message.child(markdown_body(body, base_font_size));
+    // Attachment-only messages are valid. Do not manufacture a blank prose
+    // row between their identity and gallery.
+    if !body.trim().is_empty() {
+        message = message.child(markdown_body(body, base_font_size));
+    }
 
     if let Some(attachments) = attachments {
         message = message.child(attachments);
@@ -621,7 +625,7 @@ pub(super) fn human_message_continuation(
 
 /// A machine/internal event. Unlike a human answer it keeps a compact tinted
 /// frame because it describes state rather than participating in the prose.
-pub(super) fn note(
+pub(crate) fn note(
     body: impl Into<SharedString>,
     actor: Option<impl Into<SharedString>>,
     at: f64,

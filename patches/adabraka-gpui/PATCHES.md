@@ -432,6 +432,36 @@ only, out of the src/-scoped marker convention.)
 - **Upstream status**: not filed yet — extends SDPATCH-111; batch with it if
   that API is ever upstreamed.
 
+### SDPATCH-114 — Rounded `ObjectFit::Cover` images use layout bounds
+
+- **Files / symbols**:
+  - `src/elements/img.rs` — `Img::paint`
+  - `src/window.rs` — `Window::paint_image`
+  - `src/scene.rs` — `PolychromeSprite`
+  - `src/platform/blade/shaders.wgsl` — `PolychromeSprite`, `fs_poly_sprite`
+  - `src/platform/windows/shaders.hlsl` — `PolychromeSprite`,
+    `polychrome_sprite_fragment`
+  - `src/platform/mac/shaders.metal` — `polychrome_sprite_fragment`
+- **Markers** (9 markers):
+  - `src/elements/img.rs` — `// ShellDeck patch: ObjectFit::Cover expands`
+  - `src/window.rs` — `/// ShellDeck patch: image sampling bounds and rounded mask bounds differ`
+  - `src/window.rs` — `// ShellDeck patch: emoji sprites use their sampling bounds as`
+  - `src/scene.rs` — `// ShellDeck patch: rounded image clipping follows the element bounds,`
+  - `src/platform/blade/shaders.wgsl` — `// ShellDeck patch: separate Cover sampling geometry from rounded mask geometry.`
+  - `src/platform/blade/shaders.wgsl` — `// ShellDeck patch: clip against the laid-out image box, not the oversized Cover texture bounds.`
+  - `src/platform/windows/shaders.hlsl` — `// ShellDeck patch: separate Cover sampling geometry from rounded mask geometry.`
+  - `src/platform/windows/shaders.hlsl` — `// ShellDeck patch: clip against the laid-out image box, not the oversized Cover texture bounds.`
+  - `src/platform/mac/shaders.metal` — `// ShellDeck patch: clip against the laid-out image box, not the oversized`
+- **Why**: `Img::paint` computes expanded sampling bounds for
+  `ObjectFit::Cover`, but the polychrome sprite shader also used those expanded
+  bounds as its rounded-rectangle SDF. The actual element corners then sat on a
+  straight section of the oversized image and remained square. Carrying the
+  original layout bounds separately lets the texture keep its correct cover
+  crop while the alpha mask follows the visible card exactly — no inset,
+  border, distortion or preprocessed bitmap required.
+- **Upstream status**: not filed yet; suitable for a focused GPUI image-rendering
+  bug report and PR.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)

@@ -620,12 +620,26 @@ impl Render for Workspace {
         // Both live at workspace root so they slide over the list without
         // pushing it down (their inline predecessors did the pushing).
         if !self.settings_open && matches!(self.effective_mode(), AppMode::User) {
-            if self.user_new_request_sheet_open {
-                root = root.child(self.render_user_new_request_sheet(_cx));
+            let sheet = if self.user_new_request_sheet_open {
+                Some(
+                    self.render_user_new_request_sheet(is_maximized, _cx)
+                        .into_any_element(),
+                )
             } else if let Some(iss) = self.issue_detail.clone() {
                 if self.issue_selected.as_deref() == Some(iss.id.as_str()) {
-                    root = root.child(self.render_user_issue_detail_sheet(iss, _cx));
+                    Some(
+                        self.render_user_issue_detail_sheet(iss, is_maximized, _window, _cx)
+                            .into_any_element(),
+                    )
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+
+            if let Some(sheet) = sheet {
+                root = root.child(sheet);
             }
         }
 

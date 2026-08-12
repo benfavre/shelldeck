@@ -258,7 +258,9 @@ impl Workspace {
         title: String,
         icon: Option<&'static str>,
         dismissing: bool,
+        is_maximized: bool,
         inner: C,
+        footer: Option<AnyElement>,
         on_close: impl Fn(&mut Self, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -267,7 +269,7 @@ impl Workspace {
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
-        div()
+        let mut sheet = div()
             .id(id)
             .occlude()
             .absolute()
@@ -276,6 +278,15 @@ impl Workspace {
             .right_0()
             .bottom_0()
             .bg(ShellDeckColors::backdrop())
+            .overflow_hidden();
+        if !is_maximized {
+            // Apply the window clip directly to the element that paints the
+            // full-screen backdrop. A nested absolute overlay can escape a
+            // rounded ancestor's clip in GPUI and square off all four corners.
+            sheet = sheet.rounded(use_theme().tokens.radius_xl);
+        }
+
+        sheet
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _window, cx| {
@@ -296,6 +307,19 @@ impl Workspace {
                     .border_color(ShellDeckColors::border())
                     .shadow_xl()
                     .overflow_hidden()
+                    .map(|panel| {
+                        if is_maximized {
+                            panel
+                        } else {
+                            // The backdrop owns the left corners, but this
+                            // opaque panel paints after it and therefore owns
+                            // the two right window corners. Match the exact
+                            // root radius on those edges as well.
+                            panel
+                                .rounded_tr(use_theme().tokens.radius_xl)
+                                .rounded_br(use_theme().tokens.radius_xl)
+                        }
+                    })
                     .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
                         cx.stop_propagation();
                     })
@@ -360,6 +384,10 @@ impl Workspace {
                             .p(px(16.0))
                             .child(inner),
                     )
+                    // Detail sheets keep their message composer outside the
+                    // scroll body so replying never requires scrolling to the
+                    // end of a long thread. Form sheets simply pass `None`.
+                    .children(footer)
                     // Slide (300ms). On enter: ease_out_quint (very smooth
                     // decel), from `right = -SHEET_WIDTH` to 0. On exit:
                     // ease_in_quint reversed. Encoding the direction in the
@@ -393,6 +421,7 @@ impl Workspace {
     pub(super) fn render_issue_attachment_picker(
         &self,
         target: IssueAttachmentTarget,
+        separated: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let drafts = self.attachment_drafts(target).clone();
@@ -420,16 +449,13 @@ impl Workspace {
                 }
             });
 
-        div()
+        let mut picker = div()
             .id(ElementId::from(SharedString::from(format!(
                 "issue-attachment-picker-{target:?}"
             ))))
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .pt(px(9.0))
-            .border_t_1()
-            .border_color(ShellDeckColors::border())
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                 let mods = event.keystroke.modifiers;
                 if event.keystroke.key.eq_ignore_ascii_case("v")
@@ -591,7 +617,15 @@ impl Workspace {
                                 })),
                         ),
                 )
-            })
+            });
+
+        if separated {
+            picker = picker
+                .pt(px(9.0))
+                .border_t_1()
+                .border_color(ShellDeckColors::border());
+        }
+        picker
     }
 
     pub(super) fn render_stored_attachments(
@@ -786,7 +820,11 @@ impl Workspace {
         wrap
     }
 
-    pub(super) fn render_user_new_request_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_user_new_request_sheet(
+        &self,
+        is_maximized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // One chip, not four. Four badges plus a 186px site select overflowed
         // the context row onto a second line, and the unselected ones carried
         // `opacity(0.55)` — which made "Basse" unreadable on a light theme.
@@ -1394,8 +1432,11 @@ impl Workspace {
         // Unfolded on demand — or on its own once something is attached, so a
         // pasted image never lands somewhere invisible.
         if attachments_open {
-            inner = inner
-                .child(self.render_issue_attachment_picker(IssueAttachmentTarget::NewRequest, cx));
+            inner = inner.child(self.render_issue_attachment_picker(
+                IssueAttachmentTarget::NewRequest,
+                true,
+                cx,
+            ));
         }
 
         self.render_user_sheet(
@@ -1403,7 +1444,9 @@ impl Workspace {
             t!("user.requests.new").to_string(),
             Some("plus"),
             self.user_new_request_sheet_dismissing,
+            is_maximized,
             inner,
+            None,
             |this, cx| this.close_new_request_sheet(cx),
             cx,
         )
@@ -1413,15 +1456,22 @@ impl Workspace {
     pub(super) fn render_user_issue_detail_sheet(
         &self,
         iss: Issue,
+        is_maximized: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let inner = self.render_user_issue_detail(&iss, cx);
+        let inner = self.render_user_issue_detail(&iss, window, cx);
+        let footer = self
+            .render_user_issue_detail_footer(is_maximized, cx)
+            .into_any_element();
         self.render_user_sheet(
             "user-issue-detail-sheet",
             t!("user.requests.detail_title").to_string(),
             Some("tag"),
             self.user_issue_detail_dismissing,
+            is_maximized,
             inner,
+            Some(footer),
             |this, cx| this.close_user_issue_detail(cx),
             cx,
         )
@@ -1430,184 +1480,265 @@ impl Workspace {
     pub(super) fn render_user_issue_detail(
         &self,
         iss: &Issue,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut thread = div().flex().flex_col().gap(px(6.0)).mt(px(8.0));
-        if !iss.body.trim().is_empty() {
-            thread = thread.child(
-                div()
-                    .p(px(10.0))
-                    .rounded(px(8.0))
-                    .bg(ShellDeckColors::bg_primary())
-                    .border_1()
-                    .border_color(ShellDeckColors::border())
-                    .text_size(px(13.0))
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(iss.body.clone()),
-            );
-        }
-        if !iss.attachments.is_empty() {
-            thread = thread.child(self.render_stored_attachments(&iss.attachments, cx));
-        }
+        let font_size = px(12.5).to_pixels(window.rem_size());
+        let account = self.app_config.account.as_ref();
+        let author_is_mine = |author: &str| {
+            let author = author.trim().to_ascii_lowercase();
+            !author.is_empty()
+                && account.is_some_and(|account| {
+                    let name = account.name.trim().to_ascii_lowercase();
+                    let email = account.email.trim().to_ascii_lowercase();
+                    (!name.is_empty() && author == name) || (!email.is_empty() && author == email)
+                })
+        };
+        let source_channel = match iss.source.as_str() {
+            "slack" | "github" | "manage" | "email" => Some(SharedString::from(iss.source.clone())),
+            _ => None,
+        };
+        let opening_author = if iss.requested_by.trim().is_empty() {
+            t!("support.issue.description").to_string()
+        } else {
+            iss.requested_by.clone()
+        };
+        let opening_attachments = (!iss.attachments.is_empty())
+            .then(|| self.render_stored_attachments(&iss.attachments, cx));
+        let opening = human_message(
+            HumanMessageMeta {
+                author: opening_author.clone().into(),
+                mine: author_is_mine(&opening_author),
+                at: iss.created_at,
+                channel: source_channel.clone(),
+            },
+            iss.body.clone(),
+            opening_attachments,
+            ThreadMessageExtras::default(),
+            font_size,
+        );
+
+        // The timeline owns the spacing between messages; attachments stay
+        // inside their semantic message instead of becoming orphan rows.
+        let mut thread = div()
+            .flex()
+            .flex_col()
+            .gap(px(20.0))
+            .mt(px(12.0))
+            .child(opening);
         for c in &iss.comments {
-            thread = thread.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .p(px(9.0))
-                    .rounded(px(8.0))
-                    .bg(if c.is_note() {
-                        ShellDeckColors::warning().opacity(0.10)
-                    } else {
-                        ShellDeckColors::bg_sidebar()
-                    })
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(if c.is_note() {
-                                c.kind.clone()
-                            } else {
-                                c.author.clone()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(c.body.clone()),
-                    ),
-            );
-            if !c.attachments.is_empty() {
-                thread = thread.child(self.render_stored_attachments(&c.attachments, cx));
+            let attachments = (!c.attachments.is_empty())
+                .then(|| self.render_stored_attachments(&c.attachments, cx));
+            if c.is_note() {
+                let kind = match c.kind.as_str() {
+                    "status" => ThreadNoteKind::Status,
+                    "github" => ThreadNoteKind::Github,
+                    "system" if c.body.trim_start().starts_with("Dispatch") => {
+                        ThreadNoteKind::Dispatch
+                    }
+                    _ => ThreadNoteKind::System,
+                };
+                let actor = (!c.author.trim().is_empty()).then(|| c.author.clone());
+                let mut item = div().flex().flex_col().gap(px(6.0)).child(thread_note(
+                    c.body.clone(),
+                    actor,
+                    c.at,
+                    kind,
+                    px(11.5).to_pixels(window.rem_size()),
+                ));
+                if let Some(attachments) = attachments {
+                    item = item.child(attachments);
+                }
+                thread = thread.child(item);
+            } else {
+                let channel = if c.channel.trim().is_empty() {
+                    source_channel.clone()
+                } else {
+                    Some(SharedString::from(c.channel.clone()))
+                };
+                let author = if c.author.trim().is_empty() {
+                    t!("support.issue.comment").to_string()
+                } else {
+                    c.author.clone()
+                };
+                thread = thread.child(human_message(
+                    HumanMessageMeta {
+                        author: author.clone().into(),
+                        mine: author_is_mine(&author),
+                        at: c.at,
+                        channel,
+                    },
+                    c.body.clone(),
+                    attachments,
+                    ThreadMessageExtras::default(),
+                    font_size,
+                ));
             }
         }
 
+        let mut heading = div()
+            .flex()
+            .w_full()
+            .items_start()
+            .gap(px(8.0))
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .child(div().flex_shrink_0().child(issue_status_badge(&iss.status)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .line_clamp(3)
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(iss.title.clone()),
+            )
+            .children(
+                iss.site_label
+                    .as_ref()
+                    .filter(|label| !label.trim().is_empty())
+                    .map(|label| {
+                        Badge::new(Self::ellipsize_badge_label(label, 13))
+                            .variant(BadgeVariant::Outline)
+                            .max_w(px(120.0))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                    }),
+            )
+            .children(iss.github.as_ref().map(|g| {
+                div()
+                    .id("uiss-gh")
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::primary())
+                    .cursor_pointer()
+                    .child(t!("user.github_issue", number = g.number).to_string())
+                    .on_click({
+                        let url = g.url.clone();
+                        cx.listener(move |_t, _: &ClickEvent, _, _cx| {
+                            let _ = cloud_account::open_in_browser(&url);
+                        })
+                    })
+            }));
+
+        if self.is_my_issue(iss) {
+            heading = heading.child(
+                Button::new("uiss-detail-delete", "")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .icon(IconSource::from("trash-2"))
+                    .tooltip(t!("support.menu.delete").to_string())
+                    .on_click({
+                        let id = iss.id.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.confirm_issue_delete = Some(id.clone());
+                            cx.notify();
+                        })
+                    }),
+            );
+        }
+
         // Detail content flows directly inside the sheet chrome — no inner box
-        // (bg / border / rounded) so the sheet reads as a single surface, not
-        // "a card inside a card".
+        // (bg / border / rounded) so the sheet reads as a single surface. Only
+        // this thread scrolls; the reply composer is rendered by the fixed
+        // sheet footer below.
         div()
             .flex()
             .flex_col()
             .gap(px(8.0))
             .mt(px(10.0))
+            .child(heading)
+            .child(thread)
+    }
+
+    /// Reply controls stay anchored below the independently scrollable thread.
+    /// The optional attachment tools expand upward and are height-capped so a
+    /// long draft never pushes the composer outside the sheet.
+    pub(super) fn render_user_issue_detail_footer(
+        &self,
+        is_maximized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let empty = self
+            .issue_comment_state
+            .read(cx)
+            .content()
+            .trim()
+            .is_empty();
+        let has_attachments = !self.issue_comment_attachments.is_empty();
+        let attachments_open = self.issue_comment_attachments_open || has_attachments;
+        let send_entity = cx.entity();
+        let composer = Composer::new("user-issue-comment-composer", &self.issue_comment_state)
+            .placeholder(t!("user.requests.comment_placeholder").to_string())
+            .min_rows(1)
+            .max_rows(7)
+            .commit_enabled(!self.issue_attachment_busy && (!empty || has_attachments))
+            .action(
+                IconButton::new("plus")
+                    .variant(if attachments_open {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .size(gpui::px(28.0))
+                    .icon_size(gpui::px(14.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.issue_comment_attachments_open = !this.issue_comment_attachments_open;
+                        cx.notify();
+                    })),
+            )
+            .on_commit(move |cx| {
+                send_entity.update(cx, |this, cx| this.submit_issue_comment(cx));
+            })
+            .footnote(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(9.0))
+                    .child(t!("ai.assistant.hint.send").to_string())
+                    .child(t!("ai.assistant.hint.newline").to_string()),
+            );
+
+        let mut footer = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(8.0))
+            .px(px(16.0))
+            .pt(px(10.0))
+            .pb(px(14.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_surface())
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if this.paste_issue_attachment(IssueAttachmentTarget::Comment, cx) {
                     cx.stop_propagation();
                 } else {
                     cx.propagate();
                 }
-            }))
-            .child(
+            }));
+
+        if !is_maximized {
+            // This opaque footer paints after the already-rounded sheet
+            // panel, so it is the actual owner of the window's bottom-right
+            // pixels. Repeat the root radius directly on this paint layer.
+            footer = footer.rounded_br(use_theme().tokens.radius_xl);
+        }
+
+        if attachments_open {
+            footer = footer.child(
                 div()
-                    .flex()
-                    .w_full()
-                    .items_start()
-                    .gap(px(8.0))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(div().flex_shrink_0().child(issue_status_badge(&iss.status)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .line_clamp(3)
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ShellDeckColors::text_primary())
-                            .child(iss.title.clone()),
-                    )
-                    .children(
-                        iss.site_label
-                            .as_ref()
-                            .filter(|label| !label.trim().is_empty())
-                            .map(|label| {
-                                Badge::new(Self::ellipsize_badge_label(label, 13))
-                                    .variant(BadgeVariant::Outline)
-                                    .max_w(px(120.0))
-                                    .flex_shrink_0()
-                                    .overflow_hidden()
-                            }),
-                    )
-                    .children(iss.github.as_ref().map(|g| {
-                        div()
-                            .id("uiss-gh")
-                            .flex_shrink_0()
-                            .text_size(px(11.0))
-                            .text_color(ShellDeckColors::primary())
-                            .cursor_pointer()
-                            .child(t!("user.github_issue", number = g.number).to_string())
-                            .on_click({
-                                let url = g.url.clone();
-                                cx.listener(move |_t, _: &ClickEvent, _, _cx| {
-                                    let _ = cloud_account::open_in_browser(&url);
-                                })
-                            })
-                    })),
-            )
-            .child(thread)
-            .child(self.render_issue_attachment_picker(IssueAttachmentTarget::Comment, cx))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&self.issue_comment_state)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("user.requests.comment_placeholder").to_string())
-                                .on_enter({
-                                    let entity = cx.entity();
-                                    move |_value, cx| {
-                                        entity.update(cx, |ws, cx| ws.submit_issue_comment(cx));
-                                    }
-                                }),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("uiss-comment-send")
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .px(px(12.0))
-                            .py(px(7.0))
-                            .rounded(px(6.0))
-                            .bg(ShellDeckColors::primary())
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(white())
-                            .cursor_pointer()
-                            .child(
-                                svg()
-                                    .path(lucide_path("send"))
-                                    .size(px(11.0))
-                                    .text_color(white()),
-                            )
-                            .child(t!("user.requests.send").to_string())
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.submit_issue_comment(cx);
-                            })),
-                    ),
-            )
-            .when(self.is_my_issue(iss), |el| {
-                el.child(
-                    div().mt(px(8.0)).flex().justify_end().child(
-                        Button::new("uiss-delete", t!("support.menu.delete").to_string())
-                            .variant(ButtonVariant::Destructive)
-                            .icon(IconSource::from("trash-2"))
-                            .on_click({
-                                let id = iss.id.clone();
-                                cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.confirm_issue_delete = Some(id.clone());
-                                    cx.notify();
-                                })
-                            }),
-                    ),
-                )
-            })
+                    .id("user-issue-attachment-tools")
+                    .max_h(px(220.0))
+                    .overflow_y_scroll()
+                    .child(self.render_issue_attachment_picker(
+                        IssueAttachmentTarget::Comment,
+                        false,
+                        cx,
+                    )),
+            );
+        }
+        footer.child(composer)
     }
 }

@@ -433,6 +433,7 @@ impl Workspace {
                 Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
                 ws.issue_attachment_url_open = false;
                 ws.issue_comment_attachments.clear();
+                ws.issue_comment_attachments_open = false;
                 cx.notify();
             });
         })
@@ -473,16 +474,24 @@ impl Workspace {
     /// row it does not have (which would return a 404 toast).
     const FAKE_SHOWCASE_ID: &'static str = "fake-thread-showcase";
 
-    /// Injects a fictional request into the list, ONLY when the account is
-    /// staff (super-admin or Inklura Support). Every real user has zero access
-    /// to it — Manage never returns it. It exists so we can look at the thread
-    /// design against a controlled body: 13 cases at once, exactly what the
-    /// mockup shows in `docs/design/assistant-refonte.html`.
+    /// Fixture réservée aux phases de test visuel du fil Demande.
+    ///
+    /// Garder ce code disponible pour les futures validations UI, mais laisser
+    /// cet interrupteur désactivé en utilisation normale afin que la liste ne
+    /// contienne que les demandes réellement renvoyées par Manage.
+    const ENABLE_TEST_REQUEST_SHOWCASE: bool = false;
+
+    /// Injects a fictional request into the list only when its test-phase
+    /// switch is enabled and the account is staff (super-admin or Inklura
+    /// Support). Every real user has zero access to it — Manage never returns
+    /// it. It exists so we can look at the thread design against a controlled
+    /// body: 13 cases at once, exactly what the mockup shows in
+    /// `docs/design/assistant-refonte.html`.
     ///
     /// Called from `refresh_issues` after the real list comes back, so the
     /// fixture is refreshed each poll and never persists to disk.
     fn inject_thread_showcase(list: &mut Vec<Issue>, staff: bool) {
-        if !staff {
+        if !Self::ENABLE_TEST_REQUEST_SHOWCASE || !staff {
             return;
         }
         use shelldeck_core::config::issues::{
@@ -696,8 +705,9 @@ impl Workspace {
                     ws.issues_list = list.issues.clone();
                     ws.issues_staff = list.staff;
                     ws.issues_instances = list.instances.clone();
-                    // Fixture staff-only : n'affecte que la liste EN MÉMOIRE,
-                    // rien n'est envoyé à Manage, rien n'est persisté.
+                    // Fixture de phase de test uniquement : son interrupteur
+                    // reste coupé en utilisation normale. Même activée, elle
+                    // n'affecte que la mémoire et n'est jamais envoyée à Manage.
                     Self::inject_thread_showcase(&mut ws.issues_list, ws.issues_staff);
                     ws.push_issues_to_support(cx);
                     cx.notify();
@@ -801,6 +811,7 @@ impl Workspace {
             self.issue_comment_attachments.clear();
             Self::reset_input(&self.issue_attachment_url_state.clone(), cx);
             self.issue_attachment_url_open = false;
+            self.issue_comment_attachments_open = false;
         }
         self.issue_selected = Some(id.clone());
         self.add_activity_entry(
@@ -1044,7 +1055,9 @@ impl Workspace {
                         });
                         Self::reset_input(&ws.issue_comment_state.clone(), cx);
                         Self::reset_input(&ws.issue_attachment_url_state.clone(), cx);
+                        ws.issue_attachment_url_open = false;
                         ws.issue_comment_attachments.clear();
+                        ws.issue_comment_attachments_open = false;
                         cx.notify();
                     }
                     Err(e) => {

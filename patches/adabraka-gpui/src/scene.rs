@@ -743,6 +743,9 @@ pub(crate) struct PolychromeSprite {
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    // ShellDeck patch: rounded image clipping follows the element bounds,
+    // independently from ObjectFit sampling bounds. See SDPATCH-114.
+    pub corner_bounds: Bounds<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub tile: AtlasTile,
 }

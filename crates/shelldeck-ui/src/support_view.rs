@@ -8,7 +8,10 @@
 mod home;
 mod issue_filters;
 mod requests;
-mod thread;
+// Conversation primitives are also consumed by the User request sheet. The
+// data adapters stay separate, but a request must not acquire a second visual
+// language merely because it is viewed outside Support mode.
+pub(crate) mod thread;
 mod ticket_filters;
 mod tickets;
 
@@ -1377,7 +1380,7 @@ impl SupportView {
                 cx,
             ))
             .child(tab(
-                t!("support.tickets").to_string(),
+                t!("support.tickets_count", count = self.counts.all).to_string(),
                 "inbox",
                 SupportSection::Tickets,
                 cx,

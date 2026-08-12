@@ -154,6 +154,12 @@ pub fn render_attachment_draft_gallery(
                         .child(
                             img(draft.image.clone())
                                 .size_full()
+                                // The bitmap is its own GPUI paint layer. It
+                                // must repeat the card's inner top radii;
+                                // relying on the rounded parent clip leaves
+                                // square pixels in both top corners.
+                                .rounded_tl(px(7.0))
+                                .rounded_tr(px(7.0))
                                 .object_fit(ObjectFit::Cover),
                         ),
                 )
@@ -244,6 +250,7 @@ pub fn render_stored_attachment_gallery(
             let preview = if image_url.trim().is_empty() {
                 div()
                     .size_full()
+                    .rounded(px(6.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -252,10 +259,15 @@ pub fn render_stored_attachment_gallery(
             } else {
                 img(SharedString::from(image_url))
                     .size_full()
+                    // This bitmap is the only layer that owns the card shape:
+                    // no inset, no border and no differently-rounded surface
+                    // underneath it.
+                    .rounded(px(6.0))
                     .object_fit(ObjectFit::Cover)
                     .with_fallback(|| {
                         div()
                             .size_full()
+                            .rounded(px(6.0))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -275,15 +287,8 @@ pub fn render_stored_attachment_gallery(
                 .flex_shrink_0()
                 .overflow_hidden()
                 .rounded(px(6.0))
-                .border_1()
-                .border_color(ShellDeckColors::border())
-                .bg(ShellDeckColors::bg_surface())
                 .cursor_pointer()
-                .hover(|style| {
-                    style
-                        .border_color(ShellDeckColors::primary().opacity(0.55))
-                        .bg(ShellDeckColors::hover_bg())
-                })
+                .hover(|style| style.opacity(0.92))
                 .child(preview)
                 .child(
                     div()
@@ -546,6 +551,9 @@ impl Render for AttachmentLightbox {
                         div().size_full().overflow_hidden().rounded(px(4.0)).child(
                             img(SharedString::from(attachment.url.clone()))
                                 .size_full()
+                                // Nested rounded clips are not reliable for
+                                // image paint layers in GPUI.
+                                .rounded(px(4.0))
                                 .object_fit(ObjectFit::Cover),
                         ),
                     )

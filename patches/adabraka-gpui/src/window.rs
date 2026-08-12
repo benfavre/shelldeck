@@ -3087,6 +3087,9 @@ impl Window {
                 bounds,
                 corner_radii: Default::default(),
                 content_mask,
+                // ShellDeck patch: emoji sprites use their sampling bounds as
+                // their (unrounded) mask geometry. See SDPATCH-114.
+                corner_bounds: bounds,
                 tile,
                 opacity,
             });
@@ -3161,9 +3164,12 @@ impl Window {
     /// This method will panic if the frame_index is not valid
     ///
     /// This method should only be called as part of the paint phase of element drawing.
+    /// ShellDeck patch: image sampling bounds and rounded mask bounds differ
+    /// under ObjectFit::Cover. Carry both into the sprite. See SDPATCH-114.
     pub fn paint_image(
         &mut self,
         bounds: Bounds<Pixels>,
+        corner_bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
         data: Arc<RenderImage>,
         frame_index: usize,
@@ -3191,6 +3197,7 @@ impl Window {
             })?
             .expect("Callback above only returns Some");
         let content_mask = self.content_mask().scale(scale_factor);
+        let corner_bounds = corner_bounds.scale(scale_factor);
         let corner_radii = corner_radii.scale(scale_factor);
         let opacity = self.element_opacity();
 
@@ -3202,6 +3209,7 @@ impl Window {
                 .map_origin(|origin| origin.floor())
                 .map_size(|size| size.ceil()),
             content_mask,
+            corner_bounds,
             corner_radii,
             tile,
             opacity,
