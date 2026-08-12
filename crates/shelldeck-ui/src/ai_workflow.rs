@@ -2,7 +2,7 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
 use adabraka_ui::components::input_state::InputState;
 use adabraka_ui::prelude::{
-    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Markdown,
+    scrollable_vertical, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Composer, Markdown,
 };
 use gpui::prelude::*;
 use gpui::*;
@@ -778,66 +778,35 @@ impl Render for AiWorkflowView {
             .as_ref()
             .is_none_or(|proposal| !proposal.has_changes());
 
-        let instructions_input = if self.target.result_is_read_only() {
+        let instructions_input = {
             let entity = cx.entity();
-            div()
-                .flex()
-                .items_center()
-                .w_full()
-                .min_w(px(0.0))
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .w_full()
-                        .min_w(px(0.0))
-                        .flex_initial()
-                        .h(px(32.0))
-                        .overflow_hidden()
-                        .child(
-                            Input::new(&self.instructions_state)
-                                .w_full()
-                                .size(InputSize::Sm)
-                                .placeholder(instructions_placeholder)
-                                .disabled(self.loading)
-                                .on_enter(move |_, cx| {
-                                    entity.update(cx, |this, cx| this.generate(cx));
-                                }),
-                        ),
-                )
-                .child(
-                    Button::new("ai-workflow-adjust", t!("ai.workflow.adjust").to_string())
-                        .variant(ButtonVariant::Ai)
-                        .size(ButtonSize::Sm)
-                        .min_w(px(96.0))
-                        .flex_shrink_0()
-                        .icon(IconSource::from("sparkles"))
-                        .disabled(self.loading)
-                        .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .w_full()
-                .min_w(px(0.0))
-                .child(
-                    Input::new(&self.instructions_state)
-                        .w_full()
-                        .size(InputSize::Sm)
-                        .multi_line(true)
-                        .min_rows(3)
-                        .max_rows(6)
-                        .placeholder(instructions_placeholder)
-                        .disabled(self.loading),
-                )
-                .into_any_element()
+            let (min_rows, max_rows) = if self.target.result_is_read_only() {
+                (1, 3)
+            } else {
+                (2, 6)
+            };
+            Composer::new("ai-workflow-instructions", &self.instructions_state)
+                .placeholder(instructions_placeholder)
+                .min_rows(min_rows)
+                .max_rows(max_rows)
+                .disabled(self.loading)
+                .commit_enabled(!self.loading)
+                .on_commit(move |cx| {
+                    entity.update(cx, |this, cx| this.generate(cx));
+                })
         };
 
-        let mut body = div()
+        // Match every other chat surface: the Composer is a fixed sibling of
+        // the independently scrollable result, never a child of that scroll.
+        // The previous nested-scroll tree remeasured this frame at its minimum
+        // intrinsic width as soon as a generated result appeared.
+        let controls = div()
             .flex()
             .flex_col()
             .w_full()
             .px(px(16.0))
-            .py(px(14.0))
+            .pt(px(14.0))
+            .pb(px(12.0))
             .gap(px(12.0))
             .child(
                 div()
@@ -934,6 +903,16 @@ impl Render for AiWorkflowView {
                     .child(instructions_input),
             );
 
+        let mut body = div()
+            .id("ai-workflow-result-body")
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .px(px(16.0))
+            .pb(px(14.0))
+            .gap(px(12.0));
+
         if self.restored {
             body = body.child(
                 div()
@@ -1010,14 +989,13 @@ impl Render for AiWorkflowView {
                         body = body.child(
                             div()
                                 .w_full()
-                                .h(px(280.0))
                                 .min_h(px(0.0))
                                 .overflow_hidden()
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(ShellDeckColors::border())
                                 .bg(ShellDeckColors::bg_primary())
-                                .child(scrollable_vertical(content)),
+                                .child(content),
                         );
                     } else {
                         let result = self.result_state.read(cx).content().to_string();
@@ -1039,14 +1017,13 @@ impl Render for AiWorkflowView {
                         body = body.child(
                             div()
                                 .w_full()
-                                .h(px(280.0))
                                 .min_h(px(0.0))
                                 .overflow_hidden()
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(ShellDeckColors::border())
                                 .bg(ShellDeckColors::bg_primary())
-                                .child(scrollable_vertical(content)),
+                                .child(content),
                         );
                     }
                 } else {
@@ -1152,16 +1129,6 @@ impl Render for AiWorkflowView {
                             .icon(IconSource::from("clock"))
                             .on_click(cx.listener(|this, _, _, cx| this.put_pending(cx))),
                     )
-                    .child(
-                        Button::new(
-                            "ai-workflow-regenerate",
-                            t!("ai.workflow.regenerate").to_string(),
-                        )
-                        .variant(ButtonVariant::Ai)
-                        .size(ButtonSize::Sm)
-                        .icon(IconSource::from("sparkles"))
-                        .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
-                    )
                     .when(
                         self.target.can_prepare_action()
                             && self.action_policy >= AiAutonomyLevel::Confirmation,
@@ -1218,19 +1185,6 @@ impl Render for AiWorkflowView {
                         .icon(IconSource::from("check"))
                         .on_click(cx.listener(|this, _, _, cx| this.accept(cx))),
                     )
-            })
-            .when(!has_result, |actions| {
-                actions.child(
-                    Button::new(
-                        "ai-workflow-generate",
-                        t!("ai.assistant.submit").to_string(),
-                    )
-                    .variant(ButtonVariant::Ai)
-                    .size(ButtonSize::Sm)
-                    .disabled(self.loading)
-                    .icon(IconSource::from("sparkles"))
-                    .on_click(cx.listener(|this, _, _, cx| this.generate(cx))),
-                )
             });
 
         div()
@@ -1240,6 +1194,7 @@ impl Render for AiWorkflowView {
             .flex_1()
             .min_h(px(0.0))
             .overflow_hidden()
+            .child(controls)
             .child(
                 div()
                     .flex()

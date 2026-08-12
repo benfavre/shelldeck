@@ -743,8 +743,10 @@ fragment float4 polychrome_sprite_fragment(
                                           min_filter::linear);
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+  // ShellDeck patch: clip against the laid-out image box, not the oversized
+  // Cover texture bounds. See SDPATCH-114.
   float distance =
-      quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+      quad_sdf(input.position.xy, sprite.corner_bounds, sprite.corner_radii);
 
   float4 color = sample;
   if (sprite.grayscale) {

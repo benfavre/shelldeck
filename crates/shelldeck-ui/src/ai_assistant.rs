@@ -809,9 +809,16 @@ impl AiAssistantView {
             .iter_mut()
             .find(|conversation| conversation.id == id)
         {
+            // Selecting an already-active thread is navigation, not a data
+            // mutation. Persist only when this click genuinely restores an
+            // archived conversation; serializing and renaming the complete
+            // store on every history click used to block the GPUI thread.
+            let restored = conversation.archived;
             conversation.archived = false;
             self.active_conversation = Some(id);
-            self.persist_conversations();
+            if restored {
+                self.persist_conversations();
+            }
             self.message_scroll.scroll_to_bottom();
             cx.notify();
         }
@@ -1002,7 +1009,6 @@ impl AiAssistantView {
             .conversations
             .iter()
             .filter(|conversation| conversation.archived == self.show_archived)
-            .cloned()
             .collect::<Vec<_>>();
         conversations.sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at));
 

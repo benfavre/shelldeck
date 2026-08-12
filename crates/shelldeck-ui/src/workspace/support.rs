@@ -1,6 +1,13 @@
 use super::*;
 
 impl Workspace {
+    /// Fixture réservée aux phases de test visuel du fil Ticket.
+    ///
+    /// Garder ce code disponible pour les futures validations UI, mais laisser
+    /// cet interrupteur désactivé en utilisation normale afin que les listes et
+    /// compteurs ne contiennent que les données réellement renvoyées par Manage.
+    const ENABLE_TEST_TICKET_SHOWCASE: bool = false;
+
     /// Staff-only in-memory Ticket counterpart of the Requests thread fixture.
     /// It never reaches Manage and lets the Ticket adapter exercise the same
     /// visual states even though today's Support API only returns basic
@@ -242,7 +249,7 @@ impl Workspace {
         let base = self.account_base_url();
         let token = self.app_config.cloud_sync.token.clone();
         let need_agents = !self.support.read(cx).has_agents();
-        let inject_showcase = self.is_inklura_support();
+        let inject_showcase = Self::ENABLE_TEST_TICKET_SHOWCASE && self.is_inklura_support();
         self.support.update(cx, |v, cx| {
             v.set_loading(true);
             cx.notify();

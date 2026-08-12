@@ -46,6 +46,27 @@ in `render_message`).
 | Fixed chip / toast | `max_w` + wrap or `line_clamp(n)` — no scroll inside a toast |
 | Horizontal tab strip | `overflow_x_scroll` at min width, not unbounded flex |
 
+### Chat composers beside dynamic results
+
+Keep a message `Composer` outside the independently scrollable thread/result:
+
+```rust
+div()
+    .flex()
+    .flex_col()
+    .min_h(px(0.0))
+    .child(result.flex_1().min_h(px(0.0)).overflow_y_scroll())
+    .child(composer.flex_shrink_0())
+```
+
+Do not put the composer inside a scroll view that later gains another nested
+scroll view for generated content. GPUI can remeasure the outer content at its
+minimum intrinsic width when the nested scroll appears, collapsing a full-width
+composer only after the loading → result transition. If the result is long,
+give it the single available scroll owner; do not add a second fixed-height
+scroll inside it. `AiWorkflowView` and the Support ticket thread use this
+sibling layout.
+
 ## Overlays (toasts, modals, dropdowns)
 
 - Anchor container: `max_w` matching the child cap (`ToastContainer` → 420px).

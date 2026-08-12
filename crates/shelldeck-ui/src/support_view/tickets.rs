@@ -972,6 +972,7 @@ impl SupportView {
                 "ticket-message-{}",
                 msg.at.to_bits()
             ))),
+            link_handler: Some(Self::thread_link_handler(cx)),
         };
         let font_size = px(12.5).to_pixels(window.rem_size());
         if first {

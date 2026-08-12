@@ -2,6 +2,10 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use gpui::*;
+#[cfg(feature = "markdown")]
+use once_cell::sync::Lazy;
+#[cfg(feature = "markdown")]
+use regex::Regex;
 
 use crate::display::rich_text::LinkClickHandler;
 #[cfg(feature = "markdown")]
@@ -49,7 +53,9 @@ impl Markdown {
         mut self,
         handler: impl Fn(&str, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_link_click = Some(Box::new(handler));
+        // ShellDeck patch: SDPATCH-033 — shared by every interactive inline
+        // emitted from this Markdown document.
+        self.on_link_click = Some(std::rc::Rc::new(handler));
         self
     }
 }
@@ -435,7 +441,43 @@ impl UrlTrackingBlockBuilder {
             self.code_block_content.push_str(text);
             return;
         }
-        self.push_inline(RichInline::Text(text.to_string()));
+        // ShellDeck patch: SDPATCH-034 — chat APIs mostly return bare URLs,
+        // not Markdown `[labels](destinations)`. Promote http(s) spans to the
+        // same RichInline::Link used by authored Markdown so styling, cursor
+        // and the caller's confirmation handler are identical.
+        static BARE_URL: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"https?://[^\s<>{}\[\]\"']+"#).expect("valid bare URL regex")
+        });
+        if !self.url_stack.is_empty() {
+            self.push_inline(RichInline::Text(text.to_string()));
+            return;
+        }
+
+        let mut cursor = 0;
+        for found in BARE_URL.find_iter(text) {
+            if found.start() > cursor {
+                self.push_inline(RichInline::Text(text[cursor..found.start()].to_string()));
+            }
+            let raw = found.as_str();
+            let url = raw.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
+            if url.is_empty() {
+                self.push_inline(RichInline::Text(raw.to_string()));
+            } else {
+                self.push_inline(RichInline::Link {
+                    text: vec![RichInline::Text(url.to_string())],
+                    url: url.to_string(),
+                });
+                if url.len() < raw.len() {
+                    self.push_inline(RichInline::Text(raw[url.len()..].to_string()));
+                }
+            }
+            cursor = found.end();
+        }
+        if cursor < text.len() {
+            self.push_inline(RichInline::Text(text[cursor..].to_string()));
+        } else if cursor == 0 {
+            self.push_inline(RichInline::Text(text.to_string()));
+        }
     }
 
     fn push_inline(&mut self, inline: RichInline) {
@@ -452,5 +494,43 @@ impl UrlTrackingBlockBuilder {
             }
         }
         self.blocks.push(block);
+    }
+}
+
+#[cfg(all(test, feature = "markdown"))]
+mod tests {
+    use super::{parse_markdown_with_urls, RichBlock, RichInline};
+
+    #[test]
+    fn bare_http_url_is_promoted_without_trailing_punctuation() {
+        let blocks = parse_markdown_with_urls(
+            "Consulte https://manage.inklura.fr/tickets/42, puis réponds.",
+        );
+        let RichBlock::Paragraph(inlines) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert!(inlines.iter().any(|inline| matches!(
+            inline,
+            RichInline::Link { url, .. }
+                if url == "https://manage.inklura.fr/tickets/42"
+        )));
+        assert!(inlines
+            .iter()
+            .any(|inline| matches!(inline, RichInline::Text(text) if text.starts_with(','))));
+    }
+
+    #[test]
+    fn explicit_markdown_link_is_not_linkified_twice() {
+        let blocks = parse_markdown_with_urls("[Manage](https://manage.inklura.fr)");
+        let RichBlock::Paragraph(inlines) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(
+            inlines
+                .iter()
+                .filter(|inline| matches!(inline, RichInline::Link { .. }))
+                .count(),
+            1
+        );
     }
 }
