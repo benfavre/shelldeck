@@ -267,7 +267,8 @@ impl Workspace {
     }
 
     pub(super) fn ai_available_for_current_surface(&self, cx: &App) -> bool {
-        self.ai_backend_available()
+        self.signed_in()
+            && self.ai_backend_available()
             && self
                 .app_config
                 .ai
@@ -466,7 +467,26 @@ impl Workspace {
         self.sync_ai_tasks(cx);
     }
 
+    fn ai_action_allowed(&self, plan: &AiActionPlan) -> bool {
+        if !self.signed_in() {
+            return false;
+        }
+        match &plan.payload {
+            AiActionPayload::TerminalCommand { .. }
+            | AiActionPayload::ScriptExecution { .. }
+            | AiActionPayload::FleetDispatch { .. } => self.can_access_mode(AppMode::Dev),
+            AiActionPayload::SupportSend { .. } => self.can_access_mode(AppMode::Support),
+            AiActionPayload::JeanDispatch { .. } => self.effective_jean_config().is_some(),
+            AiActionPayload::ClippyReplaceSelection { .. } => {
+                self.app_config.ai.allows(AiSurface::Clippy)
+            }
+        }
+    }
+
     pub(super) fn stage_ai_action(&mut self, mut plan: AiActionPlan, cx: &mut Context<Self>) {
+        if !self.ai_action_allowed(&plan) {
+            return;
+        }
         let level = self.app_config.ai.policies.level_for(plan.capability);
         plan.autonomy = level;
         match ai_action_disposition(level, plan.risk) {
@@ -503,7 +523,27 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let surface = target.surface();
-        if !self.ai_backend_available() || !self.app_config.ai.allows(surface) {
+        let role_allowed = match &target {
+            AiWorkflowTarget::SupportReply { .. }
+            | AiWorkflowTarget::SupportSummary { .. }
+            | AiWorkflowTarget::SupportTriage { .. }
+            | AiWorkflowTarget::IssueTriage { .. } => self.can_access_mode(AppMode::Support),
+            AiWorkflowTarget::EntityNaming { kind, .. } => {
+                matches!(kind, AiNamingKind::Issue) || self.can_access_mode(AppMode::Dev)
+            }
+            AiWorkflowTarget::ScriptGenerate { .. }
+            | AiWorkflowTarget::ScriptExplain { .. }
+            | AiWorkflowTarget::ScriptReview { .. }
+            | AiWorkflowTarget::ScriptFix { .. }
+            | AiWorkflowTarget::TerminalCommand { .. }
+            | AiWorkflowTarget::TerminalDiagnose { .. } => self.can_access_mode(AppMode::Dev),
+            AiWorkflowTarget::IssueReply { .. } | AiWorkflowTarget::IssueSummary { .. } => true,
+        };
+        if !self.signed_in()
+            || !role_allowed
+            || !self.ai_backend_available()
+            || !self.app_config.ai.allows(surface)
+        {
             return;
         }
         let pending = if initial_instructions.is_some() {
@@ -1183,6 +1223,9 @@ impl Workspace {
         let Some(plan) = self.ai_action_confirmation.take() else {
             return;
         };
+        if !self.ai_action_allowed(&plan) {
+            return;
+        }
         self.audit_ai_action(
             &plan,
             if plan.autonomy == shelldeck_core::ai::AiAutonomyLevel::Automatic {
@@ -1295,7 +1338,7 @@ impl Workspace {
         body: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.can_access_mode(AppMode::Support) {
             return;
         }
         let base = self.account_base_url();
@@ -1452,6 +1495,9 @@ impl Workspace {
         event: AiWorkflowEvent,
         cx: &mut Context<Self>,
     ) {
+        if !self.signed_in() {
+            return;
+        }
         match event {
             AiWorkflowEvent::Generate {
                 request_id,
@@ -1868,7 +1914,10 @@ impl Workspace {
         context: AiContext,
         cx: &mut Context<Self>,
     ) {
-        if !self.ai_backend_available() || !self.app_config.ai.allows(context.surface) {
+        if !self.signed_in()
+            || !self.ai_backend_available()
+            || !self.app_config.ai.allows(context.surface)
+        {
             return;
         }
         self.ai_assistant.update(cx, |assistant, cx| {
@@ -1889,7 +1938,10 @@ impl Workspace {
     /// the conversation context is about — so the chat context is left as-is
     /// and no in-flight chat request is disturbed.
     pub(super) fn open_ai_clippy(&mut self, cx: &mut Context<Self>) {
-        if !self.ai_backend_available() || !self.app_config.ai.allows(AiSurface::Clippy) {
+        if !self.signed_in()
+            || !self.ai_backend_available()
+            || !self.app_config.ai.allows(AiSurface::Clippy)
+        {
             return;
         }
         let backend = self.app_config.ai.backend;
@@ -1946,6 +1998,9 @@ impl Workspace {
         event: AiAssistantEvent,
         cx: &mut Context<Self>,
     ) {
+        if !self.signed_in() {
+            return;
+        }
         match event {
             // Routed through the Settings entity, which owns `ai.*`. Writing
             // `app_config` here would leave the Settings snapshot stale and
@@ -2055,6 +2110,9 @@ impl Workspace {
     }
 
     pub fn handle_ai_companion_event(&mut self, event: AiCompanionEvent, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
         match event {
             AiCompanionEvent::ApplyAction(action) => {
                 self.apply_ai_assistant_action(action, cx);
@@ -2193,7 +2251,7 @@ impl Workspace {
                 self.prepare_jean_dispatch(prompt, cx);
             }
             AiAssistantAction::OpenRequest { issue_id, query } => {
-                if !self.app_config.cloud_sync.is_configured() {
+                if !self.signed_in() {
                     self.show_toast(
                         t!("toast.issue.login_required_list").to_string(),
                         ToastLevel::Warning,

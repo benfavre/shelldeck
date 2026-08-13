@@ -6,6 +6,9 @@ impl Workspace {
         event: &DashboardEvent,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             DashboardEvent::QuickConnect(id) => {
                 if let Some(conn) = self.connections.iter().find(|c| c.id == *id) {
@@ -36,6 +39,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_recent_event(&mut self, event: RecentEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             RecentEvent::Open(entry) => self.open_activity(entry, cx),
             RecentEvent::Analyze(entry) => {

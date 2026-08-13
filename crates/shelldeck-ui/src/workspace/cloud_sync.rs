@@ -8,6 +8,9 @@ impl Workspace {
     /// (never the UI thread), and on completion the merged connections are
     /// reloaded into the sidebar/dashboard and a toast reports the stats.
     pub fn cloud_sync_now(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
         self.start_cloud_sync(true, cx);
     }
 

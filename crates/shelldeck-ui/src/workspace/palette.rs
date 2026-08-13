@@ -13,38 +13,59 @@ impl Workspace {
         ai_configured: bool,
         clippy_configured: bool,
     ) -> Vec<PaletteAction> {
+        let signed_in = !allowed_modes.is_empty();
         let mut actions = vec![
-            PaletteAction::new(
-                t!("palette.open_settings").to_string(),
-                Some("Ctrl+,"),
-                "settings",
-                Box::new(OpenSettings),
-            ),
             PaletteAction::new(
                 t!("palette.quit").to_string(),
                 Some("Ctrl+Q"),
                 "x",
                 Box::new(Quit),
             ),
+            // Recovery path must exist in every mode, including logged out:
+            // the menu row cannot be the only place that can restore itself.
             PaletteAction::new(
-                t!("palette.cloud_sync_now").to_string(),
-                None,
-                "refresh-cw",
-                Box::new(CloudSyncNow),
-            ),
-            PaletteAction::new(
-                t!("palette.switch_site").to_string(),
-                None,
-                "globe",
-                Box::new(SwitchSite),
-            ),
-            PaletteAction::new(
-                t!("palette.new_request").to_string(),
-                None,
-                "plus",
-                Box::new(NewRequest),
+                t!("menu.view.menu_bar").to_string(),
+                Some("Ctrl+Shift+M"),
+                "menu",
+                Box::new(ToggleMenuBar),
             ),
         ];
+
+        if signed_in {
+            actions.extend([
+                PaletteAction::new(
+                    t!("palette.open_settings").to_string(),
+                    Some("Ctrl+,"),
+                    "settings",
+                    Box::new(OpenSettings),
+                ),
+                PaletteAction::new(
+                    t!("palette.cloud_sync_now").to_string(),
+                    None,
+                    "refresh-cw",
+                    Box::new(CloudSyncNow),
+                ),
+                PaletteAction::new(
+                    t!("palette.switch_site").to_string(),
+                    None,
+                    "globe",
+                    Box::new(SwitchSite),
+                ),
+                PaletteAction::new(
+                    t!("palette.new_request").to_string(),
+                    None,
+                    "plus",
+                    Box::new(NewRequest),
+                ),
+            ]);
+        } else {
+            actions.push(PaletteAction::new(
+                t!("menu.account.sign_in").to_string(),
+                None,
+                "user-check",
+                Box::new(OpenLogin),
+            ));
+        }
 
         if current_mode == AppMode::Support && allowed_modes.contains(&AppMode::Support) {
             actions.push(PaletteAction::new(
@@ -162,7 +183,7 @@ impl Workspace {
             ]);
         }
 
-        if ai_configured {
+        if signed_in && ai_configured {
             actions.push(PaletteAction::new(
                 t!("palette.open_ai").to_string(),
                 Some("Ctrl+Shift+K"),
@@ -172,7 +193,7 @@ impl Workspace {
         }
         // Hidden when the Clippy surface is disallowed — never display a
         // command the caller cannot reach (`.agents/roles.md` spirit).
-        if clippy_configured {
+        if signed_in && clippy_configured {
             actions.push(PaletteAction::new(
                 t!("palette.open_clippy").to_string(),
                 None,
@@ -263,7 +284,9 @@ impl Workspace {
                 } else if let Some(theme) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
                     self.revert_theme_preview(cx);
                     self.terminal_theme_before_preview = None;
-                    self.apply_terminal_theme_by_name(&theme.name, cx);
+                    if self.enter_dev_mode(cx) {
+                        self.apply_terminal_theme_by_name(&theme.name, cx);
+                    }
                 } else {
                     self.revert_theme_preview(cx);
                     self.revert_terminal_theme_preview(cx);
@@ -279,10 +302,25 @@ impl Workspace {
     }
 
     pub(super) fn execute_palette_action(&mut self, action: &dyn Action, cx: &mut Context<Self>) {
+        // The standalone palette and global shortcuts can dispatch actions
+        // without the main surface being rendered. Keep the execution gate
+        // here; filtering the visible action list is only presentation.
+        if !self.signed_in()
+            && !action.as_any().is::<Quit>()
+            && !action.as_any().is::<ToggleMenuBar>()
+            && !action.as_any().is::<OpenLogin>()
+            && !action.as_any().is::<ApplyAppTheme>()
+        {
+            return;
+        }
         if action.as_any().is::<NewTerminal>() {
             self.open_new_terminal(cx);
         } else if action.as_any().is::<ToggleSidebar>() {
             self.toggle_sidebar(cx);
+        } else if action.as_any().is::<ToggleMenuBar>() {
+            self.toggle_menu_bar(cx);
+        } else if action.as_any().is::<OpenLogin>() {
+            self.show_login_form(cx);
         } else if action.as_any().is::<OpenSettings>() {
             self.open_settings(cx);
         } else if action.as_any().is::<CloseTab>() {
@@ -295,22 +333,25 @@ impl Workspace {
             self.shutdown(cx);
             cx.quit();
         } else if action.as_any().is::<OpenTemplateBrowser>() {
+            if !self.enter_dev_mode(cx) {
+                return;
+            }
             self.set_active_view(ActiveView::Scripts);
             self.show_template_browser(cx);
         } else if action.as_any().is::<NewScript>() {
+            if !self.enter_dev_mode(cx) {
+                return;
+            }
             self.set_active_view(ActiveView::Scripts);
             self.show_script_form(cx);
         } else if action.as_any().is::<OpenServerSync>() {
-            self.set_active_view(ActiveView::ServerSync);
-            cx.notify();
+            self.activate_dev_section(SidebarSection::ServerSync, cx);
         } else if action.as_any().is::<OpenSites>() {
-            self.set_active_view(ActiveView::Sites);
-            cx.notify();
+            self.activate_dev_section(SidebarSection::Sites, cx);
         } else if action.as_any().is::<OpenRecent>() {
             self.activate_dev_section(SidebarSection::Recent, cx);
         } else if action.as_any().is::<OpenFileEditorView>() {
-            self.set_active_view(ActiveView::FileEditor);
-            cx.notify();
+            self.activate_dev_section(SidebarSection::FileEditor, cx);
         } else if action.as_any().is::<CloudSyncNow>() {
             self.cloud_sync_now(cx);
         } else if action.as_any().is::<SwitchSite>() {
@@ -342,5 +383,40 @@ impl Workspace {
         } else {
             cx.dispatch_action(action);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AppMode, CloudSyncNow, NewRequest, NewTerminal, OpenAiAssistant, OpenClippy,
+        OpenFileEditorView, OpenLogin, OpenSettings, PaletteAction, Quit, SwitchSite,
+        ToggleMenuBar, Workspace,
+    };
+    use gpui::Action;
+
+    fn contains_action<T: Action + 'static>(actions: &[PaletteAction]) -> bool {
+        actions
+            .iter()
+            .any(|candidate| candidate.action.as_any().is::<T>())
+    }
+
+    // SDTEST-1602 — the standalone palette is available before login, but it
+    // must be a login/recovery surface rather than a guest-mode back door.
+    #[test]
+    fn logged_out_palette_contains_only_public_or_recovery_actions() {
+        let actions = Workspace::base_palette_actions(&[], AppMode::User, true, true);
+
+        assert!(contains_action::<OpenLogin>(&actions));
+        assert!(contains_action::<ToggleMenuBar>(&actions));
+        assert!(contains_action::<Quit>(&actions));
+        assert!(!contains_action::<OpenSettings>(&actions));
+        assert!(!contains_action::<CloudSyncNow>(&actions));
+        assert!(!contains_action::<SwitchSite>(&actions));
+        assert!(!contains_action::<NewRequest>(&actions));
+        assert!(!contains_action::<OpenAiAssistant>(&actions));
+        assert!(!contains_action::<OpenClippy>(&actions));
+        assert!(!contains_action::<NewTerminal>(&actions));
+        assert!(!contains_action::<OpenFileEditorView>(&actions));
     }
 }

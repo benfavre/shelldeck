@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::cloud_account::AppMode;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::managed_site::ManagedSite;
 use shelldeck_ssh::client::SshClient;
@@ -13,6 +14,9 @@ use super::{ActiveView, Workspace};
 
 impl Workspace {
     pub(super) fn handle_sites_event(&mut self, event: &SitesEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             SitesEvent::ScanServer(conn_id) => {
                 let conn_id = *conn_id;
