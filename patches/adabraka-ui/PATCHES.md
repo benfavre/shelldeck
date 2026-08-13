@@ -642,14 +642,16 @@ carries no marker of its own — see its entry).
 - **Files / symbols**:
   - `src/overlays/sheet.rs` — `Sheet::render`
 - **Markers**:
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — the full-window Assistant`
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — the Assistant shadow is an`
   - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — rounded Sheet chrome must`
 - **Why**: GPUI does not reliably propagate a rounded overflow clip through
-  every opaque descendant. Assistant Sheets touch the floating window's right
-  edge, so their panel, header, body, and optional footer could repaint the
-  top-right or bottom-right corner as a small rectangle even when the Workspace
-  overlay itself was rounded. Each opaque surface that actually reaches an
-  exterior corner now owns the matching `radius_xl`; internal boundaries stay
-  square when a header or footer occupies that edge.
+  every opaque descendant or outer shadow. Assistant Sheets touch the floating
+  window's right edge, so their panel, header, body, and optional footer own the
+  matching `radius_xl` directly. Their former 16 px outer shadow was itself a
+  rectangular paint layer outside that clip and left a translucent square at
+  the bottom-right corner; the Assistant variant therefore omits it while
+  ordinary Sheets retain the standard shadow.
 - **Upstream status**: not filed yet — the behavior is generic, but the
   Assistant variant and its outer-window geometry are ShellDeck-specific.
 
@@ -790,6 +792,10 @@ carries no marker of its own — see its entry).
   retained and invoked by every interactive inline. 3 new markers.
 - **2026-08-12** — added SDPATCH-034: bare HTTP(S) spans are promoted to
   interactive Markdown links. 1 new marker.
+- **2026-08-13** — extended SDPATCH-032 to suppress the Assistant variant's
+  unclipped rectangular outer shadow and make its full-window backdrop own all
+  four floating-window corners directly. 2 new markers; current code marker
+  count is 114.
 
 ## Retired patches
 
