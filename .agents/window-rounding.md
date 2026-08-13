@@ -65,13 +65,21 @@ the same theme token and the same outer bounds.
 6. Do not give backdrop and panel different radius values or slightly different
    outer bounds; that creates a dark wedge between their geometries.
 7. Keep shadows inside the clipped overlay. A shadow mounted outside it can paint
-   over the transparent client inset and square the window again.
+   over the transparent client inset and square the window again. In particular,
+   do not use `shadow_xl()` or a non-inset `BoxShadow` on an edge-to-edge panel.
+   Keep the existing border at the panel/content seam, or paint a deliberately
+   internal seam shadow that cannot reach an exposed outer corner.
 8. Apply the same rule to enter/exit animations: animate the panel position,
    not the radius or the outer overlay bounds.
 9. A fixed footer with its own opaque background paints after its panel. If it
    reaches an outer window corner, repeat that corner's radius directly on the
    footer as well. The same ownership rule applies recursively to any opaque
    descendant that reaches the window edge.
+10. Do not stack two rounded silhouettes at the same outer bounds. Once a Sheet
+    panel/body reliably owns and clips a corner, an opaque full-width composer
+    inside it stays square and is clipped by that owner. Repeating the same
+    radius on the composer cuts a second inner arc and can reveal the dim
+    backdrop as a grey triangle. One visible corner gets one silhouette owner.
 
 ## Rounded image cards
 
@@ -86,12 +94,48 @@ do not simulate clipping by adding spacing around the media.
 
 - User request composer/detail sheets:
   `crates/shelldeck-ui/src/workspace/request_views.rs::render_user_sheet`
-  rounds the full backdrop plus the two opaque panel corners directly.
-- AI assistant sheet: the same file contains the earlier right-edge host fix.
+  rounds the full backdrop plus the two opaque panel corners directly and has no
+  exterior panel shadow.
+- Connection form:
+  `crates/shelldeck-ui/src/connection_form.rs::render` follows the same pattern.
+- AI assistant sheets:
+  `patches/adabraka-ui/src/overlays/sheet.rs::Sheet::render` rounds every opaque
+  Assistant surface that owns a corner and omits the variant's exterior shadow.
+  Its full-window backdrop directly owns all four corners; there is deliberately
+  no extra rounded host wrapper in `workspace/render.rs`.
 
 The AI sheet's entity wrapper works for that component's paint structure; do
 not generalize it to hand-built nested absolute overlays. The User sheet is the
 reference for those.
+
+## Translucent rectangle outside a correct arc
+
+When the opaque corner itself follows the correct curve but a faint square or
+halo remains outside it, inspect the shadow before changing any radius. GPUI
+paints a standard exterior shadow as its own rectangular layer outside the
+element's rounded clip. Neither another `rounded_*()` nor `overflow_hidden()`
+on that same panel clips the already-exterior paint.
+
+Use this binary isolation sequence:
+
+1. Render the full-window backdrop alone.
+2. Add only the empty panel shell, without children, border or shadow.
+3. Restore the real sheet content while keeping the shadow disabled.
+4. Restore the shadow last. If the rectangle returns only here, remove that
+   exterior shadow from the edge-to-edge variant; do not compensate with extra
+   radii, padding or nested wrappers.
+
+This sequence isolated the 16 px Assistant `BoxShadow`: backdrop, panel and
+composer geometry were all correct, while the shadow alone recreated the
+bottom-right translucent rectangle. An audit should then search specifically
+for other `top_0().right_0().bottom_0()` panels with `shadow_xl()`/`.shadow()`;
+centered dialogs, cards, menus and popovers are not the same case and keep their
+normal elevation.
+
+If removing the shadow leaves only a small grey triangle when a full-width
+footer/composer is present, temporarily hide that descendant. A clean corner
+without it indicates two competing rounded silhouettes rather than a missing
+clip. Keep the outer Sheet corner owner and remove the redundant inner radius.
 
 ## Visual verification checklist
 

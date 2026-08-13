@@ -282,31 +282,34 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
     );
 
     // ── Édition ────────────────────────────────────────────────────────
-    let mut edit = vec![
-        MenuEntry::command(
-            "edit-copy",
-            t!("menu.edit.copy").to_string(),
-            MenuCommand::Copy,
-        )
-        .shortcut(if cfg!(target_os = "macos") {
-            "secondary-c"
-        } else {
-            "ctrl-shift-c"
-        })
-        .icon("copy"),
-        MenuEntry::command(
-            "edit-paste",
-            t!("menu.edit.paste").to_string(),
-            MenuCommand::Paste,
-        )
-        .shortcut(if cfg!(target_os = "macos") {
-            "secondary-v"
-        } else {
-            "ctrl-shift-v"
-        })
-        .icon("clipboard-paste"),
-        MenuEntry::Separator,
-    ];
+    let mut edit = Vec::new();
+    if ctx.signed_in {
+        edit.extend([
+            MenuEntry::command(
+                "edit-copy",
+                t!("menu.edit.copy").to_string(),
+                MenuCommand::Copy,
+            )
+            .shortcut(if cfg!(target_os = "macos") {
+                "secondary-c"
+            } else {
+                "ctrl-shift-c"
+            })
+            .icon("copy"),
+            MenuEntry::command(
+                "edit-paste",
+                t!("menu.edit.paste").to_string(),
+                MenuCommand::Paste,
+            )
+            .shortcut(if cfg!(target_os = "macos") {
+                "secondary-v"
+            } else {
+                "ctrl-shift-v"
+            })
+            .icon("clipboard-paste"),
+            MenuEntry::Separator,
+        ]);
+    }
     if dev {
         edit.push(
             MenuEntry::command(
@@ -347,6 +350,7 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
             t!("menu.view.menu_bar").to_string(),
             MenuCommand::ToggleMenuBar,
         )
+        .shortcut("secondary-shift-m")
         .checked(ctx.menu_bar_visible),
     );
     view.push(MenuEntry::Separator);
@@ -611,14 +615,16 @@ pub fn menu_bar_spec(ctx: MenuBarContext) -> Vec<MenuSpec> {
         )
         .icon("circle-help"),
     );
-    help.push(
-        MenuEntry::command(
-            "help-about",
-            t!("menu.help.about").to_string(),
-            MenuCommand::About,
-        )
-        .icon("info"),
-    );
+    if ctx.signed_in {
+        help.push(
+            MenuEntry::command(
+                "help-about",
+                t!("menu.help.about").to_string(),
+                MenuCommand::About,
+            )
+            .icon("info"),
+        );
+    }
     if ctx.signed_in {
         help.push(MenuEntry::Separator);
         help.push(
@@ -673,7 +679,8 @@ mod tests {
 
     // SDTEST-1200 — logged out, the bar must not offer any command that needs
     // a session. This is the welcome-screen contract from `.agents/roles.md`:
-    // no guest mode, so nothing beyond sign-in / quit / zoom / about.
+    // no guest mode, so nothing beyond sign-in / quit / zoom, palette,
+    // documentation and menu recovery.
     #[test]
     fn logged_out_bar_exposes_no_session_commands() {
         let menus = menu_bar_spec(ctx(AppMode::User, false));
@@ -688,6 +695,9 @@ mod tests {
             MenuCommand::NewRequest,
             MenuCommand::SyncNow,
             MenuCommand::OpenSettings,
+            MenuCommand::Copy,
+            MenuCommand::Paste,
+            MenuCommand::About,
             MenuCommand::SignOut,
             MenuCommand::GoSupportRequests,
         ] {

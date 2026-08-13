@@ -384,6 +384,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_bext_event(&mut self, event: BextViewEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             BextViewEvent::Connect => self.connect_bext(cx),
             BextViewEvent::Disconnect => self.disconnect_bext(cx),

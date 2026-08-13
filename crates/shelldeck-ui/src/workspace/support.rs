@@ -214,7 +214,7 @@ impl Workspace {
     pub(super) fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
         let want = !self.settings_open
             && self.effective_mode() == AppMode::Support
-            && self.app_config.cloud_sync.is_configured();
+            && self.can_access_mode(AppMode::Support);
         if want {
             if self._support_poll_task.is_none() {
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
@@ -223,7 +223,10 @@ impl Workspace {
                         .await;
                     let keep_going = this
                         .update(cx, |ws, cx| {
-                            if !ws.settings_open && ws.effective_mode() == AppMode::Support {
+                            if !ws.settings_open
+                                && ws.effective_mode() == AppMode::Support
+                                && ws.can_access_mode(AppMode::Support)
+                            {
                                 ws.refresh_support(cx);
                                 true
                             } else {
@@ -243,7 +246,7 @@ impl Workspace {
     }
 
     pub(super) fn refresh_support(&mut self, cx: &mut Context<Self>) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.can_access_mode(AppMode::Support) {
             return;
         }
         let base = self.account_base_url();
@@ -360,6 +363,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_support_event(&mut self, event: SupportViewEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Support) {
+            return;
+        }
         use manage_support as ms;
         match event {
             SupportViewEvent::Refresh => self.refresh_support(cx),
@@ -577,7 +583,7 @@ impl Workspace {
             + Send
             + 'static,
     {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.can_access_mode(AppMode::Support) {
             return;
         }
         let base = self.account_base_url();

@@ -19,7 +19,7 @@ impl Workspace {
 
     /// Palette: focus the User-mode "Nouvelle demande" title field.
     pub fn open_new_request(&mut self, cx: &mut Context<Self>) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.signed_in() {
             self.show_toast(
                 t!("toast.issue.login_required_create").to_string(),
                 ToastLevel::Warning,
@@ -44,7 +44,7 @@ impl Workspace {
         source: &'static str,
         cx: &mut Context<Self>,
     ) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.signed_in() {
             return;
         }
         self.issue_title_state
@@ -72,7 +72,7 @@ impl Workspace {
         draft: AiGeneratedIssueDraft,
         cx: &mut Context<Self>,
     ) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.signed_in() {
             self.show_toast(
                 t!("toast.issue.login_required_create").to_string(),
                 ToastLevel::Warning,
@@ -467,7 +467,7 @@ impl Workspace {
     /// A Jean/issues surface is on screen (User home, or Support mode).
     pub(super) fn issues_relevant(&self) -> bool {
         !self.settings_open
-            && self.app_config.cloud_sync.is_configured()
+            && self.signed_in()
             && matches!(self.effective_mode(), AppMode::User | AppMode::Support)
     }
 
@@ -1087,6 +1087,9 @@ impl Workspace {
     where
         F: FnOnce(String, String) -> shelldeck_core::Result<Issue> + Send + 'static,
     {
+        if !self.can_access_mode(AppMode::Support) || !self.issues_staff {
+            return;
+        }
         let Some((base, token)) = self.fleet_base_token() else {
             return;
         };

@@ -55,25 +55,27 @@ pub fn simple_icon(name: &str, size_px: f32, color: Hsla) -> impl IntoElement {
         .text_color(color)
 }
 
+/// Provider mark shared by AI pickers and badges.
+pub fn ai_provider_icon(backend: AiBackend, size_px: f32, color: Hsla) -> AnyElement {
+    match backend {
+        AiBackend::ClaudeCli => simple_icon("claudecode", size_px, color).into_any_element(),
+        AiBackend::CodexCli | AiBackend::OpenAi => {
+            simple_icon("openai", size_px, color).into_any_element()
+        }
+        AiBackend::Anthropic => simple_icon("anthropic", size_px, color).into_any_element(),
+        AiBackend::AiderCli => lucide_icon("terminal", size_px, color).into_any_element(),
+        AiBackend::Disabled => lucide_icon("sparkles", size_px, color).into_any_element(),
+    }
+}
+
 /// Compact, non-interactive provider signature shared by every AI surface.
 pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
-    let icon = match backend {
-        AiBackend::ClaudeCli => {
-            simple_icon("claudecode", 14.0, ShellDeckColors::text_primary()).into_any_element()
-        }
-        AiBackend::CodexCli | AiBackend::OpenAi => {
-            simple_icon("openai", 14.0, ShellDeckColors::text_primary()).into_any_element()
-        }
-        AiBackend::Anthropic => {
-            simple_icon("anthropic", 14.0, ShellDeckColors::text_primary()).into_any_element()
-        }
-        AiBackend::AiderCli => {
-            lucide_icon("terminal", 14.0, ShellDeckColors::text_primary()).into_any_element()
-        }
-        AiBackend::Disabled => {
-            lucide_icon("sparkles", 14.0, ShellDeckColors::text_muted()).into_any_element()
-        }
+    let icon_color = if backend == AiBackend::Disabled {
+        ShellDeckColors::text_muted()
+    } else {
+        ShellDeckColors::text_primary()
     };
+    let icon = ai_provider_icon(backend, 14.0, icon_color);
     let model = model.trim().to_string();
 
     div()
@@ -108,23 +110,7 @@ pub fn ai_provider_badge(backend: AiBackend, model: &str) -> impl IntoElement {
 /// frame inside a 26px control row — fine as a standalone header badge, wrong
 /// next to the attach and send controls.
 pub fn ai_provider_inline(backend: AiBackend, model: &str) -> impl IntoElement {
-    let icon = match backend {
-        AiBackend::ClaudeCli => {
-            simple_icon("claudecode", 12.0, ShellDeckColors::text_muted()).into_any_element()
-        }
-        AiBackend::CodexCli | AiBackend::OpenAi => {
-            simple_icon("openai", 12.0, ShellDeckColors::text_muted()).into_any_element()
-        }
-        AiBackend::Anthropic => {
-            simple_icon("anthropic", 12.0, ShellDeckColors::text_muted()).into_any_element()
-        }
-        AiBackend::AiderCli => {
-            lucide_icon("terminal", 12.0, ShellDeckColors::text_muted()).into_any_element()
-        }
-        AiBackend::Disabled => {
-            lucide_icon("sparkles", 12.0, ShellDeckColors::text_muted()).into_any_element()
-        }
-    };
+    let icon = ai_provider_icon(backend, 12.0, ShellDeckColors::text_muted());
     let model = model.trim().to_string();
 
     div()

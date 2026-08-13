@@ -6,7 +6,7 @@ use super::thread::{
     ThreadMessageExtras, ThreadNoteKind,
 };
 use super::*;
-use crate::icons::{ai_provider_inline, simple_icon};
+use crate::icons::{ai_provider_icon, ai_provider_inline};
 use adabraka_ui::prelude::{tooltip, Composer};
 
 #[derive(Clone, Copy)]
@@ -2376,32 +2376,11 @@ impl SupportView {
                                     .text_size(px(12.0))
                                     .when(selected, |row| row.bg(ShellDeckColors::selected_bg()))
                                     .hover(|style| style.bg(ShellDeckColors::hover_bg()))
-                                    .child(match backend {
-                                        AiBackend::ClaudeCli => simple_icon(
-                                            "claudecode",
-                                            14.0,
-                                            ShellDeckColors::text_primary(),
-                                        )
-                                        .into_any_element(),
-                                        AiBackend::CodexCli | AiBackend::OpenAi => simple_icon(
-                                            "openai",
-                                            14.0,
-                                            ShellDeckColors::text_primary(),
-                                        )
-                                        .into_any_element(),
-                                        AiBackend::Anthropic => simple_icon(
-                                            "anthropic",
-                                            14.0,
-                                            ShellDeckColors::text_primary(),
-                                        )
-                                        .into_any_element(),
-                                        _ => lucide_icon(
-                                            "terminal",
-                                            14.0,
-                                            ShellDeckColors::text_primary(),
-                                        )
-                                        .into_any_element(),
-                                    })
+                                    .child(ai_provider_icon(
+                                        backend,
+                                        14.0,
+                                        ShellDeckColors::text_primary(),
+                                    ))
                                     .child(div().flex_1().min_w(px(0.0)).child(label))
                                     .when(selected, |row| {
                                         row.child(lucide_icon(

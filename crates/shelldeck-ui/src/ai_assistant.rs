@@ -18,7 +18,7 @@ use shelldeck_core::ai::{
 use uuid::Uuid;
 
 use crate::ai_workflow::capability_result_is_markdown;
-use crate::icons::{ai_provider_inline, lucide_icon, lucide_path};
+use crate::icons::{ai_provider_icon, ai_provider_inline, lucide_icon, lucide_path};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
@@ -2662,19 +2662,12 @@ impl Render for AiAssistantView {
             // Opaque: without it the scrolled thread shows through the padding
             // around the frame and reads as if it ran under the composer.
             .bg(ShellDeckColors::bg_primary());
-        // This opaque surface owns whichever exterior bottom corner it can
-        // reach. With the Sheet history open, the main column is narrower than
-        // the 624px cap, so the composer becomes full-width and otherwise
-        // repaints the host's bottom-right curve as a rectangle.
-        match self.host {
-            AiHost::Dock => {
-                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
-            }
-            AiHost::Sheet => {
-                composer = composer
-                    .rounded_br(use_theme().tokens.radius_xl)
-                    .overflow_hidden();
-            }
+        // The Dock composer directly owns its exposed bottom-left corner.
+        // In a Sheet, the panel/body already own and clip the bottom-right
+        // curve. Giving the full-width composer a second `rounded_br` cuts a
+        // larger inner arc and reveals the dim backdrop as a grey triangle.
+        if self.host == AiHost::Dock {
+            composer = composer.rounded_bl(use_theme().tokens.radius_xl);
         }
         if let Some(error) = &self.error {
             composer = composer.child(
@@ -3083,6 +3076,11 @@ impl Render for AiAssistantView {
                         .text_color(ShellDeckColors::text_primary())
                         .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .child(ai_provider_icon(
+                            backend,
+                            14.0,
+                            ShellDeckColors::text_primary(),
+                        ))
                         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                         .when(selected, |el| {
                             el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))

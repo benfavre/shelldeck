@@ -305,7 +305,10 @@ impl Workspace {
                     .bg(ShellDeckColors::bg_surface())
                     .border_l_1()
                     .border_color(ShellDeckColors::border())
-                    .shadow_xl()
+                    // This panel reaches the transparent window edge. GPUI
+                    // paints an outer shadow beyond the rounded panel clip,
+                    // which leaves a translucent square in the bottom-right
+                    // corner; the left border already provides separation.
                     .overflow_hidden()
                     .map(|panel| {
                         if is_maximized {
@@ -767,22 +770,11 @@ impl Workspace {
                         // The provider marks, same as on the closed chip:
                         // recognising the Claude or OpenAI logo is faster than
                         // reading five near-identical CLI names.
-                        .child(match backend {
-                            AiBackend::ClaudeCli => {
-                                simple_icon("claudecode", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::CodexCli | AiBackend::OpenAi => {
-                                simple_icon("openai", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            AiBackend::Anthropic => {
-                                simple_icon("anthropic", 14.0, ShellDeckColors::text_primary())
-                                    .into_any_element()
-                            }
-                            _ => lucide_icon("terminal", 14.0, ShellDeckColors::text_primary())
-                                .into_any_element(),
-                        })
+                        .child(ai_provider_icon(
+                            backend,
+                            14.0,
+                            ShellDeckColors::text_primary(),
+                        ))
                         .child(div().flex_1().min_w(px(0.0)).child(label))
                         .when(selected, |el| {
                             el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))

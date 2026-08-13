@@ -718,7 +718,12 @@ regular users and customer admins are forced to User mode.
 `inklura_support` accounts may switch between User and Support;
 super-admins may additionally enter Dev. The titlebar, command palette,
 keyboard actions, activity links, and deep links must expose and execute
-only operations allowed by that same role matrix.
+only operations allowed by that same role matrix. Application-level entry
+points outside the rendered view tree (global shortcuts, standalone palette,
+AI Dock, native tray and pinned connections) enforce the same gate in their
+handlers. Logout closes authenticated auxiliary windows, stops terminals,
+tunnels and scripts, clears account-scoped caches, and persists an empty
+terminal workspace so runtime authority cannot cross an account boundary.
 
 ### SDUC-153 — Login persists identity, enables cloud sync, toasts profile count
 
@@ -1687,8 +1692,9 @@ growing the surrounding screen or typing off-screen.
 
 ### SDUC-434 — The tray toggles one standalone AI Dock
 
-The system-tray menu can create, hide, show and focus one Assistant Dock without
-making the main ShellDeck window visible. The 480 px Dock is anchored to the
+For an authenticated account, the system-tray menu can create, hide, show and
+focus one Assistant Dock without making the main ShellDeck window visible. A
+logged-out invocation reveals the mandatory login surface instead. The 480 px Dock is anchored to the
 right edge for the display height, has no native titlebar, and
 cannot be moved, resized or minimized. Its exposed top-left and bottom-left
 corners use the same theme radius as the floating main window; both right
@@ -1706,10 +1712,11 @@ invalidates the gate and drops the stale reply. It inherits ShellDeck's UI font 
 bounded global context, shares durable conversations and tasks with the main
 assistant, exposes an explicit action to reopen ShellDeck, and disables
 submission with an explanation when no usable global AI backend is configured.
-The Dock's global chat is owned by an independent `AiCompanionController`:
-opening it and completing a conversation do not initialize `Workspace`.
-Selecting a task action may initialize `Workspace` when its terminal, ticket,
-or script target is required. `CompanionRuntime` retains the Dock and palette
+The Dock's global chat is owned by an independent `AiCompanionController`.
+When startup was deferred, the first invocation initializes `Workspace` only
+to validate the authoritative session; chat completion itself remains owned by
+the companion controller. Selecting a task action may use `Workspace` again
+when its terminal, ticket, or script target is required. `CompanionRuntime` retains the Dock and palette
 window handles and owns global-shortcut routing, so repeated invocations do
 not depend on scanning or constructing the main application surface.
 The enabled-by-default global shortcut toggles that same single Dock from any
@@ -1754,9 +1761,10 @@ ShellDeck ignores the hidden-start preference and opens its main window so the
 process is always recoverable. Tray and deep-link show actions explicitly show
 the hidden window before activating it. A hidden start initially owns only a
 lightweight `CompanionRoot`: it does not construct `Workspace`, its views or
-its pollers until a tray, deep-link, palette, or task-target command needs
-application state. The standalone AI Dock, including the
-`shelldeck://assistant` route, is served directly by the companion controller
+its pollers until a tray, deep-link, palette, Dock or task-target command needs
+application state or authoritative authentication. After that gate, the
+standalone AI Dock, including the `shelldeck://assistant` route, is served by
+the companion controller
 and is not such a command. SSH config parsing and the connection
 store are deferred to that first Workspace demand; configured startup Cloud
 Sync begins afterward on the background executor instead of blocking process
@@ -1853,7 +1861,8 @@ resize hit-testing, and the sidebar width the terminal grid is offset by.
 
 A File / Edit / View / Go / Terminal / Help row sits under the titlebar in
 User, Support and Dev, and on the pre-login welcome screen. Its contents follow
-the account: logged out it offers only sign-in, quit, interface zoom and about;
+the account: logged out it offers only sign-in, quit, interface zoom, command
+palette, documentation and menu recovery;
 User mode omits every SSH, terminal and staff-console command; the staff
 consoles (JeanClaude, Fleet) appear only when both the capability and the
 configuration are present. Commands route through the same handler the command
@@ -2104,6 +2113,13 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-13** — Hardened SDUC-152/303/412/434/442 after the logged-out
+  Assistant affordance exposed a broader execution-boundary defect. The menu,
+  standalone palette and native tray now fail closed; global shortcuts, deep
+  links, pinned connections and Dev actions re-check authentication/role at
+  execution time; logout closes authenticated companion/runtime state and
+  prevents terminal restoration across account boundaries. Added SDTEST-1602
+  and SDTEST-1603.
 - **2026-08-11** — Amended SDUC-414 and the pending SDTEST-1425 contract: Dock
   user bubbles now receive a definite compact-or-88%-capped width before
   Markdown layout, preventing both single-line clipping and GPUI's min-content

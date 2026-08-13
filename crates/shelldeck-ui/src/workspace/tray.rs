@@ -74,34 +74,49 @@ impl Workspace {
     /// The tray thread diffs the counters against its last known
     /// state, so redundant publishes are silently dropped.
     pub fn publish_tray_state(&mut self, cx: &App) {
-        let active_ssh = self
-            .connections
-            .iter()
-            .filter(|c| matches!(c.status, ConnectionStatus::Connected))
-            .count();
-        let open_tunnels = self.active_tunnels.len();
-        let unread_tickets = self.support.read(cx).unread_ticket_count();
-        let jean_pending = self.runtime_awaiting.len();
-        let ai_tasks_running = self
-            .ai_tasks
-            .iter()
-            .filter(|task| task.status.is_running())
-            .count();
-        let pinned_connections = self
-            .app_config
-            .pinned_connections
-            .iter()
-            .filter_map(|id| {
+        let signed_in = self.signed_in();
+        let active_ssh = signed_in
+            .then(|| {
                 self.connections
                     .iter()
-                    .find(|connection| connection.id == *id)
-                    .map(|connection| TrayPinnedConnection {
-                        id: *id,
-                        name: connection.display_name().to_string(),
-                    })
+                    .filter(|c| matches!(c.status, ConnectionStatus::Connected))
+                    .count()
             })
-            .collect();
+            .unwrap_or(0);
+        let open_tunnels = signed_in.then_some(self.active_tunnels.len()).unwrap_or(0);
+        let unread_tickets = signed_in
+            .then(|| self.support.read(cx).unread_ticket_count())
+            .unwrap_or(0);
+        let jean_pending = signed_in
+            .then_some(self.runtime_awaiting.len())
+            .unwrap_or(0);
+        let ai_tasks_running = signed_in
+            .then(|| {
+                self.ai_tasks
+                    .iter()
+                    .filter(|task| task.status.is_running())
+                    .count()
+            })
+            .unwrap_or(0);
+        let pinned_connections = if signed_in {
+            self.app_config
+                .pinned_connections
+                .iter()
+                .filter_map(|id| {
+                    self.connections
+                        .iter()
+                        .find(|connection| connection.id == *id)
+                        .map(|connection| TrayPinnedConnection {
+                            id: *id,
+                            name: connection.display_name().to_string(),
+                        })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let counters = TrayCounters {
+            signed_in,
             active_ssh,
             open_tunnels,
             unread_tickets,
@@ -187,6 +202,9 @@ impl Workspace {
 
     /// Connect a pinned host selected from the system tray.
     pub fn connect_pinned_connection(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.handle_sidebar_event(&SidebarEvent::ConnectionConnect(id), cx);
     }
 

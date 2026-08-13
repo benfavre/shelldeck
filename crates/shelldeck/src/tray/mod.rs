@@ -89,6 +89,9 @@ pub enum TrayCommand {
 /// on the rows that actually moved, keeping the menu paint quiet.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrayState {
+    /// Whether authenticated tray actions may execute. Defaults to false so
+    /// the native menu starts fail-closed before Workspace publishes state.
+    pub signed_in: bool,
     /// SSH connections in `Connected` status.
     pub active_ssh: usize,
     /// Port forwards currently open.
@@ -300,18 +303,18 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
     let labels = TrayLabels::localized();
 
-    let assistant_item = MenuItem::with_id(ASSISTANT_ID, &labels.assistant, true, None);
-    let clippy_item = MenuItem::with_id(CLIPPY_ID, &labels.clippy, true, None);
+    let assistant_item = MenuItem::with_id(ASSISTANT_ID, &labels.assistant, false, None);
+    let clippy_item = MenuItem::with_id(CLIPPY_ID, &labels.clippy, false, None);
     let show_item = MenuItem::with_id(SHOW_ID, &labels.show, true, None);
     let palette_item = MenuItem::with_id(PALETTE_ID, &labels.palette, true, None);
     let choose_character_item =
-        MenuItem::with_id(CHOOSE_CHARACTER_ID, &labels.choose_character, true, None);
+        MenuItem::with_id(CHOOSE_CHARACTER_ID, &labels.choose_character, false, None);
     let pause_character_item =
-        MenuItem::with_id(PAUSE_CHARACTER_ID, &labels.pause_character, true, None);
+        MenuItem::with_id(PAUSE_CHARACTER_ID, &labels.pause_character, false, None);
     let return_character_item =
-        MenuItem::with_id(RETURN_CHARACTER_ID, &labels.return_character, true, None);
+        MenuItem::with_id(RETURN_CHARACTER_ID, &labels.return_character, false, None);
     let quit_item = MenuItem::with_id(QUIT_ID, &labels.quit, true, None);
-    let pinned_menu = Submenu::new(&labels.pinned, true);
+    let pinned_menu = Submenu::new(&labels.pinned, false);
     let no_pinned = MenuItem::new(&labels.no_pinned, false, None);
     pinned_menu
         .append(&no_pinned)
@@ -324,7 +327,7 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
         tunnels: MenuItem::with_id(COUNTER_TUNNELS_ID, counter_label_tunnels(0), false, None),
         tickets: MenuItem::with_id(COUNTER_TICKETS_ID, counter_label_tickets(0), false, None),
         jean: MenuItem::with_id(COUNTER_JEAN_ID, counter_label_jean(0), false, None),
-        ai_tasks: MenuItem::with_id(AI_TASKS_ID, counter_label_ai_tasks(0), true, None),
+        ai_tasks: MenuItem::with_id(AI_TASKS_ID, counter_label_ai_tasks(0), false, None),
     };
 
     menu.append(&assistant_item)
@@ -378,6 +381,15 @@ fn build_menu() -> Result<(Menu, MenuItems)> {
 fn apply_state(items: &mut MenuItems, prev: &mut TrayState, next: TrayState) {
     let counters = &items.counters;
     let language_changed = prev.labels != next.labels;
+    if prev.signed_in != next.signed_in {
+        items.assistant.set_enabled(next.signed_in);
+        items.clippy.set_enabled(next.signed_in);
+        items.choose_character.set_enabled(next.signed_in);
+        items.pause_character.set_enabled(next.signed_in);
+        items.return_character.set_enabled(next.signed_in);
+        items.pinned_menu.set_enabled(next.signed_in);
+        counters.ai_tasks.set_enabled(next.signed_in);
+    }
     if language_changed {
         items.assistant.set_text(&next.labels.assistant);
         items.clippy.set_text(&next.labels.clippy);

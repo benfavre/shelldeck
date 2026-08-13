@@ -2,6 +2,12 @@ use super::*;
 
 impl Workspace {
     pub(super) fn handle_sidebar_event(&mut self, event: &SidebarEvent, cx: &mut Context<Self>) {
+        // Sidebar events may also be synthesized by the native tray. Never
+        // rely on the Dev sidebar being absent from the rendered tree as an
+        // authorization boundary.
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             SidebarEvent::SectionChanged(section) => {
                 if *section == SidebarSection::Settings {
@@ -168,6 +174,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_terminal_event(&mut self, event: &TerminalEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             TerminalEvent::NewTabRequested => {
                 tracing::info!("New terminal tab created");
@@ -666,6 +675,9 @@ impl Workspace {
         } else if let Some(t) = action.as_any().downcast_ref::<ApplyTerminalTheme>() {
             // Switching to a terminal-theme entry ends any app-theme preview.
             self.revert_theme_preview(cx);
+            if !self.can_access_mode(AppMode::Dev) {
+                return;
+            }
             let name = t.name.clone();
             self.preview_terminal_theme(&name, cx);
         } else {
@@ -718,6 +730,9 @@ impl Workspace {
     /// live terminal via `ConfigChanged`) and surface a confirmation toast.
     /// Used by the command palette's theme entries.
     pub fn apply_terminal_theme_by_name(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self.enter_dev_mode(cx) {
+            return;
+        }
         self.settings.update(cx, |settings, cx| {
             settings.select_terminal_theme(name, cx);
         });

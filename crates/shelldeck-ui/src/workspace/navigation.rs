@@ -111,20 +111,7 @@ impl Workspace {
         // Persist open tabs before tearing sessions down so there is something
         // to restore next launch. Best-effort; never blocks shutdown.
         self.save_workspace_state(cx);
-        // Stop all active tunnels
-        for (fwd_id, tunnel) in self.active_tunnels.drain() {
-            tracing::info!("Stopping tunnel for forward {}", fwd_id);
-            tunnel.tunnel_handle.stop();
-        }
-        // Stop all active scripts
-        for (script_id, active) in self.active_scripts.drain() {
-            tracing::info!("Stopping script {}", script_id);
-            active.stop();
-        }
-        // Close all terminal sessions (drops channels, threads exit)
-        self.terminal.update(cx, |terminal, _| {
-            terminal.close_all_sessions();
-        });
+        self.stop_authenticated_runtime(cx);
         // Stop git polling
         self._git_poll_task = None;
         // Clear forms if open
@@ -140,6 +127,29 @@ impl Workspace {
         self.script_form = None;
         self._script_form_sub = None;
         tracing::info!("Shutdown cleanup complete");
+    }
+
+    /// Stop runtime resources that must never survive an account boundary.
+    /// Unlike `shutdown`, this keeps the Workspace itself alive for login.
+    pub(super) fn stop_authenticated_runtime(&mut self, cx: &mut Context<Self>) {
+        // Stop all active tunnels
+        for (fwd_id, tunnel) in self.active_tunnels.drain() {
+            tracing::info!("Stopping tunnel for forward {}", fwd_id);
+            tunnel.tunnel_handle.stop();
+        }
+        // Stop all active scripts
+        for (script_id, active) in self.active_scripts.drain() {
+            tracing::info!("Stopping script {}", script_id);
+            active.stop();
+        }
+        // Close all terminal sessions (drops channels, threads exit)
+        self.terminal.update(cx, |terminal, _| {
+            terminal.close_all_sessions();
+        });
+        self.ai_script_runs.clear();
+        self.ai_terminal_runs.clear();
+        self.ai_diagnostic_sequences.clear();
+        self.ai_action_confirmation = None;
     }
 
     pub fn set_active_view(&mut self, view: ActiveView) {
@@ -173,10 +183,14 @@ impl Workspace {
     /// UUID, no permission) toasts instead of failing.
     pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         tracing::info!("deep link: {link:?}");
+        if !matches!(link, DeepLink::Assistant) && !self.signed_in() {
+            self.show_login_form(cx);
+            return;
+        }
         match link {
-            // The application-level CompanionRuntime owns this target so it
-            // can show the Dock without revealing or initializing Workspace.
-            // Keep the arm inert if another caller accidentally forwards it.
+            // The application-level CompanionRuntime owns this target. It
+            // authenticates before forwarding, so keep this arm inert if
+            // another caller accidentally routes it into Workspace.
             DeepLink::Assistant => {}
             DeepLink::OpenConnection(id) => {
                 if !self.enter_dev_mode(cx) {

@@ -207,6 +207,7 @@ impl Render for Workspace {
         let h15 = handle.clone();
         let h16 = handle.clone();
         let h17 = handle.clone();
+        let h18 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -258,6 +259,11 @@ impl Render for Workspace {
                     });
                 }
             })
+            .on_action(move |_: &ToggleMenuBar, _window, cx| {
+                if let Some(ws) = h18.upgrade() {
+                    ws.update(cx, |ws, cx| ws.toggle_menu_bar(cx));
+                }
+            })
             .on_action(move |_: &OpenQuickConnect, _window, cx| {
                 if let Some(ws) = h6.upgrade() {
                     ws.update(cx, |ws, cx| {
@@ -283,6 +289,9 @@ impl Render for Workspace {
             .on_action(move |_: &OpenTemplateBrowser, _window, cx| {
                 if let Some(ws) = h10.upgrade() {
                     ws.update(cx, |ws, cx| {
+                        if !ws.enter_dev_mode(cx) {
+                            return;
+                        }
                         ws.set_active_view(ActiveView::Scripts);
                         ws.show_template_browser(cx);
                         cx.notify();
@@ -292,6 +301,9 @@ impl Render for Workspace {
             .on_action(move |_: &NewScript, _window, cx| {
                 if let Some(ws) = h11.upgrade() {
                     ws.update(cx, |ws, cx| {
+                        if !ws.enter_dev_mode(cx) {
+                            return;
+                        }
                         ws.set_active_view(ActiveView::Scripts);
                         ws.show_script_form(cx);
                         cx.notify();
@@ -301,24 +313,21 @@ impl Render for Workspace {
             .on_action(move |_: &OpenServerSync, _window, cx| {
                 if let Some(ws) = h12.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.set_active_view(ActiveView::ServerSync);
-                        cx.notify();
+                        ws.activate_dev_section(SidebarSection::ServerSync, cx)
                     });
                 }
             })
             .on_action(move |_: &OpenSites, _window, cx| {
                 if let Some(ws) = h13.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.set_active_view(ActiveView::Sites);
-                        cx.notify();
+                        ws.activate_dev_section(SidebarSection::Sites, cx)
                     });
                 }
             })
             .on_action(move |_: &OpenFileEditorView, _window, cx| {
                 if let Some(ws) = h14.upgrade() {
                     ws.update(cx, |ws, cx| {
-                        ws.set_active_view(ActiveView::FileEditor);
-                        cx.notify();
+                        ws.activate_dev_section(SidebarSection::FileEditor, cx)
                     });
                 }
             })
@@ -326,7 +335,9 @@ impl Render for Workspace {
                 if let Some(ws) = h15.upgrade() {
                     let name = action.name.clone();
                     ws.update(cx, |ws, cx| {
-                        ws.apply_terminal_theme_by_name(&name, cx);
+                        if ws.enter_dev_mode(cx) {
+                            ws.apply_terminal_theme_by_name(&name, cx);
+                        }
                     });
                 }
             })
@@ -575,6 +586,7 @@ impl Render for Workspace {
                 None
             },
             self.ui_font_size,
+            self.app_config.general.menu_bar_visible,
             self.ai_available_for_current_surface(_cx),
             self.ai_tasks
                 .iter()
@@ -660,19 +672,9 @@ impl Render for Workspace {
         }
 
         if let Some(sheet) = &self.ai_sheet {
-            // Clip the complete overlay once at the host boundary. Rounding
-            // the Sheet panel itself reveals the dim backdrop as a small dark
-            // wedge between two slightly different corner geometries.
-            let corner_radius = use_theme().tokens.radius_xl;
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_tr(corner_radius)
-                    .rounded_br(corner_radius)
-                    .overflow_hidden()
-                    .child(sheet.clone()),
-            );
+            // The Sheet backdrop and panel own their native corners directly,
+            // following the same proven structure as `render_user_sheet`.
+            root = root.child(sheet.clone());
         }
         if let Some(sheet) = &self.ai_workflow_sheet {
             root = root.child(sheet.clone());

@@ -682,17 +682,44 @@ impl Workspace {
                     .border_color(ShellDeckColors::primary().opacity(0.40))
                     // Match the surrounding page so GPUI's rectangular
                     // background paint cannot show behind the curved border.
-                    // The dark artwork itself stays safely inset below.
+                    // The artwork itself stays safely inset below.
                     .bg(ShellDeckColors::bg_primary())
                     .child(
-                        img("images/home/user-dashboard-colorful-watermark-v2.webp")
+                        img("images/home/user-dashboard-colorful-v2.webp")
                             .absolute()
                             .inset_0()
                             .size_full()
-                            // The asset is exported at this exact aspect ratio
-                            // with its gradient and Card-equivalent alpha
-                            // corners baked in, so GPUI has nothing to mask.
-                            .object_fit(ObjectFit::Fill),
+                            // Preserve the illustration at every window width.
+                            // Branding is a sibling below, never baked into or
+                            // stretched with the raster artwork.
+                            .rounded(use_theme().tokens.radius_lg)
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(
+                        // This is intentionally a real UI element rather than
+                        // pixels in the hero image: resizing may crop the
+                        // landscape, but it must never distort the wordmark.
+                        div()
+                            .absolute()
+                            .left(px(18.0))
+                            .bottom(px(10.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(7.0))
+                            .child(
+                                svg()
+                                    .path("images/shelldeck-mark.svg")
+                                    .size(px(22.0))
+                                    .flex_shrink_0()
+                                    .text_color(white().opacity(0.90)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(white().opacity(0.90))
+                                    .child("ShellDeck"),
+                            ),
                     )
                     .child(
                         div()

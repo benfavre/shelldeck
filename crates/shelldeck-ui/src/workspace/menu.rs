@@ -95,6 +95,24 @@ impl Workspace {
             ToggleSearch, ZoomIn, ZoomOut, ZoomReset,
         };
 
+        // A stale menu click must not outlive logout. The menu specification
+        // hides authenticated commands, but authorization belongs here too.
+        if !self.signed_in()
+            && !matches!(
+                command,
+                Cmd::SignIn
+                    | Cmd::Quit
+                    | Cmd::CommandPalette
+                    | Cmd::ToggleMenuBar
+                    | Cmd::UiZoomIn
+                    | Cmd::UiZoomOut
+                    | Cmd::UiZoomReset
+                    | Cmd::Documentation
+            )
+        {
+            return;
+        }
+
         match command {
             Cmd::QuickConnect => self.execute_palette_action(&OpenQuickConnect, cx),
             Cmd::NewTerminal => self.execute_palette_action(&NewTerminal, cx),
@@ -144,10 +162,10 @@ impl Workspace {
                     .update(cx, |settings, cx| settings.adjust_ui_font_size(delta, cx));
             }
 
-            Cmd::GoDashboard => self.switch_to_section(SidebarSection::Connections),
-            Cmd::GoTerminal => self.switch_to_section(SidebarSection::Terminals),
-            Cmd::GoScripts => self.switch_to_section(SidebarSection::Scripts),
-            Cmd::GoPortForwards => self.switch_to_section(SidebarSection::PortForwards),
+            Cmd::GoDashboard => self.activate_dev_section(SidebarSection::Connections, cx),
+            Cmd::GoTerminal => self.activate_dev_section(SidebarSection::Terminals, cx),
+            Cmd::GoScripts => self.activate_dev_section(SidebarSection::Scripts, cx),
+            Cmd::GoPortForwards => self.activate_dev_section(SidebarSection::PortForwards, cx),
             Cmd::GoServerSync => self.execute_palette_action(&OpenServerSync, cx),
             Cmd::GoSites => self.execute_palette_action(&OpenSites, cx),
             Cmd::GoRecent => self.execute_palette_action(&OpenRecent, cx),

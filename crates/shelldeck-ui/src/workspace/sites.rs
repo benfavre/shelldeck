@@ -95,7 +95,7 @@ impl Workspace {
     /// Fetch the sites directory + areas in the background and cache them.
     /// No-op when logged out; never blocks.
     pub fn refresh_sites(&mut self, cx: &mut Context<Self>) {
-        if !self.app_config.cloud_sync.is_configured() {
+        if !self.signed_in() {
             return;
         }
         let base = self.account_base_url();
@@ -176,6 +176,9 @@ impl Workspace {
 
     /// Open a manage area for the active site in the system browser.
     pub fn open_manage_area(&mut self, area_path: String, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
         let site = match self.active_site_info() {
             Some(s) => s,
             None => {
@@ -216,6 +219,9 @@ impl Workspace {
 
     /// Open the titlebar site switcher (from the command palette / an action).
     pub fn open_site_switcher(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
         if self.site_directory.is_none() {
             self.show_toast(
                 t!("toast.login_required_site_switch").to_string(),

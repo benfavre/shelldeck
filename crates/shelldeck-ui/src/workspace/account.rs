@@ -414,6 +414,10 @@ impl Workspace {
 
     /// Clear Inklura Manage credentials and stop cloud-backed polls/views.
     pub(super) fn invalidate_cloud_session(&mut self, cx: &mut Context<Self>) {
+        self.stop_authenticated_runtime(cx);
+        // Overwrite the persisted workspace after closing sessions. Otherwise
+        // a later launch/account could restore terminals from the old session.
+        self.save_workspace_state(cx);
         self.app_config.account = None;
         self.app_config.cloud_sync.token = String::new();
         self.app_config.cloud_sync.enabled = false;
@@ -432,16 +436,61 @@ impl Workspace {
         self.last_whoami = None;
         self.user_home_tab = UserHomeTab::Home;
         self.site_directory = None;
+        self.jean_state = None;
+        self.fleet_snapshot = None;
+        self.runtime_instance = None;
+        self.runtime_awaiting.clear();
+        self.runtime_busy = false;
+        self.issues_list.clear();
+        self.issues_instances.clear();
+        self.issues_staff = false;
+        self.reset_issue_selection(cx);
         self.issue_new_site_id = None;
         self.rebuild_issue_site_select(cx);
         self.site_menu_open = false;
+        self.ai_sheet = None;
+        self.ai_workflow_sheet = None;
+        self.ai_workflow = None;
+        self._ai_workflow_sub = None;
+        self.connection_form = None;
+        self._form_sub = None;
+        self.port_forward_form = None;
+        self._pf_form_sub = None;
+        self.script_form = None;
+        self._script_form_sub = None;
+        self.template_browser = None;
+        self._template_browser_sub = None;
+        self.variable_prompt = None;
+        self._variable_prompt_sub = None;
+        // The Dock is owned by the application runtime, but its window can be
+        // closed from the foreground App context. Its stale handle is cleared
+        // lazily by the runtime on the next authenticated open attempt.
+        for handle in cx.windows() {
+            if let Some(dock) = handle.downcast::<crate::ai_dock::AiDockView>() {
+                let _ = dock.update(cx, |_dock, window, _cx| window.remove_window());
+            }
+        }
         self._support_poll_task = None;
         self._issues_poll = None;
+        self._jean_poll_task = None;
+        self._fleet_view_poll = None;
+        self._runtime_loop = None;
+        self._bext_poll = None;
+        self.support.update(cx, |support, cx| {
+            support.set_list(Vec::new(), Default::default(), Default::default());
+            support.set_agents(Vec::new());
+            support.set_issues(Vec::new(), false, Vec::new());
+            support.set_jean_brief(false, Vec::new(), 0);
+            support.clear_selection();
+            cx.notify();
+        });
         self.sidebar.update(cx, |s, cx| {
             s.set_site_filter(None);
             cx.notify();
         });
         self.activate_current_mode(cx);
+        self.refresh_command_palette(cx);
+        self.publish_tray_state(cx);
     }
 
     /// Sign out: revoke the token server-side (best-effort), then clear local

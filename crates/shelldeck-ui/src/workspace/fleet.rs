@@ -5,7 +5,7 @@ impl Workspace {
 
     /// `(base_url, token)` when signed in to Inklura Manage.
     pub(super) fn fleet_base_token(&self) -> Option<(String, String)> {
-        if self.app_config.cloud_sync.is_configured() {
+        if self.signed_in() {
             Some((
                 self.account_base_url(),
                 self.app_config.cloud_sync.token.clone(),
@@ -199,6 +199,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_fleet_event(&mut self, event: FleetViewEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             FleetViewEvent::Refresh => self.refresh_fleet_view(cx),
             FleetViewEvent::ToggleRuntime => self.toggle_jean_runtime(cx),
