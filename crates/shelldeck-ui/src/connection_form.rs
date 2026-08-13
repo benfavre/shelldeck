@@ -518,7 +518,8 @@ impl Render for ConnectionForm {
         // a right-anchored slide-in Sheet panel that holds the form. Feels
         // less blocking than the previous centered modal — the sidebar/list
         // behind stays partially visible.
-        div()
+        let is_maximized = window.is_maximized();
+        let mut overlay = div()
             .id("connection-form-overlay")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
@@ -531,6 +532,12 @@ impl Render for ConnectionForm {
             .right_0()
             .bottom_0()
             .bg(ShellDeckColors::backdrop())
+            .overflow_hidden();
+        if !is_maximized {
+            overlay = overlay.rounded(use_theme().tokens.radius_xl);
+        }
+
+        overlay
             // Clicking on the dimmed area behind the sheet cancels the form.
             .on_mouse_down(
                 MouseButton::Left,
@@ -550,8 +557,19 @@ impl Render for ConnectionForm {
                     .bg(ShellDeckColors::bg_surface())
                     .border_l_1()
                     .border_color(ShellDeckColors::border())
-                    .shadow_xl()
                     .overflow_hidden()
+                    .map(|panel| {
+                        if is_maximized {
+                            panel
+                        } else {
+                            // The panel owns the exposed right window corners.
+                            // Do not add an outer shadow here: GPUI paints it
+                            // beyond this clip as a translucent rectangle.
+                            panel
+                                .rounded_tr(use_theme().tokens.radius_xl)
+                                .rounded_br(use_theme().tokens.radius_xl)
+                        }
+                    })
                     // Clicks inside the sheet must not bubble to the backdrop
                     // (which would close the form).
                     .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {

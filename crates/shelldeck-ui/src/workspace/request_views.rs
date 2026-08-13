@@ -305,7 +305,10 @@ impl Workspace {
                     .bg(ShellDeckColors::bg_surface())
                     .border_l_1()
                     .border_color(ShellDeckColors::border())
-                    .shadow_xl()
+                    // This panel reaches the transparent window edge. GPUI
+                    // paints an outer shadow beyond the rounded panel clip,
+                    // which leaves a translucent square in the bottom-right
+                    // corner; the left border already provides separation.
                     .overflow_hidden()
                     .map(|panel| {
                         if is_maximized {

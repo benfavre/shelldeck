@@ -195,7 +195,7 @@ impl Styled for Sheet {
 }
 
 impl Render for Sheet {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let has_header =
             self.title.is_some() || self.description.is_some() || self.show_close_button;
@@ -203,6 +203,7 @@ impl Render for Sheet {
         let sheet_size = self.get_sheet_size();
         let user_style = self.style.clone();
         let assistant = self.variant == SheetVariant::Assistant;
+        let round_assistant = assistant && !window.is_maximized();
 
         div()
             .track_focus(&self.focus_handle)
@@ -211,6 +212,13 @@ impl Render for Sheet {
             .inset_0()
             .flex()
             .bg(hsla(0.0, 0.0, 0.0, 0.5))
+            // ShellDeck patch: SDPATCH-032 — the full-window Assistant
+            // backdrop owns all four native window corners. Apply the radius
+            // directly here, exactly like Workspace::render_user_sheet; a
+            // rounded wrapper cannot reliably clip this absolute paint layer.
+            .when(round_assistant, |backdrop| {
+                backdrop.rounded(theme.tokens.radius_xl).overflow_hidden()
+            })
             .when(self.close_on_backdrop_click, |this: Div| {
                 this.on_mouse_down(
                     MouseButton::Left,
@@ -231,19 +239,26 @@ impl Render for Sheet {
                     } else {
                         theme.tokens.border
                     })
-                    .shadow(smallvec::smallvec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.2),
-                        offset: point(px(0.0), px(0.0)),
-                        blur_radius: px(16.0),
-                        spread_radius: px(0.0),
-                        inset: false,
-                    }])
+                    // ShellDeck patch: SDPATCH-032 — the Assistant shadow is an
+                    // unclipped rectangular paint layer. Even with perfectly
+                    // rounded panel descendants it leaves a translucent square
+                    // outside the bottom-right curve, so only ordinary Sheets
+                    // retain this outer shadow.
+                    .when(!assistant, |panel| {
+                        panel.shadow(smallvec::smallvec![BoxShadow {
+                            color: hsla(0.0, 0.0, 0.0, 0.2),
+                            offset: point(px(0.0), px(0.0)),
+                            blur_radius: px(16.0),
+                            spread_radius: px(0.0),
+                            inset: false,
+                        }])
+                    })
                     // ShellDeck patch: SDPATCH-032 — rounded Sheet chrome must
                     // be owned by every opaque surface that reaches a corner.
                     // GPUI does not reliably propagate a parent's curved clip
                     // through those descendants, which otherwise repaint the
                     // corner as a small rectangle.
-                    .when(assistant, |panel| {
+                    .when(round_assistant, |panel| {
                         panel
                             .rounded_tr(theme.tokens.radius_xl)
                             .rounded_br(theme.tokens.radius_xl)
@@ -292,7 +307,7 @@ impl Render for Sheet {
                                 .px(if assistant { px(18.0) } else { px(24.0) })
                                 .pt(if assistant { px(16.0) } else { px(24.0) })
                                 .pb(if assistant { px(14.0) } else { px(20.0) })
-                                .when(assistant, |header| {
+                                .when(round_assistant, |header| {
                                     header.bg(theme.tokens.primary.opacity(0.06))
                                         .rounded_tr(theme.tokens.radius_xl)
                                         .overflow_hidden()
@@ -376,12 +391,12 @@ impl Render for Sheet {
                                 .overflow_hidden()
                                 .when(assistant, |body| {
                                     let body = body.bg(theme.tokens.primary.opacity(0.015));
-                                    let body = if has_header {
+                                    let body = if has_header || !round_assistant {
                                         body
                                     } else {
                                         body.rounded_tr(theme.tokens.radius_xl)
                                     };
-                                    if has_footer {
+                                    if has_footer || !round_assistant {
                                         body
                                     } else {
                                         body.rounded_br(theme.tokens.radius_xl)
@@ -401,12 +416,12 @@ impl Render for Sheet {
                                 .overflow_hidden()
                                 .when(assistant, |body| {
                                     let body = body.bg(theme.tokens.primary.opacity(0.015));
-                                    let body = if has_header {
+                                    let body = if has_header || !round_assistant {
                                         body
                                     } else {
                                         body.rounded_tr(theme.tokens.radius_xl)
                                     };
-                                    if has_footer {
+                                    if has_footer || !round_assistant {
                                         body
                                     } else {
                                         body.rounded_br(theme.tokens.radius_xl)
@@ -425,7 +440,7 @@ impl Render for Sheet {
                             div()
                                 .px(px(24.0))
                                 .py(px(16.0))
-                                .when(assistant, |footer| {
+                                .when(round_assistant, |footer| {
                                     footer.bg(theme.tokens.primary.opacity(0.04))
                                         .rounded_br(theme.tokens.radius_xl)
                                         .overflow_hidden()

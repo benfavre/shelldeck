@@ -660,19 +660,9 @@ impl Render for Workspace {
         }
 
         if let Some(sheet) = &self.ai_sheet {
-            // Clip the complete overlay once at the host boundary. Rounding
-            // the Sheet panel itself reveals the dim backdrop as a small dark
-            // wedge between two slightly different corner geometries.
-            let corner_radius = use_theme().tokens.radius_xl;
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_tr(corner_radius)
-                    .rounded_br(corner_radius)
-                    .overflow_hidden()
-                    .child(sheet.clone()),
-            );
+            // The Sheet backdrop and panel own their native corners directly,
+            // following the same proven structure as `render_user_sheet`.
+            root = root.child(sheet.clone());
         }
         if let Some(sheet) = &self.ai_workflow_sheet {
             root = root.child(sheet.clone());

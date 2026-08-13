@@ -2662,19 +2662,12 @@ impl Render for AiAssistantView {
             // Opaque: without it the scrolled thread shows through the padding
             // around the frame and reads as if it ran under the composer.
             .bg(ShellDeckColors::bg_primary());
-        // This opaque surface owns whichever exterior bottom corner it can
-        // reach. With the Sheet history open, the main column is narrower than
-        // the 624px cap, so the composer becomes full-width and otherwise
-        // repaints the host's bottom-right curve as a rectangle.
-        match self.host {
-            AiHost::Dock => {
-                composer = composer.rounded_bl(use_theme().tokens.radius_xl);
-            }
-            AiHost::Sheet => {
-                composer = composer
-                    .rounded_br(use_theme().tokens.radius_xl)
-                    .overflow_hidden();
-            }
+        // The Dock composer directly owns its exposed bottom-left corner.
+        // In a Sheet, the panel/body already own and clip the bottom-right
+        // curve. Giving the full-width composer a second `rounded_br` cuts a
+        // larger inner arc and reveals the dim backdrop as a grey triangle.
+        if self.host == AiHost::Dock {
+            composer = composer.rounded_bl(use_theme().tokens.radius_xl);
         }
         if let Some(error) = &self.error {
             composer = composer.child(
