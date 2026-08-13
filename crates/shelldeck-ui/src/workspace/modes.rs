@@ -4,7 +4,7 @@ impl Workspace {
     // --- App modes (User / Support / Dev) ---
 
     /// Whether the user is signed in to Inklura Manage.
-    pub(super) fn signed_in(&self) -> bool {
+    pub fn signed_in(&self) -> bool {
         self.app_config.cloud_sync.is_configured() && self.app_config.account.is_some()
     }
 
@@ -250,7 +250,7 @@ impl Workspace {
             settings.set_dev_tabs_enabled(dev_tabs_enabled, cx);
         });
         self.sync_support_poll(cx);
-        if self.effective_mode() == AppMode::Support && self.app_config.cloud_sync.is_configured() {
+        if self.effective_mode() == AppMode::Support && self.can_access_mode(AppMode::Support) {
             self.refresh_support(cx);
         }
         self.update_jean_availability(cx);

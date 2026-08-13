@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{create_client, parse_generated_script_draft, AiContext, AiSurface};
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
+use shelldeck_core::config::cloud_account::AppMode;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::script::{ScriptLanguage, ScriptTarget};
 use shelldeck_core::models::script_runner::build_command;
@@ -22,6 +23,9 @@ use super::{ActiveScript, Workspace};
 
 impl Workspace {
     pub(super) fn handle_script_event(&mut self, event: &ScriptEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             ScriptEvent::RunScript(script) => {
                 // Guard: don't start if already running

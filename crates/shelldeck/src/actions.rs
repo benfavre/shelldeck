@@ -5,7 +5,7 @@ pub use shelldeck_ui::workspace::{
     CloseTab, CloudSyncNow, ConnectBextCloud, JeanTogglePause, NewRequest, NewTerminal, NextTab,
     OpenAiAssistant, OpenBextCloud, OpenFileEditorView, OpenFleet, OpenJeanConsole,
     OpenQuickConnect, OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite,
-    ToggleJeanRuntime, ToggleSidebar,
+    ToggleJeanRuntime, ToggleMenuBar, ToggleSidebar,
 };
 
 // Re-export terminal view actions
@@ -36,6 +36,8 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("secondary-t", NewTerminal, None),
         // Toggle sidebar: Cmd+B (macOS) / Ctrl+B (Linux/Win)
         KeyBinding::new("secondary-b", ToggleSidebar, None),
+        // Toggle application menu bar; remains available after the row hides.
+        KeyBinding::new("secondary-shift-m", ToggleMenuBar, None),
         // Settings: Cmd+, (macOS) / Ctrl+, (Linux/Win)
         KeyBinding::new("secondary-,", OpenSettings, None),
         // Tab navigation (Ctrl+Tab on all platforms)

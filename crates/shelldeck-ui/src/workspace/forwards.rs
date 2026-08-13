@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::AiSurface;
 use shelldeck_core::config::activity::{ActivityAction, ActivityEntry, ActivityKind};
+use shelldeck_core::config::cloud_account::AppMode;
 use shelldeck_core::models::port_forward::{ForwardDirection, ForwardStatus};
 use shelldeck_ssh::client::SshClient;
 use shelldeck_ssh::tunnel::TunnelHandle;
@@ -21,6 +22,9 @@ impl Workspace {
         event: &PortForwardEvent,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             PortForwardEvent::StartForward(id) => {
                 let forward_id = *id;

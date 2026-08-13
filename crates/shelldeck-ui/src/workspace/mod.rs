@@ -1,5 +1,5 @@
 use crate::i18n::rel_time;
-use crate::icons::{ai_provider_badge, lucide_icon, lucide_path, simple_icon};
+use crate::icons::{ai_provider_badge, ai_provider_icon, lucide_icon, lucide_path};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState, Paste};
@@ -332,6 +332,8 @@ actions!(
         NewTerminal,
         CloseTab,
         ToggleSidebar,
+        ToggleMenuBar,
+        OpenLogin,
         OpenSettings,
         NextTab,
         PrevTab,
@@ -683,6 +685,7 @@ pub struct Workspace {
 /// crate. The `main.rs`-side closure translates one into the other.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrayCounters {
+    pub signed_in: bool,
     pub active_ssh: usize,
     pub open_tunnels: usize,
     pub unread_tickets: usize,

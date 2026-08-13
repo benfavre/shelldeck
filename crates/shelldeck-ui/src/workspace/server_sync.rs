@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
+use shelldeck_core::config::cloud_account::AppMode;
 use shelldeck_core::models::connection::Connection;
 use shelldeck_core::models::server_sync::SyncProfile;
 use shelldeck_ssh::client::SshClient;
@@ -17,6 +18,9 @@ impl Workspace {
         event: &ServerSyncEvent,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         match event {
             ServerSyncEvent::ListFiles {
                 connection_id,

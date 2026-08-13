@@ -14,6 +14,7 @@ impl Workspace {
         sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
         ui_font_size: f32,
+        menu_bar_visible: bool,
         ai_configured: bool,
         ai_task_count: usize,
         handle: &WeakEntity<Self>,
@@ -418,6 +419,36 @@ impl Workspace {
             )
             .child(inc_btn);
 
+        // The menu row contains its own visibility toggle, so hiding it would
+        // otherwise remove the only discoverable way to restore it. This
+        // compact titlebar affordance exists only while the row is hidden.
+        let restore_menu_button = (!menu_bar_visible).then(|| {
+            let tooltip: SharedString =
+                format!("{} · Ctrl+Shift+M", t!("menu.view.menu_bar")).into();
+            let workspace = handle.clone();
+            div()
+                .id("titlebar-restore-menu")
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(28.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(btn_hover_bg))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: tooltip.clone(),
+                    })
+                    .into()
+                })
+                .on_click(move |_, _, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| this.toggle_menu_bar(cx));
+                    }
+                })
+                .child(lucide_icon("list-checks", 14.0, btn_text))
+        });
+
         let ai_button = ai_configured.then(|| {
             let tooltip: SharedString = t!("ai.assistant.open").to_string().into();
             let workspace = handle.clone();
@@ -506,6 +537,7 @@ impl Workspace {
                     .h_full()
                     .gap(px(4.0))
                     .pr(px(8.0))
+                    .children(restore_menu_button)
                     .child(scale_group)
                     .children(ai_button)
                     .child(divider())

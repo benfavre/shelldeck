@@ -641,6 +641,7 @@ impl CompanionRoot {
             workspace.update(cx, |ws, cx| {
                 ws.set_tray_state_publisher(Box::new(move |counters| {
                     let state = tray::TrayState {
+                        signed_in: counters.signed_in,
                         active_ssh: counters.active_ssh,
                         open_tunnels: counters.open_tunnels,
                         unread_tickets: counters.unread_tickets,
@@ -714,6 +715,14 @@ fn dispatch_tray_command(
     cx: &mut gpui::App,
 ) {
     use tray::TrayCommand;
+    if tray_command_requires_auth(&cmd) {
+        let Some(root_entity) = root.upgrade() else {
+            return;
+        };
+        if authenticated_workspace(&root_entity, window, cx).is_none() {
+            return;
+        }
+    }
     match cmd {
         TrayCommand::ShowWindow => {
             // Restore + focus the main window (or a no-op if already
@@ -779,6 +788,19 @@ fn dispatch_tray_command(
     }
 }
 
+fn tray_command_requires_auth(command: &tray::TrayCommand) -> bool {
+    matches!(
+        command,
+        tray::TrayCommand::ToggleAiDock
+            | tray::TrayCommand::OpenClippy
+            | tray::TrayCommand::OpenAiTasks
+            | tray::TrayCommand::ChooseCharacter
+            | tray::TrayCommand::PauseCharacter
+            | tray::TrayCommand::ReturnCharacterToCorner
+            | tray::TrayCommand::ConnectPinned(_)
+    )
+}
+
 fn route_desktop_character_command(
     root: gpui::WeakEntity<CompanionRoot>,
     main_window: gpui::AnyWindowHandle,
@@ -788,6 +810,9 @@ fn route_desktop_character_command(
     let Some(root) = root.upgrade() else {
         return;
     };
+    if authenticated_workspace(&root, main_window, cx).is_none() {
+        return;
+    }
     let desktop_character = root.read(cx).runtime.desktop_character.clone();
     let runtime_entity = desktop_character.clone();
     desktop_character.update(cx, |runtime, cx| {
@@ -1272,6 +1297,9 @@ fn open_ai_dock(
     let Some(root) = root.upgrade() else {
         return;
     };
+    if authenticated_workspace(&root, main_window, cx).is_none() {
+        return;
+    }
     let (ai_companion, font_family, existing) = root.update(cx, |root, cx| {
         if let Some(workspace) = &root.workspace {
             workspace.update(cx, |workspace, cx| {
@@ -1374,6 +1402,34 @@ fn open_ai_dock(
         }
         Err(error) => tracing::error!("failed to open AI Dock window: {error:#}"),
     }
+}
+
+/// Initialize the authoritative Workspace if needed and require a live local
+/// session before an application-level companion command may continue. These
+/// commands originate outside the rendered view tree (tray, global hotkey,
+/// deep link), so UI visibility cannot be their authorization boundary.
+fn authenticated_workspace(
+    root: &gpui::Entity<CompanionRoot>,
+    main_window: gpui::AnyWindowHandle,
+    cx: &mut gpui::App,
+) -> Option<gpui::Entity<Workspace>> {
+    let workspace = match main_window.update(cx, |_, window, cx| {
+        root.update(cx, |root, cx| root.ensure_workspace(window, cx))
+    }) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not initialize Workspace for authorization");
+            return None;
+        }
+    };
+    if workspace.read(cx).signed_in() {
+        return Some(workspace);
+    }
+    let _ = main_window.update(cx, |_, window, _cx| {
+        window.show_window();
+        window.activate_window();
+    });
+    None
 }
 
 fn toggle_companion_command_palette(
@@ -1489,9 +1545,9 @@ fn toggle_companion_command_palette(
 }
 
 /// Parse + route a `shelldeck://…` payload (a bare focus ping arrives as an
-/// empty string). The Assistant target stays entirely inside the lightweight
-/// companion runtime; other targets bring the main window forward and route
-/// through the Workspace. Runs on the GPUI foreground thread.
+/// empty string). The Assistant target uses the companion window after the
+/// shared Workspace authentication gate; other targets bring the main window
+/// forward and route through Workspace. Runs on the GPUI foreground thread.
 fn dispatch_deep_link(
     payload: String,
     root: gpui::WeakEntity<CompanionRoot>,
@@ -2143,10 +2199,10 @@ mod tests {
     use super::{
         ai_dock_bounds, ai_dock_global_shortcut, ai_dock_window_action, character_asset_paths,
         command_palette_bounds, command_palette_global_shortcut, companion_main_window_visible,
-        companion_pointer, merge_workspace_connections, workspace_created_at_boot, AiDockRequest,
-        AiDockWindowAction, Assets, CompanionCommand, CompanionRuntime, GlobalHotkeyRegistry,
-        GlobalShortcutRegistrationState, ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID,
-        COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
+        companion_pointer, merge_workspace_connections, tray_command_requires_auth,
+        workspace_created_at_boot, AiDockRequest, AiDockWindowAction, Assets, CompanionCommand,
+        CompanionRuntime, GlobalHotkeyRegistry, GlobalShortcutRegistrationState,
+        ShortcutRegistrationStatus, AI_DOCK_GLOBAL_HOTKEY_ID, COMMAND_PALETTE_GLOBAL_HOTKEY_ID,
     };
     #[cfg(target_os = "linux")]
     use super::{parse_x11_workarea, parse_xrandr_monitor_geometry};
@@ -2154,6 +2210,33 @@ mod tests {
     use shelldeck_core::config::app_config::CompanionConfig;
     use shelldeck_core::models::connection::Connection;
     use std::cell::{Cell, RefCell};
+
+    // SDTEST-1603 — disabled native rows are presentation; the dispatcher
+    // independently classifies every session-bearing tray command as private.
+    #[test]
+    fn tray_session_commands_require_authentication() {
+        use crate::tray::TrayCommand;
+        use uuid::Uuid;
+
+        for public in [
+            TrayCommand::ShowWindow,
+            TrayCommand::OpenPalette,
+            TrayCommand::Quit,
+        ] {
+            assert!(!tray_command_requires_auth(&public));
+        }
+        for private in [
+            TrayCommand::ToggleAiDock,
+            TrayCommand::OpenClippy,
+            TrayCommand::OpenAiTasks,
+            TrayCommand::ChooseCharacter,
+            TrayCommand::PauseCharacter,
+            TrayCommand::ReturnCharacterToCorner,
+            TrayCommand::ConnectPinned(Uuid::nil()),
+        ] {
+            assert!(tray_command_requires_auth(&private));
+        }
+    }
 
     #[derive(Default)]
     struct FakeGlobalHotkeyRegistry {

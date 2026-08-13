@@ -18,7 +18,7 @@ use shelldeck_core::ai::{
 use uuid::Uuid;
 
 use crate::ai_workflow::capability_result_is_markdown;
-use crate::icons::{ai_provider_inline, lucide_icon, lucide_path};
+use crate::icons::{ai_provider_icon, ai_provider_inline, lucide_icon, lucide_path};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
@@ -3076,6 +3076,11 @@ impl Render for AiAssistantView {
                         .text_color(ShellDeckColors::text_primary())
                         .when(selected, |el| el.bg(ShellDeckColors::selected_bg()))
                         .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                        .child(ai_provider_icon(
+                            backend,
+                            14.0,
+                            ShellDeckColors::text_primary(),
+                        ))
                         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                         .when(selected, |el| {
                             el.child(lucide_icon("check", 13.0, ShellDeckColors::primary()))

@@ -7,6 +7,9 @@ impl Workspace {
     /// Delegates to `JeanConfig::resolve_effective` (the pure fn under test in
     /// SDTEST-1054).
     pub(super) fn effective_jean_config(&self) -> Option<JeanConfig> {
+        if !self.signed_in() {
+            return None;
+        }
         let server = self
             .site_directory
             .as_ref()
@@ -128,6 +131,9 @@ impl Workspace {
     }
 
     pub(super) fn handle_jean_event(&mut self, event: JeanViewEvent, cx: &mut Context<Self>) {
+        if !self.can_access_mode(AppMode::Dev) {
+            return;
+        }
         use jeanclaude as j;
         match event {
             JeanViewEvent::Refresh => self.refresh_jean_state(cx),
