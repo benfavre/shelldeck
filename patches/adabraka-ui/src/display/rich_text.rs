@@ -401,21 +401,10 @@ pub fn render_inlines_with_handler(
                     },
                 ))
                 .into_any_element();
-        } else {
-            let urls: Vec<String> = flattened.links.iter().map(|l| l.url.clone()).collect();
-            return div()
-                .text_size(base_size)
-                .line_height(relative(1.5))
-                .child(InteractiveText::new(id, styled).on_click(
-                    click_ranges,
-                    move |idx, _window, cx| {
-                        if let Some(url) = urls.get(idx) {
-                            cx.open_url(url);
-                        }
-                    },
-                ))
-                .into_any_element();
         }
+        // ShellDeck patch: SDPATCH-035 — without an explicit host callback,
+        // rich links remain styled text and cannot bypass confirmation by
+        // calling the platform URL opener directly.
     }
 
     div()
@@ -708,20 +697,10 @@ fn render_inline_element(
                     },
                 ))
                 .into_any_element();
-        } else {
-            return div()
-                .text_size(base_size)
-                .line_height(relative(1.5))
-                .child(InteractiveText::new(id, styled).on_click(
-                    click_ranges,
-                    move |idx, _window, cx| {
-                        if let Some(url) = urls.get(idx) {
-                            cx.open_url(url);
-                        }
-                    },
-                ))
-                .into_any_element();
         }
+        // ShellDeck patch: SDPATCH-035 — passive is the safe default for
+        // parsed remote content. A caller must opt into interaction and own
+        // the confirmation policy via `on_link_click`.
     }
 
     div()

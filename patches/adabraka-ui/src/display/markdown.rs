@@ -171,6 +171,27 @@ fn parse_markdown_with_urls(source: &str) -> Vec<RichBlock> {
 }
 
 #[cfg(feature = "markdown")]
+pub(crate) fn is_safe_markdown_link_destination(url: &str) -> bool {
+    // ShellDeck patch: SDPATCH-035 — Markdown is fed by remote users and AI
+    // output. Only absolute HTTP(S) destinations may become interactive; all
+    // application/file/data/custom schemes remain inert text.
+    let url = url.trim();
+    if url.is_empty() || url.len() > 8 * 1024 || url.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    let authority = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .and_then(|rest| rest.split(['/', '?', '#']).next());
+    authority.is_some_and(|authority| {
+        !authority.is_empty()
+            && !authority.contains('@')
+            && !authority.chars().any(char::is_whitespace)
+    })
+}
+
+#[cfg(feature = "markdown")]
 struct UrlTrackingBlockBuilder {
     blocks: Vec<RichBlock>,
     inline_stack: Vec<Vec<RichInline>>,
@@ -218,7 +239,10 @@ impl UrlTrackingBlockBuilder {
             Event::SoftBreak => self.push_inline(RichInline::Text(" ".to_string())),
             Event::HardBreak => self.push_inline(RichInline::LineBreak),
             Event::Rule => self.push_block(RichBlock::HorizontalRule),
-            Event::Html(html) => self.push_inline(RichInline::Html(html.to_string())),
+            // ShellDeck patch: SDPATCH-035 — raw HTML from remote Markdown is
+            // discarded at parse time, not merely hidden by today's painter,
+            // so a later renderer cannot accidentally reactivate it.
+            Event::Html(_) | Event::InlineHtml(_) => {}
             Event::TaskListMarker(checked) => {
                 if let Some(list) = self.list_stack.last_mut() {
                     list.current_item_checked = Some(*checked);
@@ -392,16 +416,41 @@ impl UrlTrackingBlockBuilder {
             TagEnd::Link => {
                 let children = self.inline_stack.pop().unwrap_or_default();
                 let url = self.url_stack.pop().unwrap_or_default();
-                self.push_inline(RichInline::Link {
-                    text: children,
-                    url,
-                });
+                // ShellDeck patch: SDPATCH-035 — unsafe destinations keep
+                // their visible label but never acquire link interaction.
+                if is_safe_markdown_link_destination(&url) {
+                    self.push_inline(RichInline::Link {
+                        text: children,
+                        url,
+                    });
+                } else {
+                    for child in children {
+                        self.push_inline(child);
+                    }
+                }
             }
             TagEnd::Image => {
                 let alt_inlines = self.inline_stack.pop().unwrap_or_default();
                 let alt = inlines_to_plain_text(&alt_inlines);
                 let url = self.url_stack.pop().unwrap_or_default();
-                self.push_block(RichBlock::Image { alt, url });
+                // ShellDeck patch: SDPATCH-035 — never fetch a remote image
+                // merely because untrusted Markdown mentioned it. Expose a
+                // deliberate, validated link instead; the host's open/copy
+                // confirmation remains the only network-capable path.
+                let label = if alt.trim().is_empty() {
+                    "Image".to_string()
+                } else {
+                    format!("Image: {alt}")
+                };
+                let inline = if is_safe_markdown_link_destination(&url) {
+                    RichInline::Link {
+                        text: vec![RichInline::Text(label)],
+                        url,
+                    }
+                } else {
+                    RichInline::Text(label)
+                };
+                self.push_block(RichBlock::Paragraph(vec![inline]));
             }
             TagEnd::Table => {
                 if let Some(ts) = self.table_state.take() {
@@ -499,7 +548,9 @@ impl UrlTrackingBlockBuilder {
 
 #[cfg(all(test, feature = "markdown"))]
 mod tests {
-    use super::{parse_markdown_with_urls, RichBlock, RichInline};
+    use super::{
+        is_safe_markdown_link_destination, parse_markdown_with_urls, RichBlock, RichInline,
+    };
 
     #[test]
     fn bare_http_url_is_promoted_without_trailing_punctuation() {
@@ -532,5 +583,45 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    // SDTEST-1606
+    #[test]
+    fn unsafe_markdown_destinations_stay_inert() {
+        for unsafe_url in [
+            "javascript:alert(1)",
+            "data:text/html,boom",
+            "file:///etc/passwd",
+            "shelldeck://terminal/new",
+            "https://user@example.com/private",
+            "/relative",
+        ] {
+            assert!(!is_safe_markdown_link_destination(unsafe_url));
+            let blocks = parse_markdown_with_urls(&format!("[ouvrir]({unsafe_url})"));
+            assert!(!format!("{blocks:?}").contains("Link"), "{unsafe_url}");
+        }
+    }
+
+    // SDTEST-1607
+    #[test]
+    fn markdown_images_are_links_not_automatic_network_fetches() {
+        let blocks = parse_markdown_with_urls("![pixel](https://tracker.example/pixel.png)");
+        assert!(!blocks
+            .iter()
+            .any(|block| matches!(block, RichBlock::Image { .. })));
+        assert!(format!("{blocks:?}").contains("Image: pixel"));
+    }
+
+    // SDTEST-1608
+    #[test]
+    fn raw_html_is_not_exposed_as_rendered_content() {
+        let blocks = parse_markdown_with_urls("avant <script>alert('x')</script> après");
+        let rendered = format!("{blocks:?}");
+        assert!(!rendered.contains("Html("));
+        assert!(!rendered.contains("<script>"));
+        assert!(rendered.contains("avant"));
+        // Inner text remains harmless prose; only HTML semantics are dropped.
+        assert!(rendered.contains("alert('x')"));
+        assert!(rendered.contains("après"));
     }
 }

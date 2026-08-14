@@ -6,6 +6,7 @@ use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
+use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::models::connection::Connection;
@@ -16,6 +17,7 @@ use uuid::Uuid;
 const PAGE_SIZE: usize = 50;
 
 use crate::icons::lucide_icon;
+use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::monolith::{animated_monolith, MonolithMotion};
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -141,6 +143,7 @@ pub struct SitesView {
     focus_handle: FocusHandle,
     /// Open kebab (⋮) menu: which site, and the click position (window coords).
     kebab_menu: Option<(Uuid, Point<Pixels>)>,
+    markdown_link_action: Option<MarkdownLinkAction>,
 }
 
 impl EventEmitter<SitesEvent> for SitesView {}
@@ -165,7 +168,20 @@ impl SitesView {
             collapsed_groups: HashSet::new(),
             focus_handle: cx.focus_handle(),
             kebab_menu: None,
+            markdown_link_action: None,
         }
+    }
+
+    fn markdown_link_handler(cx: &mut Context<Self>) -> MarkdownLinkHandler {
+        let parent = cx.entity();
+        std::rc::Rc::new(move |url, window, cx| {
+            if let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = Some(action);
+                    cx.notify();
+                });
+            }
+        })
     }
 
     pub fn set_sites(&mut self, sites: Vec<ManagedSite>) {
@@ -1107,7 +1123,7 @@ impl SitesView {
         card
     }
 
-    fn render_detail_panel(&self, cx: &mut Context<Self>) -> Div {
+    fn render_detail_panel(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let site_id = match self.selected_site {
             Some(id) => id,
             None => return div(),
@@ -1369,6 +1385,7 @@ impl SitesView {
 
         // Notes
         if let Some(ref notes) = site.notes {
+            let link_handler = Self::markdown_link_handler(cx);
             content = content.child(
                 div()
                     .flex()
@@ -1377,9 +1394,21 @@ impl SitesView {
                     .child(Self::detail_label(&t!("sites.detail.notes")))
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .w_full()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
                             .text_color(ShellDeckColors::text_primary())
-                            .child(notes.clone()),
+                            .child(
+                                Markdown::new(notes.clone())
+                                    .base_font_size(px(11.0).to_pixels(window.rem_size()))
+                                    .compact()
+                                    .on_link_click(move |url, window, cx| {
+                                        link_handler(url, window, cx)
+                                    })
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .whitespace_normal(),
+                            ),
                     ),
             );
         }
@@ -1744,7 +1773,7 @@ impl SitesView {
 }
 
 impl Render for SitesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filtered = self.filtered_sites();
         let flat_items_count = Self::grouped_flat_items(&filtered, &self.collapsed_groups).len();
         let has_sites = !self.sites.is_empty();
@@ -2147,7 +2176,7 @@ impl Render for SitesView {
 
         // Detail panel
         if self.detail_panel_open && self.selected_site.is_some() {
-            content_area = content_area.child(self.render_detail_panel(cx));
+            content_area = content_area.child(self.render_detail_panel(window, cx));
         }
 
         page = page.child(content_area);
@@ -2157,6 +2186,16 @@ impl Render for SitesView {
             if let Some(menu) = self.render_kebab_menu(site_id, pos, cx) {
                 page = page.child(menu);
             }
+        }
+
+        if let Some(action) = self.markdown_link_action.clone() {
+            let parent = cx.entity();
+            page = page.child(markdown_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = None;
+                    cx.notify();
+                });
+            }));
         }
 
         page

@@ -662,14 +662,12 @@ impl SupportView {
     fn thread_link_handler(cx: &mut Context<Self>) -> thread::ThreadLinkHandler {
         let parent = cx.entity();
         Rc::new(move |url, window, cx| {
-            let action = thread::ThreadLinkAction {
-                url: url.to_string(),
-                position: window.mouse_position(),
-            };
-            parent.update(cx, |this, cx| {
-                this.thread_link_action = Some(action);
-                cx.notify();
-            });
+            if let Some(action) = thread::ThreadLinkAction::new(url, window.mouse_position()) {
+                parent.update(cx, |this, cx| {
+                    this.thread_link_action = Some(action);
+                    cx.notify();
+                });
+            }
         })
     }
 

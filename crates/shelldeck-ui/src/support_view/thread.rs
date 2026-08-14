@@ -6,6 +6,7 @@
 
 use crate::i18n::rel_time;
 use crate::icons::lucide_icon;
+use crate::markdown::{MarkdownLinkAction, MarkdownLinkHandler};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -33,40 +34,11 @@ pub(crate) struct ThreadMessageExtras {
     pub delivery: Option<AnyElement>,
     pub actions: Option<AnyElement>,
     pub group: Option<SharedString>,
-    pub link_handler: Option<ThreadLinkHandler>,
+    pub link_handler: Option<MarkdownLinkHandler>,
 }
 
-pub(crate) type ThreadLinkHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
-
-#[derive(Clone)]
-pub(crate) struct ThreadLinkAction {
-    pub url: String,
-    pub position: Point<Pixels>,
-}
-
-fn link_host(url: &str) -> Option<String> {
-    let (_, after_scheme) = url.split_once("://")?;
-    let authority = after_scheme.split(['/', '?', '#']).next()?;
-    let authority = authority.rsplit('@').next().unwrap_or(authority);
-    let host = if authority.starts_with('[') {
-        authority
-            .strip_prefix('[')?
-            .split_once(']')
-            .map(|(host, _)| host)?
-    } else {
-        authority.split(':').next().unwrap_or(authority)
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    (!host.is_empty()).then_some(host)
-}
-
-pub(crate) fn thread_link_is_internal(url: &str) -> bool {
-    link_host(url).is_some_and(|host| {
-        ["inklura.fr", "bext.dev"]
-            .iter()
-            .any(|root| host == *root || host.ends_with(&format!(".{root}")))
-    })
-}
+pub(crate) type ThreadLinkHandler = MarkdownLinkHandler;
+pub(crate) type ThreadLinkAction = MarkdownLinkAction;
 
 /// Cursor-anchored confirmation shared by Ticket, Support Request and User
 /// Request threads. Markdown owns link detection/styling; this component owns
@@ -76,8 +48,8 @@ pub(crate) fn thread_link_popover(
     on_close: impl Fn(&mut App) + 'static,
 ) -> AnyElement {
     let on_close = Rc::new(on_close);
-    let external = !thread_link_is_internal(&action.url);
-    let host = link_host(&action.url).unwrap_or_else(|| action.url.clone());
+    let external = !action.internal;
+    let host = action.host.clone();
     let url_for_copy = action.url.clone();
     let url_for_open = action.url.clone();
     let close_backdrop = on_close.clone();
@@ -981,7 +953,7 @@ pub(crate) fn note(
 
 #[cfg(test)]
 mod tests {
-    use super::{markdown_blocks, thread_link_is_internal};
+    use super::markdown_blocks;
 
     #[test]
     fn markdown_is_split_on_complete_top_level_blocks() {
@@ -1000,25 +972,5 @@ mod tests {
         let blocks = markdown_blocks("Une seule ligne sans balisage");
         assert_eq!(blocks.as_slice(), &["Une seule ligne sans balisage"]);
         assert!(markdown_blocks("  \n").is_empty());
-    }
-
-    #[test]
-    fn ecosystem_domains_include_subdomains_but_not_suffix_spoofs() {
-        for trusted in [
-            "https://inklura.fr",
-            "https://manage.inklura.fr/ticket/1",
-            "https://cloud.bext.dev/dashboard",
-            "https://site.staging.bext.dev",
-        ] {
-            assert!(thread_link_is_internal(trusted), "{trusted}");
-        }
-        for external in [
-            "https://example.com",
-            "https://inklura.fr.evil.example/phish",
-            "https://fakebext.dev",
-            "mailto:support@inklura.fr",
-        ] {
-            assert!(!thread_link_is_internal(external), "{external}");
-        }
     }
 }

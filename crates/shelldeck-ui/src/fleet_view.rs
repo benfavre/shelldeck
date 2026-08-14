@@ -10,6 +10,7 @@ use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::toggle::{Toggle, ToggleSize};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize};
+use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
@@ -18,6 +19,7 @@ use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
 
 use crate::i18n::rel_time;
 use crate::icons::lucide_icon;
+use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -83,6 +85,8 @@ pub struct FleetView {
     job_filter: JobFilter,
     show_runtime_warning: bool,
     job_detail_sheet: Option<Entity<Sheet>>,
+    markdown_link_action: Option<MarkdownLinkAction>,
+    markdown_font_size: Pixels,
 }
 
 impl FleetView {
@@ -98,6 +102,8 @@ impl FleetView {
             job_filter: JobFilter::All,
             show_runtime_warning: false,
             job_detail_sheet: None,
+            markdown_link_action: None,
+            markdown_font_size: gpui::px(12.0),
         }
     }
 
@@ -690,12 +696,31 @@ impl FleetView {
         let description = format!("{} · {}", job.source, rel_time(job.updated_at));
         let detail_job = job.clone();
         let fleet = cx.entity().downgrade();
+        let link_fleet = fleet.clone();
+        let markdown_font_size = self.markdown_font_size;
         self.job_detail_sheet = Some(cx.new(move |sheet_cx| {
+            let link_handler: MarkdownLinkHandler = std::rc::Rc::new(move |url, window, cx| {
+                let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) else {
+                    return;
+                };
+                if let Some(fleet) = link_fleet.upgrade() {
+                    fleet.update(cx, |this, cx| {
+                        this.markdown_link_action = Some(action);
+                        cx.notify();
+                    });
+                }
+            });
             Sheet::new(sheet_cx)
                 .size(SheetSize::Lg)
                 .title(title)
                 .description(description)
-                .dynamic_content(move || Self::render_job_detail_content(&detail_job))
+                .dynamic_content(move || {
+                    Self::render_job_detail_content(
+                        &detail_job,
+                        link_handler.clone(),
+                        markdown_font_size,
+                    )
+                })
                 .on_close(move |_window, cx| {
                     if let Some(fleet) = fleet.upgrade() {
                         fleet.update(cx, |this, cx| {
@@ -731,34 +756,25 @@ impl FleetView {
             )
     }
 
-    fn multiline_block(text: &str) -> Div {
-        let mut block = div()
+    fn markdown_block(
+        text: String,
+        link_handler: MarkdownLinkHandler,
+        base_font_size: Pixels,
+    ) -> impl IntoElement {
+        Markdown::new(text)
+            .base_font_size(base_font_size)
+            .compact()
+            .on_link_click(move |url, window, cx| link_handler(url, window, cx))
             .w_full()
             .min_w(px(0.0))
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .gap(px(3.0))
-            .text_size(px(12.0))
-            .text_color(ShellDeckColors::text_primary());
-        for line in text.split('\n') {
-            let display: SharedString = if line.is_empty() {
-                " ".into()
-            } else {
-                line.to_string().into()
-            };
-            block = block.child(
-                div()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(display),
-            );
-        }
-        block
+            .whitespace_normal()
     }
 
-    fn render_job_detail_content(job: &JeanJob) -> impl IntoElement {
+    fn render_job_detail_content(
+        job: &JeanJob,
+        link_handler: MarkdownLinkHandler,
+        markdown_font_size: Pixels,
+    ) -> impl IntoElement {
         let (status_key, status_variant, _) = Self::job_status(job);
         let no_result = t!("fleet.job.detail.no_result").to_string();
         let result = job
@@ -834,7 +850,11 @@ impl FleetView {
                             .border_1()
                             .border_color(ShellDeckColors::border())
                             .bg(ShellDeckColors::bg_surface())
-                            .child(Self::multiline_block(&job.prompt)),
+                            .child(Self::markdown_block(
+                                job.prompt.clone(),
+                                link_handler.clone(),
+                                markdown_font_size,
+                            )),
                     ),
             )
             .child(
@@ -859,7 +879,11 @@ impl FleetView {
                             .border_1()
                             .border_color(ShellDeckColors::border())
                             .bg(ShellDeckColors::bg_surface())
-                            .child(Self::multiline_block(&result)),
+                            .child(Self::markdown_block(
+                                result,
+                                link_handler,
+                                markdown_font_size,
+                            )),
                     ),
             )
     }
@@ -1054,7 +1078,8 @@ impl FleetView {
 }
 
 impl Render for FleetView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.markdown_font_size = px(12.0).to_pixels(window.rem_size());
         let mut root = div()
             .size_full()
             .min_w(px(0.0))
@@ -1075,6 +1100,15 @@ impl Render for FleetView {
 
         if let Some(sheet) = &self.job_detail_sheet {
             root = root.child(sheet.clone());
+        }
+        if let Some(action) = self.markdown_link_action.clone() {
+            let parent = cx.entity();
+            root = root.child(markdown_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = None;
+                    cx.notify();
+                });
+            }));
         }
         root
     }
