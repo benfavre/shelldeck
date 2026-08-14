@@ -686,6 +686,30 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — useful opt-in behavior, but automatic
   linkification may not suit every generic Markdown consumer.
 
+### SDPATCH-035 — Untrusted Markdown is passive by default
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `is_safe_markdown_link_destination`,
+    `UrlTrackingBlockBuilder::end_tag`
+  - `src/display/rich_text.rs` — `render_inlines_with_handler`,
+    `render_inline_element`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — Markdown is fed by remote users and AI`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — unsafe destinations keep`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — never fetch a remote image`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — raw HTML from remote Markdown is`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-035 — without an explicit host callback,`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-035 — passive is the safe default for`
+- **Why**: ShellDeck renders Markdown supplied by customers, support APIs and
+  AI providers. A document must not trigger a remote image request (tracking
+  pixel / local-network probe), open a custom or local URL scheme, or bypass
+  the application's explicit open/copy confirmation merely because a caller
+  omitted its link callback. Images are therefore exposed as inert or
+  validated links, unsafe destinations keep only their label, and links remain
+  passive until a host installs a confirmation handler.
+- **Upstream status**: not filed yet — secure-by-default behavior may need an
+  explicit compatibility flag for generic upstream consumers.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -796,6 +820,10 @@ carries no marker of its own — see its entry).
   unclipped rectangular outer shadow and make its full-window backdrop own all
   four floating-window corners directly. 2 new markers; current code marker
   count is 114.
+- **2026-08-13** — added SDPATCH-035: untrusted Markdown no longer loads
+  remote images, non-HTTP(S) destinations stay inert, and missing callbacks
+  cannot silently fall through to the platform URL opener. 6 new markers;
+  current code marker count is 120.
 
 ## Retired patches
 

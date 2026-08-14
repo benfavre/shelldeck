@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::ai_workflow::capability_result_is_markdown;
 use crate::icons::{ai_provider_icon, ai_provider_inline, lucide_icon, lucide_path};
+use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::t;
@@ -261,6 +262,9 @@ pub struct AiAssistantView {
     clippy_operation: ClippyOperationKind,
     clippy_pending_request: Option<u64>,
     clippy_auto_import_clipboard: bool,
+    /// Link action shared by user turns, assistant answers and Markdown task
+    /// results. URLs are validated before this state can be populated.
+    markdown_link_action: Option<MarkdownLinkAction>,
 }
 
 impl AiAssistantView {
@@ -309,7 +313,20 @@ impl AiAssistantView {
             clippy_operation: ClippyOperationKind::Rewrite,
             clippy_pending_request: None,
             clippy_auto_import_clipboard: false,
+            markdown_link_action: None,
         }
+    }
+
+    fn markdown_link_handler(cx: &mut Context<Self>) -> MarkdownLinkHandler {
+        let parent = cx.entity();
+        std::rc::Rc::new(move |url, window, cx| {
+            if let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = Some(action);
+                    cx.notify();
+                });
+            }
+        })
     }
 
     /// Who the assistant is working for. The Dock is a chromeless window with
@@ -1563,11 +1580,13 @@ impl AiAssistantView {
                     // flex child fills the row and silently cancels
                     // `justify_end`, which is exactly why the previous version
                     // never aligned anything despite asking for it.
+                    let link_handler = Self::markdown_link_handler(cx);
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
                         // Conversation blocks follow the prototype's compact
                         // rhythm and leave no document-style tail margin.
                         .compact()
+                        .on_link_click(move |url, window, cx| link_handler(url, window, cx))
                         .min_w_0()
                         .whitespace_normal();
                     let structured = content.lines().any(|line| {
@@ -1623,9 +1642,11 @@ impl AiAssistantView {
                     // The assistant answers in prose on the surface: no frame, no
                     // fill, no role label. Its metadata sits underneath, quiet —
                     // not as a permanent button in a card header.
+                    let link_handler = Self::markdown_link_handler(cx);
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
                         .compact()
+                        .on_link_click(move |url, window, cx| link_handler(url, window, cx))
                         .w_full()
                         .min_w_0()
                         .whitespace_normal();
@@ -1845,6 +1866,7 @@ impl AiAssistantView {
             )
             .when_some(detail, |row, detail| {
                 if detail_is_markdown {
+                    let link_handler = Self::markdown_link_handler(cx);
                     row.child(
                         div()
                             .w_full()
@@ -1855,6 +1877,9 @@ impl AiAssistantView {
                             .child(
                                 Markdown::new(detail)
                                     .base_font_size(px(11.0).to_pixels(window.rem_size()))
+                                    .on_link_click(move |url, window, cx| {
+                                        link_handler(url, window, cx)
+                                    })
                                     .w_full()
                                     .min_w_0()
                                     .whitespace_normal(),
@@ -2001,7 +2026,7 @@ impl AiAssistantView {
             .into_any_element()
     }
 
-    fn render_clippy(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_clippy(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let source = self.clippy_source_state.read(cx).content().to_string();
         let source_len = source.chars().count();
         let source_input = Input::new(&self.clippy_source_state)
@@ -2106,6 +2131,8 @@ impl AiAssistantView {
         }
         if let Some(result) = &self.clippy_result {
             let result_for_copy = result.clone();
+            let result_for_markdown = result.clone();
+            let link_handler = Self::markdown_link_handler(cx);
             let diff = ai_line_diff(&source, result);
             let diff_rows = diff.into_iter().map(|line| {
                 let (prefix, text, color) = match line {
@@ -2176,9 +2203,19 @@ impl AiAssistantView {
                         .border_color(ShellDeckColors::border())
                         .bg(ShellDeckColors::bg_surface())
                         .p(px(10.0))
-                        .text_size(px(12.0))
+                        .w_full()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
                         .text_color(ShellDeckColors::text_primary())
-                        .child(result.clone()),
+                        .child(
+                            Markdown::new(result_for_markdown)
+                                .base_font_size(px(12.0).to_pixels(window.rem_size()))
+                                .compact()
+                                .on_link_click(move |url, window, cx| link_handler(url, window, cx))
+                                .w_full()
+                                .min_w(px(0.0))
+                                .whitespace_normal(),
+                        ),
                 )
                 .child(
                     div()
@@ -2858,7 +2895,7 @@ impl Render for AiAssistantView {
             AiHost::Dock => {
                 let panel = match self.active_tab {
                     AiActivity::Chat => chat.into_any_element(),
-                    AiActivity::Clippy => self.render_clippy(cx),
+                    AiActivity::Clippy => self.render_clippy(window, cx),
                     AiActivity::Tasks => self.render_tasks(window, cx),
                     AiActivity::History => self.render_history(false, window, cx),
                 };
@@ -2889,7 +2926,7 @@ impl Render for AiAssistantView {
                 sheet_header = Some(conversation_header);
                 let main = match self.active_tab {
                     AiActivity::Tasks => self.render_tasks(window, cx),
-                    AiActivity::Clippy => self.render_clippy(cx),
+                    AiActivity::Clippy => self.render_clippy(window, cx),
                     _ => chat.into_any_element(),
                 };
                 let mut split = div()
@@ -3175,6 +3212,16 @@ impl Render for AiAssistantView {
                         }
                     }),
             );
+        }
+
+        if let Some(action) = self.markdown_link_action.clone() {
+            let parent = cx.entity();
+            root = root.child(markdown_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = None;
+                    cx.notify();
+                });
+            }));
         }
 
         root

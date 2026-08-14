@@ -20,6 +20,7 @@ pub mod icons;
 pub mod issue_attachments;
 pub mod jean_view;
 pub mod login_form;
+pub(crate) mod markdown;
 pub mod menu_bar;
 pub(crate) mod monolith;
 pub mod onboarding_view;

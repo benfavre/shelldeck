@@ -1026,6 +1026,27 @@ and `delivery`, plus issue-level `thread_state`, are optional and default empty
 so payloads from the current Manage API remain valid. The local demo fixture
 contains all thirteen states even while production omits unavailable data.
 
+### SDUC-460 — Dynamic prose uses one secure Markdown boundary
+
+Markdown is rendered only where the value is genuinely free-form prose: the
+opening message and comments of Requests/Tickets, both roles in durable AI
+conversations, read-only AI summaries/explanations/reviews, the Clippy result
+preview, Fleet job prompts/results, JeanClaude pending prompts/detail actions,
+and managed-site notes. Short previews, names, statuses, errors and control
+metadata remain plain text; editable replies/drafts and the Clippy diff retain
+their exact source; scripts, terminal output and executable AI payloads retain
+their dedicated raw/code renderers.
+
+Every rich surface shares the same security boundary. Raw HTML is ignored,
+Markdown images never trigger an automatic network request, and only absolute
+HTTP(S) destinations without embedded credentials may become interactive.
+`file:`, `data:`, custom/deep-link schemes, relative destinations and malformed
+URLs retain their visible label but are inert. A valid link still cannot open
+directly: selecting it first shows the shared copy/open panel, with an external
+warning unless the parsed host is exactly an Inklura/Bext/ShellDeck ecosystem
+domain or one of its real subdomains. The host is parsed, never inferred from a
+suffix or query-string occurrence.
+
 ---
 
 ## 13. Bext Cloud
@@ -1971,8 +1992,10 @@ the capability drops, so the route back never vanishes. Clipboard text
 enters ShellDeck only after the user presses **Use clipboard** or pastes it into
 the source field. Rewrite, translate, shorten, summarize, explain, draft reply,
 and custom operations use the configured AI backend. The response remains a
-reviewable draft with a line diff and explicit Edit, Regenerate, Copy, and
-Cancel controls. Clippy is an opt-in AI surface and is disabled by default.
+reviewable draft with a secure Markdown preview, a raw line diff and explicit
+Edit, Regenerate, Copy, and Cancel controls. Preview rendering never changes
+the exact source used by Edit/Copy/replacement. Clippy is an opt-in AI surface
+and is disabled by default.
 
 ### SDUC-446 — Desktop context is bounded, untrusted, and replacement-safe
 
@@ -2113,6 +2136,12 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-13** — Added SDUC-460 and SDTEST-1604..1609 for the shared secure
+  Markdown boundary. Dynamic prose now renders consistently across Support,
+  Assistant, Clippy, Fleet, JeanClaude and site notes; raw/editable/executable
+  content remains outside the rich renderer. Raw HTML and automatic remote
+  images are suppressed, unsafe schemes stay inert, and HTTP(S) links require
+  the common copy/open confirmation with exact-host external warnings.
 - **2026-08-13** — Hardened SDUC-152/303/412/434/442 after the logged-out
   Assistant affordance exposed a broader execution-boundary defect. The menu,
   standalone palette and native tray now fail closed; global shortcuts, deep

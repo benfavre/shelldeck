@@ -8,11 +8,13 @@
 
 use crate::scale::px;
 use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 
 use shelldeck_core::config::jeanclaude::{JeanMemory, JeanState, JeanTargets, JeanTicket};
 
+use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -87,6 +89,7 @@ pub struct JeanView {
     mem_match_state: Entity<InputState>,
     mem_text_state: Entity<InputState>,
     focus_handle: FocusHandle,
+    markdown_link_action: Option<MarkdownLinkAction>,
 }
 
 impl JeanView {
@@ -111,7 +114,35 @@ impl JeanView {
             mem_match_state: mk(cx),
             mem_text_state: mk(cx),
             focus_handle: cx.focus_handle(),
+            markdown_link_action: None,
         }
+    }
+
+    fn markdown_link_handler(cx: &mut Context<Self>) -> MarkdownLinkHandler {
+        let parent = cx.entity();
+        std::rc::Rc::new(move |url, window, cx| {
+            if let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = Some(action);
+                    cx.notify();
+                });
+            }
+        })
+    }
+
+    fn markdown_block(
+        text: String,
+        link_handler: MarkdownLinkHandler,
+        base_font_size: Pixels,
+    ) -> AnyElement {
+        Markdown::new(text)
+            .base_font_size(base_font_size)
+            .compact()
+            .on_link_click(move |url, window, cx| link_handler(url, window, cx))
+            .w_full()
+            .min_w(px(0.0))
+            .whitespace_normal()
+            .into_any_element()
     }
 
     fn field_value(state: &Entity<InputState>, cx: &Context<Self>) -> String {
@@ -429,7 +460,7 @@ impl JeanView {
             )
     }
 
-    fn render_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_overview(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut col = div()
             .id("jean-overview")
             .flex_1()
@@ -462,6 +493,7 @@ impl JeanView {
                 } else {
                     String::new()
                 };
+                let link_handler = Self::markdown_link_handler(cx);
                 col = col.child(
                     div()
                         .flex()
@@ -476,8 +508,20 @@ impl JeanView {
                             div()
                                 .text_size(px(13.0))
                                 .text_color(ShellDeckColors::text_primary())
-                                .child(format!("{}{}", p.prompt, count_note)),
+                                .child(Self::markdown_block(
+                                    p.prompt.clone(),
+                                    link_handler,
+                                    px(13.0).to_pixels(window.rem_size()),
+                                )),
                         )
+                        .when(!count_note.is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(count_note),
+                            )
+                        })
                         .child(
                             div()
                                 .text_size(px(11.0))
@@ -631,7 +675,7 @@ impl JeanView {
         col
     }
 
-    fn render_history(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_history(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let statuses = ["", "running", "queued", "done", "error", "cancelled"];
         let mut filters = div().flex().flex_wrap().gap(px(4.0)).mb(px(8.0));
         for s in statuses {
@@ -747,10 +791,10 @@ impl JeanView {
             .flex()
             .min_h(px(0.0))
             .child(left)
-            .child(self.render_detail(cx))
+            .child(self.render_detail(window, cx))
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(t) = self.detail.clone() else {
             return div()
                 .flex_1()
@@ -777,25 +821,35 @@ impl JeanView {
             actions = actions.child(Self::muted(t!("jean.detail.no_actions").as_ref()));
         } else {
             for a in &t.actions {
+                let link_handler = Self::markdown_link_handler(cx);
                 actions = actions.child(
                     div()
+                        .flex()
+                        .items_start()
+                        .gap(px(6.0))
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::text_primary())
-                        .child(format!("• {}", a)),
+                        .child("•")
+                        .child(div().flex_1().min_w(px(0.0)).child(Self::markdown_block(
+                            a.clone(),
+                            link_handler,
+                            px(12.0).to_pixels(window.rem_size()),
+                        ))),
                 );
             }
         }
 
-        let mut meta = format!("[{}] {}", t.status, t.prompt);
+        let mut meta = t.prompt.clone();
         if let Some(tgt) = &t.target {
-            meta.push_str(&format!("\n🎯 {}", tgt));
+            meta.push_str(&format!("\n\n🎯 {}", tgt));
         }
         if let Some(url) = &t.ticket_url {
             meta.push_str(&format!("\n{}", url));
         }
         if let Some(err) = &t.error {
-            meta.push_str(&format!("\n⚠ {}", err));
+            meta.push_str(&format!("\n\n⚠ {}", err));
         }
+        let detail_link_handler = Self::markdown_link_handler(cx);
 
         let mut bar = div()
             .flex()
@@ -830,9 +884,20 @@ impl JeanView {
                     .py(px(10.0))
                     .border_b_1()
                     .border_color(ShellDeckColors::border())
-                    .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_primary())
-                    .child(meta),
+                    .child(
+                        div()
+                            .mb(px(6.0))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(t.status.clone()),
+                    )
+                    .child(Self::markdown_block(
+                        meta,
+                        detail_link_handler,
+                        px(13.0).to_pixels(window.rem_size()),
+                    )),
             )
             .child(actions)
             .child(bar)
@@ -1037,7 +1102,7 @@ impl JeanView {
 }
 
 impl Render for JeanView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = div()
             .flex()
             .items_center()
@@ -1052,8 +1117,8 @@ impl Render for JeanView {
             .child(self.tab_button(JeanTab::Memory, t!("jean.tab.memory").as_ref(), cx));
 
         let body = match self.tab {
-            JeanTab::Overview => self.render_overview(cx).into_any_element(),
-            JeanTab::History => self.render_history(cx).into_any_element(),
+            JeanTab::Overview => self.render_overview(window, cx).into_any_element(),
+            JeanTab::History => self.render_history(window, cx).into_any_element(),
             JeanTab::Targets => self.render_targets(cx).into_any_element(),
             JeanTab::Memory => self.render_memory(cx).into_any_element(),
         };
@@ -1084,6 +1149,15 @@ impl Render for JeanView {
                     .text_color(white())
                     .child(err.clone()),
             );
+        }
+        if let Some(action) = self.markdown_link_action.clone() {
+            let parent = cx.entity();
+            root = root.child(markdown_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = None;
+                    cx.notify();
+                });
+            }));
         }
         root
     }
