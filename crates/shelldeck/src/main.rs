@@ -632,6 +632,17 @@ impl CompanionRoot {
                 }
             }));
         });
+        let root_handle = cx.entity().downgrade();
+        let main_window = self.runtime.main_window;
+        workspace.update(cx, |ws, _cx| {
+            ws.set_ai_dock_open_handler(Box::new(move |cx| {
+                let root_handle = root_handle.clone();
+                cx.spawn(async move |cx| {
+                    let _ = cx.update(|cx| show_ai_dock(root_handle, main_window, cx));
+                })
+                .detach();
+            }));
+        });
         let shortcut_statuses = self.shortcut_state.borrow().statuses();
         workspace.update(cx, |ws, cx| {
             ws.set_companion_shortcut_statuses(shortcut_statuses, cx);
@@ -1235,6 +1246,41 @@ fn ai_dock_bounds(display_bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Bounds<gp
     }
 }
 
+/// Reassert the Dock's requested geometry after the X11 window manager has
+/// mapped its focusable utility window. Mutter may smart-place that window
+/// after `open_window`, turning the screen-edge Dock into a centered floating
+/// panel. The second, one-shot correction runs after that initial placement;
+/// this is lifecycle work, not a render poll.
+fn reanchor_x11_ai_dock(
+    handle: gpui::WindowHandle<AiDockView>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    cx: &mut gpui::App,
+) {
+    if !is_x11_session() {
+        return;
+    }
+
+    let apply = move |handle: gpui::WindowHandle<AiDockView>, cx: &mut gpui::App| {
+        if let Err(error) = handle.update(cx, |_, window, _| {
+            window.resize(bounds.size);
+            if let Err(error) = window.set_window_origin(bounds.origin) {
+                tracing::warn!(error = %error, "failed to anchor AI Dock to the X11 work area");
+            }
+        }) {
+            tracing::debug!(error = %error, "AI Dock closed before X11 anchoring completed");
+        }
+    };
+
+    apply(handle, cx);
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(75))
+            .await;
+        let _ = cx.update(|cx| apply(handle, cx));
+    })
+    .detach();
+}
+
 fn command_palette_bounds(
     display_bounds: gpui::Bounds<gpui::Pixels>,
 ) -> gpui::Bounds<gpui::Pixels> {
@@ -1392,6 +1438,7 @@ fn open_ai_dock(
             root.update(cx, |root, _| {
                 root.runtime.ai_dock_window = Some(handle);
             });
+            reanchor_x11_ai_dock(handle, bounds, cx);
             cx.activate(true);
             if let Err(error) = handle.update(cx, |dock, window, cx| {
                 window.activate_window();

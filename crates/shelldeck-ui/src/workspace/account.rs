@@ -432,6 +432,7 @@ impl Workspace {
         self.post_login_splash = None;
         self.mode_transition = None;
         self.account_menu_open = false;
+        self.mode_menu_open = false;
         self.settings_open = false;
         self.last_whoami = None;
         self.user_home_tab = UserHomeTab::Home;

@@ -493,10 +493,10 @@ pub struct Workspace {
     /// True once the user has been warned about closing with active sessions;
     /// the next close attempt is allowed through (two-step confirm).
     pending_close_confirm: bool,
-    /// Whether the titlebar theme-switcher dropdown is open.
-    theme_menu_open: bool,
     /// Whether the titlebar account dropdown is open.
     account_menu_open: bool,
+    /// Whether the compact titlebar mode dropdown is open.
+    mode_menu_open: bool,
     /// Health of the signed-in cloud account (drives the status dot).
     account_status: AccountStatus,
     /// Kept alive while the login modal is open.
@@ -522,6 +522,8 @@ pub struct Workspace {
     /// titlebar, so a panel pinned to the window's right edge lands under the
     /// window controls instead of under the chip.
     account_menu_pos: Option<Point<Pixels>>,
+    /// Where the compact mode chip was clicked, used to anchor its dropdown.
+    mode_menu_pos: Option<Point<Pixels>>,
     /// The native Support-mode console.
     support: Entity<SupportView>,
     _support_sub: Subscription,
@@ -672,6 +674,10 @@ pub struct Workspace {
     /// Publishes Settings-owned companion changes back to the binary-level
     /// runtime, which owns the platform global-hotkey registrations.
     companion_config_publisher: Option<Box<dyn Fn(CompanionConfig, ClippyConfig) + Send + Sync>>,
+    /// Binary-owned bridge for opening the standalone AI Dock. The handler
+    /// defers into the application runtime so a titlebar click never re-enters
+    /// this Workspace while it is already being updated.
+    ai_dock_open_handler: Option<Box<dyn Fn(&mut App)>>,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -1250,8 +1256,8 @@ impl Workspace {
             pending_delete: None,
             app_config,
             pending_close_confirm: false,
-            theme_menu_open: false,
             account_menu_open: false,
+            mode_menu_open: false,
             account_status: AccountStatus::Unknown,
             _login_form_sub: None,
             _onboarding_sub: None,
@@ -1261,6 +1267,7 @@ impl Workspace {
             site_menu_open: false,
             sidebar_kebab_menu: None,
             account_menu_pos: None,
+            mode_menu_pos: None,
             support,
             _support_sub: support_sub,
             _support_poll_task: None,
@@ -1328,6 +1335,7 @@ impl Workspace {
             tray_state_publisher: None,
             tray_notifier: None,
             companion_config_publisher: None,
+            ai_dock_open_handler: None,
             last_tray_counters: None,
         }
     }

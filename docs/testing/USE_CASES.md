@@ -1872,7 +1872,7 @@ shortcuts the signed-in role can actually reach.
 
 The App Font Size setting drives the window rem size, and the surfaces the
 Workspace renders itself — User mode's home, the pre-login welcome screen, the
-titlebar chrome, and the theme / account / site / mode dropdowns — grow and
+titlebar chrome, and the account / site / mode dropdowns — grow and
 shrink with it exactly as the child views (sidebar, Support, Settings,
 Dashboard) already did. Genuine device-pixel call sites stay absolute: the
 window client inset, the rem size itself, box-shadow geometry, window-edge

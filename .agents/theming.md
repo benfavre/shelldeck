@@ -1,7 +1,7 @@
 # Theming & colors
 
-The user **switches the app theme at runtime** (Settings → Appearance, titlebar
-picker, command palette). ShellDeck ships several built-in palettes (Dark, Light,
+The user **switches the app theme at runtime** (Settings → Appearance or the
+command palette). ShellDeck ships several built-in palettes (Dark, Light,
 Solarized, …). **Never assume a fixed light or dark look** when picking colors.
 
 ## Two layers

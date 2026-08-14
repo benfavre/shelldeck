@@ -353,7 +353,7 @@ impl SettingsView {
 
     /// Select an application theme and persist it immediately. Emits
     /// `ThemeChanged` so the workspace swaps the live palette. Shared by the
-    /// Appearance settings cards and the titlebar theme switcher.
+    /// Appearance settings cards and the command palette.
     pub fn select_app_theme(&mut self, pref: ThemePreference, cx: &mut Context<Self>) {
         if self.config.theme == pref {
             return;
@@ -531,8 +531,7 @@ impl SettingsView {
 
     /// Nudge the UI scale (app font size) by `delta`, clamped to [10, 22], and
     /// persist immediately. Emits `ConfigChanged` so the workspace re-applies
-    /// the rem size live. Shared by the Appearance settings and the titlebar
-    /// scale controls.
+    /// the rem size live. Shared by Appearance settings and the View menu.
     pub fn adjust_ui_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         let new = (self.config.general.ui_font_size + delta).clamp(10.0, 22.0);
         if (new - self.config.general.ui_font_size).abs() < f32::EPSILON {

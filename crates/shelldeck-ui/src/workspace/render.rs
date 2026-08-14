@@ -571,10 +571,12 @@ impl Render for Workspace {
         }
 
         // Custom titlebar with drag area + window controls
+        let compact_titlebar = _window.window_bounds().get_bounds().size.width < gpui::px(760.0);
         let titlebar = Self::render_titlebar(
             is_maximized,
-            self.theme_menu_open,
+            compact_titlebar,
             self.account_menu_open,
+            self.mode_menu_open,
             self.app_config.account.clone(),
             self.account_status,
             self.site_menu_open,
@@ -585,7 +587,6 @@ impl Render for Workspace {
             } else {
                 None
             },
-            self.ui_font_size,
             self.app_config.general.menu_bar_visible,
             self.ai_available_for_current_surface(_cx),
             self.ai_tasks
@@ -608,14 +609,14 @@ impl Render for Workspace {
         }
         root = root.child(main_area).child(self.status_bar.clone());
 
-        // Titlebar theme-switcher dropdown overlay
-        if self.theme_menu_open {
-            root = root.child(self.render_theme_menu(_cx));
-        }
-
         // Titlebar account dropdown overlay
         if self.account_menu_open {
             root = root.child(self.render_account_menu(_window, _cx));
+        }
+
+        // Compact titlebar mode dropdown.
+        if self.mode_menu_open {
+            root = root.child(self.render_mode_menu(_window, _cx));
         }
 
         // Titlebar site-switcher dropdown overlay
