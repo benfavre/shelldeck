@@ -1061,6 +1061,13 @@ bare links show their URL, and channel or broadcast references keep a readable
 guessed or discarded. This is a presentation-only adapter; the issue title
 retained in the cache and sent back to Manage is never mutated.
 
+### SDUC-462 — Support list refresh is visible and consistent
+
+The Tickets and Requests list headers expose the same localized, standard
+refresh button with a visible `refresh-cw` glyph. Each control keeps its own
+read-only workflow — Tickets refreshes the support queue and Requests refreshes
+the issue queue — and merely rendering either header performs no network work.
+
 ---
 
 ## 13. Bext Cloud
@@ -2159,6 +2166,9 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
+  Requests refresh control. Tickets and Requests now share one standard,
+  labeled button while retaining their separate read-only refresh events.
 - **2026-08-17** — Amended SDUC-437 and added SDTEST-1616: the technical status
   bar is now exclusive to authenticated Dev mode while its state and updater
   notifications remain live outside the rendered tree.

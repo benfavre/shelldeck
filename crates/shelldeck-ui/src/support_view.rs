@@ -455,6 +455,24 @@ pub enum SupportViewEvent {
     },
 }
 
+fn support_refresh_button(
+    id: &'static str,
+    event: SupportViewEvent,
+    cx: &mut Context<SupportView>,
+) -> Button {
+    let label = t!("support.refresh").to_string();
+    Button::new(id, label.clone())
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::Sm)
+        .h(px(28.0))
+        .px(px(8.0))
+        .icon(IconSource::from("refresh-cw"))
+        .tooltip(label)
+        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+            cx.emit(event.clone());
+        }))
+}
+
 impl EventEmitter<SupportViewEvent> for SupportView {}
 
 pub struct SupportView {
@@ -1453,29 +1471,11 @@ impl Render for SupportView {
                             }),
                     ),
             )
-            .child(
-                div()
-                    .id("support-refresh")
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                    .child(lucide_icon(
-                        "refresh-cw",
-                        12.0,
-                        ShellDeckColors::text_muted(),
-                    ))
-                    .child(t!("support.refresh").to_string())
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SupportViewEvent::Refresh);
-                    })),
-            );
+            .child(support_refresh_button(
+                "support-tickets-refresh",
+                SupportViewEvent::Refresh,
+                cx,
+            ));
 
         let list = if filtered_count == 0 {
             div()

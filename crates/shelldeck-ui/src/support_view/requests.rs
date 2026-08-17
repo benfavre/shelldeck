@@ -174,15 +174,11 @@ impl SupportView {
                             .child(t!("support.requests").to_string()),
                     ),
             )
-            .child(
-                IconButton::new("refresh")
-                    .variant(ButtonVariant::Ghost)
-                    .size(gpui::px(28.0))
-                    .icon_size(gpui::px(12.0))
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SupportViewEvent::IssuesRefresh);
-                    })),
-            );
+            .child(support_refresh_button(
+                "support-requests-refresh",
+                SupportViewEvent::IssuesRefresh,
+                cx,
+            ));
 
         let entity = cx.entity();
         // Simple filter bar — mirrors `render_filters` (tickets) exactly:

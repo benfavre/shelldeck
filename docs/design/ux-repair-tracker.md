@@ -21,7 +21,7 @@ Git.
 | UX-002 | User / Détail demande | L'ancien audit signalait la disparition du compositeur pendant le défilement, alors que la correction du 12 août n'y avait pas été reportée. | P0 | Validé | Fil long parcouru jusqu'en bas puis jusqu'en haut ; le compositeur est resté visible. |
 | UX-003 | Support / Accueil | Les compteurs sont désormais actionnables et l'espace libre présente les tickets prioritaires ainsi que les demandes récentes. | P1 | Validé | Chaque compteur et les deux types de ligne ont été contrôlés dans l'application reconstruite. |
 | UX-004 | User et Support / Chrome | La barre d'état technique (`connections`, `forwards`, `scripts`, branche Git, palette) est désormais réservée au mode Dev authentifié. | P1 | Validé | User et Support récupèrent l'espace sans perdre leurs coins arrondis ; Dev conserve la barre complète. |
-| UX-005 | Support / Tickets et Demandes | L'actualisation est incohérente : Tickets affiche une action textuelle, Demandes construit un bouton sans icône visible. | P1 | Ouvert | Comparer les deux en-têtes et déclencher chaque actualisation. |
+| UX-005 | Support / Tickets et Demandes | Les deux listes partagent désormais la même action `Actualiser`, avec icône visible et composant standard. | P1 | Validé | Les deux en-têtes et leurs actualisations ont été contrôlés dans l'application reconstruite. |
 | UX-006 | Support / Listes | Les colonnes restent figées à 340 px et les grands états vides demeurent passifs. | P2 | Ouvert | Tester des sujets longs et une fenêtre étroite puis large. |
 | UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
 | UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
@@ -70,3 +70,12 @@ ligne existante.
   Support, User et Dev : les deux modes produit récupèrent les 28 px et gardent
   leurs coins inférieurs arrondis, tandis que Dev conserve compteurs, branche,
   palette et version. Le cas bienvenue reste vérifié sans révoquer la session.
+- **2026-08-17 — UX-005 → À valider.** Le bouton invisible de Demandes
+  référençait `refresh`, absent de l'inventaire Lucide. Tickets et Demandes
+  utilisent maintenant un helper commun fondé sur `Button`, le glyph
+  `refresh-cw` existant et le libellé localisé ; leurs événements réseau restent
+  distincts.
+- **2026-08-17 — UX-005 → Validé.** Les deux en-têtes affichent la même action
+  dans ShellDeck reconstruit. Les deux clics ont rafraîchi leur file respective
+  sans modifier les filtres ou la sélection ; le survol et la géométrie sont
+  identiques.
