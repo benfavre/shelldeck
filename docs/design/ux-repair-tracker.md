@@ -26,7 +26,7 @@ Git.
 | UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
 | UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
-| UX-010 | Conversations | Markdown, liens HTTP(S) et confirmation d'ouverture sont partagés entre les surfaces de prose. | P0 | À valider | Tester texte riche, lien interne, lien externe et URL refusée. |
+| UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
 | UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | À valider | Répondre, ajouter une note et ouvrir les pièces jointes sur les deux surfaces. |
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | À valider | Changer chaque valeur puis rafraîchir le détail. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | À valider | Tester un fil long avec images, note système et brouillon IA. |
@@ -79,3 +79,9 @@ ligne existante.
   dans ShellDeck reconstruit. Les deux clics ont rafraîchi leur file respective
   sans modifier les filtres ou la sélection ; le survol et la géométrie sont
   identiques.
+- **2026-08-17 — UX-010 → Validé.** Deux tickets réels ont confirmé une origine
+  e-mail Postmark/Outlook pour la forme non standard `[alt]<URL>`. Le parseur
+  limité aux autolinks HTTP(S) adjacentes affiche maintenant seulement le
+  libellé. Sur le ticket `RE: CORRECTION JEU RENTREE`, l'URL brute et les
+  crochets ont disparu ; un clic sur le libellé conserve la confirmation
+  externe et affiche le domaine cible.

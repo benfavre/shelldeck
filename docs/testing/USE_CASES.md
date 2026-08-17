@@ -1050,6 +1050,14 @@ warning unless the parsed host is exactly an Inklura/Bext/ShellDeck ecosystem
 domain or one of its real subdomains. The host is parsed, never inferred from a
 suffix or query-string occurrence.
 
+Known e-mail plain-text compatibility is handled inside that same boundary.
+Outlook/Office signatures received through Postmark may represent a linked
+image as `[generated alternative text]<https://destination>`. When the
+non-empty bracket label touches a safe HTTP(S) autolink, the conversation shows
+only that label as the link text and retains the shared confirmation panel.
+Standard `[label](destination)` Markdown, standalone or whitespace-separated
+autolinks, unsafe schemes, code and image syntax are not reinterpreted.
+
 ### SDUC-461 — External Support titles remain readable without rewriting source data
 
 Ticket subjects and request titles received through Slack may contain mrkdwn
@@ -2166,6 +2174,11 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Extended SDUC-460 with SDTEST-1620 after tracing two malformed
+  Support rows to Postmark e-mail ingestion. The known Outlook/Office
+  `[generated image alt]<https://destination>` plain-text convention now renders
+  as one labelled link without changing standard Markdown, standalone/spaced
+  autolinks or the secure external-link confirmation.
 - **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
   Requests refresh control. Tickets and Requests now share one standard,
   labeled button while retaining their separate read-only refresh events.

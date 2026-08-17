@@ -710,6 +710,27 @@ carries no marker of its own — see its entry).
 - **Upstream status**: not filed yet — secure-by-default behavior may need an
   explicit compatibility flag for generic upstream consumers.
 
+### SDPATCH-036 — E-mail image labels become Markdown link labels
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `UrlTrackingBlockBuilder`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — remember which parsed links are true`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — paired with \`url_stack\` for links;`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — only pulldown's explicit`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — HTML-to-text e-mail`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — recognize the narrow e-mail conversion`
+- **Why**: Outlook/Office e-mail signatures received through Postmark use the
+  non-standard plain-text shape `[generated image alt]<https://destination>`.
+  pulldown-cmark correctly treats those as bracketed prose followed by an
+  autolink, but that leaks transport syntax and the raw URL into conversation
+  UI. Coalescing only an immediately adjacent bracket label with a safe HTTP(S)
+  autolink restores a readable label while preserving ShellDeck's external-link
+  confirmation. Authored Markdown, standalone/spaced autolinks, unsafe schemes,
+  code, and images retain their existing behavior.
+- **Upstream status**: not filed yet — this is compatibility with a known
+  e-mail-to-text convention rather than CommonMark syntax.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -824,6 +845,10 @@ carries no marker of its own — see its entry).
   remote images, non-HTTP(S) destinations stay inert, and missing callbacks
   cannot silently fall through to the platform URL opener. 6 new markers;
   current code marker count is 120.
+- **2026-08-17** — added SDPATCH-036: adjacent Outlook/Office e-mail image
+  labels now become the visible label of their safe HTTP(S) autolink. Standard
+  Markdown, standalone/spaced autolinks and unsafe destinations are unchanged.
+  5 new markers; current code marker count is 125.
 
 ## Retired patches
 
