@@ -28,7 +28,7 @@ Git.
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
 | UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
 | UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | Validé | Réponse, note interne et panneau de pièces jointes contrôlés sans envoi sur les deux surfaces. |
-| UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | À valider | Changer chaque valeur puis rafraîchir le détail. |
+| UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | À valider | Tester un fil long avec images, note système et brouillon IA. |
 
 ## Règle de mise à jour
@@ -116,3 +116,10 @@ ligne existante.
   l'application reconstruite a confirmé leur géométrie, leurs placeholders et
   le panneau complet. Le basculement ticket vers `Note interne` modifie bien le
   placeholder et l'action finale sans envoyer de contenu au client.
+- **2026-08-17 — UX-012 → Validé sans modification.** Les six badges d'en-tête
+  ouvrent directement leurs sélecteurs complets. Sur la fixture Ticket en
+  mémoire, statut, priorité et assignation ont chacun mis à jour le détail et
+  les compteurs, puis le rafraîchissement a réinstallé les valeurs de la
+  fixture. Pour ne pas écrire sur Manage, la demande fictive réelle a servi à
+  contrôler visuellement les trois menus sans choix ; les 16 tests `issues` et
+  22 tests `manage_support`, dont les corps d'actions staff, restent verts.
