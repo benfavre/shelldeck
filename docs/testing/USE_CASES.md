@@ -1076,6 +1076,17 @@ refresh button with a visible `refresh-cw` glyph. Each control keeps its own
 read-only workflow — Tickets refreshes the support queue and Requests refreshes
 the issue queue — and merely rendering either header performs no network work.
 
+### SDUC-463 — Support master lists adapt without stealing the detail pane
+
+Tickets and Requests share one responsive master-column contract: 38% of the
+available console width, bounded between 280 and 440 scale-aware pixels. Long
+subjects gain useful room on standard and wide windows. Below a scale-aware
+760 px threshold, the two-pane layout becomes master/detail navigation: the
+list takes the whole width until selection, then the detail replaces it and
+offers an explicit localized Back to list action. Resizing preserves the open
+record. Empty-detail copy is width-contained and never auto-opens an arbitrary
+item, which could trigger read or fetch side effects.
+
 ---
 
 ## 13. Bext Cloud
@@ -2179,6 +2190,10 @@ viewport rather than its exact alpha silhouette.
   `[generated image alt]<https://destination>` plain-text convention now renders
   as one labelled link without changing standard Markdown, standalone/spaced
   autolinks or the secure external-link confirmation.
+- **2026-08-17** — Added SDUC-463 and SDTEST-1618/1619: Support Tickets and
+  Requests share one bounded proportional master column and switch to explicit
+  master/detail navigation on narrow windows. Empty details remain contained
+  and side-effect-free rather than auto-selecting an arbitrary record.
 - **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
   Requests refresh control. Tickets and Requests now share one standard,
   labeled button while retaining their separate read-only refresh events.

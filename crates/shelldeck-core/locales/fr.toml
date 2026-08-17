@@ -500,6 +500,7 @@ support.empty.tickets_hint = "Choisis un ticket dans la liste à gauche pour lir
 support.empty.tickets_filtered = "Aucun ticket ne correspond aux filtres"
 support.empty.tickets_view = "Aucun ticket dans cette vue"
 support.empty.requests_hint = "Choisis une demande dans la liste pour lire le fil, commenter ou mettre à jour le statut."
+support.back_to_list = "Retour à la liste"
 support.menu.open = "Ouvrir"
 support.menu.reopen = "Rouvrir"
 support.menu.pending = "En attente"

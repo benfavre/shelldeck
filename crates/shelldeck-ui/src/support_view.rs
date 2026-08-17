@@ -473,6 +473,96 @@ fn support_refresh_button(
         }))
 }
 
+fn support_list_column(compact: bool) -> Div {
+    let column = div()
+        .flex_shrink_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .border_r_1()
+        .border_color(ShellDeckColors::border());
+    if compact {
+        column.w_full().min_w(px(0.0))
+    } else {
+        column.w(relative(0.38)).min_w(px(280.0)).max_w(px(440.0))
+    }
+}
+
+fn support_compact_layout(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width < px(760.0).to_pixels(rem_size)
+}
+
+fn support_empty_detail(
+    icon: impl IntoElement,
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(10.0))
+        .p(px(24.0))
+        .child(
+            div()
+                .size(px(48.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(ShellDeckColors::primary().opacity(0.12))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .text_center()
+                .text_size(px(14.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ShellDeckColors::text_primary())
+                .child(title.into()),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .max_w(px(320.0))
+                .text_center()
+                .text_size(px(12.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(hint.into()),
+        )
+}
+
+fn support_compact_back(id: &'static str, cx: &mut Context<SupportView>) -> Div {
+    div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .py(px(6.0))
+        .border_b_1()
+        .border_color(ShellDeckColors::border())
+        .child(
+            Button::new(id, t!("support.back_to_list").to_string())
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .h(px(28.0))
+                .px(px(8.0))
+                .icon(IconSource::from("chevron-left"))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.clear_selection();
+                    cx.notify();
+                })),
+        )
+}
+
 impl EventEmitter<SupportViewEvent> for SupportView {}
 
 pub struct SupportView {
@@ -1521,15 +1611,8 @@ impl Render for SupportView {
             .into_any_element()
         };
 
-        let mut left = div()
-            .w(px(340.0))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(ShellDeckColors::border())
-            .child(header);
+        let compact = support_compact_layout(_window.viewport_size().width, _window.rem_size());
+        let mut left = support_list_column(compact).child(header);
         if self.jean_available {
             left = left.child(self.render_jean_strip(cx));
         }
@@ -1537,6 +1620,15 @@ impl Render for SupportView {
 
         let content = match self.section {
             SupportSection::Home => self.render_home(cx).into_any_element(),
+            SupportSection::Tickets if compact && self.selected_id.is_some() => div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .min_h(px(0.0))
+                .child(support_compact_back("support-tickets-compact-back", cx))
+                .child(self.render_conversation(cx))
+                .into_any_element(),
+            SupportSection::Tickets if compact => left.flex_1().into_any_element(),
             SupportSection::Tickets => div()
                 .flex_1()
                 .flex()
@@ -1544,7 +1636,7 @@ impl Render for SupportView {
                 .child(left)
                 .child(self.render_conversation(cx))
                 .into_any_element(),
-            SupportSection::Requests => self.render_requests(cx).into_any_element(),
+            SupportSection::Requests => self.render_requests(compact, cx).into_any_element(),
         };
 
         let mut root = div()
@@ -1892,4 +1984,18 @@ pub(crate) fn render_attachment_delete_dialog(
                     .on_click(move |_, _, cx| on_confirm(cx)),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::support_compact_layout;
+
+    // SDTEST-1618
+    #[test]
+    fn support_master_detail_switches_at_a_scale_aware_width() {
+        assert!(support_compact_layout(gpui::px(759.0), gpui::px(16.0)));
+        assert!(!support_compact_layout(gpui::px(760.0), gpui::px(16.0)));
+        assert!(support_compact_layout(gpui::px(1_519.0), gpui::px(32.0)));
+        assert!(!support_compact_layout(gpui::px(1_520.0), gpui::px(32.0)));
+    }
 }

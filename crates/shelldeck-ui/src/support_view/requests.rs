@@ -151,7 +151,11 @@ impl SupportView {
         self.issue_thread_rows.len()
     }
 
-    pub(super) fn render_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_requests(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let header = div()
             .flex()
             .items_center()
@@ -310,17 +314,23 @@ impl SupportView {
             .into_any_element()
         };
 
-        let left = div()
-            .w(px(340.0))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(ShellDeckColors::border())
+        let left = support_list_column(compact)
             .child(header)
             .child(filter_bar)
             .child(list);
+
+        if compact && self.issue_selected.is_some() {
+            return div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .min_h(px(0.0))
+                .child(support_compact_back("support-requests-compact-back", cx))
+                .child(self.render_issue_detail(cx));
+        }
+        if compact {
+            return left.flex_1();
+        }
 
         div()
             .flex_1()
@@ -487,38 +497,11 @@ impl SupportView {
     }
 
     pub(super) fn render_empty_issue_detail(&self) -> Div {
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(10.0))
-            .p(px(24.0))
-            .child(
-                div()
-                    .size(px(48.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::primary().opacity(0.12))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(lucide_icon("tag", 22.0, ShellDeckColors::primary())),
-            )
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("support.empty.requests_open").to_string()),
-            )
-            .child(
-                div()
-                    .max_w(px(320.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.requests_hint").to_string()),
-            )
+        support_empty_detail(
+            lucide_icon("tag", 22.0, ShellDeckColors::primary()),
+            t!("support.empty.requests_open").to_string(),
+            t!("support.empty.requests_hint").to_string(),
+        )
     }
 
     fn render_issue_comment_segment(

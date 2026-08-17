@@ -22,7 +22,7 @@ Git.
 | UX-003 | Support / Accueil | Les compteurs sont désormais actionnables et l'espace libre présente les tickets prioritaires ainsi que les demandes récentes. | P1 | Validé | Chaque compteur et les deux types de ligne ont été contrôlés dans l'application reconstruite. |
 | UX-004 | User et Support / Chrome | La barre d'état technique (`connections`, `forwards`, `scripts`, branche Git, palette) est désormais réservée au mode Dev authentifié. | P1 | Validé | User et Support récupèrent l'espace sans perdre leurs coins arrondis ; Dev conserve la barre complète. |
 | UX-005 | Support / Tickets et Demandes | Les deux listes partagent désormais la même action `Actualiser`, avec icône visible et composant standard. | P1 | Validé | Les deux en-têtes et leurs actualisations ont été contrôlés dans l'application reconstruite. |
-| UX-006 | Support / Listes | Les colonnes restent figées à 340 px et les grands états vides demeurent passifs. | P2 | Ouvert | Tester des sujets longs et une fenêtre étroite puis large. |
+| UX-006 | Support / Listes | Les colonnes suivent 38 % de l'espace avec des bornes de 280 à 440 px ; sous 760 px mis à l'échelle, liste et détail se remplacent avec un retour explicite. | P2 | Validé | Liste, détail et retour contrôlés sur Tickets et Demandes à 600 puis 1210 px. |
 | UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
 | UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
@@ -79,6 +79,21 @@ ligne existante.
   dans ShellDeck reconstruit. Les deux clics ont rafraîchi leur file respective
   sans modifier les filtres ou la sélection ; le survol et la géométrie sont
   identiques.
+- **2026-08-17 — UX-006 → À valider.** Le défaut initial de composition des
+  lignes avait déjà été corrigé dans `c822b6b`, mais la largeur restait figée.
+  Tickets et Demandes partagent maintenant une colonne proportionnelle bornée.
+  L'état sans sélection ne choisit volontairement aucun item : cela pourrait
+  marquer un ticket lu, et l'accueil fournit déjà la file prioritaire attendue.
+- **2026-08-17 — UX-006, garde-fou étroit.** La première recette à 600 px a
+  révélé que le détail devenait trop étroit. Sous un seuil de 760 px sensible à
+  l'échelle UI, ShellDeck affiche donc soit la liste pleine largeur, soit le
+  détail plein largeur avec `Retour à la liste`. Les deux états vides partagent
+  aussi un confinement qui empêche leur texte de déborder.
+- **2026-08-17 — UX-006 → Validé.** Dans ShellDeck reconstruit à 600 px,
+  Tickets et Demandes remplacent chacun leur liste par le détail sélectionné ;
+  leurs boutons Retour distincts restaurent la bonne file. À 1210 px, la
+  colonne proportionnelle et l'état vide restent contenus sans sélection
+  implicite.
 - **2026-08-17 — UX-010 → Validé.** Deux tickets réels ont confirmé une origine
   e-mail Postmark/Outlook pour la forme non standard `[alt]<URL>`. Le parseur
   limité aux autolinks HTTP(S) adjacentes affiche maintenant seulement le
