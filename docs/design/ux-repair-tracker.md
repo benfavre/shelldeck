@@ -27,7 +27,7 @@ Git.
 | UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | Validé | Trois titres longs et la sélection active ont été contrôlés dans un profil isolé. |
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
 | UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
-| UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | À valider | Répondre, ajouter une note et ouvrir les pièces jointes sur les deux surfaces. |
+| UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | Validé | Réponse, note interne et panneau de pièces jointes contrôlés sans envoi sur les deux surfaces. |
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | À valider | Changer chaque valeur puis rafraîchir le détail. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | À valider | Tester un fil long avec images, note système et brouillon IA. |
 
@@ -110,3 +110,9 @@ ligne existante.
   Trois conversations aux titres et contextes longs ont été chargées dans un
   profil temporaire : chaque ligne affiche une ellipse et la conversation
   sélectionnée reçoit bien le fond actif attendu.
+- **2026-08-17 — UX-011 → Validé sans modification.** Tickets et Demandes
+  montent déjà le même `Composer` avec les mêmes bornes de hauteur, le même
+  bouton `+` et le même sélecteur de pièces jointes. La recette dans
+  l'application reconstruite a confirmé leur géométrie, leurs placeholders et
+  le panneau complet. Le basculement ticket vers `Note interne` modifie bien le
+  placeholder et l'action finale sans envoyer de contenu au client.
