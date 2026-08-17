@@ -678,6 +678,8 @@ pub struct Workspace {
     /// defers into the application runtime so a titlebar click never re-enters
     /// this Workspace while it is already being updated.
     ai_dock_open_handler: Option<Box<dyn Fn(&mut App)>>,
+    /// Actual standalone Dock window state, published by the binary runtime.
+    ai_dock_open: bool,
     /// Previous tray counters, kept for delta detection. `None` before
     /// the first publish — the first publish seeds the value without
     /// firing notifications so a fresh app launch with pre-existing
@@ -1336,6 +1338,7 @@ impl Workspace {
             tray_notifier: None,
             companion_config_publisher: None,
             ai_dock_open_handler: None,
+            ai_dock_open: false,
             last_tray_counters: None,
         }
     }

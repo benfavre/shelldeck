@@ -77,7 +77,7 @@ to Lucide. Brand marks and OIDC logos stay in `images/`.
 | `maximize.svg`      | `maximize-2`           | **titlebar only** — keep `images/` |
 | `restore.svg`       | —                      | keep legacy   |
 
-## Inventory (78 icons)
+## Inventory (80 icons)
 
 Slug is the filename without `.svg`. **Category** is for humans only.
 
@@ -129,6 +129,8 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `messages-square` | AI | assistant discussions tab |
 | `minimize-2` | window | minimize (titlebar) |
 | `minus` | chrome | zoom out, decrement |
+| `panel-right-close` | window | titlebar — external AI Dock is open |
+| `panel-right-open` | window | titlebar — open the external AI Dock |
 | `pencil` | action | edit |
 | `pin` | terminal | pin tab |
 | `play` | action | execute AI actions and scripts |

@@ -42,6 +42,13 @@ impl Workspace {
         }
     }
 
+    pub fn set_ai_dock_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.ai_dock_open != open {
+            self.ai_dock_open = open;
+            cx.notify();
+        }
+    }
+
     pub fn set_companion_shortcut_statuses(
         &mut self,
         statuses: CompanionShortcutStatuses,

@@ -16,6 +16,7 @@ impl Workspace {
         mode_switch: Option<(AppMode, &'static [AppMode])>,
         menu_bar_visible: bool,
         ai_configured: bool,
+        ai_dock_open: bool,
         ai_task_count: usize,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -411,9 +412,25 @@ impl Workspace {
         // the titlebar follows the same creation/reuse path as the tray and
         // global shortcut, while always using the idempotent "show" request.
         let ai_dock_button = ai_configured.then(|| {
-            let tooltip: SharedString = t!("ai.dock.open_external").to_string().into();
+            let tooltip: SharedString = if ai_dock_open {
+                t!("ai.dock.external_opened")
+            } else {
+                t!("ai.dock.open_external")
+            }
+            .to_string()
+            .into();
+            let icon = if ai_dock_open {
+                "panel-right-close"
+            } else {
+                "panel-right-open"
+            };
+            let icon_color = if ai_dock_open {
+                ShellDeckColors::primary()
+            } else {
+                btn_text
+            };
             let workspace = handle.clone();
-            div()
+            let mut button = div()
                 .id("titlebar-ai-dock")
                 .flex()
                 .items_center()
@@ -433,7 +450,11 @@ impl Workspace {
                         workspace.update(cx, |this, cx| this.open_external_ai_dock(cx));
                     }
                 })
-                .child(lucide_icon("external-link", 14.0, btn_text))
+                .child(lucide_icon(icon, 18.0, icon_color));
+            if ai_dock_open {
+                button = button.bg(ShellDeckColors::primary().opacity(0.12));
+            }
+            button
         });
 
         // Subtle vertical divider between the chrome control clusters.

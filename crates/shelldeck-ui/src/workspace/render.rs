@@ -589,6 +589,7 @@ impl Render for Workspace {
             },
             self.app_config.general.menu_bar_visible,
             self.ai_available_for_current_surface(_cx),
+            self.ai_dock_open,
             self.ai_tasks
                 .iter()
                 .filter(|task| {

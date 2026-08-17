@@ -96,6 +96,8 @@ lucide_assets!(
     "messages-square",
     "minimize-2",
     "minus",
+    "panel-right-close",
+    "panel-right-open",
     "pencil",
     "pin",
     "play",
@@ -563,7 +565,7 @@ impl CompanionRoot {
                 let _ = this.update(cx, |root, cx| {
                     if opens_workspace {
                         if let Some(dock) = root.runtime.ai_dock_window.take() {
-                            let _ = dock.update(cx, |_, window, _| window.remove_window());
+                            let _ = dock.update(cx, |dock, window, cx| dock.close(window, cx));
                         }
                     }
                     let workspace = root.ensure_workspace(window, cx);
@@ -1370,7 +1372,7 @@ fn open_ai_dock(
                         .bounds
                         .contains(&window.window_bounds().get_bounds().center())
                     {
-                        window.remove_window();
+                        dock.close(window, cx);
                         return (true, true);
                     }
                     ai_companion.update(cx, |controller, cx| match request {
@@ -1390,7 +1392,7 @@ fn open_ai_dock(
                     (false, false)
                 }
                 AiDockWindowAction::Hide => {
-                    window.remove_window();
+                    dock.close(window, cx);
                     (false, true)
                 }
                 AiDockWindowAction::Create => unreachable!(),
@@ -1431,8 +1433,16 @@ fn open_ai_dock(
         ..Default::default()
     };
 
+    let dock_workspace = root.read(cx).workspace_slot.clone();
+    let on_open_change: Rc<dyn Fn(bool, &mut gpui::App)> = Rc::new(move |open, cx| {
+        if let Some(workspace) = dock_workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_ai_dock_open(open, cx);
+            });
+        }
+    });
     match cx.open_window(options, move |window, cx| {
-        cx.new(|cx| AiDockView::new(assistant, font_family, window, cx))
+        cx.new(|cx| AiDockView::new(assistant, font_family, on_open_change, window, cx))
     }) {
         Ok(handle) => {
             root.update(cx, |root, _| {
