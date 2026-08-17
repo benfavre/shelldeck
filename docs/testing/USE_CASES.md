@@ -1838,7 +1838,11 @@ page, Enter activates the selected command, and Escape dismisses the palette.
 When ShellDeck runs inside a Git repository, the status bar displays the
 current branch and counts staged, modified, and untracked paths. Collecting
 that snapshot uses a single porcelain-status invocation and pauses while the
-main window is hidden in the tray.
+main window is hidden in the tray. This technical chrome is rendered only for
+an authenticated Dev workspace: User, Support and the mandatory welcome screen
+do not reserve its 28 px footer. Hiding the element does not destroy its state
+or disable updater events; important updater results remain available through
+the shared toast channel.
 
 ---
 
@@ -2155,6 +2159,9 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Amended SDUC-437 and added SDTEST-1616: the technical status
+  bar is now exclusive to authenticated Dev mode while its state and updater
+  notifications remain live outside the rendered tree.
 - **2026-08-17** — Amended SDUC-440 and SDTEST-1414, then added
   SDTEST-1614/1615 for the operational Support home. Counters now route to clean
   exact queues, while priority tickets and recent requests fill the dashboard

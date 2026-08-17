@@ -20,7 +20,7 @@ Git.
 | UX-001 | Support / Tickets et Demandes | Les titres Slack affichaient encore `<url\|libellé>` ou `<url>` dans les listes et les détails. | P0 | Validé | Contrôlé dans la liste et le détail d'une vraie demande Slack. |
 | UX-002 | User / Détail demande | L'ancien audit signalait la disparition du compositeur pendant le défilement, alors que la correction du 12 août n'y avait pas été reportée. | P0 | Validé | Fil long parcouru jusqu'en bas puis jusqu'en haut ; le compositeur est resté visible. |
 | UX-003 | Support / Accueil | Les compteurs sont désormais actionnables et l'espace libre présente les tickets prioritaires ainsi que les demandes récentes. | P1 | Validé | Chaque compteur et les deux types de ligne ont été contrôlés dans l'application reconstruite. |
-| UX-004 | User et Support / Chrome | La barre d'état Dev (`connections`, `forwards`, `scripts`, branche Git, palette) reste visible hors du mode Dev. | P1 | Ouvert | Passer successivement en User, Support et Dev. |
+| UX-004 | User et Support / Chrome | La barre d'état technique (`connections`, `forwards`, `scripts`, branche Git, palette) est désormais réservée au mode Dev authentifié. | P1 | Validé | User et Support récupèrent l'espace sans perdre leurs coins arrondis ; Dev conserve la barre complète. |
 | UX-005 | Support / Tickets et Demandes | L'actualisation est incohérente : Tickets affiche une action textuelle, Demandes construit un bouton sans icône visible. | P1 | Ouvert | Comparer les deux en-têtes et déclencher chaque actualisation. |
 | UX-006 | Support / Listes | Les colonnes restent figées à 340 px et les grands états vides demeurent passifs. | P2 | Ouvert | Tester des sujets longs et une fenêtre étroite puis large. |
 | UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
@@ -62,3 +62,11 @@ ligne existante.
   Ouverts, SLA, Non attribués et Demandes ont chacun activé la bonne file et le
   bon filtre ; un ticket prioritaire et une demande récente ont ouvert leur
   détail réel. Aucune écriture réseau n'est liée à ces navigations.
+- **2026-08-17 — UX-004 → À valider.** La barre d'état n'est plus montée dans
+  l'arbre de rendu des modes User, Support et de l'écran de bienvenue. Son état,
+  ses abonnements et les notifications de mise à jour restent actifs ; seul le
+  chrome technique est masqué. SDTEST-1616 verrouille les quatre cas de rendu.
+- **2026-08-17 — UX-004 → Validé.** ShellDeck reconstruit puis contrôlé en
+  Support, User et Dev : les deux modes produit récupèrent les 28 px et gardent
+  leurs coins inférieurs arrondis, tandis que Dev conserve compteurs, branche,
+  palette et version. Le cas bienvenue reste vérifié sans révoquer la session.

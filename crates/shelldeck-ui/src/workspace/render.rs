@@ -16,6 +16,10 @@ fn mode_transition_overlay_opacity(delta: f32) -> f32 {
     }
 }
 
+fn workspace_status_bar_visible(show_welcome: bool, mode: AppMode) -> bool {
+    !show_welcome && mode == AppMode::Dev
+}
+
 impl Workspace {
     fn render_mode_transition_loader(&self, transition: ModeTransition) -> impl IntoElement {
         let mode_label = match transition.target {
@@ -608,7 +612,12 @@ impl Render for Workspace {
         if self.app_config.general.menu_bar_visible {
             root = root.child(self.menu_bar.clone());
         }
-        root = root.child(main_area).child(self.status_bar.clone());
+        let show_status_bar =
+            workspace_status_bar_visible(self.show_welcome(), self.effective_mode());
+        root = root.child(main_area);
+        if show_status_bar {
+            root = root.child(self.status_bar.clone());
+        }
 
         // Titlebar account dropdown overlay
         if self.account_menu_open {
@@ -784,8 +793,8 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        mode_transition_overlay_opacity, MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS,
-        MODE_TRANSITION_TOTAL_MS,
+        mode_transition_overlay_opacity, workspace_status_bar_visible, AppMode,
+        MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
     };
 
     #[test]
@@ -797,5 +806,14 @@ mod tests {
         assert_eq!(mode_transition_overlay_opacity(hold_delta), 1.0);
         assert_eq!(mode_transition_overlay_opacity(1.0), 0.0);
         assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
+    }
+
+    // SDTEST-1616
+    #[test]
+    fn workspace_status_bar_is_exclusive_to_authenticated_dev_mode() {
+        assert!(!workspace_status_bar_visible(false, AppMode::User));
+        assert!(!workspace_status_bar_visible(false, AppMode::Support));
+        assert!(workspace_status_bar_visible(false, AppMode::Dev));
+        assert!(!workspace_status_bar_visible(true, AppMode::Dev));
     }
 }
