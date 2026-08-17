@@ -24,7 +24,7 @@ Git.
 | UX-005 | Support / Tickets et Demandes | Les deux listes partagent désormais la même action `Actualiser`, avec icône visible et composant standard. | P1 | Validé | Les deux en-têtes et leurs actualisations ont été contrôlés dans l'application reconstruite. |
 | UX-006 | Support / Listes | Les colonnes suivent 38 % de l'espace avec des bornes de 280 à 440 px ; sous 760 px mis à l'échelle, liste et détail se remplacent avec un retour explicite. | P2 | Validé | Liste, détail et retour contrôlés sur Tickets et Demandes à 600 puis 1210 px. |
 | UX-007 | Dock IA | Le mode Markdown compact utilise désormais une échelle H1–H6 relative au corps, sans modifier les tailles document. | P1 | Validé | H1 à H4 contrôlés dans un rendu compact isolé de 480 px. |
-| UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
+| UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | Validé | Trois titres longs et la sélection active ont été contrôlés dans un profil isolé. |
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
 | UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
 | UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | À valider | Répondre, ajouter une note et ouvrir les pièces jointes sur les deux surfaces. |
@@ -105,3 +105,8 @@ ligne existante.
   maintenant 1,44/1,32/1,20/1,12/1,06/1× le corps. Un rendu isolé de 480 px a
   confirmé la hiérarchie H1–H4 et le retour à la ligne ; le test SDTEST-1621
   verrouille aussi les tailles document inchangées.
+- **2026-08-17 — UX-008 → Validé sans modification.** Le correctif existant
+  donne déjà une largeur définie aux deux lignes de texte avant les boutons.
+  Trois conversations aux titres et contextes longs ont été chargées dans un
+  profil temporaire : chaque ligne affiche une ellipse et la conversation
+  sélectionnée reçoit bien le fond actif attendu.
