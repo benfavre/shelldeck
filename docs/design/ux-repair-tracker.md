@@ -1,0 +1,55 @@
+# Suivi UX ShellDeck
+
+Ce document est la source de vérité pour la passe de réparation UX commencée
+le 17 août 2026. Les anciennes notes et leurs captures ont été déplacées dans
+`docs/design/local-reviews/archive/`, un espace de travail local ignoré par
+Git.
+
+## Statuts
+
+- **Ouvert** : défaut reproduit, aucune correction terminée.
+- **En cours** : correction en développement.
+- **À valider** : correction présente et vérifiée techniquement ; recette
+  visuelle utilisateur encore attendue.
+- **Validé** : recette visuelle terminée.
+
+## Suivi
+
+| ID | Surface | Problème | Priorité | Statut | Vérification attendue |
+|---|---|---|---|---|---|
+| UX-001 | Support / Tickets et Demandes | Les titres Slack affichaient encore `<url\|libellé>` ou `<url>` dans les listes et les détails. | P0 | Validé | Contrôlé dans la liste et le détail d'une vraie demande Slack. |
+| UX-002 | User / Détail demande | L'ancien audit signalait la disparition du compositeur pendant le défilement, alors que la correction du 12 août n'y avait pas été reportée. | P0 | Validé | Fil long parcouru jusqu'en bas puis jusqu'en haut ; le compositeur est resté visible. |
+| UX-003 | Support / Accueil | L'écran reste principalement vide et les cartes ne conduisent pas aux urgences, non-assignés, SLA ou éléments récents. | P1 | Ouvert | Ouvrir chaque compteur et vérifier le filtre ou la sélection obtenue. |
+| UX-004 | User et Support / Chrome | La barre d'état Dev (`connections`, `forwards`, `scripts`, branche Git, palette) reste visible hors du mode Dev. | P1 | Ouvert | Passer successivement en User, Support et Dev. |
+| UX-005 | Support / Tickets et Demandes | L'actualisation est incohérente : Tickets affiche une action textuelle, Demandes construit un bouton sans icône visible. | P1 | Ouvert | Comparer les deux en-têtes et déclencher chaque actualisation. |
+| UX-006 | Support / Listes | Les colonnes restent figées à 340 px et les grands états vides demeurent passifs. | P2 | Ouvert | Tester des sujets longs et une fenêtre étroite puis large. |
+| UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
+| UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
+| UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
+| UX-010 | Conversations | Markdown, liens HTTP(S) et confirmation d'ouverture sont partagés entre les surfaces de prose. | P0 | À valider | Tester texte riche, lien interne, lien externe et URL refusée. |
+| UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | À valider | Répondre, ajouter une note et ouvrir les pièces jointes sur les deux surfaces. |
+| UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | À valider | Changer chaque valeur puis rafraîchir le détail. |
+| UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | À valider | Tester un fil long avec images, note système et brouillon IA. |
+
+## Règle de mise à jour
+
+Une ligne ne passe à **À valider** qu'après correction et tests ciblés. Elle ne
+passe à **Validé** qu'après la recette visuelle de l'utilisateur. Toute nouvelle
+régression reçoit un nouvel identifiant au lieu d'écraser l'historique d'une
+ligne existante.
+
+## Journal
+
+- **2026-08-17 — UX-001 → À valider.** Adaptateur de présentation appliqué aux
+  listes et détails des tickets/demandes, aux confirmations de suppression et
+  aux demandes récentes des modes User et Support. Les trois cas unitaires
+  SDTEST-1610..1612 sont verts ; la recette dans l'application reconstruite
+  reste à faire.
+- **2026-08-17 — UX-001 → Validé.** ShellDeck reconstruit et relancé ; une vraie
+  demande Slack a été contrôlée dans la liste puis dans son détail. Les chevrons
+  mrkdwn ont disparu et l'URL nue reste lisible lorsque Slack ne fournit aucun
+  libellé.
+- **2026-08-17 — UX-002 → Validé sans nouvelle correction.** Le pied de page
+  fixe était déjà présent depuis `65c5c89` (12 août), mais l'ancien audit était
+  resté en retard. Sur la version reconstruite, un fil long a été parcouru dans
+  les deux sens : seul le fil défile et le compositeur reste ancré en bas.

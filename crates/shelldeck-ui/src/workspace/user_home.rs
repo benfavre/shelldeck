@@ -587,7 +587,9 @@ impl Workspace {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(ShellDeckColors::text_primary())
                                         .overflow_hidden()
-                                        .child(issue.title),
+                                        .child(crate::external_content::external_title(
+                                            &issue.title,
+                                        )),
                                 )
                                 .child(
                                     div()

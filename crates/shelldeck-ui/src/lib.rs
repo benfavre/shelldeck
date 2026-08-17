@@ -12,6 +12,7 @@ pub mod connection_combobox;
 pub mod connection_form;
 pub mod dashboard;
 pub mod editor_buffer;
+pub(crate) mod external_content;
 pub mod file_editor;
 pub mod fleet_view;
 pub mod glyph_cache;

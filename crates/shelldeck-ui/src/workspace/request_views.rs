@@ -66,7 +66,7 @@ impl Workspace {
                     .truncate()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_primary())
-                    .child(iss.title.clone()),
+                    .child(crate::external_content::external_title(&iss.title)),
             );
         if let Some(site_label) = iss
             .site_label
@@ -1603,7 +1603,7 @@ impl Workspace {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(iss.title.clone()),
+                    .child(crate::external_content::external_title(&iss.title)),
             )
             .children(
                 iss.site_label

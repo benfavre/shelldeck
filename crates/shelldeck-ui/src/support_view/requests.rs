@@ -340,7 +340,7 @@ impl SupportView {
         let title = if iss.title.trim().is_empty() {
             t!("support.issue.no_title").to_string()
         } else {
-            iss.title.clone()
+            crate::external_content::external_title(&iss.title)
         };
         let when = rel_time(iss.updated_at);
         let group_name = SharedString::from(format!("iss-row-{}", iss.id));
@@ -1687,19 +1687,21 @@ impl SupportView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let entity = cx.entity();
-        let title: SharedString = self
-            .issue_detail
-            .as_ref()
-            .filter(|i| i.id == id)
-            .map(|i| i.title.clone())
-            .or_else(|| {
-                self.issues
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.title.clone())
-            })
-            .unwrap_or_default()
-            .into();
+        let title: SharedString = crate::external_content::external_title(
+            &self
+                .issue_detail
+                .as_ref()
+                .filter(|i| i.id == id)
+                .map(|i| i.title.clone())
+                .or_else(|| {
+                    self.issues
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.title.clone())
+                })
+                .unwrap_or_default(),
+        )
+        .into();
 
         let close_entity = entity.clone();
         let confirm_entity = entity;
@@ -2231,7 +2233,7 @@ impl SupportView {
                             .text_size(px(15.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ShellDeckColors::text_primary())
-                            .child(iss.title.clone()),
+                            .child(crate::external_content::external_title(&iss.title)),
                     )
                     .child({
                         let summary_id = iss.id.clone();

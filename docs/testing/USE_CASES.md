@@ -990,7 +990,10 @@ the signed-in account's Manage directory, defaults to the active site when
 available, and offers an explicit no-specific-site choice. User-mode polling
 requests `mine=1`, and both the overview counter and recent-request card apply
 the same owner filter defensively. A broader Support cache or an older server
-must never surface another requester's title in the User dashboard.
+must never surface another requester's title in the User dashboard. In the
+right-side detail sheet, the chronological thread is the only scrollable
+region; the reply composer is a non-shrinking footer outside that region and
+must remain visible at every reading position.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1046,6 +1049,17 @@ directly: selecting it first shows the shared copy/open panel, with an external
 warning unless the parsed host is exactly an Inklura/Bext/ShellDeck ecosystem
 domain or one of its real subdomains. The host is parsed, never inferred from a
 suffix or query-string occurrence.
+
+### SDUC-461 — External Support titles remain readable without rewriting source data
+
+Ticket subjects and request titles received through Slack may contain mrkdwn
+references such as `<https://example.test|incident>` or a bare
+`<https://example.test>`. Every title surface in User and Support modes derives
+a single-line display label from those tokens: labeled links show their label,
+bare links show their URL, and channel or broadcast references keep a readable
+`#` or `@` prefix. Unknown angle-bracket content is preserved instead of being
+guessed or discarded. This is a presentation-only adapter; the issue title
+retained in the cache and sent back to Manage is never mutated.
 
 ---
 
@@ -2136,6 +2150,14 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Amended SDUC-228 and added pending SDTEST-1613 after
+  reconciling the stale UX audit with the fix already shipped in `65c5c89`.
+  The User request thread scrolls independently while its reply composer stays
+  fixed; the current X11 recipe covered both scroll limits.
+- **2026-08-17** — Added SDUC-461 and SDTEST-1610..1612 for readable Slack
+  titles throughout User requests and Support tickets/requests. The adapter
+  resolves known mrkdwn links/references and normalizes list whitespace without
+  changing the cached or server-side title.
 - **2026-08-13** — Added SDUC-460 and SDTEST-1604..1609 for the shared secure
   Markdown boundary. Dynamic prose now renders consistently across Support,
   Assistant, Clippy, Fleet, JeanClaude and site notes; raw/editable/executable

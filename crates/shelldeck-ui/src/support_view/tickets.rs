@@ -757,7 +757,7 @@ impl SupportView {
         let subject = if t.subject.trim().is_empty() {
             "(sans objet)".to_string()
         } else {
-            t.subject.clone()
+            crate::external_content::external_title(&t.subject)
         };
         let group_name = SharedString::from(format!("tk-row-{}", t.id));
 
@@ -2141,7 +2141,7 @@ impl SupportView {
         let subject = if ticket.subject.trim().is_empty() {
             t!("support.empty.no_subject").to_string()
         } else {
-            ticket.subject.clone()
+            crate::external_content::external_title(&ticket.subject)
         };
 
         let mut context = vec![contact_name];
