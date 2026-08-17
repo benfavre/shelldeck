@@ -1874,7 +1874,12 @@ card exposes the Manage session, active site, synchronized directory, and a
 manual sync action. A dashboard-specific network illustration with a contrast
 gradient gives the page a clear identity without reducing the readability of
 those operational cards. Support mode opens on its own Accueil tab with open,
-SLA-risk, unassigned, and hosted request counters plus direct triage actions.
+SLA-risk, unassigned, and hosted request counters. Every counter is a route,
+not decoration: it opens the matching Tickets/Requests queue after clearing
+stale search and advanced constraints so the visible rows agree with the
+announced count. The home also exposes up to four actionable tickets ordered by
+SLA risk, urgency, missing owner, then recency, plus the four most recently
+updated visible requests; selecting either kind opens its real detail.
 Operational lists remain separate tabs. Onboarding only describes modes and
 shortcuts the signed-in role can actually reach.
 
@@ -2150,6 +2155,10 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Amended SDUC-440 and SDTEST-1414, then added
+  SDTEST-1614/1615 for the operational Support home. Counters now route to clean
+  exact queues, while priority tickets and recent requests fill the dashboard
+  with directly actionable work.
 - **2026-08-17** — Amended SDUC-228 and added pending SDTEST-1613 after
   reconciling the stale UX audit with the fix already shipped in `65c5c89`.
   The User request thread scrolls independently while its reply composer stays

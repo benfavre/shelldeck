@@ -19,7 +19,7 @@ Git.
 |---|---|---|---|---|---|
 | UX-001 | Support / Tickets et Demandes | Les titres Slack affichaient encore `<url\|libellé>` ou `<url>` dans les listes et les détails. | P0 | Validé | Contrôlé dans la liste et le détail d'une vraie demande Slack. |
 | UX-002 | User / Détail demande | L'ancien audit signalait la disparition du compositeur pendant le défilement, alors que la correction du 12 août n'y avait pas été reportée. | P0 | Validé | Fil long parcouru jusqu'en bas puis jusqu'en haut ; le compositeur est resté visible. |
-| UX-003 | Support / Accueil | L'écran reste principalement vide et les cartes ne conduisent pas aux urgences, non-assignés, SLA ou éléments récents. | P1 | Ouvert | Ouvrir chaque compteur et vérifier le filtre ou la sélection obtenue. |
+| UX-003 | Support / Accueil | Les compteurs sont désormais actionnables et l'espace libre présente les tickets prioritaires ainsi que les demandes récentes. | P1 | Validé | Chaque compteur et les deux types de ligne ont été contrôlés dans l'application reconstruite. |
 | UX-004 | User et Support / Chrome | La barre d'état Dev (`connections`, `forwards`, `scripts`, branche Git, palette) reste visible hors du mode Dev. | P1 | Ouvert | Passer successivement en User, Support et Dev. |
 | UX-005 | Support / Tickets et Demandes | L'actualisation est incohérente : Tickets affiche une action textuelle, Demandes construit un bouton sans icône visible. | P1 | Ouvert | Comparer les deux en-têtes et déclencher chaque actualisation. |
 | UX-006 | Support / Listes | Les colonnes restent figées à 340 px et les grands états vides demeurent passifs. | P2 | Ouvert | Tester des sujets longs et une fenêtre étroite puis large. |
@@ -53,3 +53,12 @@ ligne existante.
   fixe était déjà présent depuis `65c5c89` (12 août), mais l'ancien audit était
   resté en retard. Sur la version reconstruite, un fil long a été parcouru dans
   les deux sens : seul le fil défile et le compositeur reste ancré en bas.
+- **2026-08-17 — UX-003 → À valider.** Les quatre compteurs ouvrent maintenant
+  la file et le filtre qu'ils annoncent, après suppression des anciennes
+  recherches ou contraintes invisibles. Deux listes compactes rendent l'accueil
+  utile : SLA/urgences/non-assignés d'un côté, demandes récemment mises à jour de
+  l'autre. Chaque ligne ouvre directement son détail.
+- **2026-08-17 — UX-003 → Validé.** Recette effectuée dans ShellDeck reconstruit :
+  Ouverts, SLA, Non attribués et Demandes ont chacun activé la bonne file et le
+  bon filtre ; un ticket prioritaire et une demande récente ont ouvert leur
+  détail réel. Aucune écriture réseau n'est liée à ces navigations.
