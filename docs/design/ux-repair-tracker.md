@@ -29,7 +29,7 @@ Git.
 | UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
 | UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | Validé | Réponse, note interne et panneau de pièces jointes contrôlés sans envoi sur les deux surfaces. |
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
-| UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | À valider | Tester un fil long avec images, note système et brouillon IA. |
+| UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | Validé | Deux fils longs contrôlés avec images, fichiers, lien, notes, citations et brouillons. |
 
 ## Règle de mise à jour
 
@@ -123,3 +123,9 @@ ligne existante.
   fixture. Pour ne pas écrire sur Manage, la demande fictive réelle a servi à
   contrôler visuellement les trois menus sans choix ; les 16 tests `issues` et
   22 tests `manage_support`, dont les corps d'actions staff, restent verts.
+- **2026-08-17 — UX-013 → Validé sans modification.** Les fixtures Ticket et
+  Demande ont été activées uniquement le temps de la recette, puis remises à
+  `false`. Sur les deux fils longs, image, fichier, lien, citation, Markdown
+  riche, séparateurs de jour, notes de statut/GitHub/système, indicateur de
+  saisie, brouillon IA, brouillon local et échec d'envoi restent contenus. Le
+  compositeur demeure ancré et aucune superposition n'a été observée.
