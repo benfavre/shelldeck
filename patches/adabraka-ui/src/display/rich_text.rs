@@ -461,6 +461,33 @@ fn render_blocks_with_density(
     elements
 }
 
+// ShellDeck patch: SDPATCH-030 — compact conversation headings scale from the
+// caller's body size instead of importing the 32/28/24/20 px document ramp.
+// H6 meets the body size while H1 remains clearly dominant in a 480 px thread.
+fn heading_size(level: u8, base_size: Pixels, compact: bool) -> Pixels {
+    if !compact {
+        return match level {
+            1 => TextVariant::H1,
+            2 => TextVariant::H2,
+            3 => TextVariant::H3,
+            4 => TextVariant::H4,
+            5 => TextVariant::H5,
+            _ => TextVariant::H6,
+        }
+        .size();
+    }
+
+    let scale = match level {
+        1 => 1.44,
+        2 => 1.32,
+        3 => 1.20,
+        4 => 1.12,
+        5 => 1.06,
+        _ => 1.0,
+    };
+    px(base_size.to_f64() as f32 * scale)
+}
+
 fn render_block(
     block: &RichBlock,
     base_size: Pixels,
@@ -498,12 +525,13 @@ fn render_block(
                 5 => TextVariant::H5,
                 _ => TextVariant::H6,
             };
-            let size = variant.size();
+            // ShellDeck patch: SDPATCH-030 — compact headings use the thread
+            // prototype's proportional type ramp, 10/4 rhythm and no indent
+            // at the first/last edge. Document Markdown keeps TextVariant sizes.
+            let size = heading_size(*level, base_size, compact);
             let weight = variant.weight();
             let id = ElementId::Name(format!("{}-h{}-{}", id_prefix, level, idx).into());
 
-            // ShellDeck patch: SDPATCH-030 — compact headings use the thread
-            // prototype's 10/4 rhythm and never indent the first/last edge.
             let top_margin = if compact {
                 px(if first { 0.0 } else { 10.0 })
             } else {
@@ -899,4 +927,32 @@ fn render_table(
     }
 
     table.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::heading_size;
+    use gpui::px;
+
+    // SDTEST-1621
+    #[test]
+    fn compact_heading_scale_is_relative_and_document_sizes_are_unchanged() {
+        let base = px(12.5);
+        let compact = [
+            heading_size(1, base, true),
+            heading_size(2, base, true),
+            heading_size(3, base, true),
+            heading_size(4, base, true),
+            heading_size(5, base, true),
+            heading_size(6, base, true),
+        ];
+        let expected = [18.0, 16.5, 15.0, 14.0, 13.25, 12.5];
+        for (actual, expected) in compact.into_iter().zip(expected) {
+            assert!((actual.to_f64() as f32 - expected).abs() < 0.001);
+        }
+
+        assert_eq!(heading_size(1, base, false), px(32.0));
+        assert_eq!(heading_size(4, base, false), px(20.0));
+        assert_eq!(heading_size(6, base, false), px(16.0));
+    }
 }

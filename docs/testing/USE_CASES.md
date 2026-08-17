@@ -1506,10 +1506,13 @@ one-line turns keep a compact width, while long or structured Markdown is
 capped at 88% of the reading column and receives a definite layout width so
 every wrapped line contributes to the bubble height instead of being clipped.
 Assistant responses remain unframed prose, and both roles use compact
-conversation block spacing without a document-style trailing margin. In the
-Sheet, opening the 240 px history column reduces that definite bubble measure
-before Markdown shaping, so long turns remain wholly inside the conversation
-viewport instead of extending beneath history. In the main window, the
+conversation block spacing without a document-style trailing margin. Compact
+headings use a body-relative H1–H6 ramp (1.44× down to 1×) suited to the 480 px
+Dock instead of the fixed 32–16 px document typography; ordinary Markdown keeps
+that document ramp unchanged. In the Sheet, opening the 240 px history column
+reduces that definite bubble measure before Markdown shaping, so long turns
+remain wholly inside the conversation viewport instead of extending beneath
+history. In the main window, the
 right-side Assistant Sheet preserves the floating window's top-right and
 bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
 host boundary so no dim-backdrop wedge appears between the panel and those
@@ -2185,6 +2188,10 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Amended SDUC-414 and added SDTEST-1621: compact Markdown
+  headings now scale from the conversation body size, while non-compact
+  document headings retain their fixed typography. H1–H4 were manually checked
+  in an isolated 480 px GPUI render.
 - **2026-08-17** — Extended SDUC-460 with SDTEST-1620 after tracing two malformed
   Support rows to Postmark e-mail ingestion. The known Outlook/Office
   `[generated image alt]<https://destination>` plain-text convention now renders

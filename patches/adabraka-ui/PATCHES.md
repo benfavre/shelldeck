@@ -609,6 +609,7 @@ carries no marker of its own — see its entry).
   - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — opt into the thread/note block spacing`
   - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — select compact margins only for`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — thread prose needs 8 px block rhythm and no`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact conversation headings scale from the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact headings use the thread`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — list rows in chat use the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact tables participate in the same`
@@ -618,9 +619,11 @@ carries no marker of its own — see its entry).
   a time, so those document margins accumulated with each list item's own
   spacing and also left an unexplained tail before note metadata and the reply
   composer. The opt-in compact mode follows the conversation prototype's 8 px
-  prose cadence, 10/4 px heading rhythm, 2 px list-row cadence, and removes the
-  last block's bottom margin. The existing document rendering remains the
-  default for every other consumer.
+  prose cadence, a body-relative heading ramp with 10/4 px rhythm, 2 px list-row
+  cadence, and removes the last block's bottom margin. A compact H1 is 1.44×
+  the caller's body size instead of the document renderer's fixed 32 px, with
+  the hierarchy descending to H6 at 1×. The existing fixed document typography
+  remains the default for every other consumer.
 - **Upstream status**: not filed yet — the opt-in density is generic enough to
   propose upstream.
 
@@ -849,6 +852,9 @@ carries no marker of its own — see its entry).
   labels now become the visible label of their safe HTTP(S) autolink. Standard
   Markdown, standalone/spaced autolinks and unsafe destinations are unchanged.
   5 new markers; current code marker count is 125.
+- **2026-08-17** — extended SDPATCH-030: compact H1–H6 typography now scales
+  from the conversation body size while document Markdown retains the fixed
+  32/28/24/20/18/16 px ramp. 1 new marker; current code marker count is 126.
 
 ## Retired patches
 

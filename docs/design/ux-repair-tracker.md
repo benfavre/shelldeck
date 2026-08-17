@@ -23,7 +23,7 @@ Git.
 | UX-004 | User et Support / Chrome | La barre d'état technique (`connections`, `forwards`, `scripts`, branche Git, palette) est désormais réservée au mode Dev authentifié. | P1 | Validé | User et Support récupèrent l'espace sans perdre leurs coins arrondis ; Dev conserve la barre complète. |
 | UX-005 | Support / Tickets et Demandes | Les deux listes partagent désormais la même action `Actualiser`, avec icône visible et composant standard. | P1 | Validé | Les deux en-têtes et leurs actualisations ont été contrôlés dans l'application reconstruite. |
 | UX-006 | Support / Listes | Les colonnes suivent 38 % de l'espace avec des bornes de 280 à 440 px ; sous 760 px mis à l'échelle, liste et détail se remplacent avec un retour explicite. | P2 | Validé | Liste, détail et retour contrôlés sur Tickets et Demandes à 600 puis 1210 px. |
-| UX-007 | Dock IA | Le mode Markdown compact réduit les marges mais conserve les grandes tailles H1/H2 de document. | P1 | Ouvert | Afficher H1 à H4 dans une conversation du Dock de 480 px. |
+| UX-007 | Dock IA | Le mode Markdown compact utilise désormais une échelle H1–H6 relative au corps, sans modifier les tailles document. | P1 | Validé | H1 à H4 contrôlés dans un rendu compact isolé de 480 px. |
 | UX-008 | Dock IA | Les titres d'historique ont une largeur définie avec ellipse et le rail distingue l'activité active. | P1 | À valider | Ouvrir un historique avec plusieurs titres longs. |
 | UX-009 | Sheets | Les couches qui peignent les quatre coins possèdent désormais le même rayon hors mode maximisé. | P0 | Validé | Déjà contrôlé sur les quatre coins et en mode maximisé. |
 | UX-010 | Conversations | Markdown, liens HTTP(S), libellés d'e-mail `[alt]<URL>` et confirmation d'ouverture partagent le même rendu sécurisé. | P0 | Validé | Le vrai e-mail Outlook a été contrôlé, puis son libellé a ouvert la confirmation externe. |
@@ -100,3 +100,8 @@ ligne existante.
   libellé. Sur le ticket `RE: CORRECTION JEU RENTREE`, l'URL brute et les
   crochets ont disparu ; un clic sur le libellé conserve la confirmation
   externe et affiche le domaine cible.
+- **2026-08-17 — UX-007 → Validé.** Le chemin compact réutilisait encore la
+  rampe document 32/28/24/20 px sur un corps de 12,5 px. H1 à H6 suivent
+  maintenant 1,44/1,32/1,20/1,12/1,06/1× le corps. Un rendu isolé de 480 px a
+  confirmé la hiérarchie H1–H4 et le retour à la ligne ; le test SDTEST-1621
+  verrouille aussi les tailles document inchangées.
