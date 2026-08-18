@@ -1149,22 +1149,23 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor().timer(timeout).await;
             let _ = this.update(cx, |workspace, cx| {
-                let still_same_action = workspace
-                    .ai_script_runs
-                    .get(&script_id)
-                    .is_some_and(|plan| plan.id == action_id);
-                let still_running = workspace.scripts.read(cx).running_script_id == Some(script_id);
-                if still_same_action && still_running {
-                    if let Some(plan) = workspace.ai_script_runs.remove(&script_id) {
-                        workspace.audit_ai_action(&plan, "timed_out", cx);
-                    }
-                    workspace.handle_script_event(&ScriptEvent::StopScript, cx);
-                    workspace.show_toast(
-                        t!("toast.ai.action_timed_out").to_string(),
-                        ToastLevel::Warning,
-                        cx,
-                    );
+                let outcome = super::ai_routing::ai_timeout_outcome(
+                    workspace.ai_script_runs.get(&script_id).map(|plan| plan.id),
+                    action_id,
+                    workspace.scripts.read(cx).running_script_id == Some(script_id),
+                );
+                if outcome == super::ai_routing::AiTimeoutOutcome::Ignore {
+                    return;
                 }
+                if let Some(plan) = workspace.ai_script_runs.remove(&script_id) {
+                    workspace.audit_ai_action(&plan, "timed_out", cx);
+                }
+                workspace.handle_script_event(&ScriptEvent::StopScript, cx);
+                workspace.show_toast(
+                    t!("toast.ai.action_timed_out").to_string(),
+                    ToastLevel::Warning,
+                    cx,
+                );
             });
         })
         .detach();
@@ -1182,11 +1183,17 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             cx.background_executor().timer(timeout).await;
             let _ = this.update(cx, |workspace, cx| {
-                let still_same_action = workspace
-                    .ai_terminal_runs
-                    .get(&session_id)
-                    .is_some_and(|plan| plan.id == action_id);
-                if !still_same_action {
+                // The terminal path has no liveness check of its own:
+                // `stop_ai_command` is a no-op when nothing is running.
+                let outcome = super::ai_routing::ai_timeout_outcome(
+                    workspace
+                        .ai_terminal_runs
+                        .get(&session_id)
+                        .map(|plan| plan.id),
+                    action_id,
+                    true,
+                );
+                if outcome == super::ai_routing::AiTimeoutOutcome::Ignore {
                     return;
                 }
                 let _ = workspace

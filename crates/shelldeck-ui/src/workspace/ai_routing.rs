@@ -90,6 +90,37 @@ pub(super) fn route_ai_action(
     }
 }
 
+/// What a fired AI timeout should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AiTimeoutOutcome {
+    /// Do nothing. Either the run already finished, or a newer action owns this
+    /// target now — stopping it would kill somebody else's work.
+    Ignore,
+    /// Stop the run and audit it as timed out.
+    StopAndAudit,
+}
+
+/// Whether a timeout that just fired still owns the run it was scheduled for.
+///
+/// Timers are detached and cannot be cancelled, so one always outlives its run.
+/// Between the moment it was scheduled and the moment it fires, the same script
+/// or terminal may already be executing a *different* AI action — or nothing at
+/// all. Firing blindly would stop a newer, unrelated execution.
+///
+/// `tracked_action` is the action currently registered for that target, and
+/// `target_still_running` lets the script path add its own liveness check; the
+/// terminal path has no equivalent and passes `true`.
+pub(super) fn ai_timeout_outcome(
+    tracked_action: Option<uuid::Uuid>,
+    scheduled_action: uuid::Uuid,
+    target_still_running: bool,
+) -> AiTimeoutOutcome {
+    if tracked_action != Some(scheduled_action) || !target_still_running {
+        return AiTimeoutOutcome::Ignore;
+    }
+    AiTimeoutOutcome::StopAndAudit
+}
+
 impl Workspace {
     pub(super) fn ai_action_context(&self) -> AiActionContext {
         AiActionContext {
@@ -106,6 +137,7 @@ impl Workspace {
 mod tests {
     use super::*;
     use shelldeck_core::ai::clippy::DesktopSelection;
+    use uuid::Uuid;
 
     /// A selection that would pass `DesktopSelection::validate` — identity and
     /// text are required, and a password role would be rejected outright.
@@ -288,6 +320,39 @@ mod tests {
                 replacement: "x".into(),
             },
         ));
+    }
+
+    // SDTEST-1366 — a timeout may only stop the run it was scheduled for.
+    //
+    // The timer is detached and cannot be cancelled, so it always outlives its
+    // run. Firing on whatever occupies the target at that moment would stop a
+    // newer, unrelated execution — the user's script killed by a stopwatch
+    // belonging to a previous one.
+    #[test]
+    fn a_timeout_never_stops_a_run_it_does_not_own() {
+        let scheduled = Uuid::from_u128(1);
+        let newer = Uuid::from_u128(2);
+
+        assert_eq!(
+            ai_timeout_outcome(Some(scheduled), scheduled, true),
+            AiTimeoutOutcome::StopAndAudit,
+            "its own still-running action must time out",
+        );
+        assert_eq!(
+            ai_timeout_outcome(Some(newer), scheduled, true),
+            AiTimeoutOutcome::Ignore,
+            "a newer action took over this target",
+        );
+        assert_eq!(
+            ai_timeout_outcome(None, scheduled, true),
+            AiTimeoutOutcome::Ignore,
+            "the run already finished and was untracked",
+        );
+        assert_eq!(
+            ai_timeout_outcome(Some(scheduled), scheduled, false),
+            AiTimeoutOutcome::Ignore,
+            "the target is no longer running",
+        );
     }
 
     // SDTEST-1365 — a signed-out session performs no AI action at all. The
