@@ -43,6 +43,8 @@ pub struct ClientHandler {
     forwarded_tcpip_tx: mpsc::UnboundedSender<ForwardedTcpIpEvent>,
     hostname: String,
     port: u16,
+    #[cfg(test)]
+    trust_server_key_for_test: bool,
 }
 
 impl ClientHandler {
@@ -57,6 +59,22 @@ impl ClientHandler {
             forwarded_tcpip_tx,
             hostname,
             port,
+            #[cfg(test)]
+            trust_server_key_for_test: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_trusting_server_key_for_test(
+        event_tx: mpsc::UnboundedSender<SshEvent>,
+        forwarded_tcpip_tx: mpsc::UnboundedSender<ForwardedTcpIpEvent>,
+    ) -> Self {
+        Self {
+            event_tx,
+            forwarded_tcpip_tx,
+            hostname: "in-memory-test-server".to_owned(),
+            port: 22,
+            trust_server_key_for_test: true,
         }
     }
 
@@ -72,6 +90,11 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
+        #[cfg(test)]
+        if self.trust_server_key_for_test {
+            return Ok(true);
+        }
+
         let key_type = server_public_key.algorithm().as_str().to_owned();
         let key_base64 = server_public_key.public_key_base64();
 

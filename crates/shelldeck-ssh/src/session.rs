@@ -467,3 +467,289 @@ mod channel_end_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod in_memory_ssh_tests {
+    use super::SshSession;
+    use crate::handler::ClientHandler;
+    use russh::keys::{ssh_key::Algorithm, PrivateKey};
+    use russh::server::{self, Auth, Msg, Session};
+    use russh::{Channel, ChannelId, Pty};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use uuid::Uuid;
+
+    #[derive(Clone)]
+    enum ExecBehavior {
+        Complete {
+            stdout: Vec<u8>,
+            stderr: Vec<u8>,
+            exit_code: u32,
+        },
+        WaitForCancellation,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum ServerEvent {
+        Pty { term: String, cols: u32, rows: u32 },
+        Shell,
+        Exec(Vec<u8>),
+        Resize { cols: u32, rows: u32 },
+        ChannelEof,
+    }
+
+    struct InMemoryServer {
+        events: mpsc::UnboundedSender<ServerEvent>,
+        exec_behavior: ExecBehavior,
+    }
+
+    impl server::Handler for InMemoryServer {
+        type Error = anyhow::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<Msg>,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        async fn pty_request(
+            &mut self,
+            channel: ChannelId,
+            term: &str,
+            cols: u32,
+            rows: u32,
+            _pixel_width: u32,
+            _pixel_height: u32,
+            _modes: &[(Pty, u32)],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Pty {
+                term: term.to_owned(),
+                cols,
+                rows,
+            });
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn shell_request(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Shell);
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn exec_request(
+            &mut self,
+            channel: ChannelId,
+            command: &[u8],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Exec(command.to_vec()));
+            session.channel_success(channel)?;
+
+            if let ExecBehavior::Complete {
+                stdout,
+                stderr,
+                exit_code,
+            } = &self.exec_behavior
+            {
+                session.data(channel, stdout.clone())?;
+                session.extended_data(channel, 1, stderr.clone())?;
+                session.exit_status_request(channel, *exit_code)?;
+                session.eof(channel)?;
+            }
+
+            Ok(())
+        }
+
+        async fn window_change_request(
+            &mut self,
+            channel: ChannelId,
+            cols: u32,
+            rows: u32,
+            _pixel_width: u32,
+            _pixel_height: u32,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::Resize { cols, rows });
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn channel_eof(
+            &mut self,
+            _channel: ChannelId,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.events.send(ServerEvent::ChannelEof);
+            Ok(())
+        }
+    }
+
+    async fn start_session(
+        exec_behavior: ExecBehavior,
+    ) -> (
+        Arc<SshSession>,
+        mpsc::UnboundedReceiver<ServerEvent>,
+        JoinHandle<()>,
+    ) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (server_event_tx, server_event_rx) = mpsc::unbounded_channel();
+
+        let server_config = server::Config {
+            inactivity_timeout: None,
+            auth_rejection_time: Duration::from_millis(1),
+            auth_rejection_time_initial: Some(Duration::from_millis(1)),
+            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                .expect("generate in-memory SSH host key")],
+            ..Default::default()
+        };
+
+        let server_task = tokio::spawn(async move {
+            let running = server::run_stream(
+                Arc::new(server_config),
+                server_stream,
+                InMemoryServer {
+                    events: server_event_tx,
+                    exec_behavior,
+                },
+            )
+            .await
+            .expect("start in-memory SSH server");
+            let _ = running.await;
+        });
+
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
+        let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+        let mut handle = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client_stream,
+            handler,
+        )
+        .await
+        .expect("connect to in-memory SSH server");
+        assert!(handle
+            .authenticate_none("shelldeck-test")
+            .await
+            .expect("authenticate in-memory SSH client")
+            .success());
+
+        (
+            Arc::new(SshSession::new(
+                Uuid::new_v4(),
+                handle,
+                event_rx,
+                forwarded_rx,
+            )),
+            server_event_rx,
+            server_task,
+        )
+    }
+
+    async fn next_event(events: &mut mpsc::UnboundedReceiver<ServerEvent>) -> ServerEvent {
+        timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("server event timed out")
+            .expect("in-memory server event stream closed")
+    }
+
+    // SDTEST-520, SDTEST-525
+    #[tokio::test]
+    async fn shell_requests_pty_dimensions_and_propagates_resize() {
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+
+        let channel = session.open_shell(32, 120).await.expect("open shell");
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Pty {
+                term: "xterm-256color".to_owned(),
+                cols: 120,
+                rows: 32,
+            }
+        );
+        assert_eq!(next_event(&mut events).await, ServerEvent::Shell);
+
+        channel.resize(48, 160).await.expect("resize shell");
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Resize {
+                cols: 160,
+                rows: 48,
+            }
+        );
+
+        server_task.abort();
+    }
+
+    // SDTEST-521
+    #[tokio::test]
+    async fn exec_collects_stdout_stderr_and_exit_status() {
+        let (session, mut events, server_task) = start_session(ExecBehavior::Complete {
+            stdout: b"standard output\n".to_vec(),
+            stderr: b"standard error\n".to_vec(),
+            exit_code: 23,
+        })
+        .await;
+
+        let result = timeout(Duration::from_secs(2), session.exec("printf test"))
+            .await
+            .expect("exec timed out")
+            .expect("exec failed");
+
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Exec(b"printf test".to_vec())
+        );
+        assert_eq!(result.stdout, b"standard output\n");
+        assert_eq!(result.stderr, b"standard error\n");
+        assert_eq!(result.exit_code, Some(23));
+        assert!(!result.success());
+
+        server_task.abort();
+    }
+
+    // SDTEST-524
+    #[tokio::test]
+    async fn cancellable_exec_sends_channel_eof_and_returns_no_exit_status() {
+        let (session, mut events, server_task) =
+            start_session(ExecBehavior::WaitForCancellation).await;
+        let (output_tx, _output_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+
+        let exec_task = tokio::spawn(async move {
+            session
+                .exec_cancellable("sleep forever", output_tx, shutdown_rx)
+                .await
+        });
+        assert_eq!(
+            next_event(&mut events).await,
+            ServerEvent::Exec(b"sleep forever".to_vec())
+        );
+
+        shutdown_tx.send(()).await.expect("request cancellation");
+        let exit_code = timeout(Duration::from_secs(2), exec_task)
+            .await
+            .expect("cancellable exec timed out")
+            .expect("cancellable exec task panicked")
+            .expect("cancellable exec failed");
+        assert_eq!(exit_code, None);
+        assert_eq!(next_event(&mut events).await, ServerEvent::ChannelEof);
+
+        server_task.abort();
+    }
+}

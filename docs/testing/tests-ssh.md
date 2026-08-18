@@ -3,20 +3,20 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** SSH is the weakest-tested crate today: only the
-`parse_jump_spec` helper has coverage. The rest (`session`, `pool`,
-`tunnel`, `known_hosts`, `handler`) is exercised only through the UI —
-one broken change lands as a runtime error, not a red test.
+**Big picture.** The parsing, known-hosts and core session exchanges have
+direct coverage. Pool, jump transport and tunnels still need controlled
+protocol-level proofs — otherwise one broken change lands as a runtime error,
+not a red test.
 
-Strategy: for anything that spans a real network, we introduce two
-kinds of fakes rather than reaching for a real SSH server:
+Strategy: for anything that spans a real network, we introduce controlled
+harnesses rather than reaching for a live SSH server:
 
-- **`FakeTransport`** for `session.rs` — a `russh::client::Handler`
-  double that lets us assert what the session pushed on the wire
-  (open-shell request, exec request, resize, EOF) without a network.
-- **`FakePool`** — mostly not needed; `ConnectionPool` is a
-  boundary around `SshSession` and can be tested with the same
-  transport fake.
+- **In-memory `russh` server** for `session.rs` — the real client and server
+  protocol run over `tokio::io::duplex`, so PTY, exec, resize and EOF are
+  asserted without a socket or user `known_hosts` access.
+- **Fake connector** for `ConnectionPool`, so connect/reuse/disconnect can be
+  driven deterministically while session protocol behavior remains covered by
+  the in-memory server.
 - **`std::net::TcpListener`** + a canned SSH banner for
   `known_hosts.rs` scenarios where we need real socket bytes.
 
@@ -45,16 +45,16 @@ If a test genuinely needs a real SSH server, it is an
 
 ## 2. `session.rs` — `SshSession`
 
-Existing: **0 tests.**
+Existing: **4 tests** (including the channel-end classification proof).
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-520 | *to write* — open_shell requests the initial window size and returns a channel | SDUC-044 | **Red / P0** | Use `FakeTransport` that asserts the pty-request and window dimensions. |
-| SDTEST-521 | *to write* — exec captures stdout, stderr, and exit code | SDUC-045 | **Red / P0** | Fake transport feeds canned `Data` + `ExtendedData(1)` + `ExitStatus`. |
+| SDTEST-520 | `session.rs::shell_requests_pty_dimensions_and_propagates_resize` | SDUC-044 | Green | In-memory SSH handshake; asserts `xterm-256color`, columns, rows and shell request. |
+| SDTEST-521 | `session.rs::exec_collects_stdout_stderr_and_exit_status` | SDUC-045 | Green | Real protocol messages over an in-memory duplex stream: `Data`, `ExtendedData(1)`, `ExitStatus`, EOF. |
 | SDTEST-522 | *to write* — exec success() bit matches exit code | SDUC-045 | **Red / P1** | |
 | SDTEST-523 | *to write* — exec_streaming yields chunks without buffering the whole output | SDUC-046 | **Red / P1** | Assert the receiver observes chunks *before* the exit signal. |
-| SDTEST-524 | *to write* — exec_cancellable interrupts the future when the token fires | SDUC-047 | **Red / P0** | Regression class: leaked long-running remote work. |
-| SDTEST-525 | *to write* — resize propagates to the channel's window request | SDUC-044 | **Red / P1** | |
+| SDTEST-524 | `session.rs::cancellable_exec_sends_channel_eof_and_returns_no_exit_status` | SDUC-047 | Green | A held remote command receives channel EOF after cancellation and returns without an exit status. |
+| SDTEST-525 | `session.rs::shell_requests_pty_dimensions_and_propagates_resize` | SDUC-044 | Green | Asserts the post-open window-change dimensions on the server side. |
 | SDTEST-527 | *to write* — disconnect() drains the event channel cleanly | SDUC-044, SDUC-054 | **Red / P1** | No stray events after `disconnect`. |
 | SDTEST-528 | *to write* — new_with_jump wires the jump session as ProxyJump transport | SDUC-053 | **Red / P0** | Fake outer transport that observes the "direct-tcpip" request opened against the inner host. |
 | SDTEST-529 | *to write* — ExecResult::stdout_string / stderr_string handle non-utf8 without panic | SDUC-045 | **Red / P1** | Lossy conversion; assert it doesn't panic on invalid utf-8 bytes. |

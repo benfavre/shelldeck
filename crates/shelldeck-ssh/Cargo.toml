@@ -17,3 +17,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
+
+[dev-dependencies]
+rand = { version = "0.10", features = ["thread_rng"] }
