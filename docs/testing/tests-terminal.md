@@ -172,14 +172,14 @@ must run on all three targets or be gated with a target-cfg reason.
 
 ## 6. `session.rs` — `TerminalSession` (async wiring)
 
-Existing: **0 tests.**
+Existing: **3 tests**, all driving a real `/bin/sh` PTY.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-980 | *to write* — spawn_local pipes PTY output into the grid via the parser | SDUC-023 | **Red / P0** | End-to-end: `echo hello` should land as `hello` in `grid.line_at(cursor.row)`. |
-| SDTEST-981 | *to write* — write_input reaches the child (echoing shell writes it back) | SDUC-023 | **Red / P0** | |
-| SDTEST-982 | *to write* — output notifier fires exactly once per grid update batch | SDUC-023 | **Red / P0** | Regression sensor: reintroducing a poll loop would silently pass functional tests but drop this one. |
-| SDTEST-983 | *to write* — resize propagates to both the grid and the PTY | SDUC-024 | **Red / P0** | |
+| SDTEST-980 | `session.rs::tracked_posix_command_emits_completion_and_captures_output` + `::resize_reaches_both_the_grid_and_the_child` | SDUC-023 | Green | Already proven, inventory was lagging: both tests read command output back out of the grid, which is only possible if the PTY → parser → grid pipe works. Not duplicated as a third test. |
+| SDTEST-981 | `session.rs::resize_reaches_both_the_grid_and_the_child` | SDUC-023 | Green | Same: `stty size` only answers because the typed bytes reached the child. Also covered by SDTEST-1379 through `write_tracked_command`. |
+| SDTEST-982 | `session.rs::output_notifier_wakes_on_output_and_never_on_a_timer` | SDUC-023 | Green | Regression sensor for the event-driven repaint contract in `AGENTS.md`. Asserts the inverse too: an **idle** terminal must produce no wake-up at all, which a reintroduced poll loop trips. The wait for quiet is deliberately bounded — unbounded, that same regression would hang CI instead of failing it. Deliberately *not* "exactly once per batch": read chunking is not a contract, and pinning it would be a fragile assertion about `read()` sizes. |
+| SDTEST-983 | `session.rs::resize_reaches_both_the_grid_and_the_child` | SDUC-024 | Green | `stty size` reads the window size from the tty itself, so it reports what the PTY really carries — not what the grid was told. Resizing only the grid is the silent half-failure this catches. |
 | SDTEST-984 | *to write* — is_running is true while child lives, false after exit | SDUC-023 | **Red / P1** | |
 | SDTEST-985 | *to write* — session state transitions Running → Exited → Failed | SDUC-023 | **Red / P1** | State-machine sanity. |
 | SDTEST-986 | *to write* — spawn_ssh honours title, rows, cols and returns the expected channels | SDUC-023, SDUC-044 | **Red / P1** | Cross-referenced with the SSH inventory (SDTEST-520). |

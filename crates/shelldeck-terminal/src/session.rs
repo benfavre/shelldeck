@@ -294,6 +294,119 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// Everything currently on screen, as plain text.
+    fn screen_text(session: &TerminalSession) -> String {
+        session
+            .grid
+            .lock()
+            .visible_rows()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn wait_for_screen(session: &TerminalSession, needle: &str, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            if screen_text(session).contains(needle) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Consume pending wake-ups until the session has been quiet for `quiet`.
+    ///
+    /// Bounded on purpose: under the very regression this test exists to catch,
+    /// a session never goes quiet, and an unbounded wait would hang the whole
+    /// CI job instead of reporting a failure.
+    fn drain_until_quiet(rx: &mut mpsc::UnboundedReceiver<()>, quiet: Duration, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        loop {
+            while rx.try_recv().is_ok() {}
+            std::thread::sleep(quiet);
+            if rx.try_recv().is_err() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the terminal never went quiet — the repaint signal is polling, not following output",
+            );
+        }
+    }
+
+    // SDTEST-982 — the repaint signal is event-driven, not polled.
+    //
+    // This is a regression sensor for the terminal contract in AGENTS.md:
+    // reintroducing a fixed-interval repaint loop would still pass every
+    // functional test in this crate, and would only be caught here — an idle
+    // terminal must produce no wake-ups at all.
+    #[test]
+    fn output_notifier_wakes_on_output_and_never_on_a_timer() {
+        let session = TerminalSession::spawn_local(Some("/bin/sh"), 24, 80).expect("spawn sh");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        session.set_output_notifier(tx);
+        drain_until_quiet(&mut rx, Duration::from_millis(300), Duration::from_secs(3));
+
+        // Nothing is happening in the PTY, so nothing may wake the UI. A poll
+        // loop at any plausible interval trips this window.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            rx.try_recv().is_err(),
+            "an idle terminal woke the UI — the repaint signal is polling, not following output",
+        );
+
+        // Real output still wakes it.
+        session.write_input(b"echo shelldeck_notify_probe\r");
+        assert!(
+            wait_for_screen(&session, "shelldeck_notify_probe", Duration::from_secs(3)),
+            "probe never reached the grid: {:?}",
+            screen_text(&session),
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "output reached the grid without waking the UI",
+        );
+
+        session.write_input(b"exit\r");
+    }
+
+    // SDTEST-983 — a resize reaches the grid *and* the child.
+    //
+    // Resizing only the grid is the silent half-failure here: the rendering
+    // would look right while the child kept wrapping at the old width.
+    #[test]
+    fn resize_reaches_both_the_grid_and_the_child() {
+        let session = TerminalSession::spawn_local(Some("/bin/sh"), 24, 80).expect("spawn sh");
+        session.resize(31, 97);
+
+        {
+            let grid = session.grid.lock();
+            assert_eq!((grid.rows, grid.cols), (31, 97), "grid was not resized");
+        }
+
+        // `stty size` reads the window size from the tty itself, so its answer
+        // is what the PTY actually carries — not what we asked the grid for.
+        session.write_input(b"stty size\r");
+        assert!(
+            wait_for_screen(&session, "31 97", Duration::from_secs(3)),
+            "child still sees the old window size: {:?}",
+            screen_text(&session),
+        );
+
+        session.write_input(b"exit\r");
+    }
+
     // SDTEST-1379
     #[test]
     fn tracked_posix_command_emits_completion_and_captures_output() {

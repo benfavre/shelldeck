@@ -19,7 +19,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-001 | NEXT-001 | Jean / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
 | REL-002 | NEXT-004 | CI multiplateforme | Les branches core macOS et Windows n'étaient pas exécutées avant release. | P1 | Terminé | CI native : 297 tests sur macOS ARM64 et 288 sur Windows x86_64 ; SDTEST-1584/1585 sont exercés. |
 | REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
-| REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize et notifier manquent encore de preuve de cycle de vie. | P0 | En cours | Destruction du processus réglée : contrat de `Drop` arrêté et couvert par SDTEST-967/969. Poursuivre avec SDTEST-980..983 sur `TerminalSession` — `spawn_ssh` est pilotable sans PTY ni sous-processus. |
+| REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquaient de preuve de cycle de vie. | P0 | Terminé | Contrat de `Drop` arrêté et couvert par SDTEST-967/969 ; sortie, entrée, resize et repaint événementiel par SDTEST-980..983. Plus aucune ligne P0 ouverte dans `tests-terminal.md`. Restent les P1 SDTEST-984..986 et la dette protocolaire suivie par REL-010. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | À vérifier | Auditer les gardes existantes puis couvrir leur prédicat commun avec SDTEST-1059. |
@@ -94,3 +94,13 @@ risques par frontière observable et impose une vérification avant correction.
   condition : l'assertion ne discriminait rien. Les tests observent désormais la
   branche réellement empruntée, et la mutation « supprimer le délai de grâce »
   fait bien virer SDTEST-967 au rouge.
+- **2026-08-18 — REL-004 terminé.** Deux lignes P0 étaient en réalité déjà
+  prouvées : SDTEST-980 et 981 découlent de tout test qui relit une sortie de
+  commande dans la grille. Elles sont requalifiées plutôt que dupliquées. Les
+  deux vraies preuves manquantes étaient le repaint et le resize.
+- **2026-08-18 — Le capteur anti-polling pendait au lieu d'échouer.** Sous la
+  régression même qu'il doit détecter — une boucle de repaint périodique —
+  l'attente de silence bouclait indéfiniment : en CI, cela aurait consommé tout
+  le job sans message exploitable. L'attente est bornée et le test échoue
+  désormais en 3 s. Règle à retenir : un capteur de régression doit être borné
+  par le comportement qu'il surveille, pas par la patience du runner.
