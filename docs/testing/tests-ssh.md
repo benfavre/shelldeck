@@ -3,10 +3,11 @@
 > Rules for this file live in [`.agents/testing.md`](../../.agents/testing.md).
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
-**Big picture.** The parsing, known-hosts and core session exchanges have
-direct coverage. Pool, jump transport and tunnels still need controlled
-protocol-level proofs — otherwise one broken change lands as a runtime error,
-not a red test.
+**Big picture.** Parsing, known-hosts, the core session exchanges, the jump
+transport and the tunnel lifecycle now have direct, protocol-level coverage.
+What is left uncovered is the dormant `ConnectionPool` (tracked as a technical
+debt decision, not a runtime risk) and the remote-forward path — otherwise one
+broken change lands as a runtime error, not a red test.
 
 Strategy: for anything that spans a real network, we introduce controlled
 harnesses rather than reaching for a live SSH server:
@@ -43,6 +44,8 @@ If a test genuinely needs a real SSH server, it is an
 ## 2. `session.rs` — `SshSession`
 
 Existing: **4 tests** (including the channel-end classification proof).
+ProxyJump lives in `client.rs`; SDTEST-528 and SDTEST-530 are listed here because
+they pin the transport `session.rs` composes with `new_with_jump`.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
@@ -53,7 +56,8 @@ Existing: **4 tests** (including the channel-end classification proof).
 | SDTEST-524 | `session.rs::cancellable_exec_sends_channel_eof_and_returns_no_exit_status` | SDUC-047 | Green | A held remote command receives channel EOF after cancellation and returns without an exit status. |
 | SDTEST-525 | `session.rs::shell_requests_pty_dimensions_and_propagates_resize` | SDUC-044 | Green | Asserts the post-open window-change dimensions on the server side. |
 | SDTEST-527 | *to write* — disconnect() drains the event channel cleanly | SDUC-044, SDUC-054 | **Red / P1** | No stray events after `disconnect`. |
-| SDTEST-528 | *to write* — new_with_jump wires the jump session as ProxyJump transport | SDUC-053 | **Red / P0** | Fake outer transport that observes the "direct-tcpip" request opened against the inner host. |
+| SDTEST-528 | `client.rs::jump_channel_targets_the_inner_host_and_carries_its_session` | SDUC-053 | Green | Two in-memory `russh` servers: the bastion records the `direct-tcpip` request and runs the target server *inside* that channel. Asserts the request names the inner host and port, then execs over the composed `new_with_jump` session and reads a marker only the inner server writes. |
+| SDTEST-530 | `client.rs::proxy_jump_none_or_blank_means_direct_and_a_chain_uses_its_first_hop` | SDUC-053 | Green | Pure `first_jump_hop`: `none` (any case) and a blank value fall back to a direct connection; a comma-separated chain uses its **first** hop, never the last. |
 | SDTEST-529 | *to write* — ExecResult::stdout_string / stderr_string handle non-utf8 without panic | SDUC-045 | **Red / P1** | Lossy conversion; assert it doesn't panic on invalid utf-8 bytes. |
 | SDTEST-1413 | `session.rs::protocol_terminators_are_clean_but_unmarked_channel_loss_is_unexpected` | SDUC-044, SDUC-439 | Green | EOF, channel close, and an exit status followed by stream end classify as clean; disappearance without a protocol terminator classifies as unexpected transport loss. |
 
