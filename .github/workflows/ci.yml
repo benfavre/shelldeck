@@ -74,3 +74,44 @@ jobs:
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
+
+  platform-core-tests:
+    name: Core tests (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-aarch64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-03-06
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-core-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-core-test-
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install openssl pkg-config
+
+      - name: Apply crate patches
+        shell: bash
+        run: ./scripts/apply-crate-patches.sh
+
+      - name: Test shelldeck-core
+        run: cargo test -p shelldeck-core

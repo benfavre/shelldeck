@@ -899,16 +899,24 @@ server {
         assert!(cmd.contains("u@h:"));
     }
 
-    // join_child_path — the std::path join must keep the old Linux string
-    // concatenation behaviour (root base, nested base, trailing slash) so
-    // Server Sync local browsing is unchanged on Unix. Windows correctness
-    // (drive letters, backslashes) follows from std::path and is covered by
-    // the CI cross-compile — it cannot be asserted from a Linux test runner.
+    // SDTEST-1585 — local browsing joins paths with the runner's native
+    // separator. Each CI runner exercises its own branch, so Unix-shaped
+    // paths are never incorrectly asserted on Windows again.
     #[test]
-    fn join_child_path_matches_unix_expectations() {
-        assert_eq!(join_child_path("/", "etc"), "/etc");
-        assert_eq!(join_child_path("/var/www", "html"), "/var/www/html");
-        assert_eq!(join_child_path("/var/www/", "html"), "/var/www/html");
+    fn join_child_path_matches_native_expectations() {
+        #[cfg(unix)]
+        {
+            assert_eq!(join_child_path("/", "etc"), "/etc");
+            assert_eq!(join_child_path("/var/www", "html"), "/var/www/html");
+            assert_eq!(join_child_path("/var/www/", "html"), "/var/www/html");
+        }
+
+        #[cfg(windows)]
+        {
+            assert_eq!(join_child_path(r"C:\", "Users"), r"C:\Users");
+            assert_eq!(join_child_path(r"C:\Users", "ben"), r"C:\Users\ben");
+            assert_eq!(join_child_path(r"C:\Users\", "ben"), r"C:\Users\ben");
+        }
     }
 
     // Windows permission strings are derived from the readonly flag only —
