@@ -66,7 +66,7 @@ impl Workspace {
                     .truncate()
                     .text_size(px(13.0))
                     .text_color(ShellDeckColors::text_primary())
-                    .child(iss.title.clone()),
+                    .child(crate::external_content::external_title(&iss.title)),
             );
         if let Some(site_label) = iss
             .site_label
@@ -1479,14 +1479,14 @@ impl Workspace {
         let link_handler: crate::support_view::thread::ThreadLinkHandler = {
             let workspace = cx.entity();
             Rc::new(move |url, window, cx| {
-                let action = crate::support_view::thread::ThreadLinkAction {
-                    url: url.to_string(),
-                    position: window.mouse_position(),
-                };
-                workspace.update(cx, |this, cx| {
-                    this.issue_thread_link_action = Some(action);
-                    cx.notify();
-                });
+                if let Some(action) =
+                    crate::support_view::thread::ThreadLinkAction::new(url, window.mouse_position())
+                {
+                    workspace.update(cx, |this, cx| {
+                        this.issue_thread_link_action = Some(action);
+                        cx.notify();
+                    });
+                }
             })
         };
         let account = self.app_config.account.as_ref();
@@ -1603,7 +1603,7 @@ impl Workspace {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(iss.title.clone()),
+                    .child(crate::external_content::external_title(&iss.title)),
             )
             .children(
                 iss.site_label

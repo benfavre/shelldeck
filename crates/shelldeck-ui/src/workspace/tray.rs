@@ -31,6 +31,24 @@ impl Workspace {
         self.companion_config_publisher = Some(publisher);
     }
 
+    /// Wire the titlebar Dock control to the binary-level companion runtime.
+    pub fn set_ai_dock_open_handler(&mut self, handler: Box<dyn Fn(&mut App)>) {
+        self.ai_dock_open_handler = Some(handler);
+    }
+
+    pub(super) fn open_external_ai_dock(&self, cx: &mut App) {
+        if let Some(handler) = self.ai_dock_open_handler.as_ref() {
+            handler(cx);
+        }
+    }
+
+    pub fn set_ai_dock_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.ai_dock_open != open {
+            self.ai_dock_open = open;
+            cx.notify();
+        }
+    }
+
     pub fn set_companion_shortcut_statuses(
         &mut self,
         statuses: CompanionShortcutStatuses,

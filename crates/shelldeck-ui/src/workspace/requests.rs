@@ -1488,19 +1488,21 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let entity = cx.entity();
-        let title: SharedString = self
-            .issue_detail
-            .as_ref()
-            .filter(|i| i.id == id)
-            .map(|i| i.title.clone())
-            .or_else(|| {
-                self.issues_list
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.title.clone())
-            })
-            .unwrap_or_default()
-            .into();
+        let title: SharedString = crate::external_content::external_title(
+            &self
+                .issue_detail
+                .as_ref()
+                .filter(|i| i.id == id)
+                .map(|i| i.title.clone())
+                .or_else(|| {
+                    self.issues_list
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.title.clone())
+                })
+                .unwrap_or_default(),
+        )
+        .into();
 
         let close_entity = entity.clone();
         let confirm_entity = entity;

@@ -5,17 +5,18 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_titlebar(
         is_maximized: bool,
-        theme_menu_open: bool,
+        compact: bool,
         account_menu_open: bool,
+        mode_menu_open: bool,
         account: Option<AccountInfo>,
         account_status: AccountStatus,
         site_menu_open: bool,
         active_site_label: Option<String>,
         sites_loaded: bool,
         mode_switch: Option<(AppMode, &'static [AppMode])>,
-        ui_font_size: f32,
         menu_bar_visible: bool,
         ai_configured: bool,
+        ai_dock_open: bool,
         ai_task_count: usize,
         handle: &WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -29,31 +30,24 @@ impl Workspace {
         let btn_hover_bg = ShellDeckColors::hover_bg();
 
         // Title area — draggable
-        let title_area = div()
+        let mut title_area = div()
             .flex_1()
+            .min_w(px(0.0))
             .h_full()
             .flex()
             .items_center()
-            .px(px(10.0))
-            .gap(px(8.0))
+            .overflow_hidden()
+            .px(if compact { px(4.0) } else { px(10.0) })
+            .gap(if compact { px(0.0) } else { px(8.0) })
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |_e, window, _cx| {
                 window.start_window_move();
-            })
-            .child(crate::brand::brand_badge(20.0))
-            .child(crate::brand::brand_wordmark(12.0))
-            .child(
-                // Version pill
-                div()
-                    .px(px(6.0))
-                    .py(px(1.0))
-                    .rounded(px(4.0))
-                    .bg(ShellDeckColors::badge_bg())
-                    .text_color(title_dim)
-                    .text_size(px(10.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(format!("v{}", shelldeck_core::VERSION)),
-            );
+            });
+        if !compact {
+            title_area = title_area
+                .child(crate::brand::brand_badge(20.0))
+                .child(crate::brand::brand_wordmark(12.0));
+        }
 
         // A window-control button with a rounded hover affordance and an SVG
         // glyph. `icon_path` points at an embedded asset (see main.rs Assets).
@@ -137,51 +131,6 @@ impl Workspace {
             },
         );
 
-        // Theme switcher — a 2x2 palette swatch that reflects the active theme
-        // and toggles the dropdown menu.
-        let mut theme_btn = div()
-            .id("titlebar-theme")
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(28.0))
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(btn_hover_bg))
-            .child(
-                div()
-                    .size(px(14.0))
-                    .rounded(px(4.0))
-                    .overflow_hidden()
-                    .flex()
-                    .flex_wrap()
-                    .child(div().size(px(7.0)).bg(ShellDeckColors::primary()))
-                    .child(div().size(px(7.0)).bg(ShellDeckColors::success()))
-                    .child(div().size(px(7.0)).bg(ShellDeckColors::warning()))
-                    .child(div().size(px(7.0)).bg(ShellDeckColors::error())),
-            )
-            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                this.theme_menu_open = !this.theme_menu_open;
-                cx.notify();
-            }));
-        if theme_menu_open {
-            theme_btn = theme_btn.bg(ShellDeckColors::hover_bg());
-        }
-
-        // Settings is a personal surface shared by User, Support and Dev.
-        let settings_btn = account.as_ref().map(|_| {
-            let settings_handle = handle.clone();
-            IconButton::new("settings")
-                .variant(ButtonVariant::Ghost)
-                .size(gpui::px(28.0))
-                .icon_size(gpui::px(14.0))
-                .on_click(move |_, _, cx| {
-                    if let Some(ws) = settings_handle.upgrade() {
-                        ws.update(cx, |ws, cx| ws.open_settings(cx));
-                    }
-                })
-        });
-
         // Account chip — "Se connecter" when logged out, otherwise an
         // avatar-initial + name with a health status dot. Toggles the account
         // dropdown.
@@ -198,44 +147,34 @@ impl Workspace {
 
         if let Some(acct) = &account {
             let dot = account_status.dot_color();
-            account_btn = account_btn
-                .child(
-                    div()
-                        .relative()
-                        .child(
-                            div()
-                                .size(px(18.0))
-                                .rounded_full()
-                                .bg(accent.opacity(0.20))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(10.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(accent)
-                                .child(acct.initial()),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom(px(-1.0))
-                                .right(px(-1.0))
-                                .size(px(7.0))
-                                .rounded_full()
-                                .bg(dot)
-                                .border_1()
-                                .border_color(titlebar_bg),
-                        ),
-                )
-                .child(
-                    div()
-                        .max_w(px(96.0))
-                        .overflow_hidden()
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(title_color)
-                        .child(acct.display_name()),
-                );
+            account_btn = account_btn.child(
+                div()
+                    .relative()
+                    .child(
+                        div()
+                            .size(px(18.0))
+                            .rounded_full()
+                            .bg(accent.opacity(0.20))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(accent)
+                            .child(acct.initial()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(px(-1.0))
+                            .right(px(-1.0))
+                            .size(px(7.0))
+                            .rounded_full()
+                            .bg(dot)
+                            .border_1()
+                            .border_color(titlebar_bg),
+                    ),
+            );
         } else {
             account_btn = account_btn
                 .child(
@@ -265,7 +204,8 @@ impl Workspace {
             this.account_menu_pos = Some(event.position());
             this.account_menu_open = !this.account_menu_open;
             if this.account_menu_open {
-                this.theme_menu_open = false;
+                this.mode_menu_open = false;
+                this.site_menu_open = false;
             }
             cx.notify();
         }));
@@ -273,75 +213,26 @@ impl Workspace {
             account_btn = account_btn.bg(ShellDeckColors::hover_bg());
         }
 
-        // Mode switcher — only the exact modes granted to this account.
-        let mode_switcher = mode_switch.map(|(current, allowed_modes)| {
-            let mut seg = div()
-                .flex()
-                .items_center()
-                .gap(px(1.0))
-                .p(px(2.0))
-                .rounded(px(6.0))
-                .bg(ShellDeckColors::badge_bg());
-            for &m in allowed_modes {
-                let active = m == current;
-                let mut btn = div()
-                    .id(ElementId::from(SharedString::from(format!(
-                        "titlebar-mode-{}",
-                        m.label()
-                    ))))
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(px(5.0))
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .child(m.label().to_string())
-                    .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                        this.set_mode(m, cx);
-                    }));
-                if active {
-                    btn = btn
-                        .bg(ShellDeckColors::bg_surface())
-                        .text_color(ShellDeckColors::text_primary());
-                } else {
-                    btn = btn
-                        .text_color(title_dim)
-                        .hover(|s| s.text_color(title_color));
-                }
-                seg = seg.child(btn);
-            }
-            seg
-        });
-
-        // Site chip — shown only when signed in and the sites directory has
-        // loaded. Displays the active site label or "Tous les sites".
-        let show_site_chip = account.is_some() && sites_loaded;
-        let site_chip = if show_site_chip {
-            let label = active_site_label.unwrap_or_else(|| "Tous les sites".to_string());
+        // One compact mode chip replaces the former three-segment control.
+        // The dropdown still exposes only modes granted to this account.
+        let mode_switcher = mode_switch.map(|(current, _allowed_modes)| {
             let mut chip = div()
-                .id("titlebar-site")
+                .id("titlebar-mode")
                 .flex()
                 .items_center()
                 .gap(px(5.0))
                 .h(px(28.0))
                 .px(px(8.0))
                 .rounded(px(6.0))
+                .bg(ShellDeckColors::badge_bg())
                 .cursor_pointer()
                 .hover(|s| s.bg(btn_hover_bg))
                 .child(
                     div()
                         .text_size(px(11.0))
-                        .text_color(title_dim)
-                        .child("\u{25C9}"), // ◉ site glyph
-                )
-                .child(
-                    div()
-                        .max_w(px(120.0))
-                        .overflow_hidden()
-                        .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(title_color)
-                        .child(label),
+                        .child(current.label().to_string()),
                 )
                 .child(
                     svg()
@@ -349,14 +240,74 @@ impl Workspace {
                         .size(px(9.0))
                         .text_color(title_dim),
                 )
-                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.site_menu_open = !this.site_menu_open;
-                    if this.site_menu_open {
-                        this.theme_menu_open = false;
+                .on_click(cx.listener(|this, event: &ClickEvent, _window, cx| {
+                    this.mode_menu_pos = Some(event.position());
+                    this.mode_menu_open = !this.mode_menu_open;
+                    if this.mode_menu_open {
                         this.account_menu_open = false;
+                        this.site_menu_open = false;
                     }
                     cx.notify();
                 }));
+            if mode_menu_open {
+                chip = chip.bg(ShellDeckColors::hover_bg());
+            }
+            chip
+        });
+
+        // Site chip — shown only when signed in and the sites directory has
+        // loaded. The global scope is a compact globe; a specific selection
+        // keeps its label visible so the current scope is never ambiguous.
+        let show_site_chip = account.is_some() && sites_loaded;
+        let site_chip = if show_site_chip {
+            let scope_tooltip: SharedString = active_site_label
+                .clone()
+                .unwrap_or_else(|| "Tous les sites".to_string())
+                .into();
+            let mut chip = div()
+                .id("titlebar-site")
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(5.0))
+                .h(px(28.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(btn_hover_bg))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: scope_tooltip.clone(),
+                    })
+                    .into()
+                })
+                .child(lucide_icon("globe", 14.0, title_dim))
+                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                    this.site_menu_open = !this.site_menu_open;
+                    if this.site_menu_open {
+                        this.account_menu_open = false;
+                        this.mode_menu_open = false;
+                    }
+                    cx.notify();
+                }));
+            if let Some(label) = active_site_label {
+                chip = chip
+                    .child(
+                        div()
+                            .max_w(px(120.0))
+                            .overflow_hidden()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(title_color)
+                            .child(label),
+                    )
+                    .child(
+                        svg()
+                            .path("images/chevron-down.svg")
+                            .size(px(9.0))
+                            .text_color(title_dim),
+                    );
+            }
             if site_menu_open {
                 chip = chip.bg(ShellDeckColors::hover_bg());
             }
@@ -364,60 +315,6 @@ impl Workspace {
         } else {
             None
         };
-
-        // UI scale controls — a compact −/value/+ group that adjusts the app
-        // font size (which drives proportional UI scaling) live.
-        let scale_btn = |id: &'static str, icon_path: &'static str| {
-            let group_name = SharedString::from(format!("scale-{id}"));
-            div()
-                .id(id)
-                .group(group_name.clone())
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(22.0))
-                .rounded(px(5.0))
-                .cursor_pointer()
-                .hover(|s| s.bg(btn_hover_bg))
-                .child(
-                    svg()
-                        .path(icon_path)
-                        .size(px(11.0))
-                        .text_color(btn_text)
-                        .group_hover(group_name, |s| {
-                            s.text_color(ShellDeckColors::text_primary())
-                        }),
-                )
-        };
-        let dec_btn = scale_btn("titlebar-scale-down", "images/minus.svg").on_click(cx.listener(
-            |this, _event: &ClickEvent, _window, cx| {
-                this.settings
-                    .update(cx, |settings, cx| settings.adjust_ui_font_size(-1.0, cx));
-                cx.notify();
-            },
-        ));
-        let inc_btn = scale_btn("titlebar-scale-up", "images/plus.svg").on_click(cx.listener(
-            |this, _event: &ClickEvent, _window, cx| {
-                this.settings
-                    .update(cx, |settings, cx| settings.adjust_ui_font_size(1.0, cx));
-                cx.notify();
-            },
-        ));
-        let scale_group = div()
-            .flex()
-            .items_center()
-            .gap(px(1.0))
-            .child(dec_btn)
-            .child(
-                div()
-                    .min_w(px(30.0))
-                    .flex()
-                    .justify_center()
-                    .text_size(px(11.0))
-                    .text_color(title_dim)
-                    .child(format!("{}px", ui_font_size as i32)),
-            )
-            .child(inc_btn);
 
         // The menu row contains its own visibility toggle, so hiding it would
         // otherwise remove the only discoverable way to restore it. This
@@ -510,6 +407,56 @@ impl Workspace {
                 })
         });
 
+        // The standalone Dock is owned by the binary-level companion runtime,
+        // not by Workspace. Dispatch its action to the window-level handler so
+        // the titlebar follows the same creation/reuse path as the tray and
+        // global shortcut, while always using the idempotent "show" request.
+        let ai_dock_button = ai_configured.then(|| {
+            let tooltip: SharedString = if ai_dock_open {
+                t!("ai.dock.external_opened")
+            } else {
+                t!("ai.dock.open_external")
+            }
+            .to_string()
+            .into();
+            let icon = if ai_dock_open {
+                "panel-right-close"
+            } else {
+                "panel-right-open"
+            };
+            let icon_color = if ai_dock_open {
+                ShellDeckColors::primary()
+            } else {
+                btn_text
+            };
+            let workspace = handle.clone();
+            let mut button = div()
+                .id("titlebar-ai-dock")
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(28.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|el| el.bg(btn_hover_bg))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| WorkspaceTooltip {
+                        label: tooltip.clone(),
+                    })
+                    .into()
+                })
+                .on_click(move |_, _, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| this.open_external_ai_dock(cx));
+                    }
+                })
+                .child(lucide_icon(icon, 18.0, icon_color));
+            if ai_dock_open {
+                button = button.bg(ShellDeckColors::primary().opacity(0.12));
+            }
+            button
+        });
+
         // Subtle vertical divider between the chrome control clusters.
         let divider = || div().w(px(1.0)).h(px(16.0)).mx(px(4.0)).bg(titlebar_border);
 
@@ -538,14 +485,12 @@ impl Workspace {
                     .gap(px(4.0))
                     .pr(px(8.0))
                     .children(restore_menu_button)
-                    .child(scale_group)
                     .children(ai_button)
+                    .children(ai_dock_button)
                     .child(divider())
                     .child(account_btn)
                     .children(mode_switcher)
                     .children(site_chip)
-                    .children(settings_btn)
-                    .child(theme_btn)
                     .child(divider())
                     .child(minimize_btn)
                     .child(maximize_btn)
@@ -553,118 +498,98 @@ impl Workspace {
             )
     }
 
-    /// Render the titlebar theme-switcher dropdown: a full-window backdrop that
-    /// dismisses on click, plus an anchored panel listing every app theme.
-    pub(super) fn render_theme_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use shelldeck_core::config::app_config::ThemePreference;
-
-        let current = self.app_config.theme.clone();
-
+    /// Render the compact mode dropdown below its titlebar chip.
+    pub(super) fn render_mode_menu(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let current = self.effective_mode();
+        let shadow = vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, 0.35),
+            offset: point(gpui::px(0.0), gpui::px(4.0)),
+            blur_radius: gpui::px(16.0),
+            spread_radius: gpui::px(0.0),
+            inset: false,
+        }];
         let mut panel = div()
-            .id("theme-menu-panel")
-            .absolute()
-            .top(px(46.0))
-            .right(px(12.0))
-            .w(px(212.0))
-            .max_h(px(440.0))
-            .overflow_y_scroll()
+            .id("mode-menu-panel")
+            .w(px(144.0))
             .bg(ShellDeckColors::bg_surface())
             .border_1()
             .border_color(ShellDeckColors::border())
-            .rounded(px(10.0))
-            .shadow(
-                vec![BoxShadow {
-                    color: hsla(0.0, 0.0, 0.0, 0.45),
-                    // BoxShadow fields are typed `Pixels` — real pixels, not rems.
-                    offset: point(gpui::px(0.0), gpui::px(4.0)),
-                    blur_radius: gpui::px(20.0),
-                    spread_radius: gpui::px(0.0),
-                    inset: false,
-                }]
-                .into(),
-            )
-            .p(px(4.0))
+            .rounded(px(9.0))
+            .shadow(shadow.into())
+            .p(px(5.0))
             .flex()
             .flex_col()
             .gap(px(1.0))
-            // Clicks inside the panel must not bubble to the dismiss backdrop.
-            .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx: &mut App| {
                 cx.stop_propagation();
             });
 
-        for pref in ThemePreference::all() {
-            let pref = pref.clone();
-            let is_active = current == pref;
-            let p = crate::theme::palette_for(&pref);
-            let label = pref.display_name().to_string();
-
-            let mut item = div()
-                .id(ElementId::from(SharedString::from(format!(
-                    "theme-menu-{label}"
-                ))))
+        for &mode in self.allowed_modes() {
+            let active = mode == current;
+            let id = match mode {
+                AppMode::User => "mode-menu-user",
+                AppMode::Support => "mode-menu-support",
+                AppMode::Dev => "mode-menu-dev",
+            };
+            let mut row = div()
+                .id(id)
                 .flex()
                 .items_center()
                 .gap(px(8.0))
                 .px(px(8.0))
-                .py(px(5.0))
+                .py(px(6.0))
                 .rounded(px(6.0))
                 .cursor_pointer()
                 .hover(|s| s.bg(ShellDeckColors::hover_bg()))
-                // A mini swatch showing the theme's background + accent.
-                .child(
-                    div()
-                        .size(px(16.0))
-                        .rounded(px(4.0))
-                        .bg(p.bg_primary)
-                        .border_1()
-                        .border_color(p.border)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().size(px(8.0)).rounded(px(2.0)).bg(p.primary)),
-                )
                 .child(
                     div()
                         .flex_1()
                         .text_size(px(12.0))
-                        .text_color(if is_active {
-                            ShellDeckColors::primary()
-                        } else {
-                            ShellDeckColors::text_primary()
-                        })
-                        .font_weight(if is_active {
+                        .font_weight(if active {
                             FontWeight::SEMIBOLD
                         } else {
                             FontWeight::NORMAL
                         })
-                        .child(label),
+                        .text_color(if active {
+                            ShellDeckColors::primary()
+                        } else {
+                            ShellDeckColors::text_primary()
+                        })
+                        .child(mode.label().to_string()),
                 );
-
-            if is_active {
-                item = item.child(
+            if active {
+                row = row.child(
                     div()
                         .text_size(px(12.0))
                         .text_color(ShellDeckColors::primary())
                         .child("\u{2713}"),
                 );
             }
-
-            item = item.on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                let pref = pref.clone();
-                this.settings.update(cx, |settings, cx| {
-                    settings.select_app_theme(pref, cx);
-                });
-                this.theme_menu_open = false;
-                cx.notify();
-            }));
-
-            panel = panel.child(item);
+            panel = panel.child(row.on_click(cx.listener(
+                move |this, _event: &ClickEvent, _window, cx| {
+                    this.mode_menu_open = false;
+                    if this.effective_mode() == mode {
+                        cx.notify();
+                    } else {
+                        this.set_mode(mode, cx);
+                    }
+                },
+            )));
         }
 
-        // Transparent full-window backdrop — a click anywhere outside the panel
-        // closes the menu.
+        let drop = px(52.0).to_pixels(window.rem_size());
+        let anchor_x = self
+            .mode_menu_pos
+            .map(|position| position.x)
+            .unwrap_or_else(|| gpui::px(700.0));
+        let anchor = point(anchor_x, drop);
+
         div()
-            .id("theme-menu-backdrop")
+            .id("mode-menu-backdrop")
             .occlude()
             .absolute()
             .top_0()
@@ -672,12 +597,21 @@ impl Workspace {
             .size_full()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _e, _window, cx| {
-                    this.theme_menu_open = false;
+                cx.listener(|this, _event, _window, cx| {
+                    this.mode_menu_open = false;
                     cx.notify();
                 }),
             )
-            .child(panel)
+            .child(
+                deferred(
+                    anchored()
+                        .position(anchor + point(gpui::px(-72.0), gpui::px(0.0)))
+                        .anchor(gpui::Corner::TopLeft)
+                        .snap_to_window_with_margin(gpui::px(8.0))
+                        .child(panel),
+                )
+                .with_priority(2),
+            )
     }
 
     /// Render the titlebar account dropdown: a dismiss backdrop plus an anchored

@@ -1,6 +1,7 @@
 use adabraka_ui::prelude::use_theme;
 use gpui::prelude::*;
-use gpui::{div, Context, Entity, Render, Subscription, Window};
+use gpui::{div, App, Context, Entity, Render, Subscription, Window};
+use std::rc::Rc;
 
 use crate::ai_assistant::AiAssistantView;
 use crate::scale::px;
@@ -104,6 +105,7 @@ pub struct AiDockView {
     assistant: Entity<AiAssistantView>,
     font_family: Option<String>,
     activation_armed: bool,
+    on_open_change: Rc<dyn Fn(bool, &mut App)>,
     _activation_sub: Subscription,
 }
 
@@ -111,16 +113,20 @@ impl AiDockView {
     pub fn new(
         assistant: Entity<AiAssistantView>,
         font_family: Option<String>,
+        on_open_change: Rc<dyn Fn(bool, &mut App)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let activation_sub = cx.observe_window_activation(window, |this, window, _cx| {
+        on_open_change(true, cx);
+        let activation_state = on_open_change.clone();
+        let activation_sub = cx.observe_window_activation(window, move |this, window, cx| {
             if window.is_window_active() {
                 this.activation_armed = true;
             } else {
                 let should_close = this.activation_armed && window.is_window_visible();
                 this.activation_armed = false;
                 if should_close {
+                    activation_state(false, cx);
                     window.remove_window();
                 }
             }
@@ -129,6 +135,7 @@ impl AiDockView {
             assistant,
             font_family,
             activation_armed: false,
+            on_open_change,
             _activation_sub: activation_sub,
         }
     }
@@ -136,6 +143,12 @@ impl AiDockView {
     pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.assistant
             .update(cx, |assistant, cx| assistant.focus_composer(window, cx));
+    }
+
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.activation_armed = false;
+        (self.on_open_change)(false, cx);
+        window.remove_window();
     }
 }
 
@@ -147,6 +160,7 @@ impl Render for AiDockView {
         window.set_client_inset(gpui::px(5.0));
         let corner_radius = use_theme().tokens.radius_xl;
         let escape_assistant = self.assistant.clone();
+        let escape_state = self.on_open_change.clone();
 
         let mut root = div()
             .id("ai-dock-root")
@@ -167,6 +181,7 @@ impl Render for AiDockView {
                 if event.keystroke.key.eq_ignore_ascii_case("escape")
                     && !escape_assistant.read(cx).has_open_dialog()
                 {
+                    escape_state(false, cx);
                     window.remove_window();
                     cx.stop_propagation();
                 }

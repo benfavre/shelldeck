@@ -171,6 +171,27 @@ fn parse_markdown_with_urls(source: &str) -> Vec<RichBlock> {
 }
 
 #[cfg(feature = "markdown")]
+pub(crate) fn is_safe_markdown_link_destination(url: &str) -> bool {
+    // ShellDeck patch: SDPATCH-035 — Markdown is fed by remote users and AI
+    // output. Only absolute HTTP(S) destinations may become interactive; all
+    // application/file/data/custom schemes remain inert text.
+    let url = url.trim();
+    if url.is_empty() || url.len() > 8 * 1024 || url.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    let authority = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .and_then(|rest| rest.split(['/', '?', '#']).next());
+    authority.is_some_and(|authority| {
+        !authority.is_empty()
+            && !authority.contains('@')
+            && !authority.chars().any(char::is_whitespace)
+    })
+}
+
+#[cfg(feature = "markdown")]
 struct UrlTrackingBlockBuilder {
     blocks: Vec<RichBlock>,
     inline_stack: Vec<Vec<RichInline>>,
@@ -183,6 +204,10 @@ struct UrlTrackingBlockBuilder {
     code_block_lang: Option<String>,
     code_block_content: String,
     url_stack: Vec<String>,
+    // ShellDeck patch: SDPATCH-036 — remember which parsed links are true
+    // `<https://…>` autolinks so e-mail compatibility never rewrites authored
+    // Markdown links whose visible label happens to equal their destination.
+    link_type_stack: Vec<pulldown_cmark::LinkType>,
 }
 
 #[cfg(feature = "markdown")]
@@ -200,6 +225,9 @@ impl UrlTrackingBlockBuilder {
             code_block_lang: None,
             code_block_content: String::new(),
             url_stack: Vec::new(),
+            // ShellDeck patch: SDPATCH-036 — paired with `url_stack` for links;
+            // images keep using only `url_stack` and therefore cannot consume it.
+            link_type_stack: Vec::new(),
         }
     }
 
@@ -218,7 +246,10 @@ impl UrlTrackingBlockBuilder {
             Event::SoftBreak => self.push_inline(RichInline::Text(" ".to_string())),
             Event::HardBreak => self.push_inline(RichInline::LineBreak),
             Event::Rule => self.push_block(RichBlock::HorizontalRule),
-            Event::Html(html) => self.push_inline(RichInline::Html(html.to_string())),
+            // ShellDeck patch: SDPATCH-035 — raw HTML from remote Markdown is
+            // discarded at parse time, not merely hidden by today's painter,
+            // so a later renderer cannot accidentally reactivate it.
+            Event::Html(_) | Event::InlineHtml(_) => {}
             Event::TaskListMarker(checked) => {
                 if let Some(list) = self.list_stack.last_mut() {
                     list.current_item_checked = Some(*checked);
@@ -283,8 +314,15 @@ impl UrlTrackingBlockBuilder {
             Tag::Strikethrough => {
                 self.inline_stack.push(Vec::new());
             }
-            Tag::Link { dest_url, .. } => {
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => {
                 self.url_stack.push(dest_url.to_string());
+                // ShellDeck patch: SDPATCH-036 — only pulldown's explicit
+                // autolink variant may borrow an adjacent e-mail label.
+                self.link_type_stack.push(*link_type);
                 self.inline_stack.push(Vec::new());
             }
             Tag::Image { dest_url, .. } => {
@@ -390,18 +428,56 @@ impl UrlTrackingBlockBuilder {
                 self.push_inline(RichInline::Strikethrough(children));
             }
             TagEnd::Link => {
-                let children = self.inline_stack.pop().unwrap_or_default();
+                let mut children = self.inline_stack.pop().unwrap_or_default();
                 let url = self.url_stack.pop().unwrap_or_default();
-                self.push_inline(RichInline::Link {
-                    text: children,
-                    url,
-                });
+                let link_type = self.link_type_stack.pop();
+                // ShellDeck patch: SDPATCH-035 — unsafe destinations keep
+                // their visible label but never acquire link interaction.
+                if is_safe_markdown_link_destination(&url) {
+                    // ShellDeck patch: SDPATCH-036 — HTML-to-text e-mail
+                    // converters commonly emit `[alt text]<https://…>`. Treat
+                    // only that adjacent, non-standard pair as one labelled
+                    // link; standard Markdown and standalone autolinks retain
+                    // pulldown-cmark's native semantics.
+                    if link_type == Some(pulldown_cmark::LinkType::Autolink)
+                        && inlines_to_plain_text(&children) == url
+                    {
+                        if let Some(label) = self.take_adjacent_email_link_label() {
+                            children = vec![RichInline::Text(label)];
+                        }
+                    }
+                    self.push_inline(RichInline::Link {
+                        text: children,
+                        url,
+                    });
+                } else {
+                    for child in children {
+                        self.push_inline(child);
+                    }
+                }
             }
             TagEnd::Image => {
                 let alt_inlines = self.inline_stack.pop().unwrap_or_default();
                 let alt = inlines_to_plain_text(&alt_inlines);
                 let url = self.url_stack.pop().unwrap_or_default();
-                self.push_block(RichBlock::Image { alt, url });
+                // ShellDeck patch: SDPATCH-035 — never fetch a remote image
+                // merely because untrusted Markdown mentioned it. Expose a
+                // deliberate, validated link instead; the host's open/copy
+                // confirmation remains the only network-capable path.
+                let label = if alt.trim().is_empty() {
+                    "Image".to_string()
+                } else {
+                    format!("Image: {alt}")
+                };
+                let inline = if is_safe_markdown_link_destination(&url) {
+                    RichInline::Link {
+                        text: vec![RichInline::Text(label)],
+                        url,
+                    }
+                } else {
+                    RichInline::Text(label)
+                };
+                self.push_block(RichBlock::Paragraph(vec![inline]));
             }
             TagEnd::Table => {
                 if let Some(ts) = self.table_state.take() {
@@ -486,6 +562,38 @@ impl UrlTrackingBlockBuilder {
         }
     }
 
+    // ShellDeck patch: SDPATCH-036 — recognize the narrow e-mail conversion
+    // shape `[label]<https://…>` without preprocessing source Markdown. The
+    // closing bracket must touch the autolink and the label must remain on one
+    // line, which prevents ordinary bracketed prose from being swallowed.
+    fn take_adjacent_email_link_label(&mut self) -> Option<String> {
+        let inlines = self.inline_stack.last_mut()?;
+        let trailing_start = inlines
+            .iter()
+            .rposition(|inline| !matches!(inline, RichInline::Text(_)))
+            .map_or(0, |index| index + 1);
+        let trailing_text = inlines[trailing_start..]
+            .iter()
+            .filter_map(|inline| match inline {
+                RichInline::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        let before_close = trailing_text.strip_suffix(']')?;
+        let open = before_close.rfind('[')?;
+        let label = &before_close[open + 1..];
+        if label.trim().is_empty() || label.contains(['\n', '\r']) {
+            return None;
+        }
+
+        let prefix = &before_close[..open];
+        inlines.truncate(trailing_start);
+        if !prefix.is_empty() {
+            inlines.push(RichInline::Text(prefix.to_string()));
+        }
+        Some(label.to_string())
+    }
+
     fn push_block(&mut self, block: RichBlock) {
         if self.blockquote_depth > 0 {
             if let Some(blocks) = self.blockquote_blocks.last_mut() {
@@ -499,7 +607,10 @@ impl UrlTrackingBlockBuilder {
 
 #[cfg(all(test, feature = "markdown"))]
 mod tests {
-    use super::{parse_markdown_with_urls, RichBlock, RichInline};
+    use super::{
+        inlines_to_plain_text, is_safe_markdown_link_destination, parse_markdown_with_urls,
+        RichBlock, RichInline,
+    };
 
     #[test]
     fn bare_http_url_is_promoted_without_trailing_punctuation() {
@@ -525,12 +636,111 @@ mod tests {
         let RichBlock::Paragraph(inlines) = &blocks[0] else {
             panic!("expected paragraph");
         };
-        assert_eq!(
-            inlines
-                .iter()
-                .filter(|inline| matches!(inline, RichInline::Link { .. }))
-                .count(),
-            1
+        assert_eq!(inlines.len(), 1);
+        let RichInline::Link { text, url } = &inlines[0] else {
+            panic!("expected one link");
+        };
+        assert_eq!(url, "https://manage.inklura.fr");
+        assert!(matches!(text.as_slice(), [RichInline::Text(label)] if label == "Manage"));
+    }
+
+    // SDTEST-1620
+    #[test]
+    fn adjacent_email_label_becomes_the_autolink_label_only() {
+        let blocks = parse_markdown_with_urls(
+            "Avant [Documentation utile]<https://external.example/aide> après",
         );
+        let RichBlock::Paragraph(inlines) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(
+            inlines_to_plain_text(inlines),
+            "Avant Documentation utile après"
+        );
+        let Some(RichInline::Link { text, url }) = inlines
+            .iter()
+            .find(|inline| matches!(inline, RichInline::Link { .. }))
+        else {
+            panic!("expected labelled link");
+        };
+        assert_eq!(url, "https://external.example/aide");
+        assert!(
+            matches!(text.as_slice(), [RichInline::Text(label)] if label == "Documentation utile")
+        );
+    }
+
+    #[test]
+    fn email_label_compatibility_does_not_change_other_link_shapes() {
+        for (source, expected_text, expected_links) in [
+            (
+                "<https://external.example/seul>",
+                "https://external.example/seul",
+                1,
+            ),
+            (
+                "[Libellé] <https://external.example/espace>",
+                "[Libellé] https://external.example/espace",
+                1,
+            ),
+            (
+                "[Libellé]<javascript:alert(1)>",
+                "[Libellé]javascript:alert(1)",
+                0,
+            ),
+        ] {
+            let blocks = parse_markdown_with_urls(source);
+            let RichBlock::Paragraph(inlines) = &blocks[0] else {
+                panic!("expected paragraph for {source}");
+            };
+            assert_eq!(inlines_to_plain_text(inlines), expected_text, "{source}");
+            assert_eq!(
+                inlines
+                    .iter()
+                    .filter(|inline| matches!(inline, RichInline::Link { .. }))
+                    .count(),
+                expected_links,
+                "{source}"
+            );
+        }
+    }
+
+    // SDTEST-1606
+    #[test]
+    fn unsafe_markdown_destinations_stay_inert() {
+        for unsafe_url in [
+            "javascript:alert(1)",
+            "data:text/html,boom",
+            "file:///etc/passwd",
+            "shelldeck://terminal/new",
+            "https://user@example.com/private",
+            "/relative",
+        ] {
+            assert!(!is_safe_markdown_link_destination(unsafe_url));
+            let blocks = parse_markdown_with_urls(&format!("[ouvrir]({unsafe_url})"));
+            assert!(!format!("{blocks:?}").contains("Link"), "{unsafe_url}");
+        }
+    }
+
+    // SDTEST-1607
+    #[test]
+    fn markdown_images_are_links_not_automatic_network_fetches() {
+        let blocks = parse_markdown_with_urls("![pixel](https://tracker.example/pixel.png)");
+        assert!(!blocks
+            .iter()
+            .any(|block| matches!(block, RichBlock::Image { .. })));
+        assert!(format!("{blocks:?}").contains("Image: pixel"));
+    }
+
+    // SDTEST-1608
+    #[test]
+    fn raw_html_is_not_exposed_as_rendered_content() {
+        let blocks = parse_markdown_with_urls("avant <script>alert('x')</script> après");
+        let rendered = format!("{blocks:?}");
+        assert!(!rendered.contains("Html("));
+        assert!(!rendered.contains("<script>"));
+        assert!(rendered.contains("avant"));
+        // Inner text remains harmless prose; only HTML semantics are dropped.
+        assert!(rendered.contains("alert('x')"));
+        assert!(rendered.contains("après"));
     }
 }

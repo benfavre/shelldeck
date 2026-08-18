@@ -12,6 +12,7 @@ use shelldeck_core::ai::{
 };
 
 use crate::icons::{ai_provider_badge, lucide_icon};
+use crate::markdown::{markdown_link_popover, MarkdownLinkAction, MarkdownLinkHandler};
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
 use crate::scale::px;
 use crate::support_view::{assignee_display, priority_badge};
@@ -435,6 +436,7 @@ pub struct AiWorkflowView {
     comparison_original: Option<String>,
     issue_triage_current: Option<(String, String)>,
     action_policy: AiAutonomyLevel,
+    markdown_link_action: Option<MarkdownLinkAction>,
 }
 
 pub struct AiWorkflowInit {
@@ -498,7 +500,20 @@ impl AiWorkflowView {
             comparison_original,
             issue_triage_current,
             action_policy,
+            markdown_link_action: None,
         }
+    }
+
+    fn markdown_link_handler(cx: &mut Context<Self>) -> MarkdownLinkHandler {
+        let parent = cx.entity();
+        std::rc::Rc::new(move |url, window, cx| {
+            if let Some(action) = MarkdownLinkAction::new(url, window.mouse_position()) {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = Some(action);
+                    cx.notify();
+                });
+            }
+        })
     }
 
     pub fn generate(&mut self, cx: &mut Context<Self>) {
@@ -979,9 +994,11 @@ impl Render for AiWorkflowView {
                         ));
                     } else if self.target.result_presentation() == AiResultPresentation::Markdown {
                         let result = self.result_state.read(cx).content().to_string();
+                        let link_handler = Self::markdown_link_handler(cx);
                         let content = div().w_full().min_w_0().p(px(12.0)).child(
                             Markdown::new(result)
                                 .base_font_size(px(12.0).to_pixels(window.rem_size()))
+                                .on_link_click(move |url, window, cx| link_handler(url, window, cx))
                                 .w_full()
                                 .min_w_0()
                                 .whitespace_normal(),
@@ -1187,7 +1204,7 @@ impl Render for AiWorkflowView {
                     )
             });
 
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .w_full()
@@ -1218,7 +1235,19 @@ impl Render for AiWorkflowView {
                     .bg(ShellDeckColors::primary().opacity(0.035))
                     .child(cancel)
                     .child(action_group),
-            )
+            );
+
+        if let Some(action) = self.markdown_link_action.clone() {
+            let parent = cx.entity();
+            root = root.child(markdown_link_popover(action, move |cx| {
+                parent.update(cx, |this, cx| {
+                    this.markdown_link_action = None;
+                    cx.notify();
+                });
+            }));
+        }
+
+        root
     }
 }
 

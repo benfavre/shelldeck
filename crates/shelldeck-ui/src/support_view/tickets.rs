@@ -757,7 +757,7 @@ impl SupportView {
         let subject = if t.subject.trim().is_empty() {
             "(sans objet)".to_string()
         } else {
-            t.subject.clone()
+            crate::external_content::external_title(&t.subject)
         };
         let group_name = SharedString::from(format!("tk-row-{}", t.id));
 
@@ -1552,43 +1552,14 @@ impl SupportView {
     /// onboarding block instead of a bare "Sélectionnez un ticket" so a
     /// first-time agent knows what the pane is for and how to get started.
     pub(super) fn render_empty_conversation(&self) -> Div {
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(10.0))
-            .p(px(24.0))
-            .child(
-                div()
-                    .size(px(48.0))
-                    .rounded_full()
-                    .bg(ShellDeckColors::primary().opacity(0.12))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(px(22.0))
-                            .text_color(ShellDeckColors::primary())
-                            .child("💬"),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ShellDeckColors::text_primary())
-                    .child(t!("support.empty.tickets").to_string()),
-            )
-            .child(
-                div()
-                    .max_w(px(320.0))
-                    .text_size(px(12.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("support.empty.tickets_hint").to_string()),
-            )
+        support_empty_detail(
+            div()
+                .text_size(px(22.0))
+                .text_color(ShellDeckColors::primary())
+                .child("💬"),
+            t!("support.empty.tickets").to_string(),
+            t!("support.empty.tickets_hint").to_string(),
+        )
     }
 
     pub(crate) fn update_ticket_showcase(
@@ -2141,7 +2112,7 @@ impl SupportView {
         let subject = if ticket.subject.trim().is_empty() {
             t!("support.empty.no_subject").to_string()
         } else {
-            ticket.subject.clone()
+            crate::external_content::external_title(&ticket.subject)
         };
 
         let mut context = vec![contact_name];

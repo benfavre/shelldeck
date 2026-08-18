@@ -105,8 +105,8 @@ impl Workspace {
         // Close transient chrome immediately, but keep rendering the current
         // surface until it has faded to zero opacity.
         self.settings_open = false;
-        self.theme_menu_open = false;
         self.account_menu_open = false;
+        self.mode_menu_open = false;
         self.site_menu_open = false;
         self.reset_issue_selection(cx);
         self.mode_transition = Some(ModeTransition {
@@ -203,8 +203,8 @@ impl Workspace {
             return;
         }
         self.settings_open = true;
-        self.theme_menu_open = false;
         self.account_menu_open = false;
+        self.mode_menu_open = false;
         self.site_menu_open = false;
         self.activate_current_mode(cx);
         cx.notify();

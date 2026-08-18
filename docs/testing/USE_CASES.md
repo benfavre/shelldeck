@@ -990,7 +990,10 @@ the signed-in account's Manage directory, defaults to the active site when
 available, and offers an explicit no-specific-site choice. User-mode polling
 requests `mine=1`, and both the overview counter and recent-request card apply
 the same owner filter defensively. A broader Support cache or an older server
-must never surface another requester's title in the User dashboard.
+must never surface another requester's title in the User dashboard. In the
+right-side detail sheet, the chronological thread is the only scrollable
+region; the reply composer is a non-shrinking footer outside that region and
+must remain visible at every reading position.
 
 ### SDUC-229 — Support "Requests" section
 
@@ -1025,6 +1028,64 @@ The wire contract is additive and future-ready: per-comment `channel`, `quote`,
 and `delivery`, plus issue-level `thread_state`, are optional and default empty
 so payloads from the current Manage API remain valid. The local demo fixture
 contains all thirteen states even while production omits unavailable data.
+
+### SDUC-460 — Dynamic prose uses one secure Markdown boundary
+
+Markdown is rendered only where the value is genuinely free-form prose: the
+opening message and comments of Requests/Tickets, both roles in durable AI
+conversations, read-only AI summaries/explanations/reviews, the Clippy result
+preview, Fleet job prompts/results, JeanClaude pending prompts/detail actions,
+and managed-site notes. Short previews, names, statuses, errors and control
+metadata remain plain text; editable replies/drafts and the Clippy diff retain
+their exact source; scripts, terminal output and executable AI payloads retain
+their dedicated raw/code renderers.
+
+Every rich surface shares the same security boundary. Raw HTML is ignored,
+Markdown images never trigger an automatic network request, and only absolute
+HTTP(S) destinations without embedded credentials may become interactive.
+`file:`, `data:`, custom/deep-link schemes, relative destinations and malformed
+URLs retain their visible label but are inert. A valid link still cannot open
+directly: selecting it first shows the shared copy/open panel, with an external
+warning unless the parsed host is exactly an Inklura/Bext/ShellDeck ecosystem
+domain or one of its real subdomains. The host is parsed, never inferred from a
+suffix or query-string occurrence.
+
+Known e-mail plain-text compatibility is handled inside that same boundary.
+Outlook/Office signatures received through Postmark may represent a linked
+image as `[generated alternative text]<https://destination>`. When the
+non-empty bracket label touches a safe HTTP(S) autolink, the conversation shows
+only that label as the link text and retains the shared confirmation panel.
+Standard `[label](destination)` Markdown, standalone or whitespace-separated
+autolinks, unsafe schemes, code and image syntax are not reinterpreted.
+
+### SDUC-461 — External Support titles remain readable without rewriting source data
+
+Ticket subjects and request titles received through Slack may contain mrkdwn
+references such as `<https://example.test|incident>` or a bare
+`<https://example.test>`. Every title surface in User and Support modes derives
+a single-line display label from those tokens: labeled links show their label,
+bare links show their URL, and channel or broadcast references keep a readable
+`#` or `@` prefix. Unknown angle-bracket content is preserved instead of being
+guessed or discarded. This is a presentation-only adapter; the issue title
+retained in the cache and sent back to Manage is never mutated.
+
+### SDUC-462 — Support list refresh is visible and consistent
+
+The Tickets and Requests list headers expose the same localized, standard
+refresh button with a visible `refresh-cw` glyph. Each control keeps its own
+read-only workflow — Tickets refreshes the support queue and Requests refreshes
+the issue queue — and merely rendering either header performs no network work.
+
+### SDUC-463 — Support master lists adapt without stealing the detail pane
+
+Tickets and Requests share one responsive master-column contract: 38% of the
+available console width, bounded between 280 and 440 scale-aware pixels. Long
+subjects gain useful room on standard and wide windows. Below a scale-aware
+760 px threshold, the two-pane layout becomes master/detail navigation: the
+list takes the whole width until selection, then the detail replaces it and
+offers an explicit localized Back to list action. Resizing preserves the open
+record. Empty-detail copy is width-contained and never auto-opens an arbitrary
+item, which could trigger read or fetch side effects.
 
 ---
 
@@ -1445,10 +1506,13 @@ one-line turns keep a compact width, while long or structured Markdown is
 capped at 88% of the reading column and receives a definite layout width so
 every wrapped line contributes to the bubble height instead of being clipped.
 Assistant responses remain unframed prose, and both roles use compact
-conversation block spacing without a document-style trailing margin. In the
-Sheet, opening the 240 px history column reduces that definite bubble measure
-before Markdown shaping, so long turns remain wholly inside the conversation
-viewport instead of extending beneath history. In the main window, the
+conversation block spacing without a document-style trailing margin. Compact
+headings use a body-relative H1–H6 ramp (1.44× down to 1×) suited to the 480 px
+Dock instead of the fixed 32–16 px document typography; ordinary Markdown keeps
+that document ramp unchanged. In the Sheet, opening the 240 px history column
+reduces that definite bubble measure before Markdown shaping, so long turns
+remain wholly inside the conversation viewport instead of extending beneath
+history. In the main window, the
 right-side Assistant Sheet preserves the floating window's top-right and
 bottom-right 12 px `radius_xl`; the complete overlay is clipped once at the
 host boundary so no dim-backdrop wedge appears between the panel and those
@@ -1803,7 +1867,11 @@ page, Enter activates the selected command, and Escape dismisses the palette.
 When ShellDeck runs inside a Git repository, the status bar displays the
 current branch and counts staged, modified, and untracked paths. Collecting
 that snapshot uses a single porcelain-status invocation and pauses while the
-main window is hidden in the tray.
+main window is hidden in the tray. This technical chrome is rendered only for
+an authenticated Dev workspace: User, Support and the mandatory welcome screen
+do not reserve its 28 px footer. Hiding the element does not destroy its state
+or disable updater events; important updater results remain available through
+the shared toast channel.
 
 ---
 
@@ -1839,7 +1907,12 @@ card exposes the Manage session, active site, synchronized directory, and a
 manual sync action. A dashboard-specific network illustration with a contrast
 gradient gives the page a clear identity without reducing the readability of
 those operational cards. Support mode opens on its own Accueil tab with open,
-SLA-risk, unassigned, and hosted request counters plus direct triage actions.
+SLA-risk, unassigned, and hosted request counters. Every counter is a route,
+not decoration: it opens the matching Tickets/Requests queue after clearing
+stale search and advanced constraints so the visible rows agree with the
+announced count. The home also exposes up to four actionable tickets ordered by
+SLA risk, urgency, missing owner, then recency, plus the four most recently
+updated visible requests; selecting either kind opens its real detail.
 Operational lists remain separate tabs. Onboarding only describes modes and
 shortcuts the signed-in role can actually reach.
 
@@ -1851,7 +1924,7 @@ shortcuts the signed-in role can actually reach.
 
 The App Font Size setting drives the window rem size, and the surfaces the
 Workspace renders itself — User mode's home, the pre-login welcome screen, the
-titlebar chrome, and the theme / account / site / mode dropdowns — grow and
+titlebar chrome, and the account / site / mode dropdowns — grow and
 shrink with it exactly as the child views (sidebar, Support, Settings,
 Dashboard) already did. Genuine device-pixel call sites stay absolute: the
 window client inset, the rem size itself, box-shadow geometry, window-edge
@@ -1971,8 +2044,10 @@ the capability drops, so the route back never vanishes. Clipboard text
 enters ShellDeck only after the user presses **Use clipboard** or pastes it into
 the source field. Rewrite, translate, shorten, summarize, explain, draft reply,
 and custom operations use the configured AI backend. The response remains a
-reviewable draft with a line diff and explicit Edit, Regenerate, Copy, and
-Cancel controls. Clippy is an opt-in AI surface and is disabled by default.
+reviewable draft with a secure Markdown preview, a raw line diff and explicit
+Edit, Regenerate, Copy, and Cancel controls. Preview rendering never changes
+the exact source used by Edit/Copy/replacement. Clippy is an opt-in AI surface
+and is disabled by default.
 
 ### SDUC-446 — Desktop context is bounded, untrusted, and replacement-safe
 
@@ -2113,6 +2188,43 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-17** — Amended SDUC-414 and added SDTEST-1621: compact Markdown
+  headings now scale from the conversation body size, while non-compact
+  document headings retain their fixed typography. H1–H4 were manually checked
+  in an isolated 480 px GPUI render.
+- **2026-08-17** — Extended SDUC-460 with SDTEST-1620 after tracing two malformed
+  Support rows to Postmark e-mail ingestion. The known Outlook/Office
+  `[generated image alt]<https://destination>` plain-text convention now renders
+  as one labelled link without changing standard Markdown, standalone/spaced
+  autolinks or the secure external-link confirmation.
+- **2026-08-17** — Added SDUC-463 and SDTEST-1618/1619: Support Tickets and
+  Requests share one bounded proportional master column and switch to explicit
+  master/detail navigation on narrow windows. Empty details remain contained
+  and side-effect-free rather than auto-selecting an arbitrary record.
+- **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
+  Requests refresh control. Tickets and Requests now share one standard,
+  labeled button while retaining their separate read-only refresh events.
+- **2026-08-17** — Amended SDUC-437 and added SDTEST-1616: the technical status
+  bar is now exclusive to authenticated Dev mode while its state and updater
+  notifications remain live outside the rendered tree.
+- **2026-08-17** — Amended SDUC-440 and SDTEST-1414, then added
+  SDTEST-1614/1615 for the operational Support home. Counters now route to clean
+  exact queues, while priority tickets and recent requests fill the dashboard
+  with directly actionable work.
+- **2026-08-17** — Amended SDUC-228 and added pending SDTEST-1613 after
+  reconciling the stale UX audit with the fix already shipped in `65c5c89`.
+  The User request thread scrolls independently while its reply composer stays
+  fixed; the current X11 recipe covered both scroll limits.
+- **2026-08-17** — Added SDUC-461 and SDTEST-1610..1612 for readable Slack
+  titles throughout User requests and Support tickets/requests. The adapter
+  resolves known mrkdwn links/references and normalizes list whitespace without
+  changing the cached or server-side title.
+- **2026-08-13** — Added SDUC-460 and SDTEST-1604..1609 for the shared secure
+  Markdown boundary. Dynamic prose now renders consistently across Support,
+  Assistant, Clippy, Fleet, JeanClaude and site notes; raw/editable/executable
+  content remains outside the rich renderer. Raw HTML and automatic remote
+  images are suppressed, unsafe schemes stay inert, and HTTP(S) links require
+  the common copy/open confirmation with exact-host external warnings.
 - **2026-08-13** — Hardened SDUC-152/303/412/434/442 after the logged-out
   Assistant affordance exposed a broader execution-boundary defect. The menu,
   standalone palette and native tray now fail closed; global shortcuts, deep

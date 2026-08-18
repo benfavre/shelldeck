@@ -609,6 +609,7 @@ carries no marker of its own — see its entry).
   - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — opt into the thread/note block spacing`
   - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-030 — select compact margins only for`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — thread prose needs 8 px block rhythm and no`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact conversation headings scale from the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact headings use the thread`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — list rows in chat use the`
   - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-030 — compact tables participate in the same`
@@ -618,9 +619,11 @@ carries no marker of its own — see its entry).
   a time, so those document margins accumulated with each list item's own
   spacing and also left an unexplained tail before note metadata and the reply
   composer. The opt-in compact mode follows the conversation prototype's 8 px
-  prose cadence, 10/4 px heading rhythm, 2 px list-row cadence, and removes the
-  last block's bottom margin. The existing document rendering remains the
-  default for every other consumer.
+  prose cadence, a body-relative heading ramp with 10/4 px rhythm, 2 px list-row
+  cadence, and removes the last block's bottom margin. A compact H1 is 1.44×
+  the caller's body size instead of the document renderer's fixed 32 px, with
+  the hierarchy descending to H6 at 1×. The existing fixed document typography
+  remains the default for every other consumer.
 - **Upstream status**: not filed yet — the opt-in density is generic enough to
   propose upstream.
 
@@ -685,6 +688,51 @@ carries no marker of its own — see its entry).
   already-authored links untouched.
 - **Upstream status**: not filed yet — useful opt-in behavior, but automatic
   linkification may not suit every generic Markdown consumer.
+
+### SDPATCH-035 — Untrusted Markdown is passive by default
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `is_safe_markdown_link_destination`,
+    `UrlTrackingBlockBuilder::end_tag`
+  - `src/display/rich_text.rs` — `render_inlines_with_handler`,
+    `render_inline_element`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — Markdown is fed by remote users and AI`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — unsafe destinations keep`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — never fetch a remote image`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-035 — raw HTML from remote Markdown is`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-035 — without an explicit host callback,`
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-035 — passive is the safe default for`
+- **Why**: ShellDeck renders Markdown supplied by customers, support APIs and
+  AI providers. A document must not trigger a remote image request (tracking
+  pixel / local-network probe), open a custom or local URL scheme, or bypass
+  the application's explicit open/copy confirmation merely because a caller
+  omitted its link callback. Images are therefore exposed as inert or
+  validated links, unsafe destinations keep only their label, and links remain
+  passive until a host installs a confirmation handler.
+- **Upstream status**: not filed yet — secure-by-default behavior may need an
+  explicit compatibility flag for generic upstream consumers.
+
+### SDPATCH-036 — E-mail image labels become Markdown link labels
+
+- **Files / symbols**:
+  - `src/display/markdown.rs` — `UrlTrackingBlockBuilder`
+- **Markers**:
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — remember which parsed links are true`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — paired with \`url_stack\` for links;`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — only pulldown's explicit`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — HTML-to-text e-mail`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-036 — recognize the narrow e-mail conversion`
+- **Why**: Outlook/Office e-mail signatures received through Postmark use the
+  non-standard plain-text shape `[generated image alt]<https://destination>`.
+  pulldown-cmark correctly treats those as bracketed prose followed by an
+  autolink, but that leaks transport syntax and the raw URL into conversation
+  UI. Coalescing only an immediately adjacent bracket label with a safe HTTP(S)
+  autolink restores a readable label while preserving ShellDeck's external-link
+  confirmation. Authored Markdown, standalone/spaced autolinks, unsafe schemes,
+  code, and images retain their existing behavior.
+- **Upstream status**: not filed yet — this is compatibility with a known
+  e-mail-to-text convention rather than CommonMark syntax.
 
 ## Preserved files (do not overwrite on sync)
 
@@ -796,6 +844,17 @@ carries no marker of its own — see its entry).
   unclipped rectangular outer shadow and make its full-window backdrop own all
   four floating-window corners directly. 2 new markers; current code marker
   count is 114.
+- **2026-08-13** — added SDPATCH-035: untrusted Markdown no longer loads
+  remote images, non-HTTP(S) destinations stay inert, and missing callbacks
+  cannot silently fall through to the platform URL opener. 6 new markers;
+  current code marker count is 120.
+- **2026-08-17** — added SDPATCH-036: adjacent Outlook/Office e-mail image
+  labels now become the visible label of their safe HTTP(S) autolink. Standard
+  Markdown, standalone/spaced autolinks and unsafe destinations are unchanged.
+  5 new markers; current code marker count is 125.
+- **2026-08-17** — extended SDPATCH-030: compact H1–H6 typography now scales
+  from the conversation body size while document Markdown retains the fixed
+  32/28/24/20/18/16 px ramp. 1 new marker; current code marker count is 126.
 
 ## Retired patches
 

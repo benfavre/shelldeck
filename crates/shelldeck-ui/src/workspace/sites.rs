@@ -231,8 +231,8 @@ impl Workspace {
             return;
         }
         self.site_menu_open = true;
-        self.theme_menu_open = false;
         self.account_menu_open = false;
+        self.mode_menu_open = false;
         cx.notify();
     }
 }
