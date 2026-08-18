@@ -757,7 +757,7 @@ async fn handle_socks_connection(
 #[cfg(test)]
 mod tests {
     use super::{TunnelManager, TunnelStatus};
-    use crate::handler::ClientHandler;
+    use crate::handler::{ClientHandler, ForwardedTcpIpEvent};
     use crate::session::SharedHandle;
     use russh::keys::{ssh_key::Algorithm, PrivateKey};
     use russh::server::{self, Auth, Msg, Session};
@@ -809,6 +809,110 @@ mod tests {
 
             Ok(true)
         }
+    }
+
+    /// Jump-free reverse-forward server: records `tcpip_forward` requests and
+    /// hands its own [`server::Handle`] back to the test so the test can play
+    /// the remote side and open a forwarded-tcpip channel on demand.
+    struct RemoteForwardServer {
+        forward_requests: mpsc::UnboundedSender<(String, u32)>,
+        server_handles: mpsc::UnboundedSender<server::Handle>,
+    }
+
+    impl server::Handler for RemoteForwardServer {
+        type Error = anyhow::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn tcpip_forward(
+            &mut self,
+            address: &str,
+            port: &mut u32,
+            session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            let _ = self.forward_requests.send((address.to_owned(), *port));
+            let _ = self.server_handles.send(session.handle());
+            Ok(true)
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn start_remote_forward_server() -> (
+        SharedHandle,
+        mpsc::UnboundedReceiver<(String, u32)>,
+        mpsc::UnboundedReceiver<server::Handle>,
+        mpsc::UnboundedReceiver<ForwardedTcpIpEvent>,
+        JoinHandle<()>,
+    ) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (forward_tx, forward_rx) = mpsc::unbounded_channel();
+        let (handles_tx, handles_rx) = mpsc::unbounded_channel();
+        let server_config = server::Config {
+            inactivity_timeout: None,
+            auth_rejection_time: Duration::from_millis(1),
+            auth_rejection_time_initial: Some(Duration::from_millis(1)),
+            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                .expect("generate in-memory SSH host key")],
+            ..Default::default()
+        };
+
+        let server_task = tokio::spawn(async move {
+            let running = server::run_stream(
+                Arc::new(server_config),
+                server_stream,
+                RemoteForwardServer {
+                    forward_requests: forward_tx,
+                    server_handles: handles_tx,
+                },
+            )
+            .await
+            .expect("start in-memory SSH remote-forward server");
+            let _ = running.await;
+        });
+
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
+        let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+        let mut handle = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client_stream,
+            handler,
+        )
+        .await
+        .expect("connect to in-memory SSH remote-forward server");
+        assert!(handle
+            .authenticate_none("shelldeck-test")
+            .await
+            .expect("authenticate in-memory SSH client")
+            .success());
+
+        (
+            Arc::new(Mutex::new(handle)),
+            forward_rx,
+            handles_rx,
+            forwarded_rx,
+            server_task,
+        )
+    }
+
+    /// Real loopback echo listener standing in for the local target of a
+    /// reverse forward.
+    async fn start_local_echo_target() -> (u16, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local echo target");
+        let port = listener.local_addr().expect("read local address").port();
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut reader, mut writer) = tokio::io::split(stream);
+                    let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                });
+            }
+        });
+        (port, task)
     }
 
     async fn start_echo_server() -> (
@@ -960,6 +1064,93 @@ mod tests {
 
         manager.cleanup();
         assert!(manager.get_tunnel(&id).is_none());
+        server_task.abort();
+    }
+
+    // SDTEST-565
+    #[tokio::test]
+    async fn remote_forward_requests_the_port_and_routes_connections_to_the_local_target() {
+        let (handle, mut forward_requests, mut server_handles, forwarded_rx, server_task) =
+            start_remote_forward_server().await;
+        let (local_port, echo_task) = start_local_echo_target().await;
+        let mut manager = TunnelManager::new();
+
+        // Unlike the local and SOCKS forwards, `start_remote_forward` does not
+        // keep the client handle: its channels are opened by the server, not by
+        // the tunnel. Production holds it through the owning `SshSession`, so
+        // the test has to hold it too or the transport closes underneath us.
+        let session_handle = handle.clone();
+        let id = manager
+            .start_remote_forward(
+                handle,
+                8443,
+                "127.0.0.1".to_owned(),
+                local_port,
+                forwarded_rx,
+            )
+            .await
+            .expect("start remote forward");
+
+        // The server must be asked to listen on the *remote* port, on every
+        // interface — this is what makes it a reverse forward.
+        assert_eq!(
+            timeout(Duration::from_secs(2), forward_requests.recv())
+                .await
+                .expect("tcpip-forward request timed out")
+                .expect("tcpip-forward request channel closed"),
+            ("0.0.0.0".to_owned(), 8443),
+        );
+
+        // Play the remote side: a client hit the forwarded port, so the server
+        // opens the channel back to us.
+        let server_handle = timeout(Duration::from_secs(2), server_handles.recv())
+            .await
+            .expect("server handle timed out")
+            .expect("server handle channel closed");
+        let channel = server_handle
+            .channel_open_forwarded_tcpip("0.0.0.0", 8443, "203.0.113.7", 54321)
+            .await
+            .expect("open forwarded-tcpip channel");
+
+        let mut remote = channel.into_stream();
+        remote
+            .write_all(b"reverse")
+            .await
+            .expect("write through the reverse forward");
+        let mut echoed = [0_u8; 7];
+        timeout(Duration::from_secs(2), remote.read_exact(&mut echoed))
+            .await
+            .expect("local target never answered")
+            .expect("read the local target echo");
+        assert_eq!(&echoed, b"reverse");
+
+        // Counters are directional: received is remote → local target, sent is
+        // the local target's answer travelling back out.
+        assert_eq!(
+            manager
+                .get_tunnel(&id)
+                .expect("tunnel handle")
+                .total_bytes(),
+            (7, 7)
+        );
+
+        manager.get_tunnel(&id).expect("tunnel handle").stop();
+        wait_until_stopped(&manager, id).await;
+
+        let mut one = [0_u8; 1];
+        assert_eq!(
+            timeout(Duration::from_secs(2), remote.read(&mut one))
+                .await
+                .expect("active reverse-forward connection remained open")
+                .expect("read closed reverse-forward connection"),
+            0,
+            "stopping a reverse forward must close already routed connections"
+        );
+
+        manager.cleanup();
+        assert!(manager.get_tunnel(&id).is_none());
+        drop(session_handle);
+        echo_task.abort();
         server_task.abort();
     }
 

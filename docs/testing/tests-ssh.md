@@ -4,10 +4,10 @@
 > Use case IDs (`SDUC-…`) resolve in [`USE_CASES.md`](./USE_CASES.md).
 
 **Big picture.** Parsing, known-hosts, the core session exchanges, the jump
-transport and the tunnel lifecycle now have direct, protocol-level coverage.
-What is left uncovered is the dormant `ConnectionPool` (tracked as a technical
-debt decision, not a runtime risk) and the remote-forward path — otherwise one
-broken change lands as a runtime error, not a red test.
+transport and every tunnel direction — local, SOCKS and reverse — now have
+direct, protocol-level coverage. No **P0** line is left open here. What remains
+uncovered is the dormant `ConnectionPool` (tracked as a technical debt decision,
+not a runtime risk) and a set of P1/P2 boundaries listed below.
 
 Strategy: for anything that spans a real network, we introduce controlled
 harnesses rather than reaching for a live SSH server:
@@ -96,7 +96,7 @@ Existing: **4 protocol/lifecycle tests.**
 | SDTEST-562 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-049 | Green | Real `russh` direct-tcpip over an in-memory transport; loopback listener forwards bytes both ways. |
 | SDTEST-563 | `tunnel.rs::port_availability_and_prebound_start_failure_are_reported` | SDUC-049 | Green | Pre-bound port returns `SshError::PortInUse` without registering a tunnel. |
 | SDTEST-564 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-052 | Green | Caught detached copy tasks: stop now aborts and joins accepted connections before publishing `Stopped`. |
-| SDTEST-565 | *to write* — start_remote_forward routes ForwardedTcpIp events to local target | SDUC-050 | **Red / P1** | Fake session emits synthetic `ForwardedTcpIpEvent`. |
+| SDTEST-565 | `tunnel.rs::remote_forward_requests_the_port_and_routes_connections_to_the_local_target` | SDUC-050, SDUC-052 | Green | Real reverse forward end to end: the in-memory server records `tcpip_forward("0.0.0.0", 8443)`, then plays the remote side by opening a forwarded-tcpip channel back. Bytes reach a loopback echo target and return; counters are directional; stopping the tunnel closes the already-routed connection. |
 | SDTEST-566 | `tunnel.rs::socks5_connect_echoes_and_rejects_bind_and_udp_associate` | SDUC-051 | Green | Raw SOCKS5 no-auth + domain CONNECT reaches direct-tcpip and echoes; BIND/UDP-associate return command-not-supported without opening a channel. |
 | SDTEST-567 | `tunnel.rs::stop_all_closes_every_listener_and_active_connection` | SDUC-052 | Green | Two active listeners and connections are drained; active count reaches zero. |
 | SDTEST-568 | local/SOCKS/stop-all tunnel tests | SDUC-052 | Green | `cleanup()` removes stopped handles after task drain. |
@@ -130,7 +130,7 @@ Existing: **0 tests.**
 |---|---|---|---|---|
 | SDTEST-600 | *to write* — ClientHandler emits SshEvent::Connected on channel_open_confirmation | SDUC-054 | **Red / P1** | |
 | SDTEST-601 | *to write* — ClientHandler emits SshEvent::Disconnected on channel_close | SDUC-054 | **Red / P1** | |
-| SDTEST-602 | *to write* — server_channel_open_forwarded_tcpip forwards into forwarded_tcpip_rx | SDUC-050, SDUC-054 | **Red / P1** | |
+| SDTEST-602 | `tunnel.rs::remote_forward_requests_the_port_and_routes_connections_to_the_local_target` | SDUC-050, SDUC-054 | Green | Covered by SDTEST-565: the event crosses the production `ClientHandler` into `forwarded_tcpip_rx` and out to the tunnel task — a dropped event would leave the echo unread. |
 
 ---
 
