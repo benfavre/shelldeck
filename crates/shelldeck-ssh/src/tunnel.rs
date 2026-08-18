@@ -121,6 +121,7 @@ impl TunnelManager {
                 remote_port
             );
 
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     accept = listener.accept() => {
@@ -132,7 +133,7 @@ impl TunnelManager {
                                 let bs = bytes_sent_clone.clone();
                                 let br = bytes_received_clone.clone();
 
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     if let Err(e) = handle_local_forward_connection(
                                         handle, stream, &rhost, remote_port, bs, br,
                                     )
@@ -147,6 +148,11 @@ impl TunnelManager {
                             }
                         }
                     }
+                    result = connections.join_next(), if !connections.is_empty() => {
+                        if let Some(Err(e)) = result {
+                            tracing::debug!("Local forward connection task ended: {}", e);
+                        }
+                    }
                     _ = shutdown_rx.recv() => {
                         tracing::info!("Stopping local forward on port {}", local_port);
                         break;
@@ -154,6 +160,8 @@ impl TunnelManager {
                 }
             }
 
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
             *status_clone.lock() = TunnelStatus::Stopped;
         });
 
@@ -211,6 +219,7 @@ impl TunnelManager {
         // Spawn a task that listens for forwarded-tcpip events from the SSH handler
         // and connects each one to the local target.
         tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     event = forwarded_rx.recv() => {
@@ -230,7 +239,7 @@ impl TunnelManager {
                                 let bs = bytes_sent_clone.clone();
                                 let br = bytes_received_clone.clone();
 
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     if let Err(e) = handle_remote_forward_connection(
                                         fwd.channel, &lhost, lport, bs, br,
                                     )
@@ -257,6 +266,11 @@ impl TunnelManager {
                             }
                         }
                     }
+                    result = connections.join_next(), if !connections.is_empty() => {
+                        if let Some(Err(e)) = result {
+                            tracing::debug!("Remote forward connection task ended: {}", e);
+                        }
+                    }
                     _ = shutdown_rx.recv() => {
                         tracing::info!("Stopping remote forward on remote port {}", remote_port);
                         break;
@@ -264,6 +278,8 @@ impl TunnelManager {
                 }
             }
 
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
             *status_clone.lock() = TunnelStatus::Stopped;
         });
 
@@ -315,6 +331,7 @@ impl TunnelManager {
 
             tracing::info!("Dynamic forward: SOCKS5 proxy on {}", bind_addr);
 
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     accept = listener.accept() => {
@@ -325,7 +342,7 @@ impl TunnelManager {
                                 let bs = bytes_sent_clone.clone();
                                 let br = bytes_received_clone.clone();
 
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     if let Err(e) =
                                         handle_socks_connection(handle, stream, bs, br).await
                                     {
@@ -338,6 +355,11 @@ impl TunnelManager {
                             }
                         }
                     }
+                    result = connections.join_next(), if !connections.is_empty() => {
+                        if let Some(Err(e)) = result {
+                            tracing::debug!("SOCKS5 connection task ended: {}", e);
+                        }
+                    }
                     _ = shutdown_rx.recv() => {
                         tracing::info!("Stopping SOCKS5 forward on {}", bind_addr);
                         break;
@@ -345,6 +367,8 @@ impl TunnelManager {
                 }
             }
 
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
             *status_clone.lock() = TunnelStatus::Stopped;
         });
 
@@ -421,9 +445,9 @@ async fn handle_local_forward_connection(
     let (mut ssh_read, mut ssh_write) = tokio::io::split(ssh_stream);
     let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
 
-    // Spawn TCP -> SSH copy
+    // TCP -> SSH copy
     let bs = bytes_sent;
-    let tcp_to_ssh = tokio::spawn(async move {
+    let tcp_to_ssh = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match tcp_read.read(&mut buf).await {
@@ -437,11 +461,11 @@ async fn handle_local_forward_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
-    // Spawn SSH -> TCP copy
+    // SSH -> TCP copy
     let br = bytes_received;
-    let ssh_to_tcp = tokio::spawn(async move {
+    let ssh_to_tcp = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match ssh_read.read(&mut buf).await {
@@ -455,7 +479,7 @@ async fn handle_local_forward_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
     let _ = tokio::join!(tcp_to_ssh, ssh_to_tcp);
     Ok(())
@@ -497,9 +521,9 @@ async fn handle_remote_forward_connection(
     let (mut ssh_read, mut ssh_write) = tokio::io::split(ssh_stream);
     let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
 
-    // Spawn SSH -> TCP copy (data from remote client to local target)
+    // SSH -> TCP copy (data from remote client to local target)
     let br = bytes_received;
-    let ssh_to_tcp = tokio::spawn(async move {
+    let ssh_to_tcp = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match ssh_read.read(&mut buf).await {
@@ -513,11 +537,11 @@ async fn handle_remote_forward_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
-    // Spawn TCP -> SSH copy (data from local target back to remote client)
+    // TCP -> SSH copy (data from local target back to remote client)
     let bs = bytes_sent;
-    let tcp_to_ssh = tokio::spawn(async move {
+    let tcp_to_ssh = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match tcp_read.read(&mut buf).await {
@@ -531,7 +555,7 @@ async fn handle_remote_forward_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
     let _ = tokio::join!(ssh_to_tcp, tcp_to_ssh);
     Ok(())
@@ -690,9 +714,9 @@ async fn handle_socks_connection(
     let (mut ssh_read, mut ssh_write) = tokio::io::split(ssh_stream);
     let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
 
-    // Spawn TCP -> SSH copy
+    // TCP -> SSH copy
     let bs = bytes_sent;
-    let tcp_to_ssh = tokio::spawn(async move {
+    let tcp_to_ssh = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match tcp_read.read(&mut buf).await {
@@ -706,11 +730,11 @@ async fn handle_socks_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
-    // Spawn SSH -> TCP copy
+    // SSH -> TCP copy
     let br = bytes_received;
-    let ssh_to_tcp = tokio::spawn(async move {
+    let ssh_to_tcp = async move {
         let mut buf = vec![0u8; 32768];
         loop {
             match ssh_read.read(&mut buf).await {
@@ -724,8 +748,383 @@ async fn handle_socks_connection(
                 Err(_) => break,
             }
         }
-    });
+    };
 
     let _ = tokio::join!(tcp_to_ssh, ssh_to_tcp);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TunnelManager, TunnelStatus};
+    use crate::handler::ClientHandler;
+    use crate::session::SharedHandle;
+    use russh::keys::{ssh_key::Algorithm, PrivateKey};
+    use russh::server::{self, Auth, Msg, Session};
+    use russh::Channel;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::{mpsc, Mutex};
+    use tokio::task::JoinHandle;
+    use tokio::time::{sleep, timeout};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DirectTcpIpRequest {
+        host: String,
+        port: u32,
+    }
+
+    struct EchoServer {
+        requests: mpsc::UnboundedSender<DirectTcpIpRequest>,
+    }
+
+    impl server::Handler for EchoServer {
+        type Error = anyhow::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            let _ = self.requests.send(DirectTcpIpRequest {
+                host: host_to_connect.to_owned(),
+                port: port_to_connect,
+            });
+
+            tokio::spawn(async move {
+                let stream = channel.into_stream();
+                let (mut reader, mut writer) = tokio::io::split(stream);
+                let _ = tokio::io::copy(&mut reader, &mut writer).await;
+            });
+
+            Ok(true)
+        }
+    }
+
+    async fn start_echo_server() -> (
+        SharedHandle,
+        mpsc::UnboundedReceiver<DirectTcpIpRequest>,
+        JoinHandle<()>,
+    ) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let server_config = server::Config {
+            inactivity_timeout: None,
+            auth_rejection_time: Duration::from_millis(1),
+            auth_rejection_time_initial: Some(Duration::from_millis(1)),
+            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                .expect("generate in-memory SSH host key")],
+            ..Default::default()
+        };
+
+        let server_task = tokio::spawn(async move {
+            let running = server::run_stream(
+                Arc::new(server_config),
+                server_stream,
+                EchoServer {
+                    requests: request_tx,
+                },
+            )
+            .await
+            .expect("start in-memory SSH echo server");
+            let _ = running.await;
+        });
+
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+        let mut handle = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client_stream,
+            handler,
+        )
+        .await
+        .expect("connect to in-memory SSH echo server");
+        assert!(handle
+            .authenticate_none("shelldeck-test")
+            .await
+            .expect("authenticate in-memory SSH client")
+            .success());
+
+        (Arc::new(Mutex::new(handle)), request_rx, server_task)
+    }
+
+    async fn unused_local_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve an ephemeral port");
+        listener.local_addr().expect("read local address").port()
+    }
+
+    async fn connect_when_ready(port: u16) -> TcpStream {
+        timeout(Duration::from_secs(2), async move {
+            loop {
+                match TcpStream::connect(("127.0.0.1", port)).await {
+                    Ok(stream) => return stream,
+                    Err(_) => sleep(Duration::from_millis(5)).await,
+                }
+            }
+        })
+        .await
+        .expect("tunnel listener did not become ready")
+    }
+
+    async fn wait_until_stopped(manager: &TunnelManager, id: uuid::Uuid) {
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if manager
+                    .get_tunnel(&id)
+                    .is_some_and(|tunnel| *tunnel.status.lock() == TunnelStatus::Stopped)
+                {
+                    return;
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("tunnel did not stop");
+    }
+
+    async fn negotiate_no_auth(stream: &mut TcpStream) {
+        stream
+            .write_all(&[0x05, 0x01, 0x00])
+            .await
+            .expect("write SOCKS5 greeting");
+        let mut response = [0_u8; 2];
+        stream
+            .read_exact(&mut response)
+            .await
+            .expect("read SOCKS5 greeting response");
+        assert_eq!(response, [0x05, 0x00]);
+    }
+
+    // SDTEST-562, SDTEST-564, SDTEST-568, SDTEST-569
+    #[tokio::test]
+    async fn local_forward_echoes_tracks_bytes_and_drains_on_stop() {
+        let (handle, mut requests, server_task) = start_echo_server().await;
+        let local_port = unused_local_port().await;
+        let mut manager = TunnelManager::new();
+        let id = manager
+            .start_local_forward(handle, local_port, "echo.internal".to_owned(), 4242)
+            .await
+            .expect("start local forward");
+
+        let mut client = connect_when_ready(local_port).await;
+        client.write_all(b"shelldeck").await.expect("write tunnel");
+        let mut echoed = [0_u8; 9];
+        client
+            .read_exact(&mut echoed)
+            .await
+            .expect("read tunnel echo");
+        assert_eq!(&echoed, b"shelldeck");
+        assert_eq!(
+            timeout(Duration::from_secs(2), requests.recv())
+                .await
+                .expect("direct-tcpip request timed out")
+                .expect("direct-tcpip request channel closed"),
+            DirectTcpIpRequest {
+                host: "echo.internal".to_owned(),
+                port: 4242,
+            }
+        );
+        assert_eq!(
+            manager
+                .get_tunnel(&id)
+                .expect("tunnel handle")
+                .total_bytes(),
+            (9, 9)
+        );
+
+        manager.get_tunnel(&id).expect("tunnel handle").stop();
+        wait_until_stopped(&manager, id).await;
+
+        let mut one = [0_u8; 1];
+        assert_eq!(
+            timeout(Duration::from_secs(1), client.read(&mut one))
+                .await
+                .expect("active tunnel connection remained open")
+                .expect("read closed tunnel connection"),
+            0,
+            "stopping a tunnel must close already accepted connections"
+        );
+
+        manager.cleanup();
+        assert!(manager.get_tunnel(&id).is_none());
+        server_task.abort();
+    }
+
+    // SDTEST-566
+    #[tokio::test]
+    async fn socks5_connect_echoes_and_rejects_bind_and_udp_associate() {
+        let (handle, mut requests, server_task) = start_echo_server().await;
+        let local_port = unused_local_port().await;
+        let mut manager = TunnelManager::new();
+        let id = manager
+            .start_socks_forward(handle, "127.0.0.1".to_owned(), local_port)
+            .await
+            .expect("start SOCKS5 forward");
+
+        let mut client = connect_when_ready(local_port).await;
+        negotiate_no_auth(&mut client).await;
+        let host = b"echo.internal";
+        let mut connect = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+        connect.extend_from_slice(host);
+        connect.extend_from_slice(&4242_u16.to_be_bytes());
+        client
+            .write_all(&connect)
+            .await
+            .expect("write SOCKS5 CONNECT");
+        let mut reply = [0_u8; 10];
+        client
+            .read_exact(&mut reply)
+            .await
+            .expect("read SOCKS5 CONNECT reply");
+        assert_eq!(reply[0], 0x05);
+        assert_eq!(reply[1], 0x00);
+        assert_eq!(
+            timeout(Duration::from_secs(2), requests.recv())
+                .await
+                .expect("SOCKS direct-tcpip request timed out")
+                .expect("SOCKS direct-tcpip request channel closed"),
+            DirectTcpIpRequest {
+                host: "echo.internal".to_owned(),
+                port: 4242,
+            }
+        );
+
+        client.write_all(b"proxy").await.expect("write SOCKS echo");
+        let mut echoed = [0_u8; 5];
+        client
+            .read_exact(&mut echoed)
+            .await
+            .expect("read SOCKS echo");
+        assert_eq!(&echoed, b"proxy");
+
+        for command in [0x02_u8, 0x03_u8] {
+            let mut rejected = connect_when_ready(local_port).await;
+            negotiate_no_auth(&mut rejected).await;
+            rejected
+                .write_all(&[0x05, command, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
+                .await
+                .expect("write unsupported SOCKS command");
+            let mut rejection = [0_u8; 10];
+            rejected
+                .read_exact(&mut rejection)
+                .await
+                .expect("read unsupported SOCKS command reply");
+            assert_eq!(rejection[1], 0x07);
+        }
+
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            manager.get_tunnel(&id).expect("SOCKS handle").total_bytes(),
+            (5, 5)
+        );
+        manager.get_tunnel(&id).expect("SOCKS handle").stop();
+        wait_until_stopped(&manager, id).await;
+        let mut one = [0_u8; 1];
+        assert_eq!(
+            timeout(Duration::from_secs(1), client.read(&mut one))
+                .await
+                .expect("SOCKS connection remained open")
+                .expect("read closed SOCKS connection"),
+            0
+        );
+
+        manager.cleanup();
+        assert!(manager.get_tunnel(&id).is_none());
+        server_task.abort();
+    }
+
+    // SDTEST-561, SDTEST-563
+    #[tokio::test]
+    async fn port_availability_and_prebound_start_failure_are_reported() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind occupied test port");
+        let occupied_port = listener.local_addr().expect("occupied address").port();
+        assert!(!TunnelManager::check_port_available(occupied_port).await);
+
+        let free_port = unused_local_port().await;
+        assert!(TunnelManager::check_port_available(free_port).await);
+
+        let (handle, _requests, server_task) = start_echo_server().await;
+        let mut manager = TunnelManager::new();
+        let error = manager
+            .start_local_forward(handle, occupied_port, "echo.internal".to_owned(), 4242)
+            .await
+            .expect_err("prebound local port must fail");
+        assert!(matches!(error, crate::SshError::PortInUse(port) if port == occupied_port));
+        assert!(manager.tunnels().is_empty());
+
+        server_task.abort();
+    }
+
+    // SDTEST-567
+    #[tokio::test]
+    async fn stop_all_closes_every_listener_and_active_connection() {
+        let (handle, _requests, server_task) = start_echo_server().await;
+        let first_port = unused_local_port().await;
+        let second_port = unused_local_port().await;
+        let mut manager = TunnelManager::new();
+        let first_id = manager
+            .start_local_forward(
+                handle.clone(),
+                first_port,
+                "first.internal".to_owned(),
+                1001,
+            )
+            .await
+            .expect("start first tunnel");
+        let second_id = manager
+            .start_local_forward(handle, second_port, "second.internal".to_owned(), 1002)
+            .await
+            .expect("start second tunnel");
+        let mut first = connect_when_ready(first_port).await;
+        let mut second = connect_when_ready(second_port).await;
+        first.write_all(b"a").await.expect("write first tunnel");
+        second.write_all(b"b").await.expect("write second tunnel");
+        let mut byte = [0_u8; 1];
+        first
+            .read_exact(&mut byte)
+            .await
+            .expect("read first tunnel");
+        second
+            .read_exact(&mut byte)
+            .await
+            .expect("read second tunnel");
+
+        manager.stop_all();
+        wait_until_stopped(&manager, first_id).await;
+        wait_until_stopped(&manager, second_id).await;
+        assert_eq!(manager.active_count(), 0);
+        assert_eq!(
+            timeout(Duration::from_secs(1), first.read(&mut byte))
+                .await
+                .expect("first tunnel remained open")
+                .expect("read closed first tunnel"),
+            0
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(1), second.read(&mut byte))
+                .await
+                .expect("second tunnel remained open")
+                .expect("read closed second tunnel"),
+            0
+        );
+
+        manager.cleanup();
+        assert!(manager.tunnels().is_empty());
+        server_task.abort();
+    }
 }
