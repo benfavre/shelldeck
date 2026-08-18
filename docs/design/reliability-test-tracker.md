@@ -19,7 +19,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-001 | NEXT-001 | Jean / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
 | REL-002 | NEXT-004 | CI multiplateforme | Les branches core macOS et Windows n'étaient pas exécutées avant release. | P1 | Terminé | CI native : 297 tests sur macOS ARM64 et 288 sur Windows x86_64 ; SDTEST-1584/1585 sont exercés. |
 | REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
-| REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquent de preuve de cycle de vie. | P0 | À vérifier | Auditer SDTEST-967 et 980..983 ; décider explicitement le contrat de `Drop` avant toute correction. |
+| REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize et notifier manquent encore de preuve de cycle de vie. | P0 | En cours | Destruction du processus réglée : contrat de `Drop` arrêté et couvert par SDTEST-967/969. Poursuivre avec SDTEST-980..983 sur `TerminalSession` — `spawn_ssh` est pilotable sans PTY ni sous-processus. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | À vérifier | Auditer les gardes existantes puis couvrir leur prédicat commun avec SDTEST-1059. |
@@ -79,3 +79,18 @@ risques par frontière observable et impose une vérification avant correction.
   ouverts par le serveur. En production, la `SshSession` propriétaire maintient le
   transport ; ce n'est donc pas un défaut, mais le test doit tenir ce handle
   explicitement, et c'est commenté à cet endroit.
+- **2026-08-18 — REL-004, contrat de `Drop` arrêté.** Le zombie a d'abord été
+  reproduit : sur Unix l'enfant de `portable_pty` *est* un `std::process::Child`,
+  dont le `Drop` ne tue ni n'attend. Chaque onglet terminal fermé laissait donc
+  un processus en état `Z` pour toute la durée de vie de l'application. Contrat
+  retenu et implémenté par `ChildReaper` : fermer le master d'abord (SIGHUP),
+  laisser un délai de grâce à l'enfant pour sortir de lui-même — c'est ce qui lui
+  permet d'écrire son historique et d'exécuter ses traps —, puis tuer et
+  moissonner seulement s'il est encore là. Le moissonnage ne bloque jamais le fil
+  qui ferme l'onglet.
+- **2026-08-18 — Une assertion temporelle remplacée.** La première version
+  vérifiait « moissonné avant la fin du délai de grâce » pour prouver que
+  l'enfant n'avait pas été tué. Un kill immédiat satisfait aussi cette
+  condition : l'assertion ne discriminait rien. Les tests observent désormais la
+  branche réellement empruntée, et la mutation « supprimer le délai de grâce »
+  fait bien virer SDTEST-967 au rouge.

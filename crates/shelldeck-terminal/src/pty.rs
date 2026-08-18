@@ -1,5 +1,6 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::time::{Duration, Instant};
 
 /// Resolve the shell a local PTY should spawn.
 ///
@@ -50,20 +51,157 @@ fn resolve_shell_from(
     }
 }
 
+/// How long a hung-up child may take to exit on its own before it is killed.
+const REAP_GRACE: Duration = Duration::from_secs(2);
+
+/// Owns the PTY child process and guarantees it is reaped.
+///
+/// On Unix `portable_pty`'s child *is* `std::process::Child`, whose `Drop`
+/// neither kills nor waits. Closing a terminal therefore left one zombie per
+/// tab for the whole lifetime of the app (reproduced: state `Z` three seconds
+/// after the PTY was dropped).
+///
+/// **Contract.** Dropping this hangs up the terminal and reaps the child, in
+/// that order:
+///
+/// 1. The master file descriptor is closed first — that is what raises SIGHUP
+///    on the child's controlling terminal. Field declaration order is what
+///    guarantees it, so do not reorder the fields of [`LocalPty`] or
+///    [`PtyMaster`].
+/// 2. The child then gets [`REAP_GRACE`] to exit on its own. A shell answering
+///    SIGHUP uses that window to flush its history and run its exit traps —
+///    which is why this is not an immediate `kill`.
+/// 3. Only a child still alive after the grace period is killed, then reaped.
+///
+/// Reaping runs on a detached thread, so dropping a terminal never blocks the
+/// thread that closed it.
+struct ChildReaper {
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// Reports which branch the reap took: `false` when the child exited on
+    /// its own inside the grace period, `true` when it had to be killed.
+    /// Timing alone cannot tell those apart — an immediate kill also looks
+    /// fast — so the tests observe the branch instead of the clock.
+    #[cfg(test)]
+    reaped_by_kill: Option<std::sync::mpsc::Sender<bool>>,
+}
+
+impl ChildReaper {
+    fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
+        Self {
+            child: Some(child),
+            #[cfg(test)]
+            reaped_by_kill: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_reap(&mut self, tx: std::sync::mpsc::Sender<bool>) {
+        self.reaped_by_kill = Some(tx);
+    }
+
+    /// `true` while the child has neither exited nor been reaped.
+    fn is_alive(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => child.try_wait().ok().flatten().is_none(),
+            None => false,
+        }
+    }
+
+    fn wait(&mut self) -> crate::Result<u32> {
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| crate::TerminalError::Pty("PTY child already reaped".into()))?;
+        let status = child
+            .wait()
+            .map_err(|e| crate::TerminalError::Pty(e.to_string()))?;
+        Ok(status.exit_code())
+    }
+
+    #[cfg(test)]
+    fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|child| child.process_id())
+    }
+}
+
+impl Drop for ChildReaper {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        // Already exited and reaped by an earlier `wait` / `is_alive`.
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+
+        #[cfg(test)]
+        let observer = self.reaped_by_kill.take();
+
+        let spawned = std::thread::Builder::new()
+            .name("pty-reaper".into())
+            .spawn(move || {
+                #[cfg(test)]
+                let report = |killed: bool| {
+                    if let Some(tx) = observer.as_ref() {
+                        let _ = tx.send(killed);
+                    }
+                };
+                #[cfg(not(test))]
+                let report = |_killed: bool| {};
+
+                let deadline = Instant::now() + REAP_GRACE;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => return report(false),
+                        Ok(None) => {}
+                        // The child is unobservable; killing it would be a
+                        // guess, and waiting forever would leak this thread.
+                        Err(_) => return,
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                report(true);
+            });
+
+        if let Err(e) = spawned {
+            // The child moved into the closure, so it is gone with it. Doing
+            // the reap inline instead would block whoever closed the terminal
+            // for the whole grace period — the wrong trade for a failure that
+            // only happens when the process can no longer spawn threads at all.
+            tracing::warn!("Failed to spawn PTY reaper thread, child left unreaped: {e}");
+        }
+    }
+}
+
 pub struct LocalPty {
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    // Drop order is load-bearing, see `ChildReaper`: the writer sends EOF, then
+    // the master fd closes and hangs up the terminal, then the child is reaped.
     writer: Box<dyn Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+    child: ChildReaper,
 }
 
 /// Handle to the PTY master, used for resize operations after the
 /// writer has been split off to a dedicated thread.
 pub struct PtyMaster {
+    // Declared before the child so the hangup precedes the reap — see
+    // `ChildReaper`. The child is held for its `Drop`, never read, hence the
+    // underscore.
     master: Box<dyn MasterPty + Send>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    _child: ChildReaper,
 }
 
 impl PtyMaster {
+    #[cfg(test)]
+    fn observe_reap(&mut self, tx: std::sync::mpsc::Sender<bool>) {
+        self._child.observe_reap(tx);
+    }
+
     /// Resize the underlying PTY.
     pub fn resize(&self, rows: u16, cols: u16) -> crate::Result<()> {
         self.master
@@ -124,9 +262,9 @@ impl LocalPty {
 
         Ok((
             Self {
-                master: pair.master,
-                child,
                 writer,
+                master: pair.master,
+                child: ChildReaper::new(child),
             },
             reader,
         ))
@@ -167,16 +305,12 @@ impl LocalPty {
 
     /// Check if the child process is still alive.
     pub fn is_alive(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_none()
+        self.child.is_alive()
     }
 
     /// Wait for the child process to exit and return its exit code.
     pub fn wait(&mut self) -> crate::Result<u32> {
-        let status = self
-            .child
-            .wait()
-            .map_err(|e| crate::TerminalError::Pty(e.to_string()))?;
-        Ok(status.exit_code())
+        self.child.wait()
     }
 }
 
@@ -361,6 +495,108 @@ mod tests {
         let (pty, _reader) = spawn_sh("sleep 0.1; exit");
         pty.resize(30, 100).expect("resize on live PTY");
         pty.resize(24, 80).expect("resize back to defaults");
+    }
+
+    /// Linux-only: `/proc/<pid>/stat` is what distinguishes *reaped* from
+    /// *zombie*. A dead-but-unreaped child still has a `/proc` entry, so
+    /// "the process is gone" is not the same question as "is_alive() is false".
+    ///
+    /// The state letter is the field right after the comm field, which is
+    /// parenthesised and may itself contain spaces — hence the split on the
+    /// last `)` rather than on whitespace.
+    #[cfg(target_os = "linux")]
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = stat.rsplit_once(')')?.1;
+        after_comm.split_whitespace().next()?.chars().next()
+    }
+
+    /// Wait for `pid` to disappear from the process table entirely, returning
+    /// how long that took. A lingering `Z` is a failure, not a pass.
+    #[cfg(target_os = "linux")]
+    fn time_until_reaped(pid: u32, limit: std::time::Duration) -> Option<std::time::Duration> {
+        let start = Instant::now();
+        loop {
+            match proc_state(pid) {
+                None => return Some(start.elapsed()),
+                Some(_) if start.elapsed() >= limit => return None,
+                Some(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
+    // SDTEST-967 — dropping the PTY hangs up the terminal and reaps the child.
+    //
+    // Before `ChildReaper`, this left one zombie per closed terminal tab for
+    // the lifetime of the app: the shell did exit on SIGHUP, but nothing ever
+    // called `waitpid`, so it stayed in state `Z`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_the_pty_hangs_up_and_reaps_the_child() {
+        let (pty, _reader) = LocalPty::spawn(Some("/bin/sh"), 24, 80).expect("spawn sh");
+        let pid = pty.child.process_id().expect("child pid");
+        assert!(
+            proc_state(pid).is_some(),
+            "child must exist right after spawn",
+        );
+
+        let (writer, mut master) = pty.into_parts();
+        let (reap_tx, reap_rx) = std::sync::mpsc::channel();
+        master.observe_reap(reap_tx);
+        drop(writer);
+        drop(master);
+
+        time_until_reaped(pid, REAP_GRACE * 3).unwrap_or_else(|| {
+            panic!("child {pid} was never reaped (state {:?})", proc_state(pid))
+        });
+
+        // The hangup did the work and the shell exited on its own terms. That
+        // distinction is the whole reason the grace period exists: a kill here
+        // would cost the user their shell history and exit traps.
+        assert!(
+            !reap_rx
+                .recv_timeout(REAP_GRACE)
+                .expect("reaper never reported"),
+            "child was killed instead of hanging up cleanly",
+        );
+    }
+
+    // SDTEST-969 — a child that never exits on its own is killed once the
+    // grace period is spent, and reaped. Driven directly through `ChildReaper`
+    // with a plain `std::process::Child`: no PTY means no SIGHUP, so only the
+    // escalation can end this process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_that_ignores_the_hangup_is_killed_after_the_grace_period() {
+        let child = std::process::Command::new("sleep")
+            .arg("120")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        let mut reaper = ChildReaper::new(Box::new(child));
+        let (reap_tx, reap_rx) = std::sync::mpsc::channel();
+        reaper.observe_reap(reap_tx);
+
+        let start = Instant::now();
+        drop(reaper);
+
+        assert!(
+            reap_rx
+                .recv_timeout(REAP_GRACE * 3)
+                .expect("reaper never reported"),
+            "a child that never exits must reach the kill branch",
+        );
+        assert!(
+            start.elapsed() >= REAP_GRACE,
+            "the grace period was skipped — killed after only {:?}",
+            start.elapsed(),
+        );
+        time_until_reaped(pid, REAP_GRACE).unwrap_or_else(|| {
+            panic!(
+                "child {pid} survived the reaper (state {:?})",
+                proc_state(pid)
+            )
+        });
     }
 
     // SDTEST-965/966 — `is_alive` flips to false after the child
