@@ -9,6 +9,15 @@ enum SupportHomeTarget {
     Requests,
 }
 
+struct SupportHomeStat {
+    id: &'static str,
+    icon: &'static str,
+    value: usize,
+    label: String,
+    color: Hsla,
+    target: SupportHomeTarget,
+}
+
 impl SupportHomeTarget {
     fn section(self) -> SupportSection {
         match self {
@@ -82,16 +91,15 @@ impl SupportView {
         cx.notify();
     }
 
-    fn render_home_stat(
-        &self,
-        id: &'static str,
-        icon: &'static str,
-        value: usize,
-        label: String,
-        color: Hsla,
-        target: SupportHomeTarget,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_home_stat(&self, stat: SupportHomeStat, cx: &mut Context<Self>) -> impl IntoElement {
+        let SupportHomeStat {
+            id,
+            icon,
+            value,
+            label,
+            color,
+            target,
+        } = stat;
         let entity = cx.entity();
         Card::new()
             .content(
@@ -439,39 +447,47 @@ impl SupportView {
                         .flex_wrap()
                         .gap(px(12.0))
                         .child(self.render_home_stat(
-                            "support-home-open-stat",
-                            "inbox",
-                            self.counts.open as usize,
-                            t!("support.home.open").to_string(),
-                            ShellDeckColors::primary(),
-                            SupportHomeTarget::OpenTickets,
+                            SupportHomeStat {
+                                id: "support-home-open-stat",
+                                icon: "inbox",
+                                value: self.counts.open as usize,
+                                label: t!("support.home.open").to_string(),
+                                color: ShellDeckColors::primary(),
+                                target: SupportHomeTarget::OpenTickets,
+                            },
                             cx,
                         ))
                         .child(self.render_home_stat(
-                            "support-home-sla-stat",
-                            "clock",
-                            self.counts.breaching as usize,
-                            t!("support.home.breaching").to_string(),
-                            ShellDeckColors::error(),
-                            SupportHomeTarget::BreachingTickets,
+                            SupportHomeStat {
+                                id: "support-home-sla-stat",
+                                icon: "clock",
+                                value: self.counts.breaching as usize,
+                                label: t!("support.home.breaching").to_string(),
+                                color: ShellDeckColors::error(),
+                                target: SupportHomeTarget::BreachingTickets,
+                            },
                             cx,
                         ))
                         .child(self.render_home_stat(
-                            "support-home-unassigned-stat",
-                            "user-x",
-                            self.counts.unassigned as usize,
-                            t!("support.home.unassigned").to_string(),
-                            ShellDeckColors::warning(),
-                            SupportHomeTarget::UnassignedTickets,
+                            SupportHomeStat {
+                                id: "support-home-unassigned-stat",
+                                icon: "user-x",
+                                value: self.counts.unassigned as usize,
+                                label: t!("support.home.unassigned").to_string(),
+                                color: ShellDeckColors::warning(),
+                                target: SupportHomeTarget::UnassignedTickets,
+                            },
                             cx,
                         ))
                         .child(self.render_home_stat(
-                            "support-home-requests-stat",
-                            "tag",
-                            self.visible_issue_count(),
-                            t!("support.home.requests").to_string(),
-                            ShellDeckColors::success(),
-                            SupportHomeTarget::Requests,
+                            SupportHomeStat {
+                                id: "support-home-requests-stat",
+                                icon: "tag",
+                                value: self.visible_issue_count(),
+                                label: t!("support.home.requests").to_string(),
+                                color: ShellDeckColors::success(),
+                                target: SupportHomeTarget::Requests,
+                            },
                             cx,
                         )),
                 )

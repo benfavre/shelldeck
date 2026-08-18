@@ -32,7 +32,7 @@ impl Workspace {
     }
 
     /// Wire the titlebar Dock control to the binary-level companion runtime.
-    pub fn set_ai_dock_open_handler(&mut self, handler: Box<dyn Fn(&mut App)>) {
+    pub fn set_ai_dock_open_handler(&mut self, handler: AiDockOpenHandler) {
         self.ai_dock_open_handler = Some(handler);
     }
 
@@ -93,29 +93,37 @@ impl Workspace {
     /// state, so redundant publishes are silently dropped.
     pub fn publish_tray_state(&mut self, cx: &App) {
         let signed_in = self.signed_in();
-        let active_ssh = signed_in
-            .then(|| {
-                self.connections
-                    .iter()
-                    .filter(|c| matches!(c.status, ConnectionStatus::Connected))
-                    .count()
-            })
-            .unwrap_or(0);
-        let open_tunnels = signed_in.then_some(self.active_tunnels.len()).unwrap_or(0);
-        let unread_tickets = signed_in
-            .then(|| self.support.read(cx).unread_ticket_count())
-            .unwrap_or(0);
-        let jean_pending = signed_in
-            .then_some(self.runtime_awaiting.len())
-            .unwrap_or(0);
-        let ai_tasks_running = signed_in
-            .then(|| {
-                self.ai_tasks
-                    .iter()
-                    .filter(|task| task.status.is_running())
-                    .count()
-            })
-            .unwrap_or(0);
+        let active_ssh = if signed_in {
+            self.connections
+                .iter()
+                .filter(|c| matches!(c.status, ConnectionStatus::Connected))
+                .count()
+        } else {
+            0
+        };
+        let open_tunnels = if signed_in {
+            self.active_tunnels.len()
+        } else {
+            0
+        };
+        let unread_tickets = if signed_in {
+            self.support.read(cx).unread_ticket_count()
+        } else {
+            0
+        };
+        let jean_pending = if signed_in {
+            self.runtime_awaiting.len()
+        } else {
+            0
+        };
+        let ai_tasks_running = if signed_in {
+            self.ai_tasks
+                .iter()
+                .filter(|task| task.status.is_running())
+                .count()
+        } else {
+            0
+        };
         let pinned_connections = if signed_in {
             self.app_config
                 .pinned_connections
