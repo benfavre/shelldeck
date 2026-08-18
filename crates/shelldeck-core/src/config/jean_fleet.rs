@@ -1015,16 +1015,9 @@ impl ClaudeExecutor {
                 .to_string(),
         }
     }
-}
 
-impl JobExecutor for ClaudeExecutor {
-    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
+    fn command(&self, workdir: &std::path::Path, model: &str) -> std::process::Command {
         use std::process::{Command, Stdio};
-
-        let workdir = match validate_workdir(workdir) {
-            Ok(path) => path,
-            Err(e) => return JobOutcome::error(format!("Workdir Jean invalide: {}", e)),
-        };
 
         let mut args: Vec<String> = vec![
             "-p".into(),
@@ -1039,13 +1032,26 @@ impl JobExecutor for ClaudeExecutor {
             args.push(model.to_string());
         }
 
-        let mut cmd = Command::new(&self.bin);
-        cmd.args(&args)
-            .current_dir(&workdir)
-            .env_remove("ANTHROPIC_API_KEY") // force subscription auth
+        let mut command = Command::new(&self.bin);
+        command
+            .args(&args)
+            .current_dir(workdir)
+            .env_remove("ANTHROPIC_API_KEY")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command
+    }
+}
+
+impl JobExecutor for ClaudeExecutor {
+    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
+        let workdir = match validate_workdir(workdir) {
+            Ok(path) => path,
+            Err(e) => return JobOutcome::error(format!("Workdir Jean invalide: {}", e)),
+        };
+
+        let mut cmd = self.command(&workdir, model);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -1602,6 +1608,54 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
             "{}",
             probe.reason
         );
+    }
+
+    // SDTEST-267, SDTEST-268, SDTEST-269
+    #[test]
+    fn claude_executor_command_matches_bot_argv_and_auth_contract() {
+        use std::ffi::OsStr;
+
+        let workdir = temp_dir("claude-command-contract");
+        let executor = ClaudeExecutor {
+            bin: "claude-contract".to_string(),
+            permission_mode: "acceptEdits".to_string(),
+        };
+        let command = executor.command(&workdir, "sonnet");
+
+        assert_eq!(command.get_program(), OsStr::new("claude-contract"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "acceptEdits",
+                "--model",
+                "sonnet",
+            ]
+            .map(OsStr::new)
+        );
+        assert_eq!(command.get_current_dir(), Some(workdir.as_path()));
+
+        let environment = command.get_envs().collect::<Vec<_>>();
+        assert!(environment
+            .iter()
+            .any(|(name, value)| { *name == OsStr::new("ANTHROPIC_API_KEY") && value.is_none() }));
+        assert!(
+            environment
+                .iter()
+                .all(|(name, _)| *name != OsStr::new("CLAUDE_CODE_OAUTH_TOKEN")),
+            "the OAuth token must remain inherited from the parent environment"
+        );
+
+        let without_model = executor.command(&workdir, "   ");
+        assert!(without_model
+            .get_args()
+            .all(|arg| arg != OsStr::new("--model")));
+
+        fs::remove_dir_all(workdir).ok();
     }
 
     #[cfg(unix)]
