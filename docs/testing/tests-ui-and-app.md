@@ -78,7 +78,7 @@ Existing: **0 tests.**
 | SDTEST-1057 | `cloud_account.rs::allowed_modes_matches_the_tier_table` | SDUC-152, SDUC-303 | Green | Pins User-only, User+Support, and full User+Support+Dev mode lists. Workspace switcher and palette consume this exact list. |
 | SDTEST-1602 | `workspace::palette::tests::logged_out_palette_contains_only_public_or_recovery_actions` | SDUC-152, SDUC-303 | Green | The standalone palette remains a recovery/login surface before authentication and excludes settings, sync, sites, requests, AI, terminals and Dev navigation even when those features are configured locally. |
 | SDTEST-1058 | *to write* — action-list contains SwitchSite entries capped at 20 | SDUC-303 | **Red / P2** | |
-| SDTEST-1059 | *to write* — poll schedulers no-op when the relevant surface is not visible | SDUC-168, SDUC-188, SDUC-227, SDUC-249 | **Red / P0** | Regression class: burning bandwidth / cache lines. Test as a pure predicate `should_poll(active_view, feature)`. |
+| SDTEST-1059 | `workspace/polling.rs::no_surface_polls_behind_settings_or_while_signed_out` + `::each_surface_polls_only_where_it_is_displayed` | SDUC-168, SDUC-188, SDUC-227, SDUC-249 | Green | 2 tests. The four inline predicates (Support, Issues, Jean, bext) are extracted into one pure `should_poll(PollContext, PolledSurface)`, so the whole decision table is asserted without a GPUI context. The shared rules — Settings covers the surface, a signed-out session shows the welcome screen — are checked once at the top and swept across every mode × view × surface combination. The context carries more than the `(active_view, feature)` this line proposed: mode, sign-in and per-surface availability all gate polling, and omitting them would have made the predicate untestably incomplete. |
 
 ---
 

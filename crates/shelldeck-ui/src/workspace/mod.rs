@@ -124,6 +124,7 @@ mod navigation;
 mod overlays;
 mod palette;
 mod panels;
+mod polling;
 mod render;
 mod request_views;
 mod requests;

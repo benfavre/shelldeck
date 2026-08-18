@@ -466,9 +466,7 @@ impl Workspace {
 
     /// A Jean/issues surface is on screen (User home, or Support mode).
     pub(super) fn issues_relevant(&self) -> bool {
-        !self.settings_open
-            && self.signed_in()
-            && matches!(self.effective_mode(), AppMode::User | AppMode::Support)
+        self.should_poll(super::polling::PolledSurface::Issues)
     }
 
     /// Sentinel id of the staff-only thread showcase — used both to insert the
