@@ -23,13 +23,7 @@ impl Workspace {
 
     /// Whether a Jean surface is currently on screen (so polling is worthwhile).
     fn jean_surface_visible(&self) -> bool {
-        if self.settings_open || !self.has_jean() {
-            return false;
-        }
-        match self.effective_mode() {
-            AppMode::User | AppMode::Support => true,
-            AppMode::Dev => self.active_view == ActiveView::JeanConsole,
-        }
+        self.should_poll(super::polling::PolledSurface::Jean)
     }
 
     /// Reflect Jean availability into the sidebar nav (Dev mode only).

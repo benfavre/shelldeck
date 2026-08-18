@@ -12,9 +12,7 @@ use super::{ActiveView, Workspace};
 
 impl Workspace {
     fn bext_visible(&self) -> bool {
-        !self.settings_open
-            && self.effective_mode() == AppMode::Dev
-            && self.active_view == ActiveView::BextCloud
+        self.should_poll(super::polling::PolledSurface::Bext)
     }
 
     /// Open the bext Cloud view (palette / sidebar).

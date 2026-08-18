@@ -22,7 +22,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquaient de preuve de cycle de vie. | P0 | Terminé | Contrat de `Drop` arrêté et couvert par SDTEST-967/969 ; sortie, entrée, resize et repaint événementiel par SDTEST-980..983. Plus aucune ligne P0 ouverte dans `tests-terminal.md`. Restent les P1 SDTEST-984..986 et la dette protocolaire suivie par REL-010. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
-| REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | À vérifier | Auditer les gardes existantes puis couvrir leur prédicat commun avec SDTEST-1059. |
+| REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
 | REL-008 | — | Keychain natif | Les implémentations macOS et Windows compilent, mais aucun aller-retour de trousseau natif n'est exécuté en CI. | P0 | À vérifier | Évaluer l'isolation des runners puis SDTEST-121/122 sans secret utilisateur réel ni état persistant. |
 | REL-009 | NEXT-005 | Mise à jour | Cadence, HTTP et vérification de hash restent couplés au temps et au réseau réels. | P1 | Ouvert | Injecter horloge et transport HTTP, puis fermer les lignes correspondantes d'`INFRA_BLOCKED.md`. |
 | REL-010 | — | Terminal / protocoles | OSC 7/52, modes souris, styles de curseur, longues chaînes OSC, sélection et caractères larges restent partiellement couverts. | P1 | À vérifier | Reproduire chaque comportement avant de reprendre SDTEST-750..755 et 870..874. |
@@ -104,3 +104,15 @@ risques par frontière observable et impose une vérification avant correction.
   le job sans message exploitable. L'attente est bornée et le test échoue
   désormais en 3 s. Règle à retenir : un capteur de régression doit être borné
   par le comportement qu'il surveille, pas par la patience du runner.
+- **2026-08-18 — REL-007 terminé, sans défaut trouvé.** L'audit cherchait une
+  surface masquée qui continue d'interroger le réseau ; les quatre gardes
+  étaient déjà correctes, y compris le cas « déconnecté » qu'on soupçonnait pour
+  Jean — `effective_jean_config` court-circuite sur `!signed_in()`. Le risque
+  réel n'était donc pas une fuite existante mais la dérive : quatre prédicats
+  recopiés, aucun endroit où vérifier la règle commune. Ils sont réunis dans
+  `workspace/polling.rs`, pur et testable hors GPUI.
+- **2026-08-18 — Un implicite rendu explicite.** « Déconnecté ⇒ aucun polling »
+  découlait de trois mécanismes séparés (`resolve_effective` force User,
+  `has_jean` et `can_access_mode` exigent un compte). C'était vrai mais nulle
+  part énoncé, donc invérifiable. Le prédicat le pose maintenant en tête : le
+  comportement à l'exécution est inchangé, la garantie est devenue testable.

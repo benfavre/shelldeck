@@ -212,9 +212,7 @@ impl Workspace {
     }
 
     pub(super) fn sync_support_poll(&mut self, cx: &mut Context<Self>) {
-        let want = !self.settings_open
-            && self.effective_mode() == AppMode::Support
-            && self.can_access_mode(AppMode::Support);
+        let want = self.should_poll(super::polling::PolledSurface::Support);
         if want {
             if self._support_poll_task.is_none() {
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
@@ -223,10 +221,7 @@ impl Workspace {
                         .await;
                     let keep_going = this
                         .update(cx, |ws, cx| {
-                            if !ws.settings_open
-                                && ws.effective_mode() == AppMode::Support
-                                && ws.can_access_mode(AppMode::Support)
-                            {
+                            if ws.should_poll(super::polling::PolledSurface::Support) {
                                 ws.refresh_support(cx);
                                 true
                             } else {
