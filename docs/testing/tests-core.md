@@ -341,8 +341,8 @@ Existing: **0 tests**.
 |---|---|---|---|---|
 | SDTEST-330 | `bext_instance.rs::list_sites_parses_and_sends_app_id` | SDUC-260 | Green | |
 | SDTEST-331 | `bext_instance.rs::create_body_shape` | SDUC-261 | Green | |
-| SDTEST-332 | *to write* — get_site / go_live / config_site / destroy_site route shapes | SDUC-262 | **Red / P1** | Table-driven mock. |
-| SDTEST-333 | *to write* — every request carries `X-Bext-App-Id` | SDUC-260 | **Red / P0** | Contract; missing header = 400 from the plugin. |
+| SDTEST-332 | `bext_instance.rs::site_actions_send_expected_routes_bodies_and_app_id` | SDUC-262 | Green | Contract mock covers the GET query plus every per-site POST route and body shape. |
+| SDTEST-333 | `bext_instance.rs::{list_sites_parses_and_sends_app_id,create_body_shape,site_actions_send_expected_routes_bodies_and_app_id}` | SDUC-260 | Green | The public SDK surface is covered across the shared GET and POST paths; missing header = 400 from the plugin. |
 
 ---
 

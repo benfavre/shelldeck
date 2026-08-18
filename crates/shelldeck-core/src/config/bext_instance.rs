@@ -230,6 +230,32 @@ mod tests {
         (addr, h)
     }
 
+    fn capture_request(action: impl FnOnce(&BextInstance) -> Result<serde_json::Value>) -> String {
+        let (addr, handle) = mock(r#"{"ok":true}"#);
+        let instance = BextInstance::new(addr, "contract-app");
+        action(&instance).unwrap();
+        handle.join().unwrap()
+    }
+
+    fn assert_request_contract(request: &str, method: &str, target: &str, body_fragments: &[&str]) {
+        assert_eq!(
+            request.lines().next(),
+            Some(format!("{method} {target} HTTP/1.1").as_str())
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("x-bext-app-id: contract-app"),
+            "request did not carry the instance app id: {request}"
+        );
+        for fragment in body_fragments {
+            assert!(
+                request.contains(fragment),
+                "request body did not contain {fragment:?}: {request}"
+            );
+        }
+    }
+
     #[test]
     fn list_sites_parses_and_sends_app_id() {
         let (addr, h) = mock(
@@ -259,7 +285,46 @@ mod tests {
         .unwrap();
         let req = h.join().unwrap();
         assert!(req.contains("/__bext/sdk/site/create"));
+        assert!(req.to_lowercase().contains("x-bext-app-id: app"));
         assert!(req.contains("\"slug\":\"newsite\""));
         assert!(req.contains("\"kind\":\"wordpress\""));
+    }
+
+    // SDTEST-332, SDTEST-333
+    #[test]
+    fn site_actions_send_expected_routes_bodies_and_app_id() {
+        let request = capture_request(|instance| get_site(instance, "demo site"));
+        assert_request_contract(
+            &request,
+            "GET",
+            "/__bext/sdk/site/get?slug=demo%20site",
+            &[],
+        );
+
+        let request = capture_request(|instance| go_live(instance, "demo", "demo.example.com"));
+        assert_request_contract(
+            &request,
+            "POST",
+            "/__bext/sdk/site/go_live",
+            &["\"slug\":\"demo\"", "\"domain\":\"demo.example.com\""],
+        );
+
+        let request = capture_request(|instance| {
+            config_site(instance, "demo", serde_json::json!({ "php": "8.3" }))
+        });
+        assert_request_contract(
+            &request,
+            "POST",
+            "/__bext/sdk/site/config",
+            &["\"slug\":\"demo\"", "\"php\":\"8.3\""],
+        );
+
+        let request = capture_request(|instance| destroy_site(instance, "demo"));
+        assert_request_contract(
+            &request,
+            "POST",
+            "/__bext/sdk/site/destroy",
+            &["\"slug\":\"demo\""],
+        );
     }
 }

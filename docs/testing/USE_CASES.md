@@ -1148,10 +1148,11 @@ visible.
 
 `crates/shelldeck-core/src/config/bext_instance.rs`
 
-### SDUC-260 — List sites carries `X-Bext-App-Id`
+### SDUC-260 — Instance SDK requests carry `X-Bext-App-Id`
 
-`list_sites(instance)` GETs `/__bext/sdk/site/list` with the correct
-`X-Bext-App-Id` header.
+Every instance SDK request carries the configured `X-Bext-App-Id` header.
+`list_sites(instance)` GETs `/__bext/sdk/site/list`; the other read and write
+operations preserve the same authentication contract.
 
 ### SDUC-261 — Create site body shape
 
@@ -2188,6 +2189,11 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-18** — Clarified SDUC-260 and completed SDTEST-332/333: every
+  single-instance Bext operation now has contract coverage for its route, body
+  where applicable, and required `X-Bext-App-Id` header. Production already
+  routed all calls through the authenticated GET/POST helpers; no runtime
+  behavior changed.
 - **2026-08-17** — Amended SDUC-414 and added SDTEST-1621: compact Markdown
   headings now scale from the conversation body size, while non-compact
   document headings retain their fixed typography. H1–H4 were manually checked
