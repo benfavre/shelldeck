@@ -262,7 +262,7 @@ mod tests {
     // the impl comment. Consumers `delete_password` on logout without
     // caring whether the entry existed.
     #[test]
-    #[ignore = "requires SHELLDECK_LIVE_KEYCHAIN=1"]
+    #[ignore = "needs a real credential store: SHELLDECK_LIVE_KEYCHAIN=1 plus a Secret Service on Linux. CI runs it on the macOS and Windows runners."]
     fn live_delete_password_missing_entry_is_ok() {
         if !live_gate() {
             return;

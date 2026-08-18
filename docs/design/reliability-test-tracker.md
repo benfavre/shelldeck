@@ -21,7 +21,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquaient de preuve de cycle de vie. | P0 | Terminé | Contrat de `Drop` arrêté et couvert par SDTEST-967/969 ; sortie, entrée, resize et repaint événementiel par SDTEST-980..983. Plus aucune ligne P0 ouverte dans `tests-terminal.md`. Restent les P1 SDTEST-984..986 et la dette protocolaire suivie par REL-010. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
-| REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
+| REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | En cours | Frontières de rôles couvertes par SDTEST-1377 sur la fonction pure `base_palette_actions` — aucun harnais requis. Restent SDTEST-1360/1361/1363/1365/1368/1370/1372/1375/1376, qui touchent réellement au rendu ou à l'état d'entité : elles demandent toujours la décision harnais GPUI **ou** extraction de réducteurs. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
 | REL-008 | — | Keychain natif | **Aucun backend n'était compilé** : `keyring = "3"` sans feature retombe sur le magasin `mock` en mémoire, sur les trois plateformes. Rien n'a jamais été persisté. | P0 | Terminé | Features `apple-native` / `windows-native` / `sync-secret-service` activées ; SDTEST-120/123 passent enfin, et SDTEST-121/122 s'exécutent sur les runners macOS et Windows. |
 | REL-009 | NEXT-005 | Mise à jour | Cadence, HTTP et vérification de hash restent couplés au temps et au réseau réels. | P1 | Ouvert | Injecter horloge et transport HTTP, puis fermer les lignes correspondantes d'`INFRA_BLOCKED.md`. |
@@ -134,3 +134,16 @@ risques par frontière observable et impose une vérification avant correction.
   démontrer que le secret atteint le magasin système. La preuve est une lecture
   D-Bus depuis un **autre** processus : l'item apparaît dans la collection
   `login` avec `service: shelldeck-ssh`. Entrée de test supprimée derrière.
+- **2026-08-18 — REL-006 n'était pas bloqué en entier.** L'inventaire classait
+  SDTEST-1377 en « GPUI integration ». C'était faux : `base_palette_actions` est
+  déjà une fonction pure, et toute la matrice rôle × surface s'assure sans
+  contexte GPUI. Le cas porteur est le super-admin resté en mode User — les
+  commandes Dev suivent la *surface*, pas le privilège ; les gater sur la seule
+  capacité déverserait tout le bloc Dev dans la palette client.
+- **2026-08-18 — Un garde central écarté sciemment.** `execute_palette_action`
+  ne vérifie que `signed_in()`, mais chaque route Dev repasse par
+  `enter_dev_mode`. Tentant d'y ajouter un prédicat central comme pour le
+  polling — sauf qu'ici le garde **effectue aussi** le basculement de mode : un
+  super-admin en mode User qui lance « Ouvrir Sites » doit passer en Dev. Un
+  pré-garde sur le mode courant casserait ce chemin. Vérifié route par route
+  avant de conclure.

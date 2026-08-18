@@ -389,8 +389,10 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, CloudSyncNow, NewRequest, NewTerminal, OpenAiAssistant, OpenClippy,
-        OpenFileEditorView, OpenLogin, OpenSettings, PaletteAction, Quit, SwitchSite,
+        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal,
+        OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenJeanConsole,
+        OpenLogin, OpenRecent, OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests,
+        OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite, ToggleJeanRuntime,
         ToggleMenuBar, Workspace,
     };
     use gpui::Action;
@@ -399,6 +401,102 @@ mod tests {
         actions
             .iter()
             .any(|candidate| candidate.action.as_any().is::<T>())
+    }
+
+    /// The Dev block of the palette. Every one of these routes into a
+    /// `enter_dev_mode` gate at execution time; none may be *offered* outside
+    /// Dev.
+    fn assert_no_dev_actions(actions: &[PaletteAction], context: &str) {
+        assert!(!contains_action::<NewTerminal>(actions), "{context}");
+        assert!(!contains_action::<OpenFileEditorView>(actions), "{context}");
+        assert!(!contains_action::<OpenServerSync>(actions), "{context}");
+        assert!(!contains_action::<OpenSites>(actions), "{context}");
+        assert!(!contains_action::<OpenRecent>(actions), "{context}");
+        assert!(!contains_action::<NewScript>(actions), "{context}");
+        assert!(
+            !contains_action::<OpenTemplateBrowser>(actions),
+            "{context}"
+        );
+        assert!(!contains_action::<OpenJeanConsole>(actions), "{context}");
+        assert!(!contains_action::<OpenFleet>(actions), "{context}");
+        assert!(!contains_action::<OpenBextCloud>(actions), "{context}");
+        assert!(!contains_action::<ToggleJeanRuntime>(actions), "{context}");
+    }
+
+    // SDTEST-1377 — a regular account is offered nothing beyond User.
+    //
+    // The tier table itself is pinned by SDTEST-184 in `shelldeck-core`; what
+    // this asserts is the consequence the user actually sees, which is the
+    // rule from `.agents/roles.md`: never display a command the caller cannot
+    // reach.
+    #[test]
+    fn a_regular_account_is_offered_no_support_or_dev_command() {
+        let actions = Workspace::base_palette_actions(&[AppMode::User], AppMode::User, true, true);
+
+        assert!(contains_action::<OpenSettings>(&actions));
+        assert!(contains_action::<NewRequest>(&actions));
+        assert!(!contains_action::<OpenSupportRequests>(&actions));
+        assert_no_dev_actions(&actions, "regular account");
+
+        // A single allowed mode means there is nothing to switch between, so
+        // the mode rows must not appear either.
+        assert!(!contains_action::<SetAppMode>(&actions));
+    }
+
+    // SDTEST-1377 — Inklura support reaches triage, never Dev.
+    #[test]
+    fn inklura_support_reaches_triage_but_never_dev() {
+        let allowed: &'static [AppMode] = &[AppMode::User, AppMode::Support];
+
+        let in_support = Workspace::base_palette_actions(allowed, AppMode::Support, true, true);
+        assert!(contains_action::<OpenSupportRequests>(&in_support));
+        assert!(contains_action::<SetAppMode>(&in_support));
+        assert_no_dev_actions(&in_support, "support account in Support mode");
+
+        // Triage commands belong to the Support surface, not to the account.
+        let in_user = Workspace::base_palette_actions(allowed, AppMode::User, true, true);
+        assert!(!contains_action::<OpenSupportRequests>(&in_user));
+        assert_no_dev_actions(&in_user, "support account in User mode");
+    }
+
+    // SDTEST-1377 — Dev commands follow the *surface*, not the privilege.
+    //
+    // This is the half that is easy to get wrong: a super-admin standing in
+    // User mode must not be offered terminals and Jean. Gating those on
+    // `allowed_modes.contains(Dev)` alone would leak the whole Dev block into
+    // the customer-facing surface.
+    #[test]
+    fn a_super_admin_gets_dev_commands_only_while_in_dev_mode() {
+        let allowed: &'static [AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
+
+        let in_dev = Workspace::base_palette_actions(allowed, AppMode::Dev, true, true);
+        assert!(contains_action::<NewTerminal>(&in_dev));
+        assert!(contains_action::<OpenJeanConsole>(&in_dev));
+        assert!(contains_action::<OpenBextCloud>(&in_dev));
+        assert!(contains_action::<ApplyTerminalTheme>(&in_dev));
+
+        assert_no_dev_actions(
+            &Workspace::base_palette_actions(allowed, AppMode::User, true, true),
+            "super-admin in User mode",
+        );
+        assert_no_dev_actions(
+            &Workspace::base_palette_actions(allowed, AppMode::Support, true, true),
+            "super-admin in Support mode",
+        );
+    }
+
+    // SDTEST-1377 — an unusable AI command is worse than an absent one.
+    #[test]
+    fn ai_commands_appear_only_when_their_backend_is_configured() {
+        let allowed: &'static [AppMode] = &[AppMode::User];
+
+        let configured = Workspace::base_palette_actions(allowed, AppMode::User, true, true);
+        assert!(contains_action::<OpenAiAssistant>(&configured));
+        assert!(contains_action::<OpenClippy>(&configured));
+
+        let unconfigured = Workspace::base_palette_actions(allowed, AppMode::User, false, false);
+        assert!(!contains_action::<OpenAiAssistant>(&unconfigured));
+        assert!(!contains_action::<OpenClippy>(&unconfigured));
     }
 
     // SDTEST-1602 — the standalone palette is available before login, but it
