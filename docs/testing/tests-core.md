@@ -275,9 +275,9 @@ Existing: **0 tests**.
 | SDTEST-264 | `jean_fleet.rs::wrong_auth_surfaces_401` | SDUC-208 | Green | |
 | SDTEST-265 | `jean_fleet.rs::parses_iso_and_null_timestamps` | SDUC-200 | Green | |
 | SDTEST-266 | `jean_fleet.rs::parse_stream_json_finds_result` | SDUC-203 | Green | |
-| SDTEST-267 | *to write* — ClaudeExecutor argv shape (fake `Command` builder) | SDUC-202 | **Red / P0** | Contract with slack-claude-bot; a rename here silently breaks parity. |
-| SDTEST-268 | *to write* — ClaudeExecutor drops `ANTHROPIC_API_KEY` from env | SDUC-202 | **Red / P0** | Security-adjacent. |
-| SDTEST-269 | *to write* — ClaudeExecutor preserves `CLAUDE_CODE_OAUTH_TOKEN` | SDUC-202 | **Red / P0** | Same. |
+| SDTEST-267 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | Inspects the non-spawned `Command` builder, including optional-model omission. |
+| SDTEST-268 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `ANTHROPIC_API_KEY` is explicitly removed before spawn. |
+| SDTEST-269 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `CLAUDE_CODE_OAUTH_TOKEN` is not overridden or removed, so parent inheritance remains intact. |
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
 | SDTEST-272 | *to write* — runtime_tick with enabled=false is a no-op | SDUC-206 | **Red / P0** | Safety guarantee per AGENTS.md. |

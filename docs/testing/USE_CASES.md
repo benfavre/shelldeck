@@ -2202,6 +2202,10 @@ viewport rather than its exact alpha silhouette.
   now pins the exact authentication route and JSON body (`action`, credentials,
   and device name) as well as the returned token and account identity; no
   runtime behavior changed.
+- **2026-08-18** — Completed SDTEST-267..269 for SDUC-202. The legacy Claude
+  executor now builds its `Command` through an inspectable, non-spawning path
+  that pins bot-compatible argv, removal of `ANTHROPIC_API_KEY`, and inheritance
+  of `CLAUDE_CODE_OAUTH_TOKEN`; runtime process behavior is unchanged.
 - **2026-08-17** — Amended SDUC-414 and added SDTEST-1621: compact Markdown
   headings now scale from the conversation body size, while non-compact
   document headings retain their fixed typography. H1–H4 were manually checked
