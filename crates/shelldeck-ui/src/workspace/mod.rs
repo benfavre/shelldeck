@@ -19,10 +19,10 @@ use gpui::*;
 // shadows, sidebar width, mouse-position math) must say `gpui::px` explicitly.
 use crate::scale::px;
 use shelldeck_core::ai::{
-    ai_action_disposition, complete_assistant_turn, configured_cli_available, create_client,
-    host_context, parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
-    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionDisposition,
-    AiActionKind, AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
+    complete_assistant_turn, configured_cli_available, create_client, host_context,
+    parse_diagnostic_plan, parse_generated_issue_draft, parse_generated_name,
+    parse_issue_triage_proposal, test_connection, validate_diagnostic_command, AiActionKind,
+    AiActionPayload, AiActionPlan, AiActionPlanSpec, AiActionRisk, AiAssistantAction,
     AiAssistantCompletion, AiConfig, AiContext, AiGeneratedIssueDraft, AiIssueTriageProposal,
     AiSurface, AiTask, AiTaskStatus, AiTaskStore, ClippyConfig,
 };
@@ -110,6 +110,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 mod account;
 mod activity;
 mod ai;
+mod ai_routing;
 mod bext;
 mod chrome;
 mod cloud_sync;

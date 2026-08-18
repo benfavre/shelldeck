@@ -21,7 +21,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquaient de preuve de cycle de vie. | P0 | Terminé | Contrat de `Drop` arrêté et couvert par SDTEST-967/969 ; sortie, entrée, resize et repaint événementiel par SDTEST-980..983. Plus aucune ligne P0 ouverte dans `tests-terminal.md`. Restent les P1 SDTEST-984..986 et la dette protocolaire suivie par REL-010. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
-| REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | En cours | Frontières de rôles couvertes par SDTEST-1377 sur la fonction pure `base_palette_actions` — aucun harnais requis. Restent SDTEST-1360/1361/1363/1365/1368/1370/1372/1375/1376, qui touchent réellement au rendu ou à l'état d'entité : elles demandent toujours la décision harnais GPUI **ou** extraction de réducteurs. |
+| REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | En cours | Voie retenue : **extraction de réducteurs purs**, un lot à la fois. Faits : SDTEST-1377 (`base_palette_actions`) et SDTEST-1365 (`route_ai_action`). Restent SDTEST-1360/1361/1363/1368/1370/1372 par la même méthode, puis 1366 (faux exécuteur/horloge) ; 1375/1376 touchent au rendu et resteront hors de portée sans harnais — 1376 appartient d'ailleurs à `patches/adabraka-ui`. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
 | REL-008 | — | Keychain natif | **Aucun backend n'était compilé** : `keyring = "3"` sans feature retombe sur le magasin `mock` en mémoire, sur les trois plateformes. Rien n'a jamais été persisté. | P0 | Terminé | Features `apple-native` / `windows-native` / `sync-secret-service` activées ; SDTEST-120/123 passent enfin, et SDTEST-121/122 s'exécutent sur les runners macOS et Windows. |
 | REL-009 | NEXT-005 | Mise à jour | Cadence, HTTP et vérification de hash restent couplés au temps et au réseau réels. | P1 | Ouvert | Injecter horloge et transport HTTP, puis fermer les lignes correspondantes d'`INFRA_BLOCKED.md`. |
@@ -155,3 +155,15 @@ risques par frontière observable et impose une vérification avant correction.
   produit était correct (`try_wait` moissonne dans cette branche aussi) ; c'est la
   preuve qui l'était moins. La machine de développement perd systématiquement
   cette course, la CI la gagne — d'où un test vert en local et rouge en CI.
+- **2026-08-18 — REL-006, premier lot par réducteur.** La décision de mise en
+  scène d'une action IA — refus, brouillon, dialogue, exécution directe — était
+  soudée à `stage_ai_action` et `confirm_ai_action`, deux méthodes exigeant un
+  contexte GPUI. Elle est désormais pure (`workspace/ai_routing.rs`) et les deux
+  portes l'appellent. Aucun changement de comportement : l'audit avait d'abord
+  confirmé que `confirm_ai_action` revalidait déjà avant d'exécuter, comme
+  l'exige `.agents/ai.md`.
+- **2026-08-18 — L'ordre permission-puis-politique est la règle porteuse.** Il
+  était déjà correct dans le code, mais rien ne l'empêchait de dériver : inverser
+  les deux permettrait à un réglage d'autonomie `Automatic` de promouvoir en
+  exécution directe une action que le compte n'a pas le droit d'effectuer. La
+  mutation de contrôle le démontre.
