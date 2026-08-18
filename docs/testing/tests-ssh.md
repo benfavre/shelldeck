@@ -14,9 +14,6 @@ harnesses rather than reaching for a live SSH server:
 - **In-memory `russh` server** for `session.rs` — the real client and server
   protocol run over `tokio::io::duplex`, so PTY, exec, resize and EOF are
   asserted without a socket or user `known_hosts` access.
-- **Fake connector** for `ConnectionPool`, so connect/reuse/disconnect can be
-  driven deterministically while session protocol behavior remains covered by
-  the in-memory server.
 - **`std::net::TcpListener`** + a canned SSH banner for
   `known_hosts.rs` scenarios where we need real socket bytes.
 
@@ -62,19 +59,25 @@ Existing: **4 tests** (including the channel-end classification proof).
 
 ---
 
-## 3. `pool.rs` — `ConnectionPool`
+## 3. `pool.rs` — dormant `ConnectionPool`
 
 Existing: **0 tests.**
 
+Audit 2026-08-18: this exported type has no production caller. These tests are
+deferred until the architecture decides whether to integrate the pool or remove
+it; adding a connector abstraction solely to test dormant code would not reduce
+current runtime risk. If integration is chosen, restore the appropriate P0
+priorities before wiring any caller.
+
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-540 | *to write* — connect returns a UUID and marks connected | SDUC-048 | **Red / P0** | Use a fake connector trait to avoid a real handshake. |
-| SDTEST-541 | *to write* — repeated connect for same Connection reuses session | SDUC-048 | **Red / P0** | |
-| SDTEST-542 | *to write* — disconnect closes the session and clears connected_ids | SDUC-048 | **Red / P0** | |
-| SDTEST-543 | *to write* — disconnect_all is idempotent | SDUC-048 | **Red / P1** | |
-| SDTEST-544 | *to write* — with_session / with_session_mut do not deadlock under contention | SDUC-048 | **Red / P0** | Two threads holding closures over the same session ID. |
-| SDTEST-545 | *to write* — take_session / return_session round-trip preserves the session | SDUC-048 | **Red / P1** | |
-| SDTEST-546 | *to write* — is_connected(uuid) returns false after remote disconnect | SDUC-048, SDUC-054 | **Red / P1** | Requires the event stream to bubble a Disconnected event. |
+| SDTEST-540 | *deferred* — connect returns a UUID and marks connected | SDUC-048 | Deferred | Requires an integration/removal decision first. |
+| SDTEST-541 | *deferred* — repeated connect for same Connection follows the chosen sharing policy | SDUC-048 | Deferred | The old reuse claim does not match the implementation or current dedicated-session topology. |
+| SDTEST-542 | *deferred* — disconnect closes the session and clears connected_ids | SDUC-048 | Deferred | |
+| SDTEST-543 | *deferred* — disconnect_all is idempotent | SDUC-048 | Deferred | |
+| SDTEST-544 | *deferred* — with_session / with_session_mut do not deadlock under contention | SDUC-048 | Deferred | Relevant only if the pool becomes a shared runtime boundary. |
+| SDTEST-545 | *deferred* — take_session / return_session round-trip preserves the session | SDUC-048 | Deferred | |
+| SDTEST-546 | *deferred* — is_connected(uuid) returns false after remote disconnect | SDUC-048, SDUC-054 | Deferred | Requires the event stream and production ownership policy to be defined. |
 
 ---
 

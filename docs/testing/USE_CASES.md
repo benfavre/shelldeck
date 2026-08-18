@@ -250,12 +250,15 @@ arrive without buffering the whole output.
 a long-running remote command is interrupted client-side and the
 remote process is signalled where possible.
 
-### SDUC-048 — Connect pool: single active session per Connection
+### SDUC-048 — Legacy connect pool (not wired)
 
-`ConnectionPool::connect` establishes a session and returns its UUID.
-Repeated calls for the same Connection reuse the pooled session.
-`disconnect(id)` closes it. `disconnect_all` cleans everything up.
-`active_count` and `connected_ids` reflect reality.
+`ConnectionPool` is exported by `shelldeck-ssh`, but has no production caller.
+ShellDeck currently opens dedicated `SshClient` sessions for terminals, scripts,
+discovery, forwards and server sync. The former claim that repeated connections
+reuse one pooled session is therefore not an observable product contract and is
+not implemented by `ConnectionPool::connect`, which replaces the prior entry.
+Before wiring this type, decide explicitly whether multiple terminals for one
+Connection share a transport or remain isolated.
 
 ### SDUC-049 — Local port forward tunnel
 
