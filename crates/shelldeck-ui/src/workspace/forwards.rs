@@ -510,7 +510,7 @@ impl Workspace {
             self.ai_backend_available() && self.app_config.ai.allows(AiSurface::Naming);
         let form = cx.new(|form_cx| PortForwardForm::new(connections, ai_enabled, form_cx));
 
-        let sub = cx.subscribe(&form, |this, _form, event: &PortForwardFormEvent, cx| {
+        let sub = cx.subscribe(&form, |this, form, event: &PortForwardFormEvent, cx| {
             match event {
                 PortForwardFormEvent::Save(forward) => {
                     tracing::info!("Port forward created: {}", forward.description());
@@ -552,10 +552,12 @@ impl Workspace {
                     cx.notify();
                 }
                 PortForwardFormEvent::SuggestNameWithAi => {
+                    // See the script form: the identity is the form instance,
+                    // so a resumed task cannot rename a different one.
                     this.open_ai_workflow(
                         AiWorkflowTarget::EntityNaming {
                             kind: AiNamingKind::Tunnel,
-                            target_id: "tunnel-form".to_string(),
+                            target_id: form.entity_id().to_string(),
                         },
                         cx,
                     );
@@ -591,7 +593,7 @@ impl Workspace {
             PortForwardForm::from_port_forward(&forward, connections, ai_enabled, form_cx)
         });
 
-        let sub = cx.subscribe(&form, |this, _form, event: &PortForwardFormEvent, cx| {
+        let sub = cx.subscribe(&form, |this, form, event: &PortForwardFormEvent, cx| {
             match event {
                 PortForwardFormEvent::Save(forward) => {
                     tracing::info!("Port forward updated: {}", forward.description());
@@ -652,10 +654,12 @@ impl Workspace {
                     cx.notify();
                 }
                 PortForwardFormEvent::SuggestNameWithAi => {
+                    // See the script form: the identity is the form instance,
+                    // so a resumed task cannot rename a different one.
                     this.open_ai_workflow(
                         AiWorkflowTarget::EntityNaming {
                             kind: AiNamingKind::Tunnel,
-                            target_id: "tunnel-form".to_string(),
+                            target_id: form.entity_id().to_string(),
                         },
                         cx,
                     );

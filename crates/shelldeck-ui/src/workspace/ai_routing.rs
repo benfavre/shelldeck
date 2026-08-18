@@ -14,6 +14,7 @@
 //! both gates call it.
 
 use super::Workspace;
+use crate::ai_workflow::AiNamingKind;
 use shelldeck_core::ai::{
     ai_action_disposition, AiActionDisposition, AiActionPayload, AiActionRisk, AiAutonomyLevel,
     AiSurface,
@@ -119,6 +120,52 @@ pub(super) fn ai_timeout_outcome(
         return AiTimeoutOutcome::Ignore;
     }
     AiTimeoutOutcome::StopAndAudit
+}
+
+/// Where a generated name may be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NamingApplication {
+    ScriptForm,
+    TunnelForm,
+    Terminal(uuid::Uuid),
+    IssueDraft,
+    /// The entity the name was generated for is closed, or a different one
+    /// took its place. Applying here would rename somebody else's work.
+    TargetLost,
+}
+
+/// Resolve where a generated name goes.
+///
+/// A naming task outlives the surface that asked for it: it can be parked and
+/// resumed from the task center once a *different* form is open. The form-bound
+/// kinds therefore carry the entity id of the form that asked, and this compares
+/// it against the form that is open now. Before that, both carried the literal
+/// `"script-form"` / `"tunnel-form"`, which named no entity at all and could
+/// only ever mean "whatever is open" — the bug this closes.
+pub(super) fn resolve_naming_application(
+    kind: AiNamingKind,
+    requested_target: &str,
+    open_script_form: Option<&str>,
+    open_tunnel_form: Option<&str>,
+    issue_draft_open: bool,
+) -> NamingApplication {
+    match kind {
+        AiNamingKind::Script if open_script_form == Some(requested_target) => {
+            NamingApplication::ScriptForm
+        }
+        AiNamingKind::Tunnel if open_tunnel_form == Some(requested_target) => {
+            NamingApplication::TunnelForm
+        }
+        // A terminal names itself by session id, which is stable for the life
+        // of the session; the tab either still exists or it does not.
+        AiNamingKind::Terminal => uuid::Uuid::parse_str(requested_target)
+            .map(NamingApplication::Terminal)
+            .unwrap_or(NamingApplication::TargetLost),
+        // There is only ever one request draft sheet, so its identity is
+        // simply whether it is still open.
+        AiNamingKind::Issue if issue_draft_open => NamingApplication::IssueDraft,
+        _ => NamingApplication::TargetLost,
+    }
 }
 
 impl Workspace {
@@ -320,6 +367,80 @@ mod tests {
                 replacement: "x".into(),
             },
         ));
+    }
+
+    // SDTEST-1363 — a generated name applies only to the entity that asked.
+    //
+    // A naming task can be parked and resumed from the task center, by which
+    // time another form may be open. Before the form carried its own entity id,
+    // the target was the literal "script-form" — which named no entity at all,
+    // so the name landed on whatever happened to be open.
+    #[test]
+    fn a_resumed_name_never_lands_on_a_different_form() {
+        let asked = "form-1";
+        let other = "form-2";
+
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Script, asked, Some(asked), None, false),
+            NamingApplication::ScriptForm,
+        );
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Script, asked, Some(other), None, false),
+            NamingApplication::TargetLost,
+            "another script form took the place of the one that asked",
+        );
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Script, asked, None, None, false),
+            NamingApplication::TargetLost,
+            "the form that asked was closed",
+        );
+
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Tunnel, asked, None, Some(asked), false),
+            NamingApplication::TunnelForm,
+        );
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Tunnel, asked, None, Some(other), false),
+            NamingApplication::TargetLost,
+        );
+
+        // Kinds do not leak into each other: an open tunnel form cannot satisfy
+        // a script naming task that happens to share its id.
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Script, asked, None, Some(asked), false),
+            NamingApplication::TargetLost,
+        );
+    }
+
+    // SDTEST-1363 — the two kinds that are not form-bound keep their own
+    // identity model, and neither falls back to "whatever is open".
+    #[test]
+    fn terminal_names_by_session_id_and_the_request_draft_by_being_open() {
+        let session = Uuid::from_u128(7);
+        assert_eq!(
+            resolve_naming_application(
+                AiNamingKind::Terminal,
+                &session.to_string(),
+                None,
+                None,
+                false,
+            ),
+            NamingApplication::Terminal(session),
+        );
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Terminal, "not-a-uuid", None, None, false),
+            NamingApplication::TargetLost,
+        );
+
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Issue, "any", None, None, true),
+            NamingApplication::IssueDraft,
+        );
+        assert_eq!(
+            resolve_naming_application(AiNamingKind::Issue, "any", None, None, false),
+            NamingApplication::TargetLost,
+            "the request draft sheet was closed",
+        );
     }
 
     // SDTEST-1366 — a timeout may only stop the run it was scheduled for.
