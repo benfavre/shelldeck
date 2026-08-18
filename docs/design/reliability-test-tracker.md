@@ -18,7 +18,7 @@ risques par frontière observable et impose une vérification avant correction.
 |---|---|---|---|---|---|---|
 | REL-001 | NEXT-001 | Jean / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
 | REL-002 | NEXT-004 | CI multiplateforme | Les branches core macOS et Windows n'étaient pas exécutées avant release. | P1 | Terminé | CI native : 297 tests sur macOS ARM64 et 288 sur Windows x86_64 ; SDTEST-1584/1585 sont exercés. |
-| REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | En cours | Session prouvée sans réseau par SDTEST-520/521/524/525 ; poursuivre avec jump SDTEST-528 puis tunnels 562/564/566. Le pool dormant est suivi par DEBT-005. |
+| REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | En cours | Session et tunnels P0 prouvés par SDTEST-520/521/524/525 et 562/564/566 ; poursuivre avec ProxyJump SDTEST-528 puis remote forward SDTEST-565. Le pool dormant est suivi par DEBT-005. |
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquent de preuve de cycle de vie. | P0 | À vérifier | Auditer SDTEST-967 et 980..983 ; décider explicitement le contrat de `Drop` avant toute correction. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
@@ -48,3 +48,9 @@ risques par frontière observable et impose une vérification avant correction.
   production ; les terminaux, scripts, forwards, discovery et sync utilisent
   des `SshClient` dédiés. Les SDTEST-540..546 ne sont donc plus présentés comme
   des risques runtime P0 avant la décision d'intégration ou de suppression.
+- **2026-08-18 — REL-003 tunnels P0 couverts.** Le harnais `russh` en mémoire a
+  reproduit une fuite réelle : `stop()` arrêtait le listener mais laissait les
+  copies des connexions acceptées détachées. Local, remote et SOCKS possèdent
+  désormais leurs tâches via `JoinSet`, les annulent et les drainent avant
+  `Stopped`. Local echo, compteurs, ports occupés, SOCKS CONNECT/rejets,
+  `stop_all` et `cleanup` sont verts.

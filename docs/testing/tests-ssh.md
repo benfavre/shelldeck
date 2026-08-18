@@ -83,20 +83,20 @@ priorities before wiring any caller.
 
 ## 4. `tunnel.rs` — port forwards
 
-Existing: **0 tests.**
+Existing: **4 protocol/lifecycle tests.**
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-560 | *to write* — validate_port(0), validate_port(1..=65535), overflow | SDUC-049 | **Red / P0** | Cross-referenced with SDTEST-030. |
-| SDTEST-561 | *to write* — check_port_available true for a free port, false for a taken one | SDUC-049 | **Red / P1** | Bind a `TcpListener` in the test to reserve the port. |
-| SDTEST-562 | *to write* — start_local_forward binds and forwards bytes both ways | SDUC-049 | **Red / P0** | Fake session opens a "loopback echo" channel; assert total_bytes counters. |
-| SDTEST-563 | *to write* — start_local_forward Errs when local bind fails | SDUC-049 | **Red / P1** | Pre-bind the port in the test. |
-| SDTEST-564 | *to write* — stop() drains connections and cleans up | SDUC-052 | **Red / P0** | Regression sensor: leaked tasks on tunnel drop. |
+| SDTEST-560 | `shelldeck-core::port_forward::zero_is_rejected` + `all_non_zero_ports_are_accepted` | SDUC-049 | Green | Already covered by SDTEST-030; `u16` makes overflow unrepresentable and 0 is rejected. |
+| SDTEST-561 | `tunnel.rs::port_availability_and_prebound_start_failure_are_reported` | SDUC-049 | Green | Reserves a real loopback port and verifies a released ephemeral port. |
+| SDTEST-562 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-049 | Green | Real `russh` direct-tcpip over an in-memory transport; loopback listener forwards bytes both ways. |
+| SDTEST-563 | `tunnel.rs::port_availability_and_prebound_start_failure_are_reported` | SDUC-049 | Green | Pre-bound port returns `SshError::PortInUse` without registering a tunnel. |
+| SDTEST-564 | `tunnel.rs::local_forward_echoes_tracks_bytes_and_drains_on_stop` | SDUC-052 | Green | Caught detached copy tasks: stop now aborts and joins accepted connections before publishing `Stopped`. |
 | SDTEST-565 | *to write* — start_remote_forward routes ForwardedTcpIp events to local target | SDUC-050 | **Red / P1** | Fake session emits synthetic `ForwardedTcpIpEvent`. |
-| SDTEST-566 | *to write* — start_socks_forward accepts CONNECT/BIND/UDP-associate handshake and rejects invalid | SDUC-051 | **Red / P0** | Feed raw SOCKS5 bytes into the listener from the test. |
-| SDTEST-567 | *to write* — stop_all closes every active tunnel | SDUC-052 | **Red / P1** | |
-| SDTEST-568 | *to write* — cleanup() removes stopped tunnels from the list | SDUC-052 | **Red / P2** | |
-| SDTEST-569 | *to write* — TunnelHandle::total_bytes accumulates monotonically | SDUC-049 | **Red / P2** | |
+| SDTEST-566 | `tunnel.rs::socks5_connect_echoes_and_rejects_bind_and_udp_associate` | SDUC-051 | Green | Raw SOCKS5 no-auth + domain CONNECT reaches direct-tcpip and echoes; BIND/UDP-associate return command-not-supported without opening a channel. |
+| SDTEST-567 | `tunnel.rs::stop_all_closes_every_listener_and_active_connection` | SDUC-052 | Green | Two active listeners and connections are drained; active count reaches zero. |
+| SDTEST-568 | local/SOCKS/stop-all tunnel tests | SDUC-052 | Green | `cleanup()` removes stopped handles after task drain. |
+| SDTEST-569 | local/SOCKS tunnel tests | SDUC-049 | Green | Counters equal the tunneled payload in both directions; SOCKS negotiation bytes are excluded. |
 
 ---
 
