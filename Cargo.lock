@@ -7495,6 +7495,7 @@ dependencies = [
  "chrono",
  "futures",
  "parking_lot",
+ "rand 0.10.2",
  "russh",
  "shelldeck-core",
  "thiserror 2.0.18",
