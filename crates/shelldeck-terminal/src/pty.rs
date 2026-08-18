@@ -129,13 +129,28 @@ impl Drop for ChildReaper {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        // Already exited and reaped by an earlier `wait` / `is_alive`.
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
 
         #[cfg(test)]
         let observer = self.reaped_by_kill.take();
+        #[cfg(test)]
+        let report_clean_exit = || {
+            if let Some(tx) = observer.as_ref() {
+                let _ = tx.send(false);
+            }
+        };
+        #[cfg(not(test))]
+        let report_clean_exit = || {};
+
+        // The child may already be gone. An earlier `wait` / `is_alive` may
+        // have reaped it — but the common case is that the writer's EOF made
+        // the shell exit before this drop ran, which is a race the dev machine
+        // usually loses and a loaded CI runner usually wins. `try_wait` reaps
+        // it either way, so the contract is met and there is nothing to
+        // escalate.
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            report_clean_exit();
+            return;
+        }
 
         let spawned = std::thread::Builder::new()
             .name("pty-reaper".into())
