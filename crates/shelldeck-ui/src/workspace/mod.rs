@@ -101,6 +101,9 @@ use crate::toast::{ToastContainer, ToastLevel};
 use crate::variable_prompt::VariablePrompt;
 use shelldeck_update::{AutoUpdateEvent, AutoUpdateStatus, AutoUpdater};
 
+/// Binary-owned bridge that opens the standalone AI Dock from Workspace UI.
+pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
+
 // Architecture guard: this file is the Workspace orchestrator only.
 // Domain logic and rendering belong in the modules below; keep mod.rs under
 // 2,000 lines. See `.agents/workspace-architecture.md`.
@@ -677,7 +680,7 @@ pub struct Workspace {
     /// Binary-owned bridge for opening the standalone AI Dock. The handler
     /// defers into the application runtime so a titlebar click never re-enters
     /// this Workspace while it is already being updated.
-    ai_dock_open_handler: Option<Box<dyn Fn(&mut App)>>,
+    ai_dock_open_handler: Option<AiDockOpenHandler>,
     /// Actual standalone Dock window state, published by the binary runtime.
     ai_dock_open: bool,
     /// Previous tray counters, kept for delta detection. `None` before

@@ -15,8 +15,8 @@ use shelldeck_core::models::connection::Connection;
 use shelldeck_ui::theme::ShellDeckColors;
 use shelldeck_ui::{
     settings::{CompanionShortcutStatuses, ShortcutRegistrationStatus},
-    AiCompanionController, AiCompanionEvent, AiDockView, CommandPaletteWindowView, Workspace,
-    WorkspaceAiBindings,
+    AiCompanionController, AiCompanionEvent, AiDockView, AiDockVisibilityHandler,
+    CommandPaletteWindowView, Workspace, WorkspaceAiBindings,
 };
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use tracing_subscriber::EnvFilter;
@@ -1434,7 +1434,7 @@ fn open_ai_dock(
     };
 
     let dock_workspace = root.read(cx).workspace_slot.clone();
-    let on_open_change: Rc<dyn Fn(bool, &mut gpui::App)> = Rc::new(move |open, cx| {
+    let on_open_change: AiDockVisibilityHandler = Rc::new(move |open, cx| {
         if let Some(workspace) = dock_workspace.upgrade() {
             workspace.update(cx, |workspace, cx| {
                 workspace.set_ai_dock_open(open, cx);

@@ -8,6 +8,10 @@ use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
+/// Binary-owned callback that mirrors the standalone Dock's native visibility
+/// into the shared Workspace state.
+pub type AiDockVisibilityHandler = Rc<dyn Fn(bool, &mut App)>;
+
 pub fn dock_window_title() -> String {
     t!("ai.dock.title").to_string()
 }
@@ -105,7 +109,7 @@ pub struct AiDockView {
     assistant: Entity<AiAssistantView>,
     font_family: Option<String>,
     activation_armed: bool,
-    on_open_change: Rc<dyn Fn(bool, &mut App)>,
+    on_open_change: AiDockVisibilityHandler,
     _activation_sub: Subscription,
 }
 
@@ -113,7 +117,7 @@ impl AiDockView {
     pub fn new(
         assistant: Entity<AiAssistantView>,
         font_family: Option<String>,
-        on_open_change: Rc<dyn Fn(bool, &mut App)>,
+        on_open_change: AiDockVisibilityHandler,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
