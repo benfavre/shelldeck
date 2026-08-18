@@ -5,10 +5,11 @@
 
 **Big picture.** `parser.rs`, `grid.rs`, and `url.rs` are the best-tested
 files in the workspace — 66 unit tests together. The VT100/220 subset
-that ShellDeck supports is essentially locked in place. The gaps live
-in `pty.rs`, `session.rs`, and `colors.rs` — none of which have any
-tests today. `pty` in particular must work identically on all three
-targets (SDUC-022), so this crate is the highest-leverage place to add
+that ShellDeck supports is essentially locked in place. `pty.rs` now has
+its process lifecycle covered as well, including the child-reaping
+contract. The remaining gaps live in `session.rs` and `colors.rs`.
+`pty` in particular must work identically on all three targets
+(SDUC-022), so this crate is the highest-leverage place to add
 cross-platform coverage.
 
 ---
@@ -163,7 +164,8 @@ must run on all three targets or be gated with a target-cfg reason.
 | SDTEST-964 | *to write* — resize triggers SIGWINCH on Unix (verify via `stty size`) | SDUC-024 | **Red / P2** | Portable_pty handles the syscall — verifying SIGWINCH delivery adds fragility for a low-value assertion. |
 | SDTEST-965 | `pty.rs::is_alive_and_wait_reflect_child_exit` (`#[cfg(all(test, unix))]`) | SDUC-022 | Green | Added 2026-07-09 (cluster K). Combined with SDTEST-966 — `exit 3` → `wait()` returns non-zero, `is_alive()` flips false. Exact code not pinned (fragile across shell implementations). |
 | SDTEST-966 | (same as SDTEST-965) | SDUC-022 | Green | Same test — the wait() return-code assertion is bundled with is_alive(). |
-| SDTEST-967 | *to write* — dropping PtyMaster kills the child (no zombies) | SDUC-022 | **Red / P0** | Requires a follow-up: `Drop` for `PtyMaster` doesn't kill by default in portable_pty. Deferred pending impl decision. |
+| SDTEST-967 | `pty.rs::dropping_the_pty_hangs_up_and_reaps_the_child` (`#[cfg(target_os = "linux")]`) | SDUC-022 | Green | The zombie was reproduced first: on Unix `portable_pty`'s child *is* `std::process::Child`, whose `Drop` neither kills nor waits, so a closed tab left state `Z` forever. `ChildReaper` now hangs up then reaps. Linux-gated because `/proc/<pid>/stat` is what separates *reaped* from *zombie* — `is_alive() == false` does not. |
+| SDTEST-969 | `pty.rs::a_child_that_ignores_the_hangup_is_killed_after_the_grace_period` (`#[cfg(target_os = "linux")]`) | SDUC-022 | Green | Escalation path, driven through `ChildReaper` with a plain `std::process::Child` (`sleep 120`) so no SIGHUP can end it. Asserts the grace period is spent *before* the kill — an immediate kill would cost the user their shell history. |
 | SDTEST-968 | *to write* — spawn Errs cleanly when shell path is invalid | SDUC-022 | **Red / P1** | |
 
 ---
