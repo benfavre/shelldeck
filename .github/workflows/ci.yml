@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `dev` is the integration branch and now receives merges directly, so it
+    # needs its own signal — it is no longer just a fast-forward of a `main`
+    # that CI already checked.
+    branches: [main, dev]
     paths-ignore:
       - "*.md"
       - "LICENSE*"
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
