@@ -86,7 +86,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-067 | `app_config.rs::load_from_corrupt_returns_err` | SDUC-086 | Green | |
 | SDTEST-068 | *to write* — config with unknown fields still loads (forward compat) | SDUC-081 | **Red / P1** | Server may add a `[foo]` we don't know about yet; must not Err. |
 | SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/jean_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
-| SDTEST-070 | *to write* — save_to writes atomically | SDUC-091 | **Red / P0** | The config is the user's investment; a torn write on power loss is unrecoverable. |
+| SDTEST-070 | `app_config.rs::save_to_replaces_config_file_atomically` | SDUC-091 | Green | A hard link preserves the prior file identity and contents while `save_to` atomically replaces the configured path. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 | SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
 | SDTEST-1382 | `app_config.rs::config_without_companion_section_defaults_to_visible_start` | SDUC-435 | Green | Old configs remain visible by default; an explicit `[companion] start_hidden = true` round-trips through serde. |
@@ -101,7 +101,7 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-080 | `store.rs::round_trip_with_data` | SDUC-087 | Green | |
 | SDTEST-081 | `store.rs::load_from_missing_creates_empty` | SDUC-088 | Green | |
 | SDTEST-082 | `store.rs::load_from_corrupt_returns_err` | SDUC-088 | Green | |
-| SDTEST-083 | *to write* — save writes atomically | SDUC-091 | **Red / P0** | Same rationale as SDTEST-070. |
+| SDTEST-083 | `store.rs::save_to_replaces_connection_store_atomically` | SDUC-091 | Green | The linked prior store remains empty while the replaced path contains the new connection. |
 | SDTEST-084 | `store.rs::round_trip_preserves_manual_ssh_config_and_cloud_sync_sources` | SDUC-087 | Green | Added 2026-07-09 (cluster M). Regression sensor for cloud_sync merge (SDUC-104): 3 connections (one per source) survive save/load with sources + tags preserved. |
 
 ---

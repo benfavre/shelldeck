@@ -2194,6 +2194,10 @@ viewport rather than its exact alpha silhouette.
   where applicable, and required `X-Bext-App-Id` header. Production already
   routed all calls through the authenticated GET/POST helpers; no runtime
   behavior changed.
+- **2026-08-18** — Completed SDTEST-070/083 for SDUC-091. App configuration
+  and connection-store saves now prove their existing atomic replacement
+  behavior through preserved hard links to the prior file versions; no runtime
+  behavior changed.
 - **2026-08-17** — Amended SDUC-414 and added SDTEST-1621: compact Markdown
   headings now scale from the conversation body size, while non-compact
   document headings retain their fixed typography. H1–H4 were manually checked
