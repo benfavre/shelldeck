@@ -3,6 +3,7 @@ use crate::session::SshSession;
 use crate::SshError;
 use russh::client;
 use russh::keys::{Algorithm, PrivateKeyWithHashAlg};
+use russh::Channel;
 use shelldeck_core::models::{Connection, ConnectionSource, ConnectionStatus};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,22 +34,17 @@ impl SshClient {
     /// to the jump host, open a `direct-tcpip` channel to the final target, and
     /// then establish the SSH session over that forwarded channel.
     pub async fn connect(&self, connection: &Connection) -> crate::Result<SshSession> {
-        if let Some(ref proxy_jump) = connection.proxy_jump {
-            // Take only the first hop if a comma-separated chain is specified.
-            let first_hop = proxy_jump.split(',').next().unwrap_or(proxy_jump).trim();
-            if first_hop.is_empty() || first_hop.eq_ignore_ascii_case("none") {
-                // ProxyJump none means direct connection
-                return self.connect_direct(connection).await;
+        match connection.proxy_jump.as_deref().and_then(first_jump_hop) {
+            Some(first_hop) => {
+                tracing::info!(
+                    "Using ProxyJump '{}' to reach {}:{}",
+                    first_hop,
+                    connection.hostname,
+                    connection.port
+                );
+                self.connect_via_jump_host(first_hop, connection).await
             }
-            tracing::info!(
-                "Using ProxyJump '{}' to reach {}:{}",
-                first_hop,
-                connection.hostname,
-                connection.port
-            );
-            self.connect_via_jump_host(first_hop, connection).await
-        } else {
-            self.connect_direct(connection).await
+            None => self.connect_direct(connection).await,
         }
     }
 
@@ -119,23 +115,7 @@ impl SshClient {
             target.hostname,
             target.port
         );
-        let channel = {
-            let jump_handle = jump_session.shared_handle();
-            let h = jump_handle.lock().await;
-            h.channel_open_direct_tcpip(
-                &target.hostname,
-                target.port as u32,
-                "127.0.0.1", // originator address
-                0,           // originator port
-            )
-            .await
-            .map_err(|e| {
-                SshError::ConnectionFailed(format!(
-                    "Failed to open direct-tcpip channel to {}:{}: {}",
-                    target.hostname, target.port, e
-                ))
-            })?
-        };
+        let channel = Self::open_jump_channel(&jump_session, target).await?;
 
         // Convert the SSH channel into an AsyncRead + AsyncWrite stream
         let channel_stream = channel.into_stream();
@@ -180,6 +160,33 @@ impl SshClient {
             forwarded_tcpip_rx,
             jump_session,
         ))
+    }
+
+    /// Open the `direct-tcpip` channel that will carry the final SSH session
+    /// through an already-established jump host session.
+    ///
+    /// Extracted from [`Self::connect_via_jump_host`] so the ProxyJump wiring can
+    /// be proven against an in-memory jump server: the channel must be opened
+    /// against the **target** host, never against the jump host itself.
+    async fn open_jump_channel(
+        jump_session: &SshSession,
+        target: &Connection,
+    ) -> crate::Result<Channel<client::Msg>> {
+        let jump_handle = jump_session.shared_handle();
+        let h = jump_handle.lock().await;
+        h.channel_open_direct_tcpip(
+            &target.hostname,
+            target.port as u32,
+            "127.0.0.1", // originator address
+            0,           // originator port
+        )
+        .await
+        .map_err(|e| {
+            SshError::ConnectionFailed(format!(
+                "Failed to open direct-tcpip channel to {}:{}: {}",
+                target.hostname, target.port, e
+            ))
+        })
     }
 
     /// Parse a jump host specifier string into a `Connection`.
@@ -420,6 +427,20 @@ impl SshClient {
     }
 }
 
+/// Select the hop to jump through from a `ProxyJump` value.
+///
+/// Returns `None` when the value disables proxying, which OpenSSH spells
+/// `ProxyJump none`, and when the field is present but blank. Only the first
+/// hop of a comma-separated chain is honored; chained jumps are not supported
+/// yet and silently using the last hop would connect through the wrong host.
+fn first_jump_hop(proxy_jump: &str) -> Option<&str> {
+    let first_hop = proxy_jump.split(',').next().unwrap_or(proxy_jump).trim();
+    if first_hop.is_empty() || first_hop.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    Some(first_hop)
+}
+
 /// Default private-key candidates under `home`, in probe order
 /// (ed25519 first, matching OpenSSH's modern preference).
 ///
@@ -533,5 +554,255 @@ mod tests {
         let conn = SshClient::parse_jump_spec("root@10.0.0.1:22").unwrap();
         assert!(conn.identity_file.is_none());
         assert!(conn.proxy_jump.is_none());
+    }
+}
+
+/// ProxyJump transport proof.
+///
+/// Two real `russh` servers run over `tokio::io::duplex`: a bastion, and a
+/// target whose whole SSH session is carried inside the bastion's
+/// `direct-tcpip` channel. No socket is opened, and the user's `known_hosts`
+/// is never read or written.
+#[cfg(test)]
+mod proxy_jump_transport_tests {
+    use super::{first_jump_hop, SshClient};
+    use crate::handler::{ClientHandler, ForwardedTcpIpEvent, SshEvent};
+    use crate::session::SshSession;
+    use russh::keys::{ssh_key::Algorithm, PrivateKey};
+    use russh::server::{self, Auth, Msg, Session};
+    use russh::{Channel, ChannelId};
+    use shelldeck_core::models::Connection;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use uuid::Uuid;
+
+    /// Marker written by the *inner* server only. Seeing it in the exec output
+    /// is what proves the session reached the target rather than the bastion.
+    const TARGET_MARKER: &[u8] = b"reached-target-host\n";
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DirectTcpIpRequest {
+        host: String,
+        port: u32,
+    }
+
+    fn in_memory_server_config() -> server::Config {
+        server::Config {
+            inactivity_timeout: None,
+            auth_rejection_time: Duration::from_millis(1),
+            auth_rejection_time_initial: Some(Duration::from_millis(1)),
+            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+                .expect("generate in-memory SSH host key")],
+            ..Default::default()
+        }
+    }
+
+    /// The final host. Answers any command with [`TARGET_MARKER`].
+    struct TargetServer;
+
+    impl server::Handler for TargetServer {
+        type Error = anyhow::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<Msg>,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        async fn exec_request(
+            &mut self,
+            channel: ChannelId,
+            _command: &[u8],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            session.data(channel, TARGET_MARKER.to_vec())?;
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            Ok(())
+        }
+    }
+
+    /// The jump host. Records every `direct-tcpip` request and runs the target
+    /// server inside the channel it just opened.
+    struct BastionServer {
+        requests: mpsc::UnboundedSender<DirectTcpIpRequest>,
+    }
+
+    impl server::Handler for BastionServer {
+        type Error = anyhow::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            let _ = self.requests.send(DirectTcpIpRequest {
+                host: host_to_connect.to_owned(),
+                port: port_to_connect,
+            });
+
+            tokio::spawn(async move {
+                let running = server::run_stream(
+                    Arc::new(in_memory_server_config()),
+                    channel.into_stream(),
+                    TargetServer,
+                )
+                .await
+                .expect("start in-memory SSH target server");
+                let _ = running.await;
+            });
+
+            Ok(true)
+        }
+    }
+
+    /// Authenticated session against the in-memory bastion, standing in for the
+    /// jump session `connect_via_jump_host` builds with `connect_direct`.
+    async fn start_jump_session() -> (
+        SshSession,
+        mpsc::UnboundedReceiver<DirectTcpIpRequest>,
+        JoinHandle<()>,
+    ) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+
+        let server_task = tokio::spawn(async move {
+            let running = server::run_stream(
+                Arc::new(in_memory_server_config()),
+                server_stream,
+                BastionServer {
+                    requests: request_tx,
+                },
+            )
+            .await
+            .expect("start in-memory SSH bastion server");
+            let _ = running.await;
+        });
+
+        let (handle, event_rx, forwarded_rx) = handshake_in_memory(client_stream).await;
+        (
+            SshSession::new(Uuid::new_v4(), handle, event_rx, forwarded_rx),
+            request_rx,
+            server_task,
+        )
+    }
+
+    /// Client half of an in-memory handshake: trusts the generated host key so
+    /// nothing touches `~/.ssh/known_hosts`, and authenticates with `none`.
+    async fn handshake_in_memory<S>(
+        stream: S,
+    ) -> (
+        russh::client::Handle<ClientHandler>,
+        mpsc::UnboundedReceiver<SshEvent>,
+        mpsc::UnboundedReceiver<ForwardedTcpIpEvent>,
+    )
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
+        let handler = ClientHandler::new_trusting_server_key_for_test(event_tx, forwarded_tx);
+        let mut handle = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            stream,
+            handler,
+        )
+        .await
+        .expect("connect to in-memory SSH server");
+        assert!(handle
+            .authenticate_none("shelldeck-test")
+            .await
+            .expect("authenticate in-memory SSH client")
+            .success());
+
+        (handle, event_rx, forwarded_rx)
+    }
+
+    // SDTEST-528
+    #[tokio::test]
+    async fn jump_channel_targets_the_inner_host_and_carries_its_session() {
+        let (jump_session, mut requests, server_task) = start_jump_session().await;
+
+        let mut target = Connection::new_manual(
+            "target".to_owned(),
+            "inner.example.internal".to_owned(),
+            "deploy".to_owned(),
+        );
+        target.port = 2022;
+
+        let channel = timeout(
+            Duration::from_secs(2),
+            SshClient::open_jump_channel(&jump_session, &target),
+        )
+        .await
+        .expect("direct-tcpip request timed out")
+        .expect("open direct-tcpip channel through the jump host");
+
+        // The bastion must be asked for the *target*, never for itself.
+        let request = timeout(Duration::from_secs(2), requests.recv())
+            .await
+            .expect("direct-tcpip request not observed")
+            .expect("bastion request channel closed");
+        assert_eq!(
+            request,
+            DirectTcpIpRequest {
+                host: "inner.example.internal".to_owned(),
+                port: 2022,
+            }
+        );
+
+        // A full second SSH session runs inside that channel, and the jump
+        // session is moved into it so the tunnel stays open for its lifetime.
+        let (inner_handle, inner_events, inner_forwarded) =
+            handshake_in_memory(channel.into_stream()).await;
+        let session = SshSession::new_with_jump(
+            target.id,
+            inner_handle,
+            inner_events,
+            inner_forwarded,
+            jump_session,
+        );
+
+        let result = timeout(Duration::from_secs(2), session.exec("hostname"))
+            .await
+            .expect("exec over the jump channel timed out")
+            .expect("exec over the jump channel failed");
+        assert_eq!(result.stdout, TARGET_MARKER);
+        assert_eq!(result.exit_code, Some(0));
+
+        server_task.abort();
+    }
+
+    // SDTEST-530
+    #[test]
+    fn proxy_jump_none_or_blank_means_direct_and_a_chain_uses_its_first_hop() {
+        assert_eq!(
+            first_jump_hop("bastion.example.com"),
+            Some("bastion.example.com")
+        );
+        assert_eq!(first_jump_hop("  admin@bastion  "), Some("admin@bastion"));
+        assert_eq!(first_jump_hop("first@a,second@b"), Some("first@a"));
+        assert_eq!(first_jump_hop("none"), None);
+        assert_eq!(first_jump_hop("None"), None);
+        assert_eq!(first_jump_hop(""), None);
+        assert_eq!(first_jump_hop("   "), None);
     }
 }
