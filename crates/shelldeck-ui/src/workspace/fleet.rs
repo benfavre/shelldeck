@@ -1,5 +1,9 @@
 use super::*;
 
+fn runtime_loop_requested(runtime_enabled: bool, credentials_available: bool) -> bool {
+    runtime_enabled && credentials_available
+}
+
 impl Workspace {
     // --- Jean fleet runtime ---
 
@@ -271,7 +275,10 @@ impl Workspace {
 
     /// Start/stop the runtime loop from config + auth state.
     pub fn sync_runtime_loop(&mut self, cx: &mut Context<Self>) {
-        let want = self.app_config.jean_runtime.enabled && self.fleet_base_token().is_some();
+        let want = runtime_loop_requested(
+            self.app_config.jean_runtime.enabled,
+            self.fleet_base_token().is_some(),
+        );
         if want {
             if self._runtime_loop.is_none() {
                 let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
@@ -604,5 +611,19 @@ impl Workspace {
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_loop_requested;
+
+    // SDTEST-272 — the Jean runtime must never start implicitly.
+    #[test]
+    fn runtime_loop_requested_requires_explicit_enablement_and_credentials() {
+        assert!(!runtime_loop_requested(false, false));
+        assert!(!runtime_loop_requested(false, true));
+        assert!(!runtime_loop_requested(true, false));
+        assert!(runtime_loop_requested(true, true));
     }
 }
