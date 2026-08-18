@@ -147,3 +147,11 @@ risques par frontière observable et impose une vérification avant correction.
   super-admin en mode User qui lance « Ouvrir Sites » doit passer en Dev. Un
   pré-garde sur le mode courant casserait ce chemin. Vérifié route par route
   avant de conclure.
+- **2026-08-18 — SDTEST-967 était instable, la CI l'a attrapé.** Le test posait
+  que le reaper signale toujours la branche empruntée. Faux : quand l'enfant est
+  déjà sorti au moment du `Drop` — le cas courant sur un runner chargé, où l'EOF
+  du writer précède la libération du master — la sortie anticipée rendait la main
+  sans prévenir l'observateur, et `recv_timeout` renvoyait `Disconnected`. Le
+  produit était correct (`try_wait` moissonne dans cette branche aussi) ; c'est la
+  preuve qui l'était moins. La machine de développement perd systématiquement
+  cette course, la CI la gagne — d'où un test vert en local et rouge en CI.
