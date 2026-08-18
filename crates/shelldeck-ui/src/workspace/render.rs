@@ -682,15 +682,6 @@ impl Render for Workspace {
             ));
         }
 
-        if let Some(sheet) = &self.ai_sheet {
-            // The Sheet backdrop and panel own their native corners directly,
-            // following the same proven structure as `render_user_sheet`.
-            root = root.child(sheet.clone());
-        }
-        if let Some(sheet) = &self.ai_workflow_sheet {
-            root = root.child(sheet.clone());
-        }
-
         // Toast notification overlay
         root = root.child(self.toasts.clone());
 
@@ -736,6 +727,25 @@ impl Render for Workspace {
             }
 
             root = root.child(modal_layer);
+        }
+
+        // The AI sheets paint *after* the modal layer on purpose.
+        //
+        // `modal_layer` is a full-window `occlude()` backdrop, so anything
+        // added before it is visible but inert. The Script and Tunnel naming
+        // sheets are opened from a button *inside* that very modal, so putting
+        // them underneath made them unusable: no click reached Accept, Send, or
+        // even their close button, and the request was never sent.
+        //
+        // On top is also the right semantics: the sheet is a child surface of
+        // the modal that opened it, so while it is up the modal must wait.
+        if let Some(sheet) = &self.ai_sheet {
+            // The Sheet backdrop and panel own their native corners directly,
+            // following the same proven structure as `render_user_sheet`.
+            root = root.child(sheet.clone());
+        }
+        if let Some(sheet) = &self.ai_workflow_sheet {
+            root = root.child(sheet.clone());
         }
 
         // User-mode delete-issue confirm modal (surfaces outside modal_backdrop

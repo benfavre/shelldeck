@@ -31,6 +31,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-011 | Support / Compositeurs | Tickets et Demandes utilisent le `Composer` partagé ; les placeholders sont visibles et les outils de pièces jointes suivent la même géométrie. | P0 | Validé | Réponse, note interne et panneau de pièces jointes contrôlés sans envoi sur les deux surfaces. |
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | Validé | Deux fils longs contrôlés avec images, fichiers, lien, notes, citations et brouillons. |
+| UX-014 | IA / Feuilles d'assistant | Toute feuille IA était **inerte** dès qu'un formulaire modal était ouvert : `render.rs` ajoutait les feuilles avant le `modal_layer`, un `occlude()` plein écran. Le nommage IA d'un script ou d'un tunnel, dont le seul point d'entrée est un bouton *dans* ce modal, était donc inutilisable — aucun clic n'atteignait Envoyer, Accepter, ni même la croix. | P0 | À valider | Ouvrir « Nouveau script » → **Nommer** → la feuille répond, l'IA génère, Accepter renseigne le champ Nom. Vérifier aussi les quatre coins de la fenêtre feuille ouverte. |
 
 ## Règle de mise à jour
 
