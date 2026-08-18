@@ -665,6 +665,33 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 2048];
+        loop {
+            let read = stream.read(&mut buffer).expect("read request");
+            assert!(read > 0, "client closed before sending a complete request");
+            request.extend_from_slice(&buffer[..read]);
+
+            let Some(headers_end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..headers_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= headers_end + 4 + content_length {
+                return String::from_utf8(request).expect("request is UTF-8");
+            }
+        }
+    }
+
     #[test]
     fn account_info_initial_and_display() {
         let a = AccountInfo {
@@ -715,6 +742,54 @@ mod tests {
             serde_json::from_str(r#"{"ok":true,"label":"x"}"#).expect("parse legacy");
         assert!(!legacy.is_superadmin);
         assert!(!legacy.account_info().is_superadmin);
+    }
+
+    // SDTEST-181
+    #[test]
+    fn login_password_sends_credentials_and_device_name() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind login mock");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept login request");
+            let request = read_http_request(&mut stream);
+            let body = r#"{"ok":true,"token":"sd_test","user":{"email":"alice@example.com","name":"Alice"},"is_superadmin":false}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write login response");
+            request
+        });
+
+        let (token, account) = login_password(
+            &base_url,
+            "alice@example.com",
+            "p@ss\"word",
+            "Laptop de test",
+        )
+        .expect("login response");
+
+        assert_eq!(token, "sd_test");
+        assert_eq!(account.email, "alice@example.com");
+        assert_eq!(account.name, "Alice");
+        let request = server.join().expect("login mock thread");
+        assert_eq!(
+            request.lines().next(),
+            Some("POST /api/manage/shelldeck/auth HTTP/1.1")
+        );
+        let (_, raw_body) = request.split_once("\r\n\r\n").expect("request body");
+        let body: serde_json::Value = serde_json::from_str(raw_body).expect("JSON login body");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "action": "login",
+                "email": "alice@example.com",
+                "password": "p@ss\"word",
+                "device_name": "Laptop de test",
+            })
+        );
     }
 
     #[test]

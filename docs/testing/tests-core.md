@@ -208,7 +208,7 @@ Existing: **0 tests**.
 | SDTEST-178 | `cloud_account.rs::browser_connect_ignores_wrong_state_and_favicon_then_accepts` | SDUC-145 | Green | |
 | SDTEST-179 | `cloud_account.rs::browser_connect_times_out` | SDUC-146 | Green | |
 | SDTEST-180 | `cloud_account.rs::browser_connect_percent_decodes_token` | SDUC-147 | Green | |
-| SDTEST-181 | *to write* — login_password sends `{action:"login", email, password}` body | SDUC-140 | **Red / P0** | Only URL/whoami paths are covered; the login body shape is not. Mock TcpListener assertion. |
+| SDTEST-181 | `cloud_account.rs::login_password_sends_credentials_and_device_name` | SDUC-140 | Green | Contract mock asserts the POST route and exact JSON body, then parses the returned token and identity. |
 | SDTEST-182 | *to write* — logout POSTs `{action:"logout"}` and swallows errors | SDUC-143 | **Red / P1** | Assert local state clears even when server 500s. |
 | SDTEST-183 | *to write* — provider=None targets the password page URL | SDUC-149 | **Red / P1** | Regression sensor for the URL shape. |
 | SDTEST-184 | `cloud_account.rs::resolve_effective_mode_*` + `can_switch_true_for_signed_in_inklura_support_or_superadmin` + `allowed_modes_matches_the_tier_table` | SDUC-152 | Green | Full 24-cell role/mode truth table: logged-out is defensive User behind welcome; regular/customer-admin is User-only; `inklura_support` gets User+Support; super-admin gets all three. Workspace delegates effective mode, switcher, palette and execution guards to this matrix. |
