@@ -75,6 +75,13 @@ ligne existante.
   `windows-latest`/x86_64. Ce périmètre exerce notamment les branches de
   processus Windows sans doubler immédiatement toute la lourde suite GPUI ; le
   statut restera ouvert jusqu'aux résultats GitHub réels.
+- **2026-08-18 — NEXT-004, premier passage réel.** macOS ARM64 a réussi. Le
+  runner Windows a exécuté 288 tests et révélé que SDTEST-1585 lui imposait à
+  tort une sortie Unix (`/var/www/html`) alors que la fonction testée joint des
+  chemins locaux natifs (`C:\\…`). Le comportement de production était correct :
+  le test couvre désormais les attentes Unix sur Unix et lecteur/backslashes
+  sur Windows. Le faux exécutable `.cmd` de Jcode a, lui, réussi dès ce premier
+  passage.
 - **2026-08-17 — UX-001 → À valider.** Adaptateur de présentation appliqué aux
   listes et détails des tickets/demandes, aux confirmations de suppression et
   aux demandes récentes des modes User et Support. Les trois cas unitaires
