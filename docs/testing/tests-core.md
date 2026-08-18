@@ -149,10 +149,10 @@ Existing: **0 tests**.
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-120 | `keychain.rs::live_password_round_trip` (`#[ignore]`, `SHELLDECK_LIVE_KEYCHAIN=1`) | SDUC-042 | Yellow | Added 2026-07-09 (cluster L). Live Secret Service round-trip; `SHELLDECK_LIVE_KEYCHAIN=1 cargo test -- --ignored keychain::tests::live_`. |
-| SDTEST-121 | *to write* — same on macOS | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
-| SDTEST-122 | *to write* — same on Windows | SDUC-042, SDUC-334 | **Red / P0** | Deferred → [`INFRA_BLOCKED.md`](./INFRA_BLOCKED.md) § CI matrix. |
-| SDTEST-123 | `keychain.rs::live_get_password_none_for_missing_entry` + `live_delete_password_missing_entry_is_ok` (`#[ignore]`) | SDUC-042 | Yellow | 2 tests, added 2026-07-09 (cluster L). Ok(None) distinction pinned; delete on missing = Ok(()) for idempotent logout. |
+| SDTEST-120 | `keychain.rs::live_password_round_trip` (`#[ignore]`, `SHELLDECK_LIVE_KEYCHAIN=1`) | SDUC-042 | Green | Added 2026-07-09 (cluster L). **This test was failing the whole time and nobody knew**: `keyring = "3"` shipped with no backend feature, so every store went to the in-process mock. Being `#[ignore]`d, it never ran. Green since the platform features were enabled; CI now runs it on macOS and Windows. |
+| SDTEST-121 | `keychain.rs::live_*` on the `macos-aarch64` runner (`Native keychain round-trip (macOS)` step) | SDUC-042, SDUC-334 | Green | The step creates a throwaway keychain, makes it default, runs the round-trips and deletes it — the runner's login keychain is never touched and nothing outlives the job. |
+| SDTEST-122 | `keychain.rs::live_*` on the `windows-x86_64` runner (`Native credential round-trip (Windows)` step) | SDUC-042, SDUC-334 | Green | Credential Manager is per-user and the runner user is disposable, so no isolation dance is needed. Entries still carry a pid+nanos host name and are deleted. |
+| SDTEST-123 | `keychain.rs::live_get_password_none_for_missing_entry` + `live_delete_password_missing_entry_is_ok` (`#[ignore]`) | SDUC-042 | Green | 2 tests, added 2026-07-09 (cluster L). Ok(None) distinction pinned; delete on missing = Ok(()) for idempotent logout. These two passed even against the mock — only the round-trip could expose a store that never stores. |
 | SDTEST-124 | `keychain.rs::password_and_passphrase_key_namespaces_do_not_collide` + `entry_key_is_user_at_host` + `passphrase_key_carries_prefix_and_path` | SDUC-042 | Green | 3 tests, added 2026-07-09 (cluster L). Pure fns — no OS keychain. Hostile fixture: SSH key path spelling out `user@host.example` proves the `passphrase:` prefix is load-bearing. |
 
 ---

@@ -50,7 +50,17 @@ anyhow = "1"
 thiserror = "2"
 directories = "6"
 notify = "7"
-keyring = "3"
+# Platform credential stores are all behind feature flags in keyring 3: with
+# none enabled, `keyring::default` resolves to the in-process **mock** store on
+# every OS, so nothing is ever persisted. The deps are target-gated upstream,
+# so naming all three here costs nothing on the other platforms. `crypto-rust`
+# keeps the Secret Service session encryption off OpenSSL.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 auto-launch = "0.5"
 tray-icon = "0.22"
 notify-rust = "4"

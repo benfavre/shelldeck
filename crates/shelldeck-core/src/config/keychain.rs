@@ -225,7 +225,7 @@ mod tests {
 
     // SDTEST-120 — store / get / delete round-trip.
     #[test]
-    #[ignore = "requires SHELLDECK_LIVE_KEYCHAIN=1 + a running Secret Service (Linux)"]
+    #[ignore = "needs a real credential store: SHELLDECK_LIVE_KEYCHAIN=1 plus a Secret Service on Linux. CI runs it on the macOS and Windows runners."]
     fn live_password_round_trip() {
         if !live_gate() {
             eprintln!("skipped: SHELLDECK_LIVE_KEYCHAIN not set");
@@ -248,7 +248,7 @@ mod tests {
     // NOT Err (consumers rely on the distinction to choose between
     // "prompt user" and "surface error toast").
     #[test]
-    #[ignore = "requires SHELLDECK_LIVE_KEYCHAIN=1 + a running Secret Service (Linux)"]
+    #[ignore = "needs a real credential store: SHELLDECK_LIVE_KEYCHAIN=1 plus a Secret Service on Linux. CI runs it on the macOS and Windows runners."]
     fn live_get_password_none_for_missing_entry() {
         if !live_gate() {
             return;
