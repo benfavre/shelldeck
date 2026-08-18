@@ -467,30 +467,25 @@ impl Workspace {
         self.sync_ai_tasks(cx);
     }
 
+    /// Revalidated immediately before execution as well as at staging time —
+    /// see `.agents/ai.md`. A plan staged in Dev must not survive a switch back
+    /// to User.
     fn ai_action_allowed(&self, plan: &AiActionPlan) -> bool {
-        if !self.signed_in() {
-            return false;
-        }
-        match &plan.payload {
-            AiActionPayload::TerminalCommand { .. }
-            | AiActionPayload::ScriptExecution { .. }
-            | AiActionPayload::FleetDispatch { .. } => self.can_access_mode(AppMode::Dev),
-            AiActionPayload::SupportSend { .. } => self.can_access_mode(AppMode::Support),
-            AiActionPayload::JeanDispatch { .. } => self.effective_jean_config().is_some(),
-            AiActionPayload::ClippyReplaceSelection { .. } => {
-                self.app_config.ai.allows(AiSurface::Clippy)
-            }
-        }
+        super::ai_routing::ai_action_permitted(&self.ai_action_context(), &plan.payload)
     }
 
     pub(super) fn stage_ai_action(&mut self, mut plan: AiActionPlan, cx: &mut Context<Self>) {
-        if !self.ai_action_allowed(&plan) {
-            return;
-        }
         let level = self.app_config.ai.policies.level_for(plan.capability);
         plan.autonomy = level;
-        match ai_action_disposition(level, plan.risk) {
-            AiActionDisposition::DraftOnly => {
+        let route = super::ai_routing::route_ai_action(
+            &self.ai_action_context(),
+            &plan.payload,
+            level,
+            plan.risk,
+        );
+        match route {
+            super::ai_routing::AiActionRoute::Refused => {}
+            super::ai_routing::AiActionRoute::Draft => {
                 self.set_ai_action_task_status(&plan, AiTaskStatus::Ready, None, cx);
                 self.show_toast(
                     t!("toast.ai.policy_preparation_only").to_string(),
@@ -498,12 +493,15 @@ impl Workspace {
                     cx,
                 );
             }
-            AiActionDisposition::Confirm => {
+            super::ai_routing::AiActionRoute::AwaitConfirmation => {
                 self.set_ai_action_task_status(&plan, AiTaskStatus::AwaitingConfirmation, None, cx);
                 self.ai_action_confirmation = Some(plan);
                 cx.notify();
             }
-            AiActionDisposition::Execute => {
+            // Still routed through `confirm_ai_action`, which revalidates the
+            // target: the automatic path is a skipped dialog, not a shortcut
+            // around the execution gate.
+            super::ai_routing::AiActionRoute::ExecuteWithoutDialog => {
                 self.set_ai_action_task_status(&plan, AiTaskStatus::AwaitingConfirmation, None, cx);
                 self.ai_action_confirmation = Some(plan);
                 self.confirm_ai_action(cx);
