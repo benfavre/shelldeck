@@ -2189,6 +2189,12 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-18** — Promoted SDTEST-1584 to Green and made SDTEST-1585
+  native-runner-aware. CI now runs `shelldeck-core` on macOS ARM64 and Windows
+  x86_64 in addition to the complete Ubuntu job. The first Windows execution
+  exposed a test that incorrectly expected Unix separators from a native local
+  path helper; the corrected test pins Unix paths on Unix and drive-letter
+  paths on Windows, while the production helper remains unchanged.
 - **2026-08-18** — Corrected and completed SDTEST-272 for SDUC-206. The safety
   boundary lives in `Workspace::sync_runtime_loop`, before the core
   `runtime_tick`: its full enablement/credentials truth table now proves that a

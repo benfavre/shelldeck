@@ -44,7 +44,7 @@ réel doit être contrôlé afin de ne pas corriger un problème déjà résolu.
 | NEXT-001 | Jean / Runtime | Verrouiller la garantie qu'un runtime désactivé ne démarre aucune boucle ni requête, même si un compte valide est présent. | P0 | Terminé | SDTEST-272 couvre toute la table de vérité activation/identifiants au point d'entrée de la boucle ; la garde défensive de chaque itération reste en place. |
 | NEXT-002 | Bext / Instance distante | La gestion Bext depuis une connexion SSH cible encore `127.0.0.1` local ; un tunnel seul serait rejeté par la wire-auth Bext désormais activée. | P1 | Bloqué | Définir comment ShellDeck obtient une identité autorisée (`X-Bext-Sdk-Token` ou contrat administratif dédié), puis tester tunnel, authentification, erreur et fermeture. |
 | NEXT-003 | Demandes | Les tags ne peuvent pas encore être gérés de bout en bout faute de mutation et de filtrage dans l'API Issues. | P1 | Bloqué | Faire évoluer le contrat serveur, puis couvrir création, modification, lecture et filtrage côté client. |
-| NEXT-004 | CI multiplateforme | Les tests automatiques ne s'exécutaient que sous Ubuntu ; les chemins macOS et Windows étaient seulement compilés pendant les releases. | P1 | En cours | Exécuter `shelldeck-core` sur macOS ARM64 et Windows avec le nightly épinglé, puis confirmer les deux jobs réels avant de clore. |
+| NEXT-004 | CI multiplateforme | Les tests automatiques ne s'exécutaient que sous Ubuntu ; les chemins macOS et Windows étaient seulement compilés pendant les releases. | P1 | Terminé | `shelldeck-core` passe nativement sur macOS ARM64 et Windows x86_64 avec le nightly épinglé ; la suite Ubuntu complète reste inchangée. |
 | NEXT-005 | Infrastructure de test | Les scénarios SSH de session/pool/tunnel, l'horloge/HTTP de l'updater et certains branchements GPUI restent difficiles à isoler. | P1 | Ouvert | Introduire successivement `FakeTransport`, horloge/HTTP injectables et harnais de branchement UI. |
 | NEXT-006 | Dette UI | Finir seulement les migrations de dialogues standard et les identifiants stables/allocations des lignes Support qui sont encore mesurables. | P2 | Ouvert | Reproduire ou profiler chaque cas avant modification, puis vérifier visuellement les surfaces touchées. |
 
@@ -82,6 +82,11 @@ ligne existante.
   le test couvre désormais les attentes Unix sur Unix et lecteur/backslashes
   sur Windows. Le faux exécutable `.cmd` de Jcode a, lui, réussi dès ce premier
   passage.
+- **2026-08-18 — NEXT-004 → Terminé.** Après correction du test, le second
+  passage natif a réussi sur macOS ARM64 (1 min 28, 297 tests core réussis) et
+  Windows x86_64 (3 min 40, 288 tests réussis, 5 ignorés). SDTEST-1584 passe
+  désormais dans la CI normale au lieu de dépendre de la seule compilation de
+  release.
 - **2026-08-17 — UX-001 → À valider.** Adaptateur de présentation appliqué aux
   listes et détails des tickets/demandes, aux confirmations de suppression et
   aux demandes récentes des modes User et Support. Les trois cas unitaires

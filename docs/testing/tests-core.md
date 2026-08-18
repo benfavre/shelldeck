@@ -281,7 +281,7 @@ Existing: **0 tests**.
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
 | SDTEST-272 | `workspace/fleet.rs::runtime_loop_requested_requires_explicit_enablement_and_credentials` | SDUC-206 | Green | The Workspace gate is the layer that prevents `runtime_tick` from ever being reached while disabled; its complete enablement/credentials truth table is pinned in `shelldeck-ui`. |
-| SDTEST-1584 | `jean_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Yellow | Added 2026-08-06. Windows twin of the JSON-output parse test through a `.cmd` batch fake (std launches it via `cmd.exe`), covering the real `JcodeExecutor` spawn→parse path on the one platform where process launch differs. **Yellow: no CI target compiles or runs it today** — `ci.yml` tests on ubuntu only and the release Windows job only builds. Per `.agents/testing.md` item 5, closing the gap needs a windows-latest `cargo test -p shelldeck-core` (or at least `cargo check --tests --target x86_64-pc-windows-msvc`). |
+| SDTEST-1584 | `jean_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Green | Added 2026-08-06, activated in CI 2026-08-18. The `Core tests (windows-x86_64)` job runs the `.cmd` batch fake through the real `JcodeExecutor` spawn→parse path on `windows-latest`. |
 
 > ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
 > `c5dd9c2`/`148b975` (`jcode_executor_uses_run_ndjson_flags_and_prompt_arg`,
