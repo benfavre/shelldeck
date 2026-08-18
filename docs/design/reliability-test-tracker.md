@@ -18,7 +18,7 @@ risques par frontière observable et impose une vérification avant correction.
 |---|---|---|---|---|---|---|
 | REL-001 | NEXT-001 | Jean / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
 | REL-002 | NEXT-004 | CI multiplateforme | Les branches core macOS et Windows n'étaient pas exécutées avant release. | P1 | Terminé | CI native : 297 tests sur macOS ARM64 et 288 sur Windows x86_64 ; SDTEST-1584/1585 sont exercés. |
-| REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | En cours | Session, tunnels et ProxyJump prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/566 ; poursuivre avec le remote forward SDTEST-565. Le pool dormant est suivi par DEBT-005. |
+| REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquent de preuve de cycle de vie. | P0 | À vérifier | Auditer SDTEST-967 et 980..983 ; décider explicitement le contrat de `Drop` avant toute correction. |
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
@@ -67,3 +67,15 @@ risques par frontière observable et impose une vérification avant correction.
   place — il lie les deux durées de vie — mais son commentaire actuel affirme
   plus que ce qui est démontré. À reprendre avec une preuve dédiée avant de
   reformuler le contrat.
+- **2026-08-18 — REL-003 terminé.** Le remote forward est la dernière direction
+  couverte : le serveur en mémoire enregistre `tcpip_forward`, puis joue le côté
+  distant en ouvrant lui-même le canal `forwarded-tcpip`. L'événement traverse le
+  vrai `ClientHandler` jusqu'à `forwarded_tcpip_rx`, ce qui rend SDTEST-602 vert
+  du même coup — c'était une ligne rouge en retard sur le code, pas un manque. Les
+  mutations de contrôle confirment la preuve : mauvais port local et tâche de
+  connexion détachée font échouer le test.
+- **2026-08-18 — Asymétrie relevée.** `start_remote_forward` ne conserve pas le
+  handle client, contrairement aux forwards local et SOCKS : ses canaux sont
+  ouverts par le serveur. En production, la `SshSession` propriétaire maintient le
+  transport ; ce n'est donc pas un défaut, mais le test doit tenir ce handle
+  explicitement, et c'est commenté à cet endroit.
