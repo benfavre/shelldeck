@@ -1665,36 +1665,44 @@ impl Workspace {
                             return;
                         }
                     };
-                    let applied = match kind {
-                        AiNamingKind::Script => self.script_form.as_ref().is_some_and(|form| {
-                            form.update(cx, |form, cx| form.apply_ai_name(generated.name, cx));
-                            true
-                        }),
-                        AiNamingKind::Terminal => {
-                            Uuid::parse_str(target_id).ok().is_some_and(|id| {
-                                self.terminal
-                                    .update(cx, |view, cx| {
-                                        view.apply_ai_name(id, generated.name, cx)
-                                    })
-                                    .is_ok()
+                    let open_script_form = self
+                        .script_form
+                        .as_ref()
+                        .map(|form| form.entity_id().to_string());
+                    let open_tunnel_form = self
+                        .port_forward_form
+                        .as_ref()
+                        .map(|form| form.entity_id().to_string());
+                    let application = super::ai_routing::resolve_naming_application(
+                        *kind,
+                        target_id,
+                        open_script_form.as_deref(),
+                        open_tunnel_form.as_deref(),
+                        self.user_new_request_sheet_open,
+                    );
+                    let applied = match application {
+                        super::ai_routing::NamingApplication::ScriptForm => {
+                            self.script_form.as_ref().is_some_and(|form| {
+                                form.update(cx, |form, cx| form.apply_ai_name(generated.name, cx));
+                                true
                             })
                         }
-                        AiNamingKind::Tunnel => {
+                        super::ai_routing::NamingApplication::Terminal(id) => self
+                            .terminal
+                            .update(cx, |view, cx| view.apply_ai_name(id, generated.name, cx))
+                            .is_ok(),
+                        super::ai_routing::NamingApplication::TunnelForm => {
                             self.port_forward_form.as_ref().is_some_and(|form| {
                                 form.update(cx, |form, cx| form.apply_ai_name(generated.name, cx));
                                 true
                             })
                         }
-                        AiNamingKind::Issue => {
-                            if self.user_new_request_sheet_open {
-                                self.issue_title_state.update(cx, |state, cx| {
-                                    state.replace_content(generated.name, cx)
-                                });
-                                true
-                            } else {
-                                false
-                            }
+                        super::ai_routing::NamingApplication::IssueDraft => {
+                            self.issue_title_state
+                                .update(cx, |state, cx| state.replace_content(generated.name, cx));
+                            true
                         }
+                        super::ai_routing::NamingApplication::TargetLost => false,
                     };
                     if !applied {
                         self.show_toast(

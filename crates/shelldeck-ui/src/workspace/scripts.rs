@@ -1164,7 +1164,7 @@ impl Workspace {
             )
         });
 
-        let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
+        let sub = cx.subscribe(&form, |this, form, event: &ScriptFormEvent, cx| {
             match event {
                 ScriptFormEvent::Save(script) => {
                     tracing::info!("Script created: {}", script.name);
@@ -1204,10 +1204,13 @@ impl Workspace {
                     this.generate_script_form_with_ai(instructions.clone(), cx);
                 }
                 ScriptFormEvent::SuggestNameWithAi => {
+                    // The entity id of the form that asked, not a literal: a
+                    // task parked here can be resumed once another form is
+                    // open, and the name must not land on it.
                     this.open_ai_workflow(
                         AiWorkflowTarget::EntityNaming {
                             kind: AiNamingKind::Script,
-                            target_id: "script-form".to_string(),
+                            target_id: form.entity_id().to_string(),
                         },
                         cx,
                     );
@@ -1266,7 +1269,7 @@ impl Workspace {
             )
         });
 
-        let sub = cx.subscribe(&form, |this, _form, event: &ScriptFormEvent, cx| {
+        let sub = cx.subscribe(&form, |this, form, event: &ScriptFormEvent, cx| {
             match event {
                 ScriptFormEvent::Save(script) => {
                     tracing::info!("Script updated: {}", script.name);
@@ -1325,10 +1328,13 @@ impl Workspace {
                     this.generate_script_form_with_ai(instructions.clone(), cx);
                 }
                 ScriptFormEvent::SuggestNameWithAi => {
+                    // The entity id of the form that asked, not a literal: a
+                    // task parked here can be resumed once another form is
+                    // open, and the name must not land on it.
                     this.open_ai_workflow(
                         AiWorkflowTarget::EntityNaming {
                             kind: AiNamingKind::Script,
-                            target_id: "script-form".to_string(),
+                            target_id: form.entity_id().to_string(),
                         },
                         cx,
                     );
