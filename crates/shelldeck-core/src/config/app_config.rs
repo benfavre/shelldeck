@@ -533,6 +533,31 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
+    // SDTEST-070
+    #[test]
+    fn save_to_replaces_config_file_atomically() {
+        let path = temp_path("config.toml");
+        let prior_version = path.with_extension("prior.toml");
+
+        AppConfig::default()
+            .save_to(&path)
+            .expect("save initial config");
+        std::fs::hard_link(&path, &prior_version).expect("link initial config");
+
+        let updated = AppConfig {
+            theme: ThemePreference::Light,
+            ..Default::default()
+        };
+        updated.save_to(&path).expect("replace config atomically");
+
+        let current = AppConfig::load_from(&path).expect("load current config");
+        let prior = AppConfig::load_from(&prior_version).expect("load linked prior config");
+        assert_eq!(current.theme, ThemePreference::Light);
+        assert_eq!(prior.theme, ThemePreference::Dark);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     #[test]
     fn older_config_defaults_pinned_connections_to_empty() {
         let config: AppConfig = toml::from_str(

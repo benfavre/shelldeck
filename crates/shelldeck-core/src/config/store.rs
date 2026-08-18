@@ -374,6 +374,33 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
+    // SDTEST-083
+    #[test]
+    fn save_to_replaces_connection_store_atomically() {
+        let path = temp_path("connections.json");
+        let prior_version = path.with_extension("prior.json");
+
+        ConnectionStore::default()
+            .save_to(&path)
+            .expect("save initial store");
+        std::fs::hard_link(&path, &prior_version).expect("link initial store");
+
+        let mut updated = ConnectionStore::default();
+        updated.connections.push(Connection::new_manual(
+            "production".to_string(),
+            "example.com".to_string(),
+            "root".to_string(),
+        ));
+        updated.save_to(&path).expect("replace store atomically");
+
+        let current = ConnectionStore::load_from(&path).expect("load current store");
+        let prior = ConnectionStore::load_from(&prior_version).expect("load linked prior store");
+        assert_eq!(current.connections.len(), 1);
+        assert!(prior.connections.is_empty());
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     #[test]
     fn load_from_missing_creates_empty() {
         let path = temp_path("connections.json");
