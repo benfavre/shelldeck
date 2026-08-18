@@ -3,7 +3,8 @@
 Ce document est la source de vérité pour la passe de réparation UX commencée
 le 17 août 2026. Les anciennes notes et leurs captures ont été déplacées dans
 `docs/design/local-reviews/archive/`, un espace de travail local ignoré par
-Git.
+Git. Les manques produit, la fiabilité et la dette technique vivent dans les
+registres séparés référencés par [`work-registers.md`](./work-registers.md).
 
 ## Statuts
 
@@ -12,8 +13,6 @@ Git.
 - **À valider** : correction présente et vérifiée techniquement ; recette
   visuelle utilisateur encore attendue.
 - **Validé** : recette visuelle terminée.
-- **Bloqué** : la suite dépend d'un contrat ou d'une infrastructure absente.
-- **Terminé** : chantier technique vérifié, sans recette visuelle applicable.
 
 ## Suivi
 
@@ -33,21 +32,6 @@ Git.
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | Validé | Deux fils longs contrôlés avec images, fichiers, lien, notes, citations et brouillons. |
 
-## Suite produit et technique
-
-Cette liste conserve les prochains chantiers identifiés sans rouvrir les treize
-réparations UX validées ci-dessus. Avant toute modification, le comportement
-réel doit être contrôlé afin de ne pas corriger un problème déjà résolu.
-
-| ID | Surface | Manque ou risque à traiter | Priorité | Statut | Prochaine preuve attendue |
-|---|---|---|---|---|---|
-| NEXT-001 | Jean / Runtime | Verrouiller la garantie qu'un runtime désactivé ne démarre aucune boucle ni requête, même si un compte valide est présent. | P0 | Terminé | SDTEST-272 couvre toute la table de vérité activation/identifiants au point d'entrée de la boucle ; la garde défensive de chaque itération reste en place. |
-| NEXT-002 | Bext / Instance distante | La gestion Bext depuis une connexion SSH cible encore `127.0.0.1` local ; un tunnel seul serait rejeté par la wire-auth Bext désormais activée. | P1 | Bloqué | Définir comment ShellDeck obtient une identité autorisée (`X-Bext-Sdk-Token` ou contrat administratif dédié), puis tester tunnel, authentification, erreur et fermeture. |
-| NEXT-003 | Demandes | Les tags ne peuvent pas encore être gérés de bout en bout faute de mutation et de filtrage dans l'API Issues. | P1 | Bloqué | Faire évoluer le contrat serveur, puis couvrir création, modification, lecture et filtrage côté client. |
-| NEXT-004 | CI multiplateforme | Les tests automatiques ne s'exécutaient que sous Ubuntu ; les chemins macOS et Windows étaient seulement compilés pendant les releases. | P1 | Terminé | `shelldeck-core` passe nativement sur macOS ARM64 et Windows x86_64 avec le nightly épinglé ; la suite Ubuntu complète reste inchangée. |
-| NEXT-005 | Infrastructure de test | Les scénarios SSH de session/pool/tunnel, l'horloge/HTTP de l'updater et certains branchements GPUI restent difficiles à isoler. | P1 | Ouvert | Introduire successivement `FakeTransport`, horloge/HTTP injectables et harnais de branchement UI. |
-| NEXT-006 | Dette UI | Finir seulement les migrations de dialogues standard et les identifiants stables/allocations des lignes Support qui sont encore mesurables. | P2 | Ouvert | Reproduire ou profiler chaque cas avant modification, puis vérifier visuellement les surfaces touchées. |
-
 ## Règle de mise à jour
 
 Une ligne ne passe à **À valider** qu'après correction et tests ciblés. Elle ne
@@ -56,37 +40,6 @@ régression reçoit un nouvel identifiant au lieu d'écraser l'historique d'une
 ligne existante.
 
 ## Journal
-
-- **2026-08-18 — NEXT-001 → Terminé.** L'inventaire attribuait à tort la garde
-  au `runtime_tick` du core. La frontière réelle est
-  `Workspace::sync_runtime_loop` : SDTEST-272 couvre maintenant ses quatre cas
-  activation/identifiants. La production possédait déjà les deux gardes
-  nécessaires ; seule leur expression testable a été extraite, sans changement
-  de comportement réseau.
-- **2026-08-18 — NEXT-002 → Bloqué après vérification.** Le serveur Bext
-  n'accorde plus sa confiance au seul couple loopback/App ID : en mode
-  `BEXT_SDK_WIRE_AUTH=enforce`, il exige aussi un `X-Bext-Sdk-Token` HMAC et
-  refuse les espaces non autorisés. ShellDeck ne reçoit actuellement aucun
-  jeton de ce type. Monter seulement `127.0.0.1:<port> → 127.0.0.1:80` créerait
-  donc une interface qui échoue en 403 et affaiblir cette garde côté serveur
-  serait une régression de sécurité.
-- **2026-08-18 — NEXT-004 → En cours.** La CI candidate ajoute deux jobs
-  natifs et limités à `shelldeck-core` sur `macos-15`/ARM64 et
-  `windows-latest`/x86_64. Ce périmètre exerce notamment les branches de
-  processus Windows sans doubler immédiatement toute la lourde suite GPUI ; le
-  statut restera ouvert jusqu'aux résultats GitHub réels.
-- **2026-08-18 — NEXT-004, premier passage réel.** macOS ARM64 a réussi. Le
-  runner Windows a exécuté 288 tests et révélé que SDTEST-1585 lui imposait à
-  tort une sortie Unix (`/var/www/html`) alors que la fonction testée joint des
-  chemins locaux natifs (`C:\\…`). Le comportement de production était correct :
-  le test couvre désormais les attentes Unix sur Unix et lecteur/backslashes
-  sur Windows. Le faux exécutable `.cmd` de Jcode a, lui, réussi dès ce premier
-  passage.
-- **2026-08-18 — NEXT-004 → Terminé.** Après correction du test, le second
-  passage natif a réussi sur macOS ARM64 (1 min 28, 297 tests core réussis) et
-  Windows x86_64 (3 min 40, 288 tests réussis, 5 ignorés). SDTEST-1584 passe
-  désormais dans la CI normale au lieu de dépendre de la seule compilation de
-  release.
 - **2026-08-17 — UX-001 → À valider.** Adaptateur de présentation appliqué aux
   listes et détails des tickets/demandes, aux confirmations de suppression et
   aux demandes récentes des modes User et Support. Les trois cas unitaires
