@@ -23,7 +23,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | Bloqué | Définir le plus petit harnais GPUI ou extraire des réducteurs purs ; reprendre SDTEST-1365..1377 sans exécuter d'IA réelle. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
-| REL-008 | — | Keychain natif | Les implémentations macOS et Windows compilent, mais aucun aller-retour de trousseau natif n'est exécuté en CI. | P0 | À vérifier | Évaluer l'isolation des runners puis SDTEST-121/122 sans secret utilisateur réel ni état persistant. |
+| REL-008 | — | Keychain natif | **Aucun backend n'était compilé** : `keyring = "3"` sans feature retombe sur le magasin `mock` en mémoire, sur les trois plateformes. Rien n'a jamais été persisté. | P0 | Terminé | Features `apple-native` / `windows-native` / `sync-secret-service` activées ; SDTEST-120/123 passent enfin, et SDTEST-121/122 s'exécutent sur les runners macOS et Windows. |
 | REL-009 | NEXT-005 | Mise à jour | Cadence, HTTP et vérification de hash restent couplés au temps et au réseau réels. | P1 | Ouvert | Injecter horloge et transport HTTP, puis fermer les lignes correspondantes d'`INFRA_BLOCKED.md`. |
 | REL-010 | — | Terminal / protocoles | OSC 7/52, modes souris, styles de curseur, longues chaînes OSC, sélection et caractères larges restent partiellement couverts. | P1 | À vérifier | Reproduire chaque comportement avant de reprendre SDTEST-750..755 et 870..874. |
 | REL-011 | — | Contrats API | Plusieurs lignes rouges Cloud, Issues, Support et Bext peuvent être réelles ou simplement en retard sur le code. | P1 | À vérifier | Auditer les routes et mocks actuels avant d'ajouter des tests ; corriger l'inventaire quand une preuve existe déjà. |
@@ -116,3 +116,21 @@ risques par frontière observable et impose une vérification avant correction.
   `has_jean` et `can_access_mode` exigent un compte). C'était vrai mais nulle
   part énoncé, donc invérifiable. Le prédicat le pose maintenant en tête : le
   comportement à l'exécution est inchangé, la garantie est devenue testable.
+- **2026-08-18 — REL-008 : le trousseau n'a jamais rien enregistré.** L'audit
+  cherchait une couverture CI manquante ; il a trouvé un défaut fonctionnel
+  complet. Dans keyring 3, chaque magasin système est derrière une feature, et
+  `lib.rs` retombe explicitement sur `pub use mock as default` quand aucune n'est
+  activée — sur macOS, Windows **et** Linux. `Cargo.toml` déclarait `keyring =
+  "3"` nu. `store_password` renvoyait donc `Ok(())` dans un mock jeté aussitôt et
+  toute relecture disait « pas trouvé ». Trois chemins réels touchés : mots de
+  passe SSH, passphrases de clés chiffrées, clés d'API IA.
+- **2026-08-18 — Ce qui l'a masqué.** Le seul test capable de l'attraper,
+  SDTEST-120, est `#[ignore]` : il n'a jamais tourné. Lancé sur la machine de
+  développement, il échouait immédiatement. Un test gaté indéfiniment ne protège
+  rien — il donne juste l'apparence d'une couverture dans l'inventaire. C'est la
+  raison pour laquelle les aller-retours natifs sont désormais exécutés en CI et
+  non plus seulement écrits.
+- **2026-08-18 — Preuve retenue.** Le round-trip en processus ne suffisait pas à
+  démontrer que le secret atteint le magasin système. La preuve est une lecture
+  D-Bus depuis un **autre** processus : l'item apparaît dans la collection
+  `login` avec `service: shelldeck-ssh`. Entrée de test supprimée derrière.

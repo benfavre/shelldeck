@@ -115,3 +115,38 @@ jobs:
 
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
+
+      # The keychain round-trips are `#[ignore]`d by default because they need
+      # a real credential store. macOS and Windows runners have one; Linux does
+      # not (no Secret Service on the runner), so this step is per-OS.
+      - name: Native keychain round-trip (macOS)
+        if: runner.os == 'macOS'
+        # Bounded on purpose: an unexpected keychain access prompt would block
+        # until the 30-minute job timeout and report nothing useful.
+        timeout-minutes: 5
+        env:
+          SHELLDECK_LIVE_KEYCHAIN: "1"
+        run: |
+          # A throwaway keychain, created and destroyed inside this step: the
+          # runner's login keychain is never touched and nothing outlives the
+          # job. `set-keychain-settings` with no flags disables the idle
+          # auto-lock that would otherwise make the round-trip flaky.
+          security create-keychain -p shelldeck-ci shelldeck-ci.keychain
+          security set-keychain-settings shelldeck-ci.keychain
+          security unlock-keychain -p shelldeck-ci shelldeck-ci.keychain
+          security list-keychains -d user -s shelldeck-ci.keychain
+          security default-keychain -s shelldeck-ci.keychain
+          # Filter on the full module path: `-- --ignored live_` would also
+          # catch the cloud_sync live smoke test, which hits the real Manage.
+          cargo test -p shelldeck-core -- --ignored config::keychain::tests::live_
+          security delete-keychain shelldeck-ci.keychain
+
+      - name: Native credential round-trip (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        env:
+          SHELLDECK_LIVE_KEYCHAIN: "1"
+        # Credential Manager is per-user and the runner user is disposable, so
+        # there is no shared store to isolate. Each test still writes under a
+        # pid+nanos host name and deletes it.
+        run: cargo test -p shelldeck-core -- --ignored config::keychain::tests::live_

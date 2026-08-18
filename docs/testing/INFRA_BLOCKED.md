@@ -106,16 +106,20 @@ Le module `lib.rs` reste par défaut sur `tokio::time` + `reqwest`.
 
 ---
 
-## 3. CI matrix — macOS et Windows runners
+## 3. CI matrix — macOS et Windows runners — **LEVÉ (2026-08-18)**
 
-**Ce qu'il faut construire.** Étendre `.github/workflows/ci.yml`
-(aujourd'hui `ubuntu-latest` uniquement) à une matrix
-`[ubuntu, macos, windows]` avec cache par OS. Coût cargo : ×3 en
-temps d'exécution, cache réduit le linéaire au bout d'un ou deux
-runs.
+Le job `platform-core-tests` de `.github/workflows/ci.yml` exécute
+`cargo test -p shelldeck-core` sur `macos-15` et `windows-latest`, plus
+les aller-retours de trousseau natifs. Cette section est conservée pour
+l'historique ; ne pas la traiter comme du travail restant.
 
-`release.yml` a déjà cette matrix pour build ; le levier ici est de
-la propager à `cargo test`.
+**Ce qui reste hors matrice.** Seul `shelldeck-core` est testé sur les
+runners non-Linux. `shelldeck-ssh`, `shelldeck-terminal` et
+`shelldeck-ui` restent exercés sur Ubuntu uniquement — c'est un
+élargissement séparé, à ne pas glisser dans un correctif.
+
+**Ce qui avait été prévu.** Étendre `ci.yml` (alors `ubuntu-latest`
+uniquement) à une matrix `[ubuntu, macos, windows]` avec cache par OS.
 
 **Estimation.** ~30min de rédaction du yaml + ~30min de shakedown
 sur les premiers runs (deps système différentes par OS —
@@ -124,10 +128,10 @@ sur les premiers runs (deps système différentes par OS —
 
 **SDTEST débloqués** :
 
-| ID | Cible | Priorité |
-|---|---|---|
-| SDTEST-121 | `keychain.rs` — round-trip Keychain macOS | **P0** |
-| SDTEST-122 | `keychain.rs` — round-trip Credential Manager Windows | **P0** |
+| ID | Cible | Priorité | État |
+|---|---|---|---|
+| SDTEST-121 | `keychain.rs` — round-trip Keychain macOS | **P0** | ✅ Green |
+| SDTEST-122 | `keychain.rs` — round-trip Credential Manager Windows | **P0** | ✅ Green |
 | SDTEST-960..968 | PTY (portable_pty) — spawn / resize / echo / kill sur macOS + Windows | **P0** (déjà Green sur Linux via cluster K) |
 | SDTEST-1201 | `platform.rs::macos_uses_macos_prefix_never_darwin` — s'exécute enfin sur un runner macOS | **P0** (déjà écrit, gate `cfg(target_os = "macos")`) |
 | SDTEST-1202 | `platform.rs::windows_uses_windows_prefix` — idem Windows | **P0** |
