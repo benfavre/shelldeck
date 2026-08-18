@@ -12,6 +12,8 @@ Git.
 - **À valider** : correction présente et vérifiée techniquement ; recette
   visuelle utilisateur encore attendue.
 - **Validé** : recette visuelle terminée.
+- **Bloqué** : la suite dépend d'un contrat ou d'une infrastructure absente.
+- **Terminé** : chantier technique vérifié, sans recette visuelle applicable.
 
 ## Suivi
 
@@ -31,6 +33,21 @@ Git.
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | Validé | Deux fils longs contrôlés avec images, fichiers, lien, notes, citations et brouillons. |
 
+## Suite produit et technique
+
+Cette liste conserve les prochains chantiers identifiés sans rouvrir les treize
+réparations UX validées ci-dessus. Avant toute modification, le comportement
+réel doit être contrôlé afin de ne pas corriger un problème déjà résolu.
+
+| ID | Surface | Manque ou risque à traiter | Priorité | Statut | Prochaine preuve attendue |
+|---|---|---|---|---|---|
+| NEXT-001 | Jean / Runtime | Verrouiller la garantie qu'un runtime désactivé ne démarre aucune boucle ni requête, même si un compte valide est présent. | P0 | Terminé | SDTEST-272 couvre toute la table de vérité activation/identifiants au point d'entrée de la boucle ; la garde défensive de chaque itération reste en place. |
+| NEXT-002 | Bext / Instance distante | La gestion Bext depuis une connexion SSH cible encore `127.0.0.1` local ; il manque le transport distant par tunnel SSH. | P1 | Ouvert | Définir le cycle de vie du tunnel, puis tester connexion, erreur et fermeture sans exposer le port. |
+| NEXT-003 | Demandes | Les tags ne peuvent pas encore être gérés de bout en bout faute de mutation et de filtrage dans l'API Issues. | P1 | Bloqué | Faire évoluer le contrat serveur, puis couvrir création, modification, lecture et filtrage côté client. |
+| NEXT-004 | CI multiplateforme | Les tests automatiques ne s'exécutent que sous Ubuntu ; les chemins macOS et Windows sont seulement compilés pendant les releases. | P1 | Ouvert | Ajouter des jobs de test macOS/Windows, en conservant le nightly et `pathfinder_simd` épinglés. |
+| NEXT-005 | Infrastructure de test | Les scénarios SSH de session/pool/tunnel, l'horloge/HTTP de l'updater et certains branchements GPUI restent difficiles à isoler. | P1 | Ouvert | Introduire successivement `FakeTransport`, horloge/HTTP injectables et harnais de branchement UI. |
+| NEXT-006 | Dette UI | Finir seulement les migrations de dialogues standard et les identifiants stables/allocations des lignes Support qui sont encore mesurables. | P2 | Ouvert | Reproduire ou profiler chaque cas avant modification, puis vérifier visuellement les surfaces touchées. |
+
 ## Règle de mise à jour
 
 Une ligne ne passe à **À valider** qu'après correction et tests ciblés. Elle ne
@@ -40,6 +57,12 @@ ligne existante.
 
 ## Journal
 
+- **2026-08-18 — NEXT-001 → Terminé.** L'inventaire attribuait à tort la garde
+  au `runtime_tick` du core. La frontière réelle est
+  `Workspace::sync_runtime_loop` : SDTEST-272 couvre maintenant ses quatre cas
+  activation/identifiants. La production possédait déjà les deux gardes
+  nécessaires ; seule leur expression testable a été extraite, sans changement
+  de comportement réseau.
 - **2026-08-17 — UX-001 → À valider.** Adaptateur de présentation appliqué aux
   listes et détails des tickets/demandes, aux confirmations de suppression et
   aux demandes récentes des modes User et Support. Les trois cas unitaires

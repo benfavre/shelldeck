@@ -2189,6 +2189,12 @@ viewport rather than its exact alpha silhouette.
 
 ## Change log
 
+- **2026-08-18** — Corrected and completed SDTEST-272 for SDUC-206. The safety
+  boundary lives in `Workspace::sync_runtime_loop`, before the core
+  `runtime_tick`: its full enablement/credentials truth table now proves that a
+  configured account cannot start Jean while `[jean_runtime].enabled` is
+  false. The existing defense-in-depth check inside `runtime_loop_step` remains
+  unchanged.
 - **2026-08-18** — Clarified SDUC-260 and completed SDTEST-332/333: every
   single-instance Bext operation now has contract coverage for its route, body
   where applicable, and required `X-Bext-App-Id` header. Production already
