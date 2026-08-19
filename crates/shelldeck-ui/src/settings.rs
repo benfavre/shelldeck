@@ -38,15 +38,27 @@ const MONOSPACE_FONTS: &[&str] = &[
 /// Cross-platform shortlist for the application UI. Platform-specific faces
 /// are only shown when GPUI can actually resolve them; Inter is embedded by
 /// adabraka-ui and is therefore the stable fallback on every platform.
-const UI_FONT_FAMILIES: &[&str] = &[
-    "Inter",
-    "SF Pro Text",
-    "Segoe UI",
-    "Ubuntu",
-    "Roboto",
-    "JetBrains Mono",
-    "Fira Code",
-];
+///
+/// **Sans-serif only.** A monospace face is a tool for code, terminal output
+/// and aligned columns; it is the wrong instrument for an interface, where it
+/// costs reading speed and makes every label wider than it needs to be. The
+/// two shortlists are deliberately disjoint: [`MONOSPACE_FONTS`] serves the
+/// terminal and the editor, this one serves the interface, and neither offers
+/// the other's picks.
+const UI_FONT_FAMILIES: &[&str] = &["Inter", "SF Pro Text", "Segoe UI", "Ubuntu", "Roboto"];
+
+/// True when `family` is one of the monospace faces we ship for the terminal
+/// and the editor.
+///
+/// Used to reject one as an *interface* family. We only refuse what we can
+/// positively identify — `all_font_names()` says nothing about metrics, so an
+/// installed sans face outside our shortlist is still honoured if it is
+/// configured by hand.
+fn is_monospace_family(family: &str) -> bool {
+    MONOSPACE_FONTS
+        .iter()
+        .any(|mono| mono.eq_ignore_ascii_case(family))
+}
 
 fn font_family_is_available(family: &str, available: &[String]) -> bool {
     available
@@ -54,9 +66,29 @@ fn font_family_is_available(family: &str, available: &[String]) -> bool {
         .any(|candidate| candidate.eq_ignore_ascii_case(family))
 }
 
-pub(crate) fn normalize_ui_font_family(configured: &str, cx: &App) -> String {
-    if configured == "System Default" {
-        return configured.to_string();
+/// The legacy sentinel that used to mean "let the platform decide".
+///
+/// It never named a real family, so every consumer skipped setting a font and
+/// the window fell through to GPUI's built-in default — a *monospace* face on
+/// Linux. Since adabraka components set `theme.tokens.font_family` (Inter)
+/// themselves, the application rendered in two different typefaces at once:
+/// the menu bar in Inter, everything hand-rolled in monospace. The sentinel is
+/// still accepted from older config files; it just resolves like any other
+/// unavailable family now.
+const LEGACY_SYSTEM_DEFAULT: &str = "System Default";
+
+/// Resolve a configured UI family to one that certainly exists.
+///
+/// Never returns a sentinel: the result is always a real family, so callers can
+/// apply it unconditionally. Inter is the floor because ShellDeck embeds and
+/// registers it at startup (`adabraka_ui::fonts::register_fonts`), which makes
+/// it the one family guaranteed present on every platform.
+pub fn normalize_ui_font_family(configured: &str, cx: &App) -> String {
+    if configured.trim().is_empty()
+        || configured == LEGACY_SYSTEM_DEFAULT
+        || is_monospace_family(configured)
+    {
+        return adabraka_ui::fonts::UI_FONT_FAMILY.to_string();
     }
 
     let available = cx.text_system().all_font_names();
@@ -2965,40 +2997,35 @@ fn build_general_language_select(
     })
 }
 
-/// Fresh `Select<SharedString>` for the app UI font. Mirrors the terminal
-/// shortlist with a “System Default” option on top — that value falls back
-/// to the platform's default sans-serif family.
+/// Fresh `Select<SharedString>` for the app UI font.
+///
+/// Every row is a family that is actually installed, Inter first — it is the
+/// embedded default and the fallback for anything else. There is deliberately
+/// no "System Default" row: that sentinel never named a real family, so
+/// choosing it produced GPUI's monospace fallback rather than a system
+/// sans-serif. Older configs still carrying it resolve to Inter at load and are
+/// rewritten on the next save.
 fn build_ui_font_family_select(
     config: &AppConfig,
     cx: &mut Context<SettingsView>,
 ) -> Entity<Select<SharedString>> {
-    // "System Default" is a stable sentinel value persisted in config
-    // (see `AppConfig::default().general.ui_font_family`); only the display
-    // label is translated.
-    let system_default_label: SharedString = t!("settings.general.font.system_default")
-        .to_string()
-        .into();
+    let inter: SharedString = SharedString::from(adabraka_ui::fonts::UI_FONT_FAMILY);
     let available = cx.text_system().all_font_names();
-    let fonts = std::iter::once("System Default").chain(
-        UI_FONT_FAMILIES
-            .iter()
-            .copied()
-            .filter(|name| font_family_is_available(name, &available)),
-    );
-    let entries: Vec<(SharedString, SharedString)> = fonts
-        .map(|name| {
-            let label: SharedString = if name == "System Default" {
-                system_default_label.clone()
-            } else {
-                SharedString::from(name)
-            };
-            (SharedString::from(name), label)
-        })
+    let entries: Vec<(SharedString, SharedString)> = UI_FONT_FAMILIES
+        .iter()
+        .copied()
+        .filter(|name| font_family_is_available(name, &available))
+        .map(|name| (SharedString::from(name), SharedString::from(name)))
         .collect();
+    let current = if config.general.ui_font_family == LEGACY_SYSTEM_DEFAULT {
+        adabraka_ui::fonts::UI_FONT_FAMILY
+    } else {
+        config.general.ui_font_family.as_str()
+    };
     build_string_field_select(
         entries,
-        &config.general.ui_font_family,
-        Some(system_default_label),
+        current,
+        Some(inter),
         true,
         cx,
         |this| this.config.general.ui_font_family.as_str(),
@@ -3195,10 +3222,52 @@ fn ai_clippy_replace_policy_row(
 mod tests {
     use super::{
         apply_character_choice, compositor_companion_limited, display_shortcut,
-        shortcut_error_is_portal_missing, validate_shortcut_capture, ClippyAppearanceConfig,
-        ShortcutCaptureValidation,
+        is_monospace_family, shortcut_error_is_portal_missing, validate_shortcut_capture,
+        ClippyAppearanceConfig, ShortcutCaptureValidation, MONOSPACE_FONTS, UI_FONT_FAMILIES,
     };
     use gpui::Keystroke;
+
+    // SDTEST-1653
+    //
+    // The interface shortlist and the terminal/editor shortlist must stay
+    // disjoint. A monospace face is a tool for code and aligned output; used as
+    // an interface family it costs reading speed and widens every label. This
+    // is the test that stops one drifting back into the other.
+    #[test]
+    fn the_ui_font_shortlist_offers_no_monospace_family() {
+        for family in UI_FONT_FAMILIES {
+            assert!(
+                !is_monospace_family(family),
+                "{family} is a monospace face and must not be offered for the interface"
+            );
+        }
+        for family in MONOSPACE_FONTS {
+            assert!(
+                !UI_FONT_FAMILIES.contains(family),
+                "{family} belongs to the terminal shortlist, not the interface one"
+            );
+        }
+        assert_eq!(
+            UI_FONT_FAMILIES.first().copied(),
+            Some(adabraka_ui::fonts::UI_FONT_FAMILY),
+            "the embedded default must lead the interface shortlist"
+        );
+    }
+
+    // SDTEST-1654
+    //
+    // `normalize_ui_font_family` needs a `TextSystem`, so the branches that do
+    // not consult it are pinned here: they are the ones that used to leak GPUI's
+    // monospace default into the whole interface.
+    #[test]
+    fn monospace_and_the_legacy_sentinel_never_survive_as_interface_families() {
+        assert!(is_monospace_family("JetBrains Mono"));
+        assert!(is_monospace_family("jetbrains mono"));
+        assert!(is_monospace_family("Consolas"));
+        assert!(!is_monospace_family("Inter"));
+        assert!(!is_monospace_family("Segoe UI"));
+        assert_eq!(super::LEGACY_SYSTEM_DEFAULT, "System Default");
+    }
 
     // SDTEST-1419 — the portal-missing classifier decides whether a user reads
     // an explanation or a D-Bus sentence. It has to catch both shapes ashpd

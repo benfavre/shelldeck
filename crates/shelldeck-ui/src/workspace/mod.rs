@@ -68,7 +68,7 @@ use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
     capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
 };
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};
@@ -119,6 +119,7 @@ mod events;
 mod fleet;
 mod forwards;
 mod jean;
+mod mentions;
 mod menu;
 mod modes;
 mod navigation;
@@ -395,9 +396,15 @@ struct AiDiagnosticSequence {
 /// GPUI for a missing family falls back to the first fallback *face* (regular),
 /// which also discards requested weights such as semibold and bold. Inter is
 /// embedded by adabraka-ui, so it is a stable weighted fallback on every OS.
-fn resolve_ui_font_family(configured: &str, cx: &App) -> Option<String> {
-    let resolved = crate::settings::normalize_ui_font_family(configured, cx);
-    (resolved != "System Default").then_some(resolved)
+/// The UI family the application will actually render with.
+///
+/// Always a real family — see `settings::normalize_ui_font_family`. It used to
+/// return `None` for the `"System Default"` sentinel, which made every root
+/// skip `.font_family()` and fall through to GPUI's built-in monospace default
+/// while adabraka components rendered in Inter. One resolution point, one
+/// answer, applied unconditionally.
+fn resolve_ui_font_family(configured: &str, cx: &App) -> String {
+    crate::settings::normalize_ui_font_family(configured, cx)
 }
 
 pub struct Workspace {
@@ -453,9 +460,10 @@ pub struct Workspace {
     companion_shortcut_statuses: CompanionShortcutStatuses,
     sidebar_visible: bool,
     sidebar_width: f32,
-    /// Available application UI family, with missing configured fonts resolved
-    /// to the embedded Inter family so requested font weights remain intact.
-    resolved_ui_font_family: Option<String>,
+    /// The application UI family in use, always resolvable: a missing or
+    /// legacy-sentinel configuration resolves to the embedded Inter family
+    /// rather than leaving the root without a font.
+    resolved_ui_font_family: String,
     /// Application UI base font size in pixels.
     ui_font_size: f32,
     window_active: bool,
@@ -473,6 +481,12 @@ pub struct Workspace {
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
     _ai_assistant_sub: Subscription,
+    /// The Dock assistant's events belong to `AiCompanionController` — the Dock
+    /// must keep working with no Workspace at all. This second subscription
+    /// listens for exactly one of them: the request to rebuild the mention
+    /// directory, which only the Workspace can answer. Handling anything else
+    /// here would run it twice.
+    _ai_dock_mentions_sub: Subscription,
     _ai_workflow_sub: Option<Subscription>,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
@@ -562,6 +576,10 @@ pub struct Workspace {
     runtime_busy: bool,
     /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
     _runtime_loop: Option<gpui::Task<()>>,
+    /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
+    /// Empty until the directory endpoint ships (`manage_directory`); people
+    /// are the one mention kind that needs server-side role information.
+    mention_people: Vec<shelldeck_core::config::manage_directory::DirectoryPerson>,
     /// Hosted issue-management (requests) cache — shared by User + Support.
     issues_list: Vec<Issue>,
     issues_staff: bool,
@@ -1087,6 +1105,14 @@ impl Workspace {
             cx.subscribe(&ai_assistant, |this, view, event: &AiAssistantEvent, cx| {
                 this.handle_ai_assistant_event(view, event.clone(), cx);
             });
+        let ai_dock_mentions_sub = cx.subscribe(
+            &ai_dock_assistant,
+            |this, _view, event: &AiAssistantEvent, cx| {
+                if matches!(event, AiAssistantEvent::RefreshMentions) {
+                    this.refresh_mention_directory(cx);
+                }
+            },
+        );
         // Subscribe to script editor events
         let scripts_sub = cx.subscribe(&scripts, |this, _scripts, event: &ScriptEvent, cx| {
             this.handle_script_event(event, cx);
@@ -1243,6 +1269,7 @@ impl Workspace {
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
             _ai_assistant_sub: ai_assistant_sub,
+            _ai_dock_mentions_sub: ai_dock_mentions_sub,
             _ai_workflow_sub: None,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
@@ -1293,6 +1320,7 @@ impl Workspace {
             runtime_awaiting: Vec::new(),
             runtime_busy: false,
             _runtime_loop: None,
+            mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,
             issues_filter: issues::IssueListFilter::default(),

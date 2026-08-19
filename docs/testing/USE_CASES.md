@@ -2190,8 +2190,116 @@ viewport rather than its exact alpha silhouette.
 
 ---
 
+## 31. Assistant composer references and attachments
+
+`crates/shelldeck-core/src/ai/mentions.rs`,
+`crates/shelldeck-core/src/ai/attachments.rs`,
+`crates/shelldeck-ui/src/ai_assistant/composer.rs`,
+`crates/shelldeck-ui/src/workspace/mentions.rs`.
+Full contract: [`docs/ai-mentions.md`](../ai-mentions.md).
+
+### SDUC-464 — The assistant can be pointed at a specific ShellDeck entity
+
+The composer's `@` control opens a picker over a directory the host builds from
+live application state: SSH connections, hosted requests, support tickets, open
+terminals, saved scripts, Manage sites, port forwards, open editor files, fleet
+instances, and people. Clicking `@` inserts the trigger at the caret and the
+picker reads its query out of the draft, so typing `@` behaves identically; the
+rows are ranked (prefix, then substring, then subsequence) and grouped by kind,
+and a kind token (`@host`, `@ticket`) narrows to that kind. Accepting a row —
+by click, or with Enter on the top row — writes a readable `@Label` at the
+caret and adds a removable chip.
+
+The draft is authoritative: deleting a mention's text removes it from the sent
+turn, repeated labels are matched by occurrence count, and removing a chip
+removes one occurrence of its token. The turn carries each surviving reference
+resolved against the live directory as bounded, redacted, kind-specific facts,
+appended to the user message inside a clearly delimited untrusted block — never
+to the system guardrail. Because they are structured *text*, mentions reach
+every backend identically, including the CLI backends invoked with no tools.
+
+Two independent gates decide what may be referenced, both applied when the
+directory is built and re-applied at send. The kind gate follows the effective
+app mode: User reaches sites, requests and people; Support adds tickets; Dev
+adds hosts, tunnels, scripts, terminals, files and fleet instances. The row
+gate follows the tenant and the active site: a site-bound candidate is offered
+to a non-staff caller only when it belongs to the active site, unbound
+candidates (local connections, local scripts, local terminals, open files) are
+always in scope, and staff see cross-site rows with an explicit site badge.
+Nothing from another tenant is ever offered to a non-staff caller.
+
+People carry an extra rule: a super-admin is never mentionable by anyone, and a
+person is only offered when the source proves their role. The signed-in account
+and the Manage people directory are the only such sources; request and ticket
+participants are deliberately not offered. The directory endpoint ships
+separately in the `bext` repository, and its absence degrades to an empty
+"Personnes" section rather than an error.
+
+### SDUC-465 — Attachments are carried or refused, never silently dropped
+
+The composer's `+` control stages local bytes: a file chosen from disk, the
+clipboard (image or text), or an interactive region capture. The kind is
+decided from the content, not the extension. A region capture passes through
+the shared annotation editor before it is staged, and a staged image can be
+opened full-size in the shared image viewer from its chip — the same two
+components the request and ticket composers use, so a draft image is inspected
+and annotated exactly like a posted one. Text attachments are inlined into
+the prompt inside untrusted delimiters and therefore reach every backend; image
+attachments travel as a provider content block and reach API backends only.
+
+The distinction is stated in the UI before it can bite: on a text-only backend
+the image entries in the `+` menu are disabled with the reason, and the menu
+explains that images would not be transmitted. If a backend switch makes a
+staged image undeliverable, the composer marks it and the turn is refused
+rather than sent without the evidence the question is about. Image bytes never
+appear in the prompt text and never enter `AiContext::data` — the same rule
+Clippy applies to desktop screenshots. Attachments are bounded per kind, capped
+in number, truncated with a visible marker rather than silently, and cleared
+once the message they belong to has left.
+
+### SDUC-467 — The interface always renders in one sans-serif family
+
+Application text renders in Inter, which ShellDeck embeds and registers at
+startup, on every window root: the workspace, the AI Dock and the standalone
+command palette. The configured family is resolved once, and the resolution
+never yields a value that cannot be applied — an empty setting, the legacy
+`"System Default"` sentinel, an uninstalled family and a monospace family all
+resolve to Inter. Consequently no surface can fall through to the platform
+toolkit's own default, and the application never renders two typefaces at once.
+
+The font picker for the interface offers sans-serif families only; monospace
+families remain available where they belong, in the terminal and editor
+settings. Older configurations carrying the retired sentinel keep parsing and
+are rewritten to the resolved family on the next save.
+
+### SDUC-466 — A composer commits on Enter and breaks the line on Shift+Enter
+
+Every ShellDeck composer prints "⏎ envoyer · ⇧⏎ nouvelle ligne" under the
+field, and both halves hold: Enter sends the message (or, in the assistant,
+completes an open mention first), Shift+Enter inserts a newline. Multi-line
+fields that were given no commit handler — script bodies, request details —
+keep plain textarea behaviour, where Enter inserts a newline.
+
+---
+
 ## Change log
 
+- **2026-08-19** — Amended SDUC-465: the assistant's `+` now reuses the whole
+  shared attachment chain rather than half of it. A region capture opens the
+  annotation editor before staging, and a staged image opens the shared viewer
+  from its chip, which gained a source-agnostic `LightboxItem` so it serves
+  in-memory drafts as well as uploaded attachments.
+- **2026-08-19** — Added SDUC-467 and SDTEST-1653/1654 after the welcome screen
+  was reported rendering in monospace. The `"System Default"` sentinel named no
+  real family, so every root skipped setting one and GPUI's monospace default
+  showed through beside adabraka's Inter. Inter is now the resolved default
+  everywhere and the interface shortlist is sans-serif only.
+- **2026-08-19** — Added SDUC-464/465/466 and SDTEST-1622…1651 for the
+  assistant composer's `@` mentions and `+` attachments. The two placeholder
+  affordances became functional: mentions resolve typed references to eleven
+  ShellDeck entity kinds behind a mode gate and a tenant/site gate, attachments
+  are carried or explicitly refused per backend capability, and SDPATCH-038
+  made the "⏎ envoyer" hint true in all four composers for the first time.
 - **2026-08-18** — Promoted SDTEST-1584 to Green and made SDTEST-1585
   native-runner-aware. CI now runs `shelldeck-core` on macOS ARM64 and Windows
   x86_64 in addition to the complete Ubuntu job. The first Windows execution

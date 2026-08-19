@@ -3,7 +3,7 @@ use adabraka_ui::components::empty_state::{EmptyState, EmptyStateSize};
 use adabraka_ui::components::icon_button::IconButton;
 use adabraka_ui::components::icon_source::IconSource;
 use adabraka_ui::components::input::{Input, InputSize};
-use adabraka_ui::components::input_state::InputState;
+use adabraka_ui::components::input_state::{InputEvent, InputState};
 use adabraka_ui::prelude::{
     scrollable_vertical, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
     Composer, Markdown, Spinner, SpinnerSize, SpinnerVariant,
@@ -14,8 +14,14 @@ use shelldeck_core::ai::{
     ai_line_diff, clippy_prompt as build_clippy_prompt, AiBackend, AiCapability, AiChatRole,
     AiContext, AiConversation, AiConversationStore, AiDiffLine, AiSurface, AiTask, AiTaskStatus,
     ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
+    MentionCandidate, MentionRef,
 };
+use std::rc::Rc;
 use uuid::Uuid;
+
+mod composer;
+
+use composer::{attachment_summary, MentionPicker};
 
 use crate::ai_workflow::capability_result_is_markdown;
 use crate::icons::{ai_provider_icon, ai_provider_inline, lucide_icon, lucide_path};
@@ -46,12 +52,20 @@ pub enum AiAssistantEvent {
         conversation_id: Uuid,
         prompt: String,
         latest_user_message: String,
-        context: AiContext,
+        /// Boxed: with mentions and attachments the context is by far the
+        /// largest thing this enum carries, and every other variant would pay
+        /// for it on the stack.
+        context: Box<AiContext>,
     },
     ResumeTask(Uuid),
     OpenTaskTarget(Uuid),
     StopTask(Uuid),
     DeleteTask(Uuid),
+    /// The `@` picker is about to open. The host owns every mention source, so
+    /// it rebuilds the directory now — that is what makes a terminal tail, a
+    /// ticket status or a freshly added host current at the moment the list is
+    /// shown, without any polling.
+    RefreshMentions,
 }
 
 impl EventEmitter<AiAssistantEvent> for AiAssistantView {}
@@ -265,6 +279,37 @@ pub struct AiAssistantView {
     /// Link action shared by user turns, assistant answers and Markdown task
     /// results. URLs are validated before this state can be populated.
     markdown_link_action: Option<MarkdownLinkAction>,
+    /// `@` directory published by the host. Shared by reference: the Sheet and
+    /// the Dock hold the same rows, and rebuilding it must not clone payloads
+    /// twice. `Rc` is safe here — GPUI entities all live on the main thread.
+    mention_directory: Rc<Vec<MentionCandidate>>,
+    /// False until a host publishes a directory, which is how "nothing to
+    /// mention" is told apart from "this window has no mentions wired".
+    mention_directory_ready: bool,
+    /// References the user accepted, in insertion order. Reconciled against the
+    /// draft before anything is sent — see `composer.rs`.
+    mentions: Vec<MentionRef>,
+    /// The open `@` picker, derived from the draft on every change.
+    mention_picker: Option<MentionPicker>,
+    /// The draft as it stood right after a completion was accepted. Keeps the
+    /// picker from immediately reopening on the token it just wrote.
+    mention_completed_draft: Option<String>,
+    /// `+` menu visibility.
+    attach_menu_open: bool,
+    attachments: Vec<composer::StagedAttachment>,
+    attachment_error: Option<String>,
+    /// True while an interactive capture is running, so a second click cannot
+    /// start a second selection.
+    attachment_busy: bool,
+    /// The shared annotation editor, open between a region capture and the
+    /// image being staged — the same editor the request and ticket composers
+    /// use.
+    capture_annotator: Option<Entity<crate::attachment_annotator::AttachmentAnnotator>>,
+    /// The shared image viewer, opened from a staged image chip.
+    attachment_lightbox: Option<Entity<crate::issue_attachments::AttachmentLightbox>>,
+    /// Keeps the composer's change subscription alive; it is what drives the
+    /// mention picker.
+    _prompt_sub: Subscription,
 }
 
 impl AiAssistantView {
@@ -273,8 +318,16 @@ impl AiAssistantView {
             tracing::warn!("Failed to load AI conversations: {error}");
             Vec::new()
         });
+        let prompt_state = cx.new(|cx| InputState::new(cx).multi_line(true));
+        // Subscribed once, in the constructor — never in `render`. Subscribing
+        // per frame is exactly the leak SDPATCH-011 was written for.
+        let prompt_sub = cx.subscribe(&prompt_state, |this, _state, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.sync_mention_picker(cx);
+            }
+        });
         Self {
-            prompt_state: cx.new(|cx| InputState::new(cx).multi_line(true)),
+            prompt_state,
             context,
             available: true,
             // Clippy is opt-in (`ai.surfaces.clippy`): stay unavailable until a
@@ -314,6 +367,18 @@ impl AiAssistantView {
             clippy_pending_request: None,
             clippy_auto_import_clipboard: false,
             markdown_link_action: None,
+            mention_directory: Rc::new(Vec::new()),
+            mention_directory_ready: false,
+            mentions: Vec::new(),
+            mention_picker: None,
+            mention_completed_draft: None,
+            attach_menu_open: false,
+            attachments: Vec::new(),
+            attachment_error: None,
+            attachment_busy: false,
+            capture_annotator: None,
+            attachment_lightbox: None,
+            _prompt_sub: prompt_sub,
         }
     }
 
@@ -495,7 +560,13 @@ impl AiAssistantView {
     }
 
     pub fn has_open_dialog(&self) -> bool {
-        self.pending_delete.is_some() || self.backend_menu_open || self.account_menu_open
+        self.pending_delete.is_some()
+            || self.capture_annotator.is_some()
+            || self.attachment_lightbox.is_some()
+            || self.backend_menu_open
+            || self.account_menu_open
+            || self.attach_menu_open
+            || self.mention_picker.is_some()
     }
 
     /// Providers offered by the composer picker, mirroring the Settings list.
@@ -680,7 +751,7 @@ impl AiAssistantView {
             // instruction: the empty message keeps the action router out of
             // the turn entirely (see `complete_assistant_turn`).
             latest_user_message: String::new(),
-            context,
+            context: Box::new(context),
         });
         cx.notify();
     }
@@ -706,9 +777,21 @@ impl AiAssistantView {
         if self.loading || !self.available {
             return;
         }
+        // Enter completes the mention being typed rather than sending a
+        // half-written reference. The picker is only open while the caret sits
+        // inside a query that actually matches something.
+        if self.mention_picker_intercepts_commit() {
+            self.accept_top_mention(cx);
+            return;
+        }
         // The notice was about an affordance the user just tried; sending
         // something means they moved on.
         self.notice = None;
+        if self.composer_blocked_by_attachments() {
+            self.error = self.attachment_notice();
+            cx.notify();
+            return;
+        }
         let prompt = self.prompt_state.read(cx).content().trim().to_string();
         if prompt.is_empty() {
             return;
@@ -719,6 +802,11 @@ impl AiAssistantView {
     fn submit_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         if !self.loading {
             let conversation_id = self.ensure_active_conversation();
+            // Resolved against the *draft being sent* and the live directory,
+            // so a reference the user deleted — or one that left the caller's
+            // scope while the draft sat open — never travels with the turn.
+            let mentions = self.resolved_mentions(&prompt);
+            let attachments = self.staged_attachments();
             let latest_user_message = prompt.clone();
             if let Some(conversation) = self
                 .conversations
@@ -740,16 +828,25 @@ impl AiAssistantView {
                 latest_user_message,
                 // Dropping the chip is not cosmetic: the turn really goes out
                 // without the screen's context attached.
-                context: if self.context_dropped {
+                context: Box::new(if self.context_dropped {
                     AiContext::new(
                         AiSurface::Global,
                         t!("ai.context.global").to_string(),
                         serde_json::json!({}),
                     )
+                    .with_mentions(mentions)
+                    .with_attachments(attachments)
                 } else {
-                    self.context.clone()
-                },
+                    self.context
+                        .clone()
+                        .with_mentions(mentions)
+                        .with_attachments(attachments)
+                }),
             });
+            // The payload belongs to the message that just left, not to the
+            // next one: a mention silently re-attached to the following turn is
+            // how an assistant answers about the wrong server.
+            self.clear_composer_payload();
             cx.notify();
         }
     }
@@ -2718,6 +2815,26 @@ impl Render for AiAssistantView {
                     .child(error.clone()),
             );
         }
+        if let Some(problem) = self.attachment_notice() {
+            composer = composer.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::error().opacity(0.10))
+                    .text_size(px(12.0))
+                    .text_color(ShellDeckColors::error())
+                    .child(lucide_icon(
+                        "triangle-alert",
+                        13.0,
+                        ShellDeckColors::error(),
+                    ))
+                    .child(div().flex_1().min_w(px(0.0)).child(problem)),
+            );
+        }
         if let Some(notice) = self.notice.clone() {
             composer = composer.child(
                 div()
@@ -2747,6 +2864,7 @@ impl Render for AiAssistantView {
         if self.host == AiHost::Sheet {
             composer = composer.max_w(px(624.0)).mx_auto().w_full();
         }
+        let draft_text = self.prompt_state.read(cx).content().to_string();
         let mut assistant_composer = Composer::new("ai-composer", &self.prompt_state)
             .placeholder(t!("ai.assistant.placeholder").to_string())
             .min_rows(2)
@@ -2754,30 +2872,10 @@ impl Render for AiAssistantView {
             .disabled(self.loading || !self.available)
             // The context left the header: it now rides with the message,
             // where it is visible next to what it will be sent with.
-            // Placeholders, on purpose: the affordances are drawn now so the
-            // footer has its final shape, but attachments and targeting are
-            // not implemented yet. Their handlers only explain that future
-            // availability; they never perform the unavailable operation.
-            .action(
-                Button::new("ai-composer-attach", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("plus"))
-                    .tooltip(t!("ai.composer.attach_soon").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_notice(t!("ai.composer.attach_soon").to_string(), cx);
-                    })),
-            )
-            .action(
-                Button::new("ai-composer-target", "")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Sm)
-                    .icon(IconSource::from("at-sign"))
-                    .tooltip(t!("ai.composer.target_soon").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_notice(t!("ai.composer.target_soon").to_string(), cx);
-                    })),
-            )
+            // `+` stages local bytes, `@` references an entity ShellDeck
+            // already knows — see `composer.rs` and `docs/ai-mentions.md`.
+            .action(self.render_attach_button(cx))
+            .action(self.render_mention_button(cx))
             // The model moves out of the header and into the footer, where
             // every reference app puts it.
             // The chip is a picker: Settings already lets you switch
@@ -2809,16 +2907,35 @@ impl Render for AiAssistantView {
             // the left of that row is reserved for surface-specific
             // settings (the execution mode), so the keyboard hints sit
             // opposite them and stay opposite even when that side is empty.
-            .footnote(
-                div()
-                    .flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(9.0))
+            .footnote({
+                let mut footnote = div().flex().w_full().items_center().gap(px(9.0));
+                // The left half is the surface's own state; the hints stay
+                // opposite it, and stay opposite when it is empty.
+                if let Some(summary) = attachment_summary(&self.staged_attachments()) {
+                    footnote = footnote.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .min_w(px(0.0))
+                            .child(lucide_icon(
+                                "paperclip",
+                                11.0,
+                                ShellDeckColors::text_muted(),
+                            ))
+                            .child(div().truncate().child(summary)),
+                    );
+                }
+                footnote
+                    .child(div().flex_1().min_w(px(0.0)))
                     .child(t!("ai.assistant.hint.send").to_string())
-                    .child(t!("ai.assistant.hint.newline").to_string()),
-            );
+                    .child(t!("ai.assistant.hint.newline").to_string())
+            });
+        // Attachment and mention chips ride in the same row as the context
+        // chip: one place that answers "what leaves with this message".
+        for chip in self.render_composer_chips(&draft_text, cx) {
+            assistant_composer = assistant_composer.context(chip);
+        }
         if !self.context_dropped {
             assistant_composer = assistant_composer
                 // Removable, as the mockup asks: you can see what leaves with
@@ -3148,6 +3265,22 @@ impl Render for AiAssistantView {
                     )
                     .child(menu),
             );
+        }
+
+        if let Some(menu) = self.render_attach_menu(cx) {
+            root = root.child(menu);
+        }
+        if let Some(picker) = self.render_mention_picker(cx) {
+            root = root.child(picker);
+        }
+
+        // Last children: the annotator and the image viewer each own the whole
+        // surface while open.
+        if let Some(annotator) = self.render_capture_annotator() {
+            root = root.child(annotator);
+        }
+        if let Some(lightbox) = self.render_attachment_lightbox() {
+            root = root.child(lightbox);
         }
 
         if let Some(delete_id) = self.pending_delete {

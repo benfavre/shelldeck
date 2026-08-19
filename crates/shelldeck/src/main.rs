@@ -80,6 +80,7 @@ lucide_assets!(
     "external-link",
     "eye",
     "eye-off",
+    "file-text",
     "filter",
     "flag",
     "globe",
@@ -89,6 +90,7 @@ lucide_assets!(
     "info",
     "key",
     "keyboard",
+    "life-buoy",
     "list-checks",
     "lock",
     "mail",
@@ -96,6 +98,7 @@ lucide_assets!(
     "messages-square",
     "minimize-2",
     "minus",
+    "paperclip",
     "panel-right-close",
     "panel-right-open",
     "pencil",
@@ -698,9 +701,11 @@ impl CompanionRoot {
         if let Some(workspace) = &self.workspace {
             return workspace.read(cx).companion_ui_font_family();
         }
-        self.config.as_ref().and_then(|config| {
-            (config.general.ui_font_family != "System Default")
-                .then(|| config.general.ui_font_family.clone())
+        // No workspace yet (standalone Dock before the main window is built):
+        // resolve through the same single point, so the Dock never renders in
+        // GPUI's monospace default while the main window renders in Inter.
+        self.config.as_ref().map(|config| {
+            shelldeck_ui::settings::normalize_ui_font_family(&config.general.ui_font_family, cx)
         })
     }
 }

@@ -436,6 +436,44 @@ Existing: **0 tests**.
 
 ---
 
+## 24. `ai/mentions.rs` + `ai/attachments.rs` + `config/manage_directory.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1622 | `ai/mentions.rs::user_mode_cannot_reference_dev_only_kinds` | SDUC-464 | Green | The kind gate follows the effective mode: User reaches sites/requests/people, never hosts, terminals or tickets. |
+| SDTEST-1652 | `ai/mentions.rs::a_dev_super_admin_reaches_every_kind` | SDUC-464 | Green | The positive half of the scope gate. SDTEST-1622 proves a customer cannot reach Dev entities and SDTEST-1623 proves a closed session reaches none — neither would notice a filter that hid everything from everybody. |
+| SDTEST-1623 | `ai/mentions.rs::signed_out_scope_offers_nothing` | SDUC-464 | Green | No kind survives a signed-out scope, even one carrying super-admin flags. |
+| SDTEST-1624 | `ai/mentions.rs::foreign_site_rows_are_dropped_for_non_staff_and_kept_for_staff` | SDUC-464 | Green | The tenant/site gate: another site's row is invisible to a customer, visible to staff, and an unbound row is always in scope. |
+| SDTEST-1625 | `ai/mentions.rs::scoped_candidates_filters_the_whole_directory` | SDUC-464 | Green | Both gates applied over a mixed directory in one pass. |
+| SDTEST-1626 | `ai/mentions.rs::super_admins_are_never_mentionable` | SDUC-464 | Green | Every spelling of the role is denied, and the server's `mentionable: true` does not override it. |
+| SDTEST-1627 | `ai/mentions.rs::caret_query_ignores_email_addresses` | SDUC-464 | Green | `user@host` is an address, not a mention; a query is only recognised when `@` starts a word. |
+| SDTEST-1628 | `ai/mentions.rs::inserting_replaces_the_partial_query_and_spaces_the_token` | SDUC-464 | Green | Completion rewrites the typed `@query` in place and does not double a space that is already there. |
+| SDTEST-1629 | `ai/mentions.rs::deleting_the_text_deletes_the_mention` | SDUC-464 | Green | The draft is authoritative: a reference whose token left the text does not travel. |
+| SDTEST-1630 | `ai/mentions.rs::repeated_labels_are_matched_by_occurrence_count` | SDUC-464 | Green | Two hosts sharing an alias survive exactly as many times as the token appears. |
+| SDTEST-1631 | `ai/mentions.rs::removing_a_chip_removes_one_token_and_its_space` | SDUC-464 | Green | Chip removal edits one occurrence and collapses the space it leaves. |
+| SDTEST-1632 | `ai/mentions.rs::picker_ranks_prefix_matches_first_and_is_stable` | SDUC-464 | Green | Prefix beats substring, the order is stable between keystrokes, and a kind token narrows to that kind. |
+| SDTEST-1633 | `ai/mentions.rs::candidate_payloads_are_redacted_and_bounded` | SDUC-464 | Green | Credential-looking keys are redacted and long strings truncate with a visible marker. |
+| SDTEST-1634 | `ai/mentions.rs::prompt_block_is_empty_without_mentions` | SDUC-464 | Green | An ordinary turn keeps its exact previous shape; a mentioned turn carries the resolved facts. |
+| SDTEST-1635 | `ai/mentions.rs::every_kind_has_a_bundled_icon_and_a_distinct_token` | SDUC-464 | Green | Guards the catalogue: unique tokens, non-empty bundled icons, namespaced label keys. |
+| SDTEST-1636 | `ai/attachments.rs::kind_is_detected_from_content_not_from_the_extension` | SDUC-465 | Green | A `.txt` holding PNG magic is an image; a `.png` holding text is text. |
+| SDTEST-1637 | `ai/attachments.rs::binary_that_is_neither_image_nor_utf8_is_rejected` | SDUC-465 | Green | Unsupported binary and empty files are refused rather than inlined as mojibake. |
+| SDTEST-1638 | `ai/attachments.rs::oversized_files_are_refused_per_kind` | SDUC-465 | Green | Separate image and text ceilings, each reported with its own limit. |
+| SDTEST-1639 | `ai/attachments.rs::long_text_is_truncated_with_a_visible_marker` | SDUC-465 | Green | Truncation is announced and the original size is preserved in the metadata. |
+| SDTEST-1640 | `ai/attachments.rs::cli_backends_never_accept_images` | SDUC-465 | Green | The capability matrix: CLI backends refuse images, API backends accept them. |
+| SDTEST-1641 | `ai/attachments.rs::text_attachments_reach_every_backend_and_are_delimited` | SDUC-465 | Green | Text is portable and always inlined inside `<untrusted>` delimiters. |
+| SDTEST-1642 | `ai/attachments.rs::image_bytes_never_enter_the_prompt_text` | SDUC-465 | Green | Same rule as Clippy screenshots: the transcript carries the name, never the payload. |
+| SDTEST-1643 | `ai/attachments.rs::attachment_count_is_capped` | SDUC-465 | Green | |
+| SDTEST-1644 | `ai/attachments.rs::names_are_reduced_to_a_basename` | SDUC-465 | Green | Unix and Windows paths both lose their directory before leaving the machine. |
+| SDTEST-1645 | `ai.rs::image_attachments_ride_a_content_block_and_leave_the_guardrail_alone` | SDUC-465 | Green | OpenAI `input_image` and Anthropic `image` blocks are built with the text part first; the guardrail stays out of the untrusted content. |
+| SDTEST-1646 | `ai.rs::mentions_and_attachments_land_in_the_user_message_only` | SDUC-464, SDUC-465 | Green | Both blocks precede the user request and neither reaches `SYSTEM_GUARDRAIL`. |
+| SDTEST-1647 | `ai.rs::a_text_only_backend_refuses_an_image_instead_of_dropping_it` | SDUC-465 | Green | The turn fails loudly on a CLI backend rather than answering about evidence it never received. |
+| SDTEST-1648 | `config/manage_directory.rs::people_request_carries_the_bearer_token_and_the_site_scope` | SDUC-464 | Green | Mock listener asserts the route, the `site_id` scope and the Bearer header. |
+| SDTEST-1649 | `config/manage_directory.rs::a_missing_endpoint_is_an_empty_directory_not_a_failure` | SDUC-464 | Green | 404/403/400 degrade to "no people" — the endpoint ships in a separate `bext` PR. |
+| SDTEST-1650 | `config/manage_directory.rs::an_expired_token_is_reported_so_the_session_can_be_invalidated` | SDUC-464 | Green | 401 stays an error so the session-invalidation path can run. |
+| SDTEST-1651 | `config/manage_directory.rs::super_admins_are_dropped_even_when_the_server_marks_them_mentionable` | SDUC-464 | Green | Client-side defense in depth over the server's own verdict. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

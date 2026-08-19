@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **102**
+Total markers in code: **108**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -740,6 +740,49 @@ carries no marker of its own — see its entry).
 - `CLAUDE.md` — upstream's own working notes; kept in-tree because
   vendored, but not our territory to rewrite. Overwrite it only if the
   upstream version genuinely changed.
+
+### SDPATCH-037 — caret introspection and caret-anchored replacement on `InputState`
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `InputState::caret_offset`,
+    `InputState::replace_content_with_caret`
+- **Markers**:
+  - `src/components/input_state.rs:1104` — `// ShellDeck patch: SDPATCH-037 — caret introspection + caret-anchored`
+- **Why**: a parent that completes what is being typed needs two things
+  upstream does not expose: where the caret is, and a way to put it back
+  after inserted text. `selected_range` is private and `replace_content`
+  always lands the caret at the end of the buffer. The AI composer's `@`
+  mention picker needs both — without them, accepting a completion in the
+  middle of a sentence rewrote the wrong span and threw the user to the end
+  of the draft. Read-only introspection plus one windowless setter, in the
+  same shape as the existing `replace_content` (SDPATCH-014).
+- **Upstream status**: not filed yet — small, self-contained, pairs with
+  SDPATCH-014 in a PR.
+
+### SDPATCH-038 — Enter commits in a composer; Shift+Enter is the newline
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `ShiftEnter` action, `InputState::enter`,
+    `InputState::shift_enter`
+  - `src/components/input.rs` — `shift-enter` keybinding, `ShiftEnter`
+    re-export, `on_action` wiring
+- **Markers**:
+  - `src/components/input_state.rs:58` — `// ShellDeck patch: SDPATCH-038 — an explicit Shift+Enter action so a`
+  - `src/components/input_state.rs:1024` — `// ShellDeck patch: SDPATCH-038 — unless the parent installed an`
+  - `src/components/input_state.rs:1045` — `// ShellDeck patch: SDPATCH-038 — the newline half of the composer contract.`
+  - `src/components/input.rs:34` — `// ShellDeck patch: SDPATCH-038 — Shift+Enter matched no binding, so a`
+  - `src/components/input.rs:796` — `// ShellDeck patch: SDPATCH-038 — newline half.`
+- **Why**: SDPATCH-009 made Enter insert a newline in every `multi_line`
+  field and told parents to wire their own submit control. But SDPATCH-028's
+  `Composer` *does* install an `on_enter` handler — and it was never called,
+  because `InputState::enter` returned before reaching the callback slot. All
+  four ShellDeck composers (assistant, support reply, request creation,
+  request comment) print "⏎ envoyer · ⇧⏎ nouvelle ligne" under the field, and
+  neither half was true: Enter typed a newline and Shift+Enter matched no
+  binding at all. A multi-line field that was handed a commit handler is a
+  composer and must honour that contract; a field with no handler (script
+  bodies, request details) keeps the plain textarea behaviour.
+- **Upstream status**: not filed yet — pairs with SDPATCH-009/028.
 
 ## Sync log
 

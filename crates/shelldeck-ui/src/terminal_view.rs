@@ -135,6 +135,23 @@ const GRID_TOP_OFFSET: f32 = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
 const SCROLLBAR_WIDTH: f32 = 6.0;
 /// Right margin of the scrollbar from the grid edge.
 const SCROLLBAR_MARGIN: f32 = 2.0;
+/// Rows of output a `@terminal` mention carries. Bounded on purpose: a mention
+/// identifies a session and shows what it was doing, it does not ship a
+/// scrollback.
+const TERMINAL_MENTION_TAIL_ROWS: usize = 60;
+
+/// One open terminal tab, as the assistant's mention directory needs it.
+#[derive(Debug, Clone)]
+pub struct TerminalMentionRow {
+    pub id: Uuid,
+    pub title: String,
+    pub state: String,
+    pub cwd: Option<String>,
+    pub connection_id: Option<Uuid>,
+    /// Epoch milliseconds at which `tail` was captured.
+    pub captured_at: i64,
+    pub tail: String,
+}
 
 pub struct TerminalView {
     pub pane: TerminalPane,
@@ -869,6 +886,58 @@ impl TerminalView {
         self.ai_running_command = None;
         cx.notify();
         Ok(())
+    }
+
+    /// One row per open tab for the assistant's `@` picker.
+    ///
+    /// The output tail is a *snapshot*, taken here, with its capture time — the
+    /// assistant sends what it showed the user, not a re-read at send time, and
+    /// says when it was taken so a stale tail is legible as one. The grid lock
+    /// is taken once per tab and released immediately.
+    pub fn mention_sessions(&self) -> Vec<TerminalMentionRow> {
+        let captured_at = chrono::Utc::now().timestamp_millis();
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let session = self
+                    .pane
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == tab.id);
+                let (cwd, tail) = match session {
+                    Some(session) => {
+                        let grid = session.grid.lock();
+                        let cwd = grid.working_directory.clone();
+                        let tail = grid
+                            .visible_rows()
+                            .iter()
+                            .rev()
+                            .take(TERMINAL_MENTION_TAIL_ROWS)
+                            .rev()
+                            .map(|row| {
+                                row.iter()
+                                    .map(|cell| cell.c)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string()
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (cwd, tail)
+                    }
+                    None => (None, String::new()),
+                };
+                TerminalMentionRow {
+                    id: tab.id,
+                    title: tab.title.clone(),
+                    state: format!("{:?}", tab.state),
+                    cwd,
+                    connection_id: tab.connection_id,
+                    captured_at,
+                    tail,
+                }
+            })
+            .collect()
     }
 
     pub fn ai_context_data(&self) -> serde_json::Value {

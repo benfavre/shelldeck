@@ -20,7 +20,7 @@ use crate::i18n::rel_time;
 use crate::icons::{lucide_icon, lucide_path};
 use crate::issue_attachments::{
     capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
 };
 use crate::scale::px;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -910,6 +910,12 @@ impl SupportView {
     /// don't need to touch the private `tickets` field.
     pub fn unread_ticket_count(&self) -> usize {
         self.tickets.iter().filter(|t| t.unread).count()
+    }
+
+    /// The cached ticket list, for consumers that build on it without owning
+    /// it — today the assistant's `@` mention directory.
+    pub fn tickets(&self) -> &[SupportTicket] {
+        &self.tickets
     }
 
     pub fn set_list(&mut self, tickets: Vec<SupportTicket>, counts: SupportCounts, me: SupportMe) {

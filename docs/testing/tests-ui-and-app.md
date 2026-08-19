@@ -166,8 +166,8 @@ surface is small, contract-heavy, and 100% testable without GPUI.
 | SDTEST-1240 | `installer::tests::sha256_mismatch_removes_partial_download` | SDUC-283 | Green | Streams a fixture through a local HTTP socket, rejects the digest and leaves neither destination nor partial archive. |
 | SDTEST-1241 | *to write* — download_and_verify streams bytes (does not buffer the whole archive) | SDUC-283 | **Red / P1** | Regression sensor for memory on macOS DMG (~200 MB). |
 | SDTEST-1242 | `installer::tests::linux_binary_replacement_is_atomic_and_keeps_backup` | SDUC-284 | Green | Verifies the same-filesystem rename and retained rollback copy on Linux. |
-| SDTEST-1243 | *to write* — install uses pending-replace pattern on Windows | SDUC-284 | **Red / P0** | Windows CI. |
-| SDTEST-1244 | *to write* — install fails cleanly if archive is corrupt (no partial writes) | SDUC-284 | **Red / P1** | |
+| SDTEST-1243 | `installer::tests::windows_pending_replace_keeps_a_rollback_and_restores_it_on_failure` (`#[cfg(target_os = "windows")]`) | SDUC-284 | Green | Found a real defect: the Windows swap renamed the running exe aside and copied the new one in, but **nothing undid the rename when the copy failed** — a full disk, a locked file or an antivirus left the user with no executable at all. The Unix path had always rolled back. Extracted as `pending_replace_file` and now executed on the Windows runner. |
+| SDTEST-1244 | `installer::tests::an_archive_without_the_binary_fails_before_touching_the_installation` | SDUC-284 | Green | The binary lookup runs before any swap, so an archive missing `shelldeck`/`shelldeck.exe` fails with nothing outside the staging directory touched. |
 | SDTEST-1592 | *to write* — Windows `Expand-Archive` command builder doubles single quotes in paths | SDUC-284 | **Red / P2** | Extract the PowerShell command string into a pure builder fn and pin the `''`-doubling for both the archive and staging paths (an apostrophe in an install path must neither break nor inject the command — fixed 2026-08-06). `install_windows` is `cfg(windows)`, so the builder must live outside the cfg gate to be testable and type-checked on Linux. |
 
 ### Cross-repo smoke
@@ -430,6 +430,15 @@ parallel `cargo test`.
 | SDTEST-1214 | `sidebar::tests::rail_lists_activities_not_destinations` | SDUC-443 | Green | JeanClaude, Fleet, bext Cloud and Settings never take a rail slot, and every rail entry either has a panel or is the spelled-out Server Sync exception — the guard against re-adding a rail icon with nothing behind it. |
 | SDTEST-1215 | *to write* — panel content follows the selected activity | SDUC-443 | **Red / P1** | GPUI integration: selecting each rail activity swaps the panel to that activity's rows, a row click performs its open/focus action, empty activities show their localized hint, and a panel-less activity collapses the panel. Regression guard for the 2026-07-25 mislabelled-panel defect. |
 | SDTEST-1212 | *to write* — Workspace surfaces re-layout at non-default App Font Size | SDUC-441 | **Red / P2** | GPUI integration: at 10px and 22px the User home, welcome screen and account/site/mode titlebar dropdowns scale proportionally while the client inset, shadow geometry and window-resize border stay in device pixels. Needs a `TestAppContext` harness we do not have yet. |
+
+---
+
+## 8e. `shelldeck-ui/settings.rs` — interface typography
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1653 | `settings.rs::the_ui_font_shortlist_offers_no_monospace_family` | SDUC-467 | Green | The interface shortlist and the terminal/editor shortlist stay disjoint, and Inter leads the interface list. |
+| SDTEST-1654 | `settings.rs::monospace_and_the_legacy_sentinel_never_survive_as_interface_families` | SDUC-467 | Green | The branches of `normalize_ui_font_family` that need no `TextSystem`: monospace families and the retired sentinel are both refused as interface families. |
 
 ---
 
