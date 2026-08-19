@@ -11,10 +11,10 @@ use adabraka_ui::prelude::{
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::ai::{
-    ai_line_diff, clippy_prompt as build_clippy_prompt, AiAttachment, AiBackend, AiCapability,
-    AiChatRole, AiContext, AiConversation, AiConversationStore, AiDiffLine, AiSurface, AiTask,
-    AiTaskStatus, ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation,
-    ClippyProposal, MentionCandidate, MentionRef,
+    ai_line_diff, clippy_prompt as build_clippy_prompt, AiBackend, AiCapability, AiChatRole,
+    AiContext, AiConversation, AiConversationStore, AiDiffLine, AiSurface, AiTask, AiTaskStatus,
+    ClippyContext, ClippyContextSource, ClippyOperation as CoreClippyOperation, ClippyProposal,
+    MentionCandidate, MentionRef,
 };
 use std::rc::Rc;
 use uuid::Uuid;
@@ -296,11 +296,17 @@ pub struct AiAssistantView {
     mention_completed_draft: Option<String>,
     /// `+` menu visibility.
     attach_menu_open: bool,
-    attachments: Vec<AiAttachment>,
+    attachments: Vec<composer::StagedAttachment>,
     attachment_error: Option<String>,
     /// True while an interactive capture is running, so a second click cannot
     /// start a second selection.
     attachment_busy: bool,
+    /// The shared annotation editor, open between a region capture and the
+    /// image being staged — the same editor the request and ticket composers
+    /// use.
+    capture_annotator: Option<Entity<crate::attachment_annotator::AttachmentAnnotator>>,
+    /// The shared image viewer, opened from a staged image chip.
+    attachment_lightbox: Option<Entity<crate::issue_attachments::AttachmentLightbox>>,
     /// Keeps the composer's change subscription alive; it is what drives the
     /// mention picker.
     _prompt_sub: Subscription,
@@ -370,6 +376,8 @@ impl AiAssistantView {
             attachments: Vec::new(),
             attachment_error: None,
             attachment_busy: false,
+            capture_annotator: None,
+            attachment_lightbox: None,
             _prompt_sub: prompt_sub,
         }
     }
@@ -553,6 +561,8 @@ impl AiAssistantView {
 
     pub fn has_open_dialog(&self) -> bool {
         self.pending_delete.is_some()
+            || self.capture_annotator.is_some()
+            || self.attachment_lightbox.is_some()
             || self.backend_menu_open
             || self.account_menu_open
             || self.attach_menu_open
@@ -796,7 +806,7 @@ impl AiAssistantView {
             // so a reference the user deleted — or one that left the caller's
             // scope while the draft sat open — never travels with the turn.
             let mentions = self.resolved_mentions(&prompt);
-            let attachments = self.attachments.clone();
+            let attachments = self.staged_attachments();
             let latest_user_message = prompt.clone();
             if let Some(conversation) = self
                 .conversations
@@ -2901,7 +2911,7 @@ impl Render for AiAssistantView {
                 let mut footnote = div().flex().w_full().items_center().gap(px(9.0));
                 // The left half is the surface's own state; the hints stay
                 // opposite it, and stay opposite when it is empty.
-                if let Some(summary) = attachment_summary(&self.attachments) {
+                if let Some(summary) = attachment_summary(&self.staged_attachments()) {
                     footnote = footnote.child(
                         div()
                             .flex()
@@ -3262,6 +3272,15 @@ impl Render for AiAssistantView {
         }
         if let Some(picker) = self.render_mention_picker(cx) {
             root = root.child(picker);
+        }
+
+        // Last children: the annotator and the image viewer each own the whole
+        // surface while open.
+        if let Some(annotator) = self.render_capture_annotator() {
+            root = root.child(annotator);
+        }
+        if let Some(lightbox) = self.render_attachment_lightbox() {
+            root = root.child(lightbox);
         }
 
         if let Some(delete_id) = self.pending_delete {

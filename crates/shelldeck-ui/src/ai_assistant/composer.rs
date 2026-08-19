@@ -22,7 +22,7 @@ use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::{
     div, hsla, point, px as gpui_px, AnyElement, AsyncApp, BoxShadow, ClipboardEntry, Context,
-    MouseButton, SharedString, Window,
+    Image, MouseButton, SharedString, Window,
 };
 use shelldeck_core::ai::{
     filter_mention_candidates, insert_mention, mention_query_at_caret, reconcile_mentions,
@@ -32,13 +32,28 @@ use shelldeck_core::ai::{
 };
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{AiAssistantEvent, AiAssistantView};
+use crate::attachment_annotator::AttachmentAnnotator;
 use crate::icons::{lucide_icon, lucide_path};
-use crate::issue_attachments::{capture_region, draft_from_clipboard_image};
+use crate::issue_attachments::{
+    capture_region, draft_from_clipboard_image, AttachmentDraft, AttachmentLightbox, LightboxItem,
+};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
+
+/// A staged attachment plus, for images, the decoded bitmap used to preview it.
+///
+/// The preview is kept beside the wire value rather than derived from it: the
+/// wire value carries base64, and re-decoding it on every frame to paint a chip
+/// would be absurd. Every intake path already holds the decoded image (the
+/// shared `AttachmentDraft` carries one), so this costs nothing to fill.
+pub(super) struct StagedAttachment {
+    pub(super) attachment: AiAttachment,
+    pub(super) preview: Option<Arc<Image>>,
+}
 
 /// An open `@` picker, anchored to the partial token being typed.
 ///
@@ -261,7 +276,12 @@ impl AiAssistantView {
         self.backend.supports_image_attachments()
     }
 
-    fn push_attachment(&mut self, attachment: AiAttachment, cx: &mut Context<Self>) {
+    fn push_attachment(
+        &mut self,
+        attachment: AiAttachment,
+        preview: Option<Arc<Image>>,
+        cx: &mut Context<Self>,
+    ) {
         if self.attachments.len() >= AI_ATTACHMENT_MAX_COUNT {
             self.report_attachment_error(AttachmentError::TooMany, cx);
             return;
@@ -270,10 +290,77 @@ impl AiAssistantView {
             self.report_attachment_error(error, cx);
             return;
         }
-        self.attachments.push(attachment);
+        self.attachments.push(StagedAttachment {
+            attachment,
+            preview,
+        });
         self.attachment_error = None;
         self.attach_menu_open = false;
         cx.notify();
+    }
+
+    /// What actually travels with the turn.
+    pub(super) fn staged_attachments(&self) -> Vec<AiAttachment> {
+        self.attachments
+            .iter()
+            .map(|staged| staged.attachment.clone())
+            .collect()
+    }
+
+    /// Open the shared image viewer on a staged attachment.
+    ///
+    /// The same component the request threads use, so checking what you are
+    /// about to send looks exactly like re-reading what you already sent.
+    pub(super) fn open_attachment_preview(&mut self, index: usize, cx: &mut Context<Self>) {
+        let items: Vec<(usize, LightboxItem)> = self
+            .attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(position, staged)| {
+                let preview = staged.preview.clone()?;
+                Some((
+                    position,
+                    LightboxItem::from_image(
+                        format!("ai-attachment-{position}"),
+                        staged.attachment.name.clone(),
+                        preview,
+                    ),
+                ))
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        // The clicked chip may not be the first previewable one, so the
+        // selection is the position *within the previewable subset*.
+        let selected = items
+            .iter()
+            .position(|(position, _)| *position == index)
+            .unwrap_or(0);
+        let parent = cx.entity().downgrade();
+        let lightbox = cx.new(|cx| {
+            AttachmentLightbox::new(
+                items.into_iter().map(|(_, item)| item).collect(),
+                selected,
+                move |cx| {
+                    if let Some(parent) = parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.attachment_lightbox = None;
+                            cx.notify();
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+        self.attachment_lightbox = Some(lightbox);
+        cx.notify();
+    }
+
+    pub(super) fn render_attachment_lightbox(&self) -> Option<AnyElement> {
+        self.attachment_lightbox
+            .as_ref()
+            .map(|lightbox| lightbox.clone().into_any_element())
     }
 
     fn report_attachment_error(&mut self, error: AttachmentError, cx: &mut Context<Self>) {
@@ -329,13 +416,30 @@ impl AiAssistantView {
 
     fn import_attachment_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         for path in paths {
+            // The shared draft loader decodes images and rejects anything that
+            // is not one, which is exactly the discrimination needed here: an
+            // image gets a preview, everything else goes down the text path.
+            if let Ok(draft) = AttachmentDraft::from_path(&path) {
+                match AiAttachment::image(
+                    draft.filename.clone(),
+                    draft.content_type.clone(),
+                    &draft.bytes,
+                ) {
+                    Ok(attachment) => self.push_attachment(attachment, Some(draft.image), cx),
+                    Err(error) => {
+                        self.report_attachment_error(error, cx);
+                        return;
+                    }
+                }
+                continue;
+            }
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string_lossy().to_string());
             match std::fs::read(&path) {
                 Ok(bytes) => match AiAttachment::from_bytes(name, bytes) {
-                    Ok(attachment) => self.push_attachment(attachment, cx),
+                    Ok(attachment) => self.push_attachment(attachment, None, cx),
                     Err(error) => {
                         self.report_attachment_error(error, cx);
                         return;
@@ -368,8 +472,12 @@ impl AiAssistantView {
         if let Some(image) = image {
             match draft_from_clipboard_image(&image) {
                 Ok(draft) => {
-                    match AiAttachment::image(draft.filename, draft.content_type, &draft.bytes) {
-                        Ok(attachment) => self.push_attachment(attachment, cx),
+                    match AiAttachment::image(
+                        draft.filename.clone(),
+                        draft.content_type.clone(),
+                        &draft.bytes,
+                    ) {
+                        Ok(attachment) => self.push_attachment(attachment, Some(draft.image), cx),
                         Err(error) => self.report_attachment_error(error, cx),
                     }
                 }
@@ -385,7 +493,7 @@ impl AiAssistantView {
                 t!("ai.attachment.clipboard_name").to_string(),
                 text.into_bytes(),
             ) {
-                Ok(attachment) => self.push_attachment(attachment, cx),
+                Ok(attachment) => self.push_attachment(attachment, None, cx),
                 Err(error) => self.report_attachment_error(error, cx),
             },
             None => {
@@ -395,8 +503,15 @@ impl AiAssistantView {
         }
     }
 
-    /// Interactive region capture, reusing the helper the request/ticket
-    /// composers already use so a screenshot behaves identically everywhere.
+    /// Interactive region capture, reusing the *whole* helper chain the
+    /// request and ticket composers use: `capture_region` to select the area,
+    /// then the annotation editor before the image is staged.
+    ///
+    /// The annotator is not a flourish. A screenshot sent to an assistant
+    /// almost always needs "this bit here" pointed at — the arrow is the
+    /// question. Skipping it, as the first cut of this method did, made the
+    /// assistant the only surface in the application where a capture could not
+    /// be annotated, for no reason other than that it was wired later.
     pub(super) fn capture_attachment(&mut self, cx: &mut Context<Self>) {
         self.attach_menu_open = false;
         if self.attachment_busy {
@@ -412,13 +527,7 @@ impl AiAssistantView {
             let _ = this.update(cx, |view, cx| {
                 view.attachment_busy = false;
                 match result {
-                    Ok(draft) => {
-                        match AiAttachment::image(draft.filename, draft.content_type, &draft.bytes)
-                        {
-                            Ok(attachment) => view.push_attachment(attachment, cx),
-                            Err(error) => view.report_attachment_error(error, cx),
-                        }
-                    }
+                    Ok(draft) => view.open_capture_annotator(draft, cx),
                     Err(error) => {
                         view.attachment_error = Some(error);
                         cx.notify();
@@ -427,6 +536,57 @@ impl AiAssistantView {
             });
         })
         .detach();
+    }
+
+    /// Present the shared annotation editor over the assistant surface.
+    ///
+    /// Hosted by the view rather than by the Workspace so it works in both
+    /// hosts — the Dock is its own window and has no Workspace overlay to
+    /// borrow.
+    fn open_capture_annotator(&mut self, draft: AttachmentDraft, cx: &mut Context<Self>) {
+        let cancel_parent = cx.entity().downgrade();
+        let apply_parent = cancel_parent.clone();
+        let annotator = cx.new(|cx| {
+            AttachmentAnnotator::new(
+                draft,
+                move |cx| {
+                    if let Some(parent) = cancel_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.capture_annotator = None;
+                            cx.notify();
+                        });
+                    }
+                },
+                move |draft, cx| {
+                    if let Some(parent) = apply_parent.upgrade() {
+                        parent.update(cx, |this, cx| {
+                            this.capture_annotator = None;
+                            match AiAttachment::image(
+                                draft.filename.clone(),
+                                draft.content_type.clone(),
+                                &draft.bytes,
+                            ) {
+                                Ok(attachment) => {
+                                    this.push_attachment(attachment, Some(draft.image), cx)
+                                }
+                                Err(error) => this.report_attachment_error(error, cx),
+                            }
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+        self.capture_annotator = Some(annotator);
+        cx.notify();
+    }
+
+    /// The annotation editor, when one is open. Painted last so it covers the
+    /// conversation and its own picker/menu overlays.
+    pub(super) fn render_capture_annotator(&self) -> Option<AnyElement> {
+        self.capture_annotator
+            .as_ref()
+            .map(|annotator| annotator.clone().into_any_element())
     }
 
     // ------------------------------------------------------------ rendering
@@ -439,28 +599,40 @@ impl AiAssistantView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let mut chips: Vec<AnyElement> = Vec::new();
-        for (index, attachment) in self.attachments.iter().enumerate() {
+        for (index, staged) in self.attachments.iter().enumerate() {
+            let attachment = &staged.attachment;
             let undeliverable = attachment.is_image() && !self.backend_takes_images();
             let tint = if undeliverable {
                 ShellDeckColors::error()
             } else {
                 ShellDeckColors::text_muted()
             };
+            let previewable = staged.preview.is_some();
+            let mut chip = chip_shell(("ai-attachment-chip", index))
+                .child(lucide_icon(attachment.kind.icon(), 11.0, tint))
+                .child(
+                    div()
+                        .truncate()
+                        .max_w(px(160.0))
+                        .text_color(tint)
+                        .child(attachment.name.clone()),
+                );
+            // An image chip is a door to the image. Without this the only way
+            // to check what is about to be sent is to send it.
+            if previewable {
+                chip = chip
+                    .cursor_pointer()
+                    .hover(|style| style.bg(ShellDeckColors::hover_bg()))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_attachment_preview(index, cx)),
+                    );
+            }
             chips.push(
-                chip_shell(("ai-attachment-chip", index))
-                    .child(lucide_icon(attachment.kind.icon(), 11.0, tint))
-                    .child(
-                        div()
-                            .truncate()
-                            .max_w(px(160.0))
-                            .text_color(tint)
-                            .child(attachment.name.clone()),
-                    )
-                    .child(chip_remove(
-                        ("ai-attachment-drop", index),
-                        cx.listener(move |this, _, _, cx| this.remove_attachment(index, cx)),
-                    ))
-                    .into_any_element(),
+                chip.child(chip_remove(
+                    ("ai-attachment-drop", index),
+                    cx.listener(move |this, _, _, cx| this.remove_attachment(index, cx)),
+                ))
+                .into_any_element(),
             );
         }
         // Only mentions the draft still carries get a chip: the row must show
@@ -716,7 +888,12 @@ impl AiAssistantView {
         if let Some(error) = self.attachment_error.clone() {
             return Some(error);
         }
-        if self.attachments.iter().any(AiAttachment::is_image) && !self.backend_takes_images() {
+        if self
+            .attachments
+            .iter()
+            .any(|staged| staged.attachment.is_image())
+            && !self.backend_takes_images()
+        {
             return Some(
                 t!(
                     "ai.attachment.error.backend",
@@ -732,7 +909,7 @@ impl AiAssistantView {
     /// the point: a turn that quietly drops the screenshot the question is
     /// about produces a confident answer to a question nobody asked.
     pub(super) fn composer_blocked_by_attachments(&self) -> bool {
-        validate_attachments(self.backend, &self.attachments).is_err()
+        validate_attachments(self.backend, &self.staged_attachments()).is_err()
     }
 }
 
@@ -798,7 +975,12 @@ fn chip_remove(
                 .size(px(10.0))
                 .text_color(ShellDeckColors::text_muted()),
         )
-        .on_click(on_click)
+        .on_click(move |event, window, cx| {
+            // The chip itself opens the preview; without this the remove
+            // control would do both.
+            cx.stop_propagation();
+            on_click(event, window, cx);
+        })
         .into_any_element()
 }
 

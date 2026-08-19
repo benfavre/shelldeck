@@ -2239,7 +2239,11 @@ separately in the `bext` repository, and its absence degrades to an empty
 
 The composer's `+` control stages local bytes: a file chosen from disk, the
 clipboard (image or text), or an interactive region capture. The kind is
-decided from the content, not the extension. Text attachments are inlined into
+decided from the content, not the extension. A region capture passes through
+the shared annotation editor before it is staged, and a staged image can be
+opened full-size in the shared image viewer from its chip — the same two
+components the request and ticket composers use, so a draft image is inspected
+and annotated exactly like a posted one. Text attachments are inlined into
 the prompt inside untrusted delimiters and therefore reach every backend; image
 attachments travel as a provider content block and reach API backends only.
 
@@ -2265,6 +2269,11 @@ keep plain textarea behaviour, where Enter inserts a newline.
 
 ## Change log
 
+- **2026-08-19** — Amended SDUC-465: the assistant's `+` now reuses the whole
+  shared attachment chain rather than half of it. A region capture opens the
+  annotation editor before staging, and a staged image opens the shared viewer
+  from its chip, which gained a source-agnostic `LightboxItem` so it serves
+  in-memory drafts as well as uploaded attachments.
 - **2026-08-19** — Added SDUC-464/465/466 and SDTEST-1622…1651 for the
   assistant composer's `@` mentions and `+` attachments. The two placeholder
   affordances became functional: mentions resolve typed references to eleven

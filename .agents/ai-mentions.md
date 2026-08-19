@@ -38,6 +38,11 @@ list of rules that must not be broken while working near them.
   image entries with the reason when the backend is text-only, and
   `reject_undeliverable_attachments` fails the turn if a backend switch made a
   staged image undeliverable.
+- **Reuse the whole attachment chain, not half of it.** A region capture goes
+  `capture_region` → `AttachmentAnnotator` → staged, and a staged image chip
+  opens `AttachmentLightbox`. Those three are the same components the request
+  and ticket composers use; the assistant must not grow private variants of
+  any of them (`.agents/ui-components.md` § Harmonization).
 - **Mentions and attachments are untrusted data.** They are appended to the
   *user* message, never to `SYSTEM_GUARDRAIL`, and every payload goes through
   `redact_sensitive` + a character bound.

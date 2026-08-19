@@ -105,6 +105,18 @@ User request:
 
 Consequences, and they are UI-visible on purpose:
 
+- A region capture goes through the **shared annotation editor** before it is
+  staged, exactly like a capture attached to a request or a ticket. An image
+  sent to an assistant almost always needs "this bit here" pointed at — the
+  arrow is the question. The assistant reuses `capture_region` *and*
+  `AttachmentAnnotator`; using only the first is what made it, briefly, the one
+  surface where a capture could not be annotated.
+- A staged image is **previewable before it is sent**: its chip opens the shared
+  `AttachmentLightbox`. The viewer takes a `LightboxItem`, which is either a
+  remote URL (a posted attachment) or bytes held in memory (a draft), so
+  checking what you are about to send is the same surface as re-reading what you
+  already sent. It is hosted by the assistant view rather than the Workspace, so
+  it works identically in the Dock, which has no Workspace overlay to borrow.
 - Text attachments are inlined into the prompt and therefore work everywhere.
 - Image attachments are offered **only** when
   `AiBackend::supports_image_attachments()` is true. On a CLI backend the image

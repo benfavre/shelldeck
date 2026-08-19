@@ -857,7 +857,10 @@ impl SupportView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let lightbox_attachments = attachments.to_vec();
+        // Posted attachments become source-agnostic viewer items; the same
+        // viewer also serves drafts held in memory (`LightboxItem::from_draft`).
+        let lightbox_attachments: Vec<LightboxItem> =
+            attachments.iter().map(LightboxItem::from_stored).collect();
         let delete_target = if self.section == SupportSection::Requests {
             self.issue_detail
                 .as_ref()
