@@ -82,6 +82,12 @@ impl AiCompanionController {
                     // The Dock has its own close control in `AiDockView`; the
                     // in-view one only exists for the Sheet.
                     AiAssistantEvent::Close => {}
+                    // The mention directory is built from Workspace state. The
+                    // Workspace subscribes to this same entity for exactly this
+                    // event; when it does not exist yet (standalone Dock before
+                    // the main window), there is nothing to rebuild and the
+                    // picker correctly reports that mentions are unavailable.
+                    AiAssistantEvent::RefreshMentions => {}
                     // The Dock cannot open Settings itself — it is a separate
                     // window with no workspace. Forwarded to the app root,
                     // which raises the main window and routes it.
@@ -123,7 +129,7 @@ impl AiCompanionController {
                                         client.as_ref(),
                                         &prompt,
                                         &latest_user_message,
-                                        context,
+                                        *context,
                                     )
                                 })
                                 .await

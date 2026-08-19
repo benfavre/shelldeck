@@ -6,7 +6,7 @@ pub use crate::components::input_state::{
     Backspace, BackspaceWord, Copy, Cut, Delete, DeleteWord, Down, End, Enter, Escape, Home,
     InputEvent, InputMask, InputState, InputType, Left, LeftWord, Paste, Right, RightWord,
     SelectAll, SelectDown, SelectLeft, SelectLeftWord, SelectRight, SelectRightWord, SelectUp,
-    ShiftTab, Tab, Up, ValidationError, ValidationRules,
+    ShiftEnter, ShiftTab, Tab, Up, ValidationError, ValidationRules,
 };
 use crate::layout::{HStack, VStack};
 use crate::theme::use_theme;
@@ -31,6 +31,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("home", Home, Some("Input")),
         KeyBinding::new("end", End, Some("Input")),
         KeyBinding::new("enter", Enter, Some("Input")),
+        // ShellDeck patch: SDPATCH-038 — Shift+Enter matched no binding, so a
+        // committing composer had no way to type a newline.
+        KeyBinding::new("shift-enter", ShiftEnter, Some("Input")),
         KeyBinding::new("tab", Tab, Some("Input")),
         KeyBinding::new("shift-tab", ShiftTab, Some("Input")),
         #[cfg(target_os = "macos")]
@@ -790,6 +793,8 @@ impl RenderOnce for Input {
                             .on_action(window.listener_for(&self.state, InputState::cut))
                             .on_action(window.listener_for(&self.state, InputState::paste))
                             .on_action(window.listener_for(&self.state, InputState::enter))
+                            // ShellDeck patch: SDPATCH-038 — newline half.
+                            .on_action(window.listener_for(&self.state, InputState::shift_enter))
                             .on_action(window.listener_for(&self.state, InputState::tab))
                             .on_action(window.listener_for(&self.state, InputState::shift_tab))
                             .on_action(window.listener_for(&self.state, InputState::escape))

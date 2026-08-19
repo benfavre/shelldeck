@@ -42,6 +42,7 @@ impl Workspace {
                         // Token is valid → load the sites directory + activate
                         // the persisted mode (starts the support poll if needed).
                         ws.refresh_sites(cx);
+                        ws.refresh_mention_people(cx);
                         ws.activate_current_mode(cx);
                         ws.maybe_show_onboarding(cx);
                     }
@@ -331,6 +332,9 @@ impl Workspace {
 
         // Load the sites directory for the switcher (background, non-blocking).
         self.refresh_sites(cx);
+        // Who this account may address in the assistant's `@` picker. Same
+        // shape: background, best-effort, silent when the endpoint is absent.
+        self.refresh_mention_people(cx);
         // Non-super-admins are forced to User mode; activate whatever mode applies.
         self.activate_current_mode(cx);
         // Kick a whoami to populate `last_whoami` (device label, created_at,

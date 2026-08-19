@@ -113,6 +113,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `external-link` | navigation | open in browser |
 | `eye` | action | show password / preview |
 | `eye-off` | action | hide password |
+| `file-text` | AI | mention picker — open editor file |
 | `filter` | support | ticket list filters |
 | `flag` | support | priority / flag ticket |
 | `globe` | infra | sites, public URL |
@@ -122,6 +123,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `info` | status | info banners |
 | `key` | ssh | SSH keys, credentials |
 | `keyboard` | dashboard | shortcuts section header |
+| `life-buoy` | AI | mention picker — support ticket |
 | `list-checks` | AI | assistant tasks tab and empty state |
 | `lock` | security | locked / auth required |
 | `mail` | support | email channel |
@@ -129,6 +131,7 @@ Slug is the filename without `.svg`. **Category** is for humans only.
 | `messages-square` | AI | assistant discussions tab |
 | `minimize-2` | window | minimize (titlebar) |
 | `minus` | chrome | zoom out, decrement |
+| `paperclip` | AI | composer attachments (`+`) |
 | `panel-right-close` | window | titlebar — external AI Dock is open |
 | `panel-right-open` | window | titlebar — open the external AI Dock |
 | `pencil` | action | edit |
