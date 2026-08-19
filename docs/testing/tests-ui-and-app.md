@@ -433,6 +433,15 @@ parallel `cargo test`.
 
 ---
 
+## 8e. `shelldeck-ui/settings.rs` — interface typography
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1653 | `settings.rs::the_ui_font_shortlist_offers_no_monospace_family` | SDUC-467 | Green | The interface shortlist and the terminal/editor shortlist stay disjoint, and Inter leads the interface list. |
+| SDTEST-1654 | `settings.rs::monospace_and_the_legacy_sentinel_never_survive_as_interface_families` | SDUC-467 | Green | The branches of `normalize_ui_font_family` that need no `TextSystem`: monospace families and the retired sentinel are both refused as interface families. |
+
+---
+
 ## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST

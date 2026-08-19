@@ -396,9 +396,15 @@ struct AiDiagnosticSequence {
 /// GPUI for a missing family falls back to the first fallback *face* (regular),
 /// which also discards requested weights such as semibold and bold. Inter is
 /// embedded by adabraka-ui, so it is a stable weighted fallback on every OS.
-fn resolve_ui_font_family(configured: &str, cx: &App) -> Option<String> {
-    let resolved = crate::settings::normalize_ui_font_family(configured, cx);
-    (resolved != "System Default").then_some(resolved)
+/// The UI family the application will actually render with.
+///
+/// Always a real family — see `settings::normalize_ui_font_family`. It used to
+/// return `None` for the `"System Default"` sentinel, which made every root
+/// skip `.font_family()` and fall through to GPUI's built-in monospace default
+/// while adabraka components rendered in Inter. One resolution point, one
+/// answer, applied unconditionally.
+fn resolve_ui_font_family(configured: &str, cx: &App) -> String {
+    crate::settings::normalize_ui_font_family(configured, cx)
 }
 
 pub struct Workspace {
@@ -454,9 +460,10 @@ pub struct Workspace {
     companion_shortcut_statuses: CompanionShortcutStatuses,
     sidebar_visible: bool,
     sidebar_width: f32,
-    /// Available application UI family, with missing configured fonts resolved
-    /// to the embedded Inter family so requested font weights remain intact.
-    resolved_ui_font_family: Option<String>,
+    /// The application UI family in use, always resolvable: a missing or
+    /// legacy-sentinel configuration resolves to the embedded Inter family
+    /// rather than leaving the root without a font.
+    resolved_ui_font_family: String,
     /// Application UI base font size in pixels.
     ui_font_size: f32,
     window_active: bool,

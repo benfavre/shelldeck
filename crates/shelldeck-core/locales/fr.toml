@@ -175,7 +175,6 @@ settings.terminal.cursor_style.description = "Forme du curseur (bloc, souligné,
 settings.terminal.cursor_style.block = "Bloc"
 settings.terminal.cursor_style.underline = "Souligné"
 settings.terminal.cursor_style.bar = "Barre"
-settings.general.font.system_default = "Système (par défaut)"
 settings.terminal.cursor_blink.label = "Clignotement du curseur"
 settings.terminal.cursor_blink.description = "Activer le clignotement du curseur"
 
