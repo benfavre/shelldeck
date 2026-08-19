@@ -68,7 +68,7 @@ use crate::file_editor::view::{FileEditorEvent, FileEditorView};
 use crate::fleet_view::{FleetView, FleetViewEvent};
 use crate::issue_attachments::{
     capture_region, draft_from_clipboard_image, render_attachment_draft_gallery,
-    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox,
+    render_stored_attachment_gallery, AttachmentDraft, AttachmentLightbox, LightboxItem,
 };
 use crate::jean_view::{JeanView, JeanViewEvent};
 use crate::login_form::{LoginForm, LoginFormEvent};

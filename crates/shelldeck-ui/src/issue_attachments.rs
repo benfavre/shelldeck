@@ -422,13 +422,86 @@ pub fn render_stored_attachment_gallery(
     gallery.into_any_element()
 }
 
+/// Where a previewed image comes from.
+///
+/// A posted request attachment lives behind a URL; an attachment still being
+/// composed lives in memory. The viewer treats them the same — which is the
+/// point: a user who wants to check what they are about to send should not get
+/// a lesser surface than one re-reading what they already sent.
+#[derive(Clone)]
+pub enum LightboxSource {
+    Remote(SharedString),
+    Local(Arc<Image>),
+}
+
+/// One image in the viewer, independent of whether it has been uploaded yet.
+#[derive(Clone)]
+pub struct LightboxItem {
+    pub id: SharedString,
+    pub filename: SharedString,
+    pub source: LightboxSource,
+    /// Full-resolution or external viewer URL, when the image has one. `None`
+    /// for a local draft — there is nothing to open in a browser yet, so the
+    /// control is hidden rather than shown pointing nowhere.
+    pub open_url: Option<SharedString>,
+}
+
+impl LightboxItem {
+    /// A posted attachment, served from Inklura Share.
+    pub fn from_stored(attachment: &IssueAttachment) -> Self {
+        let open_url = if attachment.viewer_url.is_empty() {
+            attachment.url.clone()
+        } else {
+            attachment.viewer_url.clone()
+        };
+        Self {
+            id: SharedString::from(attachment.id.clone()),
+            filename: SharedString::from(attachment.filename.clone()),
+            source: LightboxSource::Remote(SharedString::from(attachment.url.clone())),
+            open_url: (!open_url.is_empty()).then(|| SharedString::from(open_url)),
+        }
+    }
+
+    /// A draft held in memory, not yet uploaded anywhere.
+    pub fn from_draft(id: impl Into<SharedString>, draft: &AttachmentDraft) -> Self {
+        Self {
+            id: id.into(),
+            filename: SharedString::from(draft.filename.clone()),
+            source: LightboxSource::Local(draft.image.clone()),
+            open_url: None,
+        }
+    }
+
+    /// A local image the caller already decoded.
+    pub fn from_image(
+        id: impl Into<SharedString>,
+        filename: impl Into<SharedString>,
+        image: Arc<Image>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            filename: filename.into(),
+            source: LightboxSource::Local(image),
+            open_url: None,
+        }
+    }
+
+    fn img(&self) -> gpui::Img {
+        match &self.source {
+            LightboxSource::Remote(url) => img(url.clone()),
+            LightboxSource::Local(image) => img(image.clone()),
+        }
+    }
+}
+
 /// Native full-window image viewer for request threads.
 ///
 /// adabraka-ui has dialogs and sheets but no media lightbox. This dedicated
-/// view keeps the one custom full-screen shape shared by User and Support,
-/// while preserving the surrounding thread and its scroll position.
+/// view keeps the one custom full-screen shape shared by User, Support and the
+/// assistant composer, while preserving the surrounding thread and its scroll
+/// position.
 pub struct AttachmentLightbox {
-    attachments: Vec<IssueAttachment>,
+    attachments: Vec<LightboxItem>,
     selected: usize,
     focus_handle: FocusHandle,
     focused: bool,
@@ -437,7 +510,7 @@ pub struct AttachmentLightbox {
 
 impl AttachmentLightbox {
     pub fn new(
-        attachments: Vec<IssueAttachment>,
+        attachments: Vec<LightboxItem>,
         selected: usize,
         on_close: impl Fn(&mut App) + 'static,
         cx: &mut Context<Self>,
@@ -501,11 +574,7 @@ impl Render for AttachmentLightbox {
         };
         let has_multiple = self.attachments.len() > 1;
         let counter = format!("{} / {}", self.selected + 1, self.attachments.len());
-        let original_url = if current.viewer_url.is_empty() {
-            current.url.clone()
-        } else {
-            current.viewer_url.clone()
-        };
+        let original_url = current.open_url.clone();
 
         let close_entity = cx.entity();
         let previous_entity = close_entity.clone();
@@ -549,7 +618,8 @@ impl Render for AttachmentLightbox {
                     .hover(|style| style.border_color(white().opacity(0.7)))
                     .child(
                         div().size_full().overflow_hidden().rounded(px(4.0)).child(
-                            img(SharedString::from(attachment.url.clone()))
+                            attachment
+                                .img()
                                 .size_full()
                                 // Nested rounded clips are not reliable for
                                 // image paint layers in GPUI.
@@ -598,7 +668,7 @@ impl Render for AttachmentLightbox {
                                     .truncate()
                                     .text_size(px(13.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child(current.filename),
+                                    .child(current.filename.clone()),
                             )
                             .child(
                                 div()
@@ -607,14 +677,16 @@ impl Render for AttachmentLightbox {
                                     .child(counter),
                             ),
                     )
-                    .child(lightbox_icon_button(
-                        "attachment-lightbox-original",
-                        "external-link",
-                        32.0,
-                        move |_| {
-                            let _ = cloud_account::open_in_browser(&original_url);
-                        },
-                    ))
+                    .when_some(original_url, |el, url| {
+                        el.child(lightbox_icon_button(
+                            "attachment-lightbox-original",
+                            "external-link",
+                            32.0,
+                            move |_| {
+                                let _ = cloud_account::open_in_browser(&url);
+                            },
+                        ))
+                    })
                     .child(lightbox_icon_button(
                         "attachment-lightbox-close",
                         "x",
@@ -653,7 +725,8 @@ impl Render for AttachmentLightbox {
                             .items_center()
                             .justify_center()
                             .child(
-                                img(SharedString::from(current.url))
+                                current
+                                    .img()
                                     .size_full()
                                     .object_fit(ObjectFit::Contain)
                                     .with_fallback(|| {

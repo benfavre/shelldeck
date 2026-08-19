@@ -637,7 +637,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let lightbox_attachments = attachments.to_vec();
+        // Posted attachments become source-agnostic viewer items; the same
+        // viewer also serves drafts held in memory (`LightboxItem::from_draft`).
+        let lightbox_attachments: Vec<LightboxItem> =
+            attachments.iter().map(LightboxItem::from_stored).collect();
         let delete_entity = entity.clone();
         let delete_attachments = attachments.to_vec();
         let issue_id = self
