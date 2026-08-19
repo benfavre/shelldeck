@@ -158,6 +158,10 @@ impl Workspace {
             cx.notify();
         });
         self.refresh_command_palette(cx);
+        // Both mention gates read the active site: the directory and the people
+        // cache are scoped to it and must follow the switch.
+        self.refresh_mention_people(cx);
+        self.refresh_mention_directory(cx);
         self.site_menu_open = false;
         if let Some(site_id) = activity_site_id {
             let label = activity_label.unwrap_or_else(|| site_id.clone());

@@ -203,6 +203,7 @@ rules loader.
 @.agents/testing.md
 @.agents/i18n.md
 @.agents/ai.md
+@.agents/ai-mentions.md
 @.agents/github.md
 @.agents/related-repositories.md
 

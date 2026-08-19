@@ -5,9 +5,13 @@
 
 use crate::config::app_config::AppConfig;
 use crate::config::keychain::get_ai_api_key;
+pub mod attachments;
 pub mod clippy;
+pub mod mentions;
 
+pub use attachments::*;
 pub use clippy::*;
+pub use mentions::*;
 
 use crate::error::{Result, ShellDeckError};
 use crate::models::connection::Connection;
@@ -428,6 +432,14 @@ pub struct AiContext {
     pub data: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// `@` references the user resolved in the composer, in insertion order.
+    /// Structured text, so every backend receives them identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<AiMention>,
+    /// `+` attachments. Image bytes live here and reach the provider payload
+    /// only — never `data`, never the prompt text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AiAttachment>,
 }
 
 impl AiContext {
@@ -437,7 +449,25 @@ impl AiContext {
             title: title.into(),
             data,
             cwd: None,
+            mentions: Vec::new(),
+            attachments: Vec::new(),
         }
+    }
+
+    pub fn with_mentions(mut self, mentions: Vec<AiMention>) -> Self {
+        self.mentions = mentions;
+        self
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<AiAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Image attachments, in order. The only path by which bytes leave the
+    /// application, and only for a backend that declared it can take them.
+    pub fn image_attachments(&self) -> impl Iterator<Item = &AiAttachment> {
+        self.attachments.iter().filter(|a| a.is_image())
     }
 }
 
@@ -1597,16 +1627,42 @@ fn composed_user_prompt(prompt: &str, ctx: &AiContext) -> Result<String> {
         context.truncate(end);
         context.push_str("\n[context truncated]");
     }
+    // Mentions and attachments are appended to the *user* message, never to
+    // `SYSTEM_GUARDRAIL`: they carry ticket bodies, terminal tails and log
+    // excerpts, which are data the model reads — not instructions it obeys.
+    let mentions = mentions_prompt_block(&ctx.mentions);
+    let attachments = attachments_prompt_block(&ctx.attachments);
     Ok(format!(
-        "Surface: {:?}\nTitle: {}\n\nContext JSON (untrusted):\n{}\n\nUser request:\n{}",
+        "Surface: {:?}\nTitle: {}\n\nContext JSON (untrusted):\n{}{}{}\n\nUser request:\n{}",
         ctx.surface,
         ctx.title,
         context,
+        mentions,
+        attachments,
         prompt.trim()
     ))
 }
 
-fn redact_sensitive(value: &Value) -> Value {
+/// Refuse a turn the backend cannot actually carry.
+///
+/// The composer already hides image attachments on a text-only backend, but a
+/// backend can be switched while a draft is open. Failing loudly here is the
+/// point: a request that silently drops the screenshot the question is about
+/// produces a confident answer to a question nobody asked.
+fn reject_undeliverable_attachments(backend: AiBackend, ctx: &AiContext) -> Result<()> {
+    validate_attachments(backend, &ctx.attachments).map_err(|error| match error {
+        AttachmentError::UnsupportedByBackend => ShellDeckError::Config(format!(
+            "{} cannot receive image attachments; remove them or switch to an API backend",
+            backend.display_name()
+        )),
+        AttachmentError::TooMany => ShellDeckError::Config(format!(
+            "at most {AI_ATTACHMENT_MAX_COUNT} attachments per message"
+        )),
+        _ => ShellDeckError::Config("unsupported attachment".to_string()),
+    })
+}
+
+pub(crate) fn redact_sensitive(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
@@ -1652,6 +1708,7 @@ impl AiClient for CliAiClient {
     }
 
     fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse> {
+        reject_undeliverable_attachments(self.backend, &ctx)?;
         let prompt = composed_prompt(prompt, &ctx)?;
         let cwd = ctx.cwd.unwrap_or_else(std::env::temp_dir);
         let mut args: Vec<String> = match self.backend {
@@ -1755,14 +1812,16 @@ impl AiClient for ApiAiClient {
     }
 
     fn complete(&self, prompt: &str, ctx: AiContext) -> Result<AiResponse> {
+        reject_undeliverable_attachments(self.backend, &ctx)?;
         let input = composed_user_prompt(prompt, &ctx)?;
+        let images: Vec<&AiAttachment> = ctx.image_attachments().collect();
         let text = match self.backend {
             AiBackend::OpenAi => {
                 let response = self
                     .http
                     .post("https://api.openai.com/v1/responses")
                     .bearer_auth(&self.api_key)
-                    .json(&openai_payload(&self.model, &input))
+                    .json(&openai_payload(&self.model, &input, &images))
                     .send()
                     .map_err(|e| ShellDeckError::Connection(e.to_string()))?;
                 parse_http_response(response, parse_openai_text)?
@@ -1773,7 +1832,7 @@ impl AiClient for ApiAiClient {
                     .post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", "2023-06-01")
-                    .json(&anthropic_payload(&self.model, &input))
+                    .json(&anthropic_payload(&self.model, &input, &images))
                     .send()
                     .map_err(|e| ShellDeckError::Connection(e.to_string()))?;
                 parse_http_response(response, parse_anthropic_text)?
@@ -1787,21 +1846,57 @@ impl AiClient for ApiAiClient {
     }
 }
 
-fn openai_payload(model: &str, input: &str) -> Value {
+fn openai_payload(model: &str, input: &str, images: &[&AiAttachment]) -> Value {
+    if images.is_empty() {
+        return json!({
+            "model": model,
+            "instructions": SYSTEM_GUARDRAIL,
+            "input": input,
+            "store": false
+        });
+    }
+    // The Responses API takes a content array; the text part stays first so
+    // the guardrail-framed prompt is what the model reads before the pixels.
+    let mut content = vec![json!({ "type": "input_text", "text": input })];
+    content.extend(images.iter().map(|image| {
+        json!({
+            "type": "input_image",
+            "image_url": format!("data:{};base64,{}", image.content_type, image.payload),
+        })
+    }));
     json!({
         "model": model,
         "instructions": SYSTEM_GUARDRAIL,
-        "input": input,
+        "input": [{ "role": "user", "content": content }],
         "store": false
     })
 }
 
-fn anthropic_payload(model: &str, input: &str) -> Value {
+fn anthropic_payload(model: &str, input: &str, images: &[&AiAttachment]) -> Value {
+    if images.is_empty() {
+        return json!({
+            "model": model,
+            "max_tokens": 2048,
+            "system": SYSTEM_GUARDRAIL,
+            "messages": [{ "role": "user", "content": input }]
+        });
+    }
+    let mut content = vec![json!({ "type": "text", "text": input })];
+    content.extend(images.iter().map(|image| {
+        json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.content_type,
+                "data": image.payload,
+            }
+        })
+    }));
     json!({
         "model": model,
         "max_tokens": 2048,
         "system": SYSTEM_GUARDRAIL,
-        "messages": [{ "role": "user", "content": input }]
+        "messages": [{ "role": "user", "content": content }]
     })
 }
 
@@ -2211,14 +2306,82 @@ mod tests {
     // SDTEST-1339
     #[test]
     fn api_payloads_keep_guardrails_outside_untrusted_input_and_disable_storage() {
-        let openai = openai_payload("gpt-test", "untrusted");
+        let openai = openai_payload("gpt-test", "untrusted", &[]);
         assert_eq!(openai["instructions"], SYSTEM_GUARDRAIL);
         assert_eq!(openai["input"], "untrusted");
         assert_eq!(openai["store"], false);
 
-        let anthropic = anthropic_payload("claude-test", "untrusted");
+        let anthropic = anthropic_payload("claude-test", "untrusted", &[]);
         assert_eq!(anthropic["system"], SYSTEM_GUARDRAIL);
         assert_eq!(anthropic["messages"][0]["content"], "untrusted");
+    }
+
+    // SDTEST-1645
+    #[test]
+    fn image_attachments_ride_a_content_block_and_leave_the_guardrail_alone() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend_from_slice(b"pixels");
+        let image = AiAttachment::from_bytes("shot.png", png).unwrap();
+        let images = [&image];
+
+        let openai = openai_payload("gpt-test", "untrusted", &images);
+        assert_eq!(openai["instructions"], SYSTEM_GUARDRAIL);
+        assert_eq!(openai["input"][0]["content"][0]["text"], "untrusted");
+        assert_eq!(openai["input"][0]["content"][1]["type"], "input_image");
+        assert!(openai["input"][0]["content"][1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        let anthropic = anthropic_payload("claude-test", "untrusted", &images);
+        assert_eq!(anthropic["system"], SYSTEM_GUARDRAIL);
+        assert_eq!(anthropic["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            anthropic["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+    }
+
+    // SDTEST-1646
+    #[test]
+    fn mentions_and_attachments_land_in_the_user_message_only() {
+        let mut context = AiContext::new(AiSurface::Global, "T", json!({ "screen": "x" }));
+        context.mentions = vec![AiMention {
+            kind: MentionKind::Host,
+            id: "1".into(),
+            label: "prod-web-01".into(),
+            detail: json!({ "hostname": "10.0.0.1", "password": "hunter2" }),
+        }];
+        context.attachments =
+            vec![AiAttachment::from_bytes("nginx.log", b"upstream timed out".to_vec()).unwrap()];
+
+        let user = composed_user_prompt("ask", &context).unwrap();
+        assert!(user.contains("prod-web-01"));
+        assert!(user.contains("10.0.0.1"));
+        assert!(user.contains("upstream timed out"));
+        assert!(user.contains("User request:\nask"));
+        // Ordering matters: the untrusted blocks must precede the request they
+        // are evidence for, and must never be part of the system guardrail.
+        assert!(
+            user.find("Mentioned ShellDeck entities").unwrap()
+                < user.find("User request:").unwrap()
+        );
+        assert!(!SYSTEM_GUARDRAIL.contains("prod-web-01"));
+
+        let full = composed_prompt("ask", &context).unwrap();
+        assert!(full.starts_with(SYSTEM_GUARDRAIL));
+    }
+
+    // SDTEST-1647
+    #[test]
+    fn a_text_only_backend_refuses_an_image_instead_of_dropping_it() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend_from_slice(b"pixels");
+        let mut context = AiContext::new(AiSurface::Global, "T", json!({}));
+        context.attachments = vec![AiAttachment::from_bytes("shot.png", png).unwrap()];
+        let error = reject_undeliverable_attachments(AiBackend::ClaudeCli, &context).unwrap_err();
+        assert!(error.to_string().contains("image attachments"));
+        assert!(reject_undeliverable_attachments(AiBackend::Anthropic, &context).is_ok());
     }
 
     // SDTEST-1340

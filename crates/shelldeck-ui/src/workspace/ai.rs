@@ -319,6 +319,9 @@ impl Workspace {
             view.set_ai_enabled(backend_ready && self.app_config.ai.allows(AiSurface::Recent));
             cx.notify();
         });
+        // The mention directory depends on the mode and the active site, both
+        // of which move with the config this method re-reads.
+        self.refresh_mention_directory(cx);
     }
 
     pub(super) fn close_ai_workflow(&mut self, cx: &mut Context<Self>) {
@@ -1942,6 +1945,7 @@ impl Workspace {
             );
             assistant.set_context(context, cx);
         });
+        self.refresh_mention_directory(cx);
         self.present_ai_sheet(cx);
     }
 
@@ -1968,6 +1972,7 @@ impl Workspace {
             assistant.set_clippy_auto_import_clipboard(auto_import, cx);
             assistant.show_clippy(cx);
         });
+        self.refresh_mention_directory(cx);
         self.present_ai_sheet(cx);
     }
 
@@ -2052,7 +2057,7 @@ impl Workspace {
                                 client.as_ref(),
                                 &prompt,
                                 &latest_user_message,
-                                context,
+                                *context,
                             )
                         })
                         .await
@@ -2104,6 +2109,9 @@ impl Workspace {
             }
             AiAssistantEvent::OpenTaskTarget(task_id) => {
                 self.open_ai_task_target(task_id, cx);
+            }
+            AiAssistantEvent::RefreshMentions => {
+                self.refresh_mention_directory(cx);
             }
             AiAssistantEvent::StopTask(task_id) => {
                 self.stop_ai_task(task_id, cx);
