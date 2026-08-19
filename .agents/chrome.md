@@ -39,6 +39,39 @@ hand-rolled chrome grows. Fixing it means converting ~2 500 call sites across
 146 files in the vendored fork — a deliberate, separately-scoped change, not
 something to start halfway through an unrelated task.
 
+## 1b. The application font — one family, always set
+
+The interface renders in **Inter**, embedded in the binary and registered at
+startup by `adabraka_ui::fonts::register_fonts`. It is the default value of
+`general.ui_font_family` and the fallback for anything unresolvable, so there
+is always exactly one real family in play.
+
+**Incident (2026-08-19):** the default was a sentinel string, `"System
+Default"`, which named no real family. Every consumer treated it as "set
+nothing" — `resolve_ui_font_family` returned `None`, the roots skipped
+`.font_family()`, and GPUI fell through to its built-in default, a *monospace*
+face on Linux. Meanwhile adabraka components set `theme.tokens.font_family`
+(Inter) themselves. The application therefore rendered in two typefaces at
+once: the menu bar in Inter, every hand-rolled element in monospace — on the
+welcome screen, which is the first thing a new user sees.
+
+**How to apply:**
+
+- **`settings::normalize_ui_font_family` is the single resolution point, and it
+  never returns a sentinel.** Empty, legacy `"System Default"`, unavailable, or
+  a known monospace family all resolve to Inter. Callers apply the result
+  unconditionally; there is no "no font" branch to re-introduce.
+- **Every window root applies it**: the Workspace, the AI Dock, the standalone
+  command palette. A new top-level root must too, or it renders in a different
+  typeface from the rest of the app.
+- **The UI shortlist is sans-serif only** (`UI_FONT_FAMILIES`), and disjoint
+  from the terminal/editor shortlist (`MONOSPACE_FONTS`). A monospace face is a
+  tool for code and aligned output; in an interface it costs reading speed and
+  widens every label. SDTEST-1653 pins the two lists apart — do not merge them
+  "for convenience".
+- **Terminal and editor keep their own monospace settings.** This rule is about
+  interface text only.
+
 ## 2. The application menu row
 
 - Spec: `crates/shelldeck-ui/src/menu_bar.rs` — `menu_bar_spec(MenuBarContext)`

@@ -2257,6 +2257,21 @@ Clippy applies to desktop screenshots. Attachments are bounded per kind, capped
 in number, truncated with a visible marker rather than silently, and cleared
 once the message they belong to has left.
 
+### SDUC-467 — The interface always renders in one sans-serif family
+
+Application text renders in Inter, which ShellDeck embeds and registers at
+startup, on every window root: the workspace, the AI Dock and the standalone
+command palette. The configured family is resolved once, and the resolution
+never yields a value that cannot be applied — an empty setting, the legacy
+`"System Default"` sentinel, an uninstalled family and a monospace family all
+resolve to Inter. Consequently no surface can fall through to the platform
+toolkit's own default, and the application never renders two typefaces at once.
+
+The font picker for the interface offers sans-serif families only; monospace
+families remain available where they belong, in the terminal and editor
+settings. Older configurations carrying the retired sentinel keep parsing and
+are rewritten to the resolved family on the next save.
+
 ### SDUC-466 — A composer commits on Enter and breaks the line on Shift+Enter
 
 Every ShellDeck composer prints "⏎ envoyer · ⇧⏎ nouvelle ligne" under the
@@ -2274,6 +2289,11 @@ keep plain textarea behaviour, where Enter inserts a newline.
   annotation editor before staging, and a staged image opens the shared viewer
   from its chip, which gained a source-agnostic `LightboxItem` so it serves
   in-memory drafts as well as uploaded attachments.
+- **2026-08-19** — Added SDUC-467 and SDTEST-1653/1654 after the welcome screen
+  was reported rendering in monospace. The `"System Default"` sentinel named no
+  real family, so every root skipped setting one and GPUI's monospace default
+  showed through beside adabraka's Inter. Inter is now the resolved default
+  everywhere and the interface shortlist is sans-serif only.
 - **2026-08-19** — Added SDUC-464/465/466 and SDTEST-1622…1651 for the
   assistant composer's `@` mentions and `+` attachments. The two placeholder
   affordances became functional: mentions resolve typed references to eleven

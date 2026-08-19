@@ -214,6 +214,13 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub ui_language: UiLanguage,
     /// Font family for the application UI (sidebar, dashboard, forms, etc.).
+    ///
+    /// Defaults to `Inter`, which ShellDeck embeds and registers at startup, so
+    /// the application always has one resolvable UI family on every platform.
+    /// The legacy `"System Default"` sentinel still parses and resolves to
+    /// Inter — it never named a real family, and leaving it unresolved is what
+    /// let GPUI's built-in (monospace) default leak into every hand-rolled
+    /// element while adabraka components rendered in Inter.
     pub ui_font_family: String,
     /// Base font size in pixels for the application UI.
     pub ui_font_size: f32,
@@ -396,7 +403,7 @@ impl Default for GeneralConfig {
             auto_attach_tmux: false,
             auto_update: true,
             ui_language: UiLanguage::default(),
-            ui_font_family: "System Default".to_string(),
+            ui_font_family: "Inter".to_string(),
             ui_font_size: 14.0,
             autostart: false,
             onboarding_completed: false,
@@ -984,7 +991,7 @@ ui_font_size = 14.0
         assert!(!cfg.general.auto_attach_tmux);
         assert!(cfg.general.auto_update);
         assert_eq!(cfg.general.ui_language, UiLanguage::System);
-        assert_eq!(cfg.general.ui_font_family, "System Default");
+        assert_eq!(cfg.general.ui_font_family, "Inter");
         assert_eq!(cfg.general.ui_font_size, 14.0);
 
         // Session state that must be OFF on first run

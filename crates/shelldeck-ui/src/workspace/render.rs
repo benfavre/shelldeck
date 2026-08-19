@@ -358,13 +358,13 @@ impl Render for Workspace {
                 }
             });
 
-        // Apply the configured application UI font family on the root so it
-        // cascades to every child view; "System Default" leaves GPUI's
-        // default font untouched. (UI scale is driven by the rem size set at
-        // the top of render.)
-        if let Some(font_family) = &self.resolved_ui_font_family {
-            root = root.font_family(font_family.clone());
-        }
+        // Apply the application UI font family on the root so it cascades to
+        // every child view. Unconditional on purpose: the family is always
+        // resolvable, and skipping it is what used to leave hand-rolled
+        // elements on GPUI's monospace default while adabraka widgets rendered
+        // in Inter. (UI scale is driven by the rem size set at the top of
+        // render.)
+        root = root.font_family(self.resolved_ui_font_family.clone());
 
         // Window chrome: clip children to the root so the custom titlebar and
         // status bar follow the window's rounded corners. When floating (not
