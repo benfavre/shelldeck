@@ -175,7 +175,6 @@ settings.terminal.cursor_style.description = "Terminal cursor shape (block, unde
 settings.terminal.cursor_style.block = "Block"
 settings.terminal.cursor_style.underline = "Underline"
 settings.terminal.cursor_style.bar = "Bar"
-settings.general.font.system_default = "System default"
 settings.terminal.cursor_blink.label = "Cursor Blink"
 settings.terminal.cursor_blink.description = "Enable cursor blinking in terminal"
 

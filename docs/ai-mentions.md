@@ -16,6 +16,25 @@ cannot receive an image). Mentions are *structured text* and therefore work
 identically on every backend — which is exactly why the `@` path is the one
 that carries application meaning.
 
+## Aperçu
+
+Captures prises sur un profil de démonstration entièrement fictif (hôtes,
+scripts, tunnels et site inventés, compte factice, aucune donnée réelle).
+
+| | |
+|---|---|
+| ![Le picker de mentions](screenshots/06-ai-mention-picker.png) | ![Mentions acceptées](screenshots/07-ai-mention-chips.png) |
+| Le `@` ouvre un picker groupé par type, chaque ligne portant son badge de site. | Une mention acceptée écrit `@Label` dans le texte et pose une puce retirable. |
+| ![Le menu des pièces jointes](screenshots/08-ai-attachment-menu.png) | ![Une pièce jointe attachée](screenshots/09-ai-attachment-chip.png) |
+| Le `+` désactive les entrées image sur un backend qui ne peut pas les recevoir, et dit pourquoi. | Une pièce jointe texte est portée par toutes les IA ; le compteur indique ce qui partira. |
+
+![Le picker dans le dock](screenshots/10-ai-mention-dock.png)
+
+Le dock externe et la surface intégrée partagent le même code : le picker s'y
+ouvre à l'identique, borné par le rail d'activités.
+
+---
+
 > **Related:** [`.agents/ai.md`](../.agents/ai.md) (safety contract),
 > [`.agents/ai-mentions.md`](../.agents/ai-mentions.md) (the short rules),
 > [`.agents/roles.md`](../.agents/roles.md) (who may see what),
