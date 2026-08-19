@@ -119,6 +119,12 @@ jobs:
       - name: Test shelldeck-core
         run: cargo test -p shelldeck-core
 
+      # `shelldeck-update` owns the binary-replacement paths, which differ per
+      # platform and are the ones that can leave a user without an executable.
+      # No GPUI, so it builds as cheaply as core here.
+      - name: Test shelldeck-update
+        run: cargo test -p shelldeck-update
+
       # The keychain round-trips are `#[ignore]`d by default because they need
       # a real credential store. macOS and Windows runners have one; Linux does
       # not (no Secret Service on the runner), so this step is per-OS.

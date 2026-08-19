@@ -267,16 +267,34 @@ async fn install_windows(archive: &Path) -> Result<()> {
 
     let new_binary = find_binary_in_dir(&staging)?;
 
-    // On Windows we cannot replace a running exe directly. Rename current to .old,
-    // copy new one in, and the old one will be cleaned up on next launch.
     let old = current_exe.with_extension("old.exe");
-    let _ = std::fs::remove_file(&old); // Remove previous .old if it exists
-    std::fs::rename(&current_exe, &old).context("Failed to rename current exe to .old.exe")?;
-    std::fs::copy(&new_binary, &current_exe).context("Failed to copy new binary")?;
+    pending_replace_file(&current_exe, &new_binary, &old)?;
 
     let _ = std::fs::remove_dir_all(&staging);
 
     tracing::info!("Windows update installed successfully");
+    Ok(())
+}
+
+/// Swap a running Windows executable, keeping a rollback.
+///
+/// Windows will not let a running `.exe` be replaced in place, so the current
+/// one is renamed aside and the new one copied into its name; the leftover is
+/// cleaned up on the next launch.
+///
+/// The rename must be undone when the copy fails. Without that, a copy
+/// interrupted by a full disk, a locked file or an antivirus leaves the user
+/// with **no executable at all** — only a `.old.exe` they would have to rename
+/// back by hand. The Unix path has always rolled back; this one had not.
+#[cfg(target_os = "windows")]
+fn pending_replace_file(current: &Path, replacement: &Path, old: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(old);
+    std::fs::rename(current, old).context("Failed to rename current exe to .old.exe")?;
+    if let Err(error) = std::fs::copy(replacement, current) {
+        // Put the user's working executable back before surfacing the failure.
+        let _ = std::fs::rename(old, current);
+        return Err(error).context("Failed to copy new binary");
+    }
     Ok(())
 }
 
@@ -362,6 +380,64 @@ mod tests {
         assert!(error.to_string().contains("SHA-256 mismatch"));
         assert!(!destination.exists());
         assert!(!destination.with_extension("part").exists());
+    }
+
+    // SDTEST-1243 — the Windows replacement keeps a rollback, and restores it
+    // when the copy fails.
+    //
+    // Windows cannot overwrite a running exe, so the current one is renamed
+    // aside first. If the copy then fails and nothing undoes that rename, the
+    // user is left with no executable at all — a failed update uninstalls the
+    // app. The Unix path always rolled back; this one did not.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_pending_replace_keeps_a_rollback_and_restores_it_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("shelldeck.exe");
+        let replacement = temp.path().join("staged.exe");
+        let old = temp.path().join("shelldeck.old.exe");
+        std::fs::write(&current, b"old").unwrap();
+        std::fs::write(&replacement, b"new").unwrap();
+
+        pending_replace_file(&current, &replacement, &old).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(&old).unwrap(),
+            b"old",
+            "the previous executable must survive as a rollback",
+        );
+
+        // Now fail the copy by pointing at a replacement that does not exist.
+        std::fs::write(&current, b"live").unwrap();
+        let missing = temp.path().join("not-there.exe");
+        let error = pending_replace_file(&current, &missing, &old).unwrap_err();
+        assert!(error.to_string().contains("Failed to copy new binary"));
+        assert_eq!(
+            std::fs::read(&current).unwrap(),
+            b"live",
+            "a failed update must leave the user's executable in place",
+        );
+    }
+
+    // SDTEST-1244 — an archive without the expected binary fails before
+    // anything is replaced.
+    #[test]
+    fn an_archive_without_the_binary_fails_before_touching_the_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("staging");
+        std::fs::create_dir_all(staging.join("nested")).unwrap();
+        std::fs::write(staging.join("README.md"), b"not a binary").unwrap();
+        std::fs::write(staging.join("nested").join("shelldeck.txt"), b"decoy").unwrap();
+
+        let error = find_binary_in_dir(&staging).unwrap_err();
+        assert!(
+            error.to_string().contains("Could not find"),
+            "unexpected error: {error}",
+        );
+
+        // The guard runs before any swap, so nothing outside the staging
+        // directory has been touched.
+        assert!(staging.join("README.md").exists());
     }
 
     // SDTEST-1242 — the Unix replacement is a same-filesystem rename and

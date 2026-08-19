@@ -24,7 +24,7 @@ risques par frontière observable et impose une vérification avant correction.
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | En cours | Voie retenue : **extraction de réducteurs purs**, un lot à la fois. Faits : SDTEST-1377 (`base_palette_actions`), SDTEST-1365 (`route_ai_action`) et SDTEST-1366 (`ai_timeout_outcome`). Faits aussi : SDTEST-1363 (`resolve_naming_application`). Restent SDTEST-1360/1361/1368/1370/1372 par la même méthode ; 1375/1376 touchent au rendu et resteront hors de portée sans harnais — 1376 appartient d'ailleurs à `patches/adabraka-ui`. |
 | REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
 | REL-008 | — | Keychain natif | **Aucun backend n'était compilé** : `keyring = "3"` sans feature retombe sur le magasin `mock` en mémoire, sur les trois plateformes. Rien n'a jamais été persisté. | P0 | Terminé | Features `apple-native` / `windows-native` / `sync-secret-service` activées ; SDTEST-120/123 passent enfin, et SDTEST-121/122 s'exécutent sur les runners macOS et Windows. |
-| REL-009 | NEXT-005 | Mise à jour | Cadence, HTTP et vérification de hash restent couplés au temps et au réseau réels. | P1 | Ouvert | Injecter horloge et transport HTTP, puis fermer les lignes correspondantes d'`INFRA_BLOCKED.md`. |
+| REL-009 | NEXT-005 | Mise à jour | La cadence de sondage reste couplée au temps réel. | P1 | En cours | Chemins de remplacement du binaire couverts sur les deux plateformes (SDTEST-1242/1243/1244) et exécutés en CI ; la vérification SHA-256 l'était déjà (SDTEST-1240). Reste l'injection d'horloge pour SDTEST-1220/1221, puis 1224/1241. |
 | REL-010 | — | Terminal / protocoles | OSC 7/52, modes souris, styles de curseur, longues chaînes OSC, sélection et caractères larges restent partiellement couverts. | P1 | À vérifier | Reproduire chaque comportement avant de reprendre SDTEST-750..755 et 870..874. |
 | REL-011 | — | Contrats API | Plusieurs lignes rouges Cloud, Issues, Support et Bext peuvent être réelles ou simplement en retard sur le code. | P1 | À vérifier | Auditer les routes et mocks actuels avant d'ajouter des tests ; corriger l'inventaire quand une preuve existe déjà. |
 
@@ -185,3 +185,17 @@ risques par frontière observable et impose une vérification avant correction.
   `resolve_naming_application` le compare. Impact réel modéré — un champ « nom »
   visible et corrigeable avant enregistrement — mais le trou n'était pas le
   symptôme : c'était l'absence de tout modèle d'identité derrière ces cibles.
+- **2026-08-19 — REL-009 : une mise à jour Windows ratée désinstallait l'app.**
+  Windows ne peut pas écraser un `.exe` en cours d'exécution : le chemin
+  d'installation renommait donc l'exécutable courant en `.old.exe` puis copiait
+  le nouveau à sa place. **Rien ne défaisait ce renommage quand la copie
+  échouait** — disque plein, fichier verrouillé, antivirus — et l'utilisateur se
+  retrouvait sans exécutable, avec un `.old.exe` à renommer à la main. Le chemin
+  Unix, lui, restaurait sa sauvegarde depuis toujours ; c'est en le comparant que
+  l'écart est apparu. Extrait en `pending_replace_file`, avec restauration.
+- **2026-08-19 — Le test existait sur le papier depuis un mois.** SDTEST-1243
+  était Rouge/P0 avec la mention « Windows CI » ; le runner Windows existe depuis
+  #45, mais il n'exécutait que `shelldeck-core`. Un test bloqué sur une
+  infrastructure qui est arrivée entre-temps reste bloqué tant que personne ne
+  relit la raison du blocage. La matrice teste désormais aussi
+  `shelldeck-update`.
