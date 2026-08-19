@@ -55,6 +55,9 @@ actions!(
         Cut,
         Paste,
         Enter,
+        // ShellDeck patch: SDPATCH-038 — an explicit Shift+Enter action so a
+        // committing multi-line field keeps a way to type a newline.
+        ShiftEnter,
         Tab,
         ShiftTab,
         Escape,
@@ -1018,9 +1021,13 @@ impl InputState {
     pub fn enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         // ShellDeck patch: SDPATCH-009 — in multi_line mode, Enter inserts a
         // newline into the content instead of emitting the Enter event.
-        // Parents that want a submit binding in multi_line mode should wire
-        // a dedicated button or a Cmd/Ctrl+Enter shortcut.
-        if self.multi_line {
+        // ShellDeck patch: SDPATCH-038 — unless the parent installed an
+        // `on_enter` handler. A multi-line field that was given a commit
+        // handler is a *composer*: it promises "⏎ send / ⇧⏎ new line", and
+        // swallowing Enter made that promise false in all four ShellDeck
+        // composers. Fields with no handler (script bodies, request details)
+        // keep the plain textarea behaviour.
+        if self.multi_line && self.on_enter_cb.is_none() {
             self.replace_text_in_range(None, "\n", window, cx);
         } else {
             cx.emit(InputEvent::Enter);
@@ -1032,6 +1039,14 @@ impl InputState {
                 // ShellDeck patch: SDPATCH-012 — defer; see helper above.
                 defer_input_callback(cb, value, cx);
             }
+        }
+    }
+
+    // ShellDeck patch: SDPATCH-038 — the newline half of the composer contract.
+    // Without its own binding, Shift+Enter reached no action at all.
+    pub fn shift_enter(&mut self, _: &ShiftEnter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multi_line {
+            self.replace_text_in_range(None, "\n", window, cx);
         }
     }
 
@@ -1099,6 +1114,45 @@ impl InputState {
         } else {
             self.selected_range.end
         }
+    }
+
+    // ShellDeck patch: SDPATCH-037 — caret introspection + caret-anchored
+    // replacement. A parent that completes what is being typed (the AI
+    // composer's `@` mention picker) must know where the caret is to know what
+    // partial token to replace, and must be able to put the caret back after
+    // the inserted text. Upstream keeps `selected_range` private and only
+    // offers `replace_content`, which always lands the caret at the end — so
+    // completing a mention mid-sentence moved the user to the end of the
+    // draft and rewrote the wrong span.
+    /// Byte offset of the caret in the current content.
+    pub fn caret_offset(&self) -> usize {
+        self.cursor_offset().min(self.content.len())
+    }
+
+    /// Replace the whole buffer and place the caret at `caret` (clamped to a
+    /// char boundary). Windowless, like `replace_content`.
+    pub fn replace_content_with_caret(
+        &mut self,
+        value: impl Into<SharedString>,
+        caret: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let value = value.into();
+        let filtered_value = self.filter_input(&value);
+        let mut caret = caret.min(filtered_value.len());
+        while caret > 0 && !filtered_value.is_char_boundary(caret) {
+            caret -= 1;
+        }
+        self.content = filtered_value.into();
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.preferred_cursor_x = None;
+        cx.emit(InputEvent::Change);
+        if let Some(cb) = self.on_change_cb.clone() {
+            defer_input_callback(cb, self.content.clone(), cx);
+        }
+        cx.notify();
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {

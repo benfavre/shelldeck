@@ -119,6 +119,7 @@ mod events;
 mod fleet;
 mod forwards;
 mod jean;
+mod mentions;
 mod menu;
 mod modes;
 mod navigation;
@@ -473,6 +474,12 @@ pub struct Workspace {
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
     _ai_assistant_sub: Subscription,
+    /// The Dock assistant's events belong to `AiCompanionController` — the Dock
+    /// must keep working with no Workspace at all. This second subscription
+    /// listens for exactly one of them: the request to rebuild the mention
+    /// directory, which only the Workspace can answer. Handling anything else
+    /// here would run it twice.
+    _ai_dock_mentions_sub: Subscription,
     _ai_workflow_sub: Option<Subscription>,
     _scripts_sub: Subscription,
     _forwards_sub: Subscription,
@@ -562,6 +569,10 @@ pub struct Workspace {
     runtime_busy: bool,
     /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
     _runtime_loop: Option<gpui::Task<()>>,
+    /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
+    /// Empty until the directory endpoint ships (`manage_directory`); people
+    /// are the one mention kind that needs server-side role information.
+    mention_people: Vec<shelldeck_core::config::manage_directory::DirectoryPerson>,
     /// Hosted issue-management (requests) cache — shared by User + Support.
     issues_list: Vec<Issue>,
     issues_staff: bool,
@@ -1087,6 +1098,14 @@ impl Workspace {
             cx.subscribe(&ai_assistant, |this, view, event: &AiAssistantEvent, cx| {
                 this.handle_ai_assistant_event(view, event.clone(), cx);
             });
+        let ai_dock_mentions_sub = cx.subscribe(
+            &ai_dock_assistant,
+            |this, _view, event: &AiAssistantEvent, cx| {
+                if matches!(event, AiAssistantEvent::RefreshMentions) {
+                    this.refresh_mention_directory(cx);
+                }
+            },
+        );
         // Subscribe to script editor events
         let scripts_sub = cx.subscribe(&scripts, |this, _scripts, event: &ScriptEvent, cx| {
             this.handle_script_event(event, cx);
@@ -1243,6 +1262,7 @@ impl Workspace {
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,
             _ai_assistant_sub: ai_assistant_sub,
+            _ai_dock_mentions_sub: ai_dock_mentions_sub,
             _ai_workflow_sub: None,
             _scripts_sub: scripts_sub,
             _forwards_sub: forwards_sub,
@@ -1293,6 +1313,7 @@ impl Workspace {
             runtime_awaiting: Vec::new(),
             runtime_busy: false,
             _runtime_loop: None,
+            mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,
             issues_filter: issues::IssueListFilter::default(),

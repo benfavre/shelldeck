@@ -912,6 +912,12 @@ impl SupportView {
         self.tickets.iter().filter(|t| t.unread).count()
     }
 
+    /// The cached ticket list, for consumers that build on it without owning
+    /// it — today the assistant's `@` mention directory.
+    pub fn tickets(&self) -> &[SupportTicket] {
+        &self.tickets
+    }
+
     pub fn set_list(&mut self, tickets: Vec<SupportTicket>, counts: SupportCounts, me: SupportMe) {
         self.tickets = tickets;
         self.counts = counts;

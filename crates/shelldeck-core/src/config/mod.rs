@@ -10,6 +10,7 @@ pub mod issues;
 pub mod jean_fleet;
 pub mod jeanclaude;
 pub mod keychain;
+pub mod manage_directory;
 pub mod manage_sites;
 pub mod manage_support;
 pub mod single_instance;

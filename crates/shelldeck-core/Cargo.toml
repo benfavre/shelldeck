@@ -20,6 +20,7 @@ ssh2-config = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+base64 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Already in the dependency tree transitively; used directly for
