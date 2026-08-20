@@ -59,6 +59,16 @@ impl Workspace {
                         ws.account_status = AccountStatus::Offline;
                     }
                 }
+                // La palette est construite une seule fois, avant que le
+                // compte ne soit connu, donc avec `signed_in = false`. Sans
+                // cette reconstruction, un portail injoignable au démarrage
+                // prive un utilisateur pourtant connecté de toutes ses
+                // commandes (Réglages, Synchroniser, Nouvelle demande…) pour
+                // le reste de la session — alors que le menu Fichier, lui,
+                // les affiche puisqu'il se reconstruit à chaque rendu.
+                // Les trois branches en ont besoin : la branche `Ok` elle-même
+                // ne rebâtit la palette que si l'annuaire des sites répond.
+                ws.refresh_command_palette(cx);
                 cx.notify();
             });
         })
@@ -81,7 +91,7 @@ impl Workspace {
             Err(e) => self.show_toast(
                 t!(
                     "toast.open_browser_failed",
-                    error = cloud_account::user_message(&e)
+                    error = crate::i18n::api_error_message(&e)
                 )
                 .to_string(),
                 ToastLevel::Error,
@@ -199,7 +209,7 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok((token, account)) => ws.apply_login(token, account, cx),
                 Err(e) => {
-                    let msg = cloud_account::user_message(&e);
+                    let msg = crate::i18n::api_error_message(&e);
                     if let Some(form) = &ws.login_form {
                         form.update(cx, |f, cx| {
                             f.set_busy(false);
@@ -251,7 +261,7 @@ impl Workspace {
             self.show_toast(
                 t!(
                     "toast.open_browser_failed",
-                    error = cloud_account::user_message(&e)
+                    error = crate::i18n::api_error_message(&e)
                 )
                 .to_string(),
                 ToastLevel::Error,
@@ -293,7 +303,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.browser_login_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -373,7 +383,7 @@ impl Workspace {
                         t!(
                             "toast.login_sync_failed",
                             name = name.as_str(),
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Warning,

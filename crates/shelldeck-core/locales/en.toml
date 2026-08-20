@@ -1788,3 +1788,14 @@ settings.companion.characters.window_climbing.label = "Window climbing"
 settings.companion.characters.window_climbing.description = "Allow supported platforms to use eligible external window edges as walkable surfaces."
 settings.companion.characters.multi_monitor.label = "Multiple displays"
 settings.companion.characters.multi_monitor.description = "Allow the companion to route between connected displays when supported."
+
+# API errors — one human sentence per failure class. The raw client message,
+# which carries the internal URL, goes to the log instead of the interface.
+error.api.unreachable = "Inklura Manage is unreachable. Check your network connection."
+error.api.timeout = "The portal did not answer in time. Try again in a moment."
+error.api.auth_rejected = "Your session has expired. Sign in again to continue."
+error.api.forbidden = "Your account does not have access to this item."
+error.api.not_found = "This item no longer exists on the portal."
+error.api.server = "The portal hit an error. Try again later."
+error.api.bad_response = "Unexpected response from the portal. Details are in the logs."
+error.api.other = "The request to the portal failed. Details are in the logs."

@@ -471,6 +471,7 @@ Existing: **0 tests**.
 | SDTEST-1649 | `config/manage_directory.rs::a_missing_endpoint_is_an_empty_directory_not_a_failure` | SDUC-464 | Green | 404/403/400 degrade to "no people" — the endpoint ships in a separate `bext` PR. |
 | SDTEST-1650 | `config/manage_directory.rs::an_expired_token_is_reported_so_the_session_can_be_invalidated` | SDUC-464 | Green | 401 stays an error so the session-invalidation path can run. |
 | SDTEST-1651 | `config/manage_directory.rs::super_admins_are_dropped_even_when_the_server_marks_them_mentionable` | SDUC-464 | Green | Client-side defense in depth over the server's own verdict. |
+| SDTEST-1655 | `config/cloud_account.rs::api_failures_are_classified_from_the_messages_the_clients_actually_emit` | SDUC-468 | Green | The real strings every Manage client emits — reqwest's URL-bearing transport error, hand-built `HTTP 401/403/404/503`, an unreadable payload — each land on the right `ApiFailure`. |
 
 ---
 

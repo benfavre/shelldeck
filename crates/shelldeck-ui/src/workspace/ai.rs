@@ -1379,7 +1379,7 @@ impl Workspace {
                 }
                 Err(error) => {
                     workspace.audit_ai_action(&plan, "failed", cx);
-                    let message = cloud_account::user_message(&error);
+                    let message = crate::i18n::api_error_message(&error);
                     workspace.support.update(cx, |view, cx| {
                         view.set_error(message.clone());
                         cx.notify();
@@ -1422,7 +1422,7 @@ impl Workspace {
                         workspace.show_toast(
                             t!(
                                 "toast.jean.error",
-                                error = cloud_account::user_message(&error)
+                                error = crate::i18n::api_error_message(&error)
                             )
                             .to_string(),
                             ToastLevel::Error,
@@ -1486,7 +1486,7 @@ impl Workspace {
                     workspace.show_toast(
                         t!(
                             "toast.issue.staff_failed",
-                            error = cloud_account::user_message(&error)
+                            error = crate::i18n::api_error_message(&error)
                         )
                         .to_string(),
                         ToastLevel::Error,

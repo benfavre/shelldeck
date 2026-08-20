@@ -122,7 +122,7 @@ impl Workspace {
                     ws.focus_pending_fleet_job(cx);
                 }
                 Err(e) => ws.fleet_view.update(cx, |v, cx| {
-                    v.set_error(cloud_account::user_message(&e));
+                    v.set_error(crate::i18n::api_error_message(&e));
                     cx.notify();
                 }),
             });
@@ -397,7 +397,7 @@ impl Workspace {
                     v.set_error(
                         t!(
                             "toast.jean.register_failed",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                     );
@@ -442,7 +442,7 @@ impl Workspace {
             }
             Err(e) => {
                 self.fleet_view.update(cx, |v, cx| {
-                    v.set_error(cloud_account::user_message(&e));
+                    v.set_error(crate::i18n::api_error_message(&e));
                     cx.notify();
                 });
             }
@@ -513,7 +513,7 @@ impl Workspace {
                     ws.show_toast(
                         t!(
                             "toast.jean.ticket_failed",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Error,

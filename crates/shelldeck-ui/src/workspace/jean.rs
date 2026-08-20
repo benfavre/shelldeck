@@ -89,7 +89,7 @@ impl Workspace {
                 }
                 Err(e) => {
                     ws.jean_view.update(cx, |v, cx| {
-                        v.set_error(cloud_account::user_message(&e));
+                        v.set_error(crate::i18n::api_error_message(&e));
                         cx.notify();
                     });
                 }
@@ -174,7 +174,11 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| {
                 if let Err(e) = result {
                     ws.show_toast(
-                        t!("toast.jean.error", error = cloud_account::user_message(&e)).to_string(),
+                        t!(
+                            "toast.jean.error",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     );
@@ -210,7 +214,11 @@ impl Workspace {
                         ws.show_toast(t!("toast.jean.sent").to_string(), ToastLevel::Success, cx)
                     }
                     Err(e) => ws.show_toast(
-                        t!("toast.jean.error", error = cloud_account::user_message(&e)).to_string(),
+                        t!(
+                            "toast.jean.error",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     ),
@@ -236,7 +244,7 @@ impl Workspace {
                     cx.notify();
                 }),
                 Err(e) => ws.jean_view.update(cx, |v, cx| {
-                    v.set_error(cloud_account::user_message(&e));
+                    v.set_error(crate::i18n::api_error_message(&e));
                     cx.notify();
                 }),
             });
@@ -259,7 +267,7 @@ impl Workspace {
                     cx.notify();
                 }),
                 Err(e) => ws.jean_view.update(cx, |v, cx| {
-                    v.set_error(cloud_account::user_message(&e));
+                    v.set_error(crate::i18n::api_error_message(&e));
                     cx.notify();
                 }),
             });

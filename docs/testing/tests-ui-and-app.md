@@ -439,6 +439,7 @@ parallel `cargo test`.
 |---|---|---|---|---|
 | SDTEST-1653 | `settings.rs::the_ui_font_shortlist_offers_no_monospace_family` | SDUC-467 | Green | The interface shortlist and the terminal/editor shortlist stay disjoint, and Inter leads the interface list. |
 | SDTEST-1654 | `settings.rs::monospace_and_the_legacy_sentinel_never_survive_as_interface_families` | SDUC-467 | Green | The branches of `normalize_ui_font_family` that need no `TextSystem`: monospace families and the retired sentinel are both refused as interface families. |
+| SDTEST-1656 | `i18n.rs::assert_portal_failures_stay_readable` (appelé par `locale_fr_and_en`) | SDUC-468 | Green | In both locales, a portal failure never shows the internal URL, reqwest's wording or an HTTP code, and "unreachable" and "session expired" do not collapse into one message. Folded into the single locale test because `set_locale` is process-global. |
 
 ---
 
