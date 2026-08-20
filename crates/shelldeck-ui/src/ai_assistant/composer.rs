@@ -44,6 +44,7 @@ use crate::issue_attachments::{
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
+use shelldeck_core::ai::AiConversation;
 
 /// A staged attachment plus, for images, the decoded bitmap used to preview it.
 ///
@@ -1128,4 +1129,74 @@ pub(super) fn attachment_summary(attachments: &[AiAttachment]) -> Option<String>
         parts.push(t!("ai.attachment.summary.texts", count = texts.to_string()).to_string());
     }
     Some(parts.join(", "))
+}
+
+/// Render `text` with its resolved `@` mentions coloured, as one shaped run set.
+///
+/// Used wherever a turn is *quoted* rather than composed — the recent-thread
+/// list, the history panel. Those rows are plain strings, so without this a
+/// mention reads as ordinary grey text in the one place a user scans to find
+/// the conversation that talked about a given server.
+///
+/// `StyledText` shapes the whole string in one pass, which keeps the row's
+/// wrapping and clipping behaviour intact; the conversation title is already
+/// character-bounded upstream, so nothing here needs to truncate.
+pub(super) fn styled_mention_text(
+    text: impl Into<SharedString>,
+    labels: &[String],
+    color: gpui::Hsla,
+    background: gpui::Hsla,
+    window: &Window,
+) -> gpui::StyledText {
+    let text: SharedString = text.into();
+    let spans = mention_spans(text.as_ref(), labels);
+    if spans.is_empty() {
+        return gpui::StyledText::new(text);
+    }
+    let style = window.text_style();
+    let base = gpui::TextRun {
+        len: 0,
+        font: style.font(),
+        color: style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut runs: Vec<gpui::TextRun> = Vec::new();
+    let mut cursor = 0usize;
+    for span in spans {
+        if span.start > cursor {
+            runs.push(gpui::TextRun {
+                len: span.start - cursor,
+                ..base.clone()
+            });
+        }
+        runs.push(gpui::TextRun {
+            len: span.end - span.start,
+            color,
+            background_color: Some(background),
+            ..base.clone()
+        });
+        cursor = span.end;
+    }
+    if cursor < text.len() {
+        runs.push(gpui::TextRun {
+            len: text.len() - cursor,
+            ..base
+        });
+    }
+    gpui::StyledText::new(text).with_runs(runs)
+}
+
+/// Every label mentioned anywhere in a conversation, in first-seen order.
+pub(super) fn conversation_mention_labels(conversation: &AiConversation) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for message in &conversation.messages {
+        for label in &message.mentions {
+            if !labels.iter().any(|existing| existing == label) {
+                labels.push(label.clone());
+            }
+        }
+    }
+    labels
 }

@@ -472,6 +472,33 @@ only, out of the src/-scoped marker convention.)
   section of `.agents/patches.md`). If a sync introduces upstream changes
   to `div.rs`, stop and report — do not merge them silently.
 
+### SDPATCH-041 — a run background is a chip, not a rectangle glued to the glyphs
+
+- **Files / symbols**:
+  - `src/text_system/line.rs` — `paint_run_background`, the three background
+    quad sites in `WrappedLineLayout::paint_background`
+- **Markers** (4):
+  - `src/text_system/line.rs` — `// ShellDeck patch: SDPATCH-041 — a run background is a chip, not a rectangle`
+  - `src/text_system/line.rs` — `// ShellDeck patch: SDPATCH-041 — chip geometry.` (×3, one per quad site)
+- **Why**: `TextRun::background_color` painted a bare rect of exactly the run's
+  advance and the full line height. That reads as *selected text*, not as a
+  token: the first and last glyphs touch the fill and the square corners
+  collide with the surrounding prose. ShellDeck paints resolved `@mentions`
+  with a run background, and a mention has to look like one object, so every
+  run background now gains a small horizontal padding, a vertical inset and
+  rounded corners.
+
+  Applied unconditionally rather than behind a new `TextRun` field: adding one
+  would ripple through every struct literal in gpui, adabraka-ui and ShellDeck
+  for a purely cosmetic option. The blast radius is small — the only other
+  producer of run backgrounds in the tree is adabraka's inline-HTML
+  `style="background-color:…"` path, which ShellDeck does not use.
+
+  A run that wraps is painted once per visual line, so each fragment is rounded
+  on its own. That is what browsers do with an inline background, and it keeps
+  the fragments legible instead of producing one shape with a hole in it.
+- **Upstream status**: not filed yet.
+
 ## Sync log
 
 - **2026-07-07** — patch inventory bootstrapped after the fact. Marker

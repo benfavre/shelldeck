@@ -2244,6 +2244,11 @@ colour means the reference resolved, not that the text contains an `@`. It
 appears on the keystroke that completes a mention and disappears on the one
 that breaks it.
 
+The wash is shaped like a chip — padded on both sides, inset vertically and
+rounded — rather than a bare rectangle, so it reads as one object instead of as
+selected text. The same treatment appears wherever a turn is quoted rather than
+composed: the recent-threads list and the history panel.
+
 The rendered source is never altered. Mention labels travel with the message
 rather than being re-derived at display time, so an old turn keeps the colours
 it was sent with even after the directory that resolved them has changed.
@@ -2316,6 +2321,10 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
+  chip (SDPATCH-041 on the gpui fork, where a run background was a bare
+  full-line-height rect), and quoted turns — recent threads and the history
+  panel — are coloured like composed ones.
 - **2026-08-20** — Added SDUC-468 and SDTEST-1655…1661: resolved `@` mentions
   are coloured and tinted in the composer and in the thread. Required
   SDPATCH-039 (coloured runs in `InputState`, plus the `paint_background` call

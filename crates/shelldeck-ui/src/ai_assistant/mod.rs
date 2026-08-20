@@ -1151,6 +1151,7 @@ impl AiAssistantView {
             let selected = self.active_conversation == Some(id);
             let updated = crate::i18n::rel_time(conversation.updated_at.timestamp_millis() as f64);
             let display_title = conversation.display_title();
+            let history_labels = composer::conversation_mention_labels(conversation);
             let history_meta = format!("{} · {updated}", conversation.context_title);
             list = list.child(
                 div()
@@ -1185,7 +1186,13 @@ impl AiAssistantView {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(display_title),
+                                    .child(composer::styled_mention_text(
+                                        display_title,
+                                        &history_labels,
+                                        ShellDeckColors::primary(),
+                                        ShellDeckColors::primary().opacity(0.14),
+                                        window,
+                                    )),
                             )
                             .child(
                                 div()
@@ -2689,13 +2696,19 @@ impl Render for AiAssistantView {
             .is_some_and(|conversation| !conversation.messages.is_empty());
         // Recent threads are real data, so the "start from here" list shows
         // them rather than invented sample prompts.
-        let recent: Vec<(Uuid, String)> = self
+        let recent: Vec<(Uuid, String, Vec<String>)> = self
             .conversations
             .iter()
             .rev()
             .filter(|conversation| !conversation.archived && !conversation.messages.is_empty())
             .take(3)
-            .map(|conversation| (conversation.id, conversation.display_title()))
+            .map(|conversation| {
+                (
+                    conversation.id,
+                    conversation.display_title(),
+                    composer::conversation_mention_labels(conversation),
+                )
+            })
             .collect();
 
         let conversation_body = if has_messages {
@@ -2750,7 +2763,7 @@ impl Render for AiAssistantView {
 
             if !recent.is_empty() {
                 let mut list = div().flex().flex_col().w_full().min_w(px(0.0)).gap(px(6.0));
-                for (index, (id, title)) in recent.into_iter().enumerate() {
+                for (index, (id, title, labels)) in recent.into_iter().enumerate() {
                     list = list.child(
                         div()
                             .id(("ai-recent", index))
@@ -2776,7 +2789,16 @@ impl Render for AiAssistantView {
                                     .truncate()
                                     .text_size(px(12.5))
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(title),
+                                    // A user scanning this list is looking for
+                                    // the thread that talked about a given
+                                    // server; the mention is the thing to find.
+                                    .child(composer::styled_mention_text(
+                                        title,
+                                        &labels,
+                                        ShellDeckColors::primary(),
+                                        ShellDeckColors::primary().opacity(0.14),
+                                        window,
+                                    )),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active_conversation = Some(id);

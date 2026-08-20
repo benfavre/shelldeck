@@ -47,6 +47,12 @@ list of rules that must not be broken while working near them.
   text, same hue at ~14 % behind it, in the composer (`SDPATCH-039`) and in the
   thread (`SDPATCH-040`). Only *live* references are painted — that is the
   whole signal. Never colour by pattern-matching `@…`.
+- **The tint is a chip, not a highlight** (`SDPATCH-041`): run backgrounds are
+  padded, inset and rounded in the gpui fork, so every surface gets the same
+  shape. Do not re-implement it per surface.
+- **A quoted turn is coloured too** — recent threads and the history panel go
+  through `composer::styled_mention_text`, which shapes the row in one pass and
+  therefore keeps its clipping behaviour.
 - **Never encode a mention in the source text.** The colour is applied to the
   parsed tree; the stored content and what the model receives stay identical
   to what the user typed.

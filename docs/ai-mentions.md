@@ -320,11 +320,19 @@ La couleur apparaît aux **deux** endroits, et pour deux raisons différentes :
   n'est pas coloré. La couleur signifie donc « celle-ci a résolu », pas
   « celle-ci contient un `@` ». Elle apparaît sur la frappe qui complète la
   mention et disparaît sur celle qui la casse.
+- **Dans les listes de conversations** — récentes et historique — pour la même
+  raison : on y cherche le fil qui parlait d'un serveur donné, et la mention
+  est justement ce qu'on cherche.
 - **Dans le fil, une fois envoyé** (`SDPATCH-040`). Les libellés voyagent avec
   le message (`AiChatMessage::mentions`) plutôt que d'être redérivés : un tour
   est le compte rendu de ce qui a été dit, et confronter ses `@…` à l'annuaire
   d'aujourd'hui repeindrait le message d'hier selon les connexions
   d'aujourd'hui.
+
+Le fond n'est pas un rectangle : `SDPATCH-041` donne aux fonds de runs une
+géométrie de pastille — un peu d'air de chaque côté, un léger retrait vertical
+et des coins arrondis. Sans ça, la teinte se lisait comme une *sélection* et
+non comme un objet.
 
 La source n'est jamais modifiée. Markdown n'a pas de syntaxe de mention et il
 n'était pas question d'en inventer une : le modèle recevrait cette syntaxe.
