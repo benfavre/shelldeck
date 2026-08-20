@@ -808,12 +808,18 @@ impl AiAssistantView {
             let mentions = self.resolved_mentions(&prompt);
             let attachments = self.staged_attachments();
             let latest_user_message = prompt.clone();
+            let mention_labels: Vec<String> = mentions
+                .iter()
+                .map(|mention| mention.label.clone())
+                .collect();
             if let Some(conversation) = self
                 .conversations
                 .iter_mut()
                 .find(|conversation| conversation.id == conversation_id)
             {
-                conversation.push(AiChatRole::User, prompt);
+                // The labels ride with the message so the thread can still
+                // colour them once the directory has moved on.
+                conversation.push_with_mentions(AiChatRole::User, prompt, mention_labels);
             }
             self.persist_conversations();
             let prompt = self.conversation_prompt(conversation_id);
@@ -1145,6 +1151,7 @@ impl AiAssistantView {
             let selected = self.active_conversation == Some(id);
             let updated = crate::i18n::rel_time(conversation.updated_at.timestamp_millis() as f64);
             let display_title = conversation.display_title();
+            let history_labels = composer::conversation_mention_labels(conversation);
             let history_meta = format!("{} · {updated}", conversation.context_title);
             list = list.child(
                 div()
@@ -1179,7 +1186,13 @@ impl AiAssistantView {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(display_title),
+                                    .child(composer::styled_mention_text(
+                                        display_title,
+                                        &history_labels,
+                                        ShellDeckColors::primary(),
+                                        ShellDeckColors::primary().opacity(0.14),
+                                        window,
+                                    )),
                             )
                             .child(
                                 div()
@@ -1665,6 +1678,11 @@ impl AiAssistantView {
         let user_bubble_width =
             (reading_width - px(36.0).to_pixels(window.rem_size())).max(gpui::px(0.0)) * 0.88;
         if let Some(conversation) = self.active_conversation() {
+            // The assistant echoes the entity it was asked about, so its reply
+            // is coloured from the thread's resolved labels. Nothing else is
+            // painted: a `@word` the model invented has no label behind it and
+            // stays plain, which is the same rule as everywhere else.
+            let thread_labels = composer::conversation_mention_labels(conversation);
             for message in &conversation.messages {
                 let is_user = message.role == AiChatRole::User;
                 let message_id = message.id;
@@ -1678,8 +1696,21 @@ impl AiAssistantView {
                     // `justify_end`, which is exactly why the previous version
                     // never aligned anything despite asking for it.
                     let link_handler = Self::markdown_link_handler(cx);
+                    // A mention is worth seeing after it was sent, not only
+                    // while it was typed: it tells the reader which entity the
+                    // answer above is actually about.
+                    let mention_tokens: Vec<SharedString> = message
+                        .mentions
+                        .iter()
+                        .map(|label| SharedString::from(format!("@{label}")))
+                        .collect();
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        .highlight_tokens(
+                            mention_tokens,
+                            ShellDeckColors::primary(),
+                            Some(ShellDeckColors::primary().opacity(0.14)),
+                        )
                         // Conversation blocks follow the prototype's compact
                         // rhythm and leave no document-style tail margin.
                         .compact()
@@ -1740,8 +1771,17 @@ impl AiAssistantView {
                     // fill, no role label. Its metadata sits underneath, quiet —
                     // not as a permanent button in a card header.
                     let link_handler = Self::markdown_link_handler(cx);
+                    let reply_tokens: Vec<SharedString> = thread_labels
+                        .iter()
+                        .map(|label| SharedString::from(format!("@{label}")))
+                        .collect();
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        .highlight_tokens(
+                            reply_tokens,
+                            ShellDeckColors::primary(),
+                            Some(ShellDeckColors::primary().opacity(0.14)),
+                        )
                         .compact()
                         .on_link_click(move |url, window, cx| link_handler(url, window, cx))
                         .w_full()
@@ -2482,6 +2522,10 @@ impl Render for AiAssistantView {
             })
             .count();
         let active_title = self.active_title();
+        let active_labels = self
+            .active_conversation()
+            .map(composer::conversation_mention_labels)
+            .unwrap_or_default();
         // The single chrome row. In the Dock it belongs to the 424px content
         // column, not to the 480px window: the 56px rail is its full-height
         // sibling. In the Sheet the adabraka `Sheet` draws no header of its own
@@ -2539,7 +2583,15 @@ impl Render for AiAssistantView {
                     .text_size(px(13.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(active_title),
+                    // The header names the thread, so it quotes a turn just
+                    // like the history rows do.
+                    .child(composer::styled_mention_text(
+                        active_title,
+                        &active_labels,
+                        ShellDeckColors::primary(),
+                        ShellDeckColors::primary().opacity(0.14),
+                        window,
+                    )),
             ),
         );
         if in_sheet {
@@ -2670,13 +2722,19 @@ impl Render for AiAssistantView {
             .is_some_and(|conversation| !conversation.messages.is_empty());
         // Recent threads are real data, so the "start from here" list shows
         // them rather than invented sample prompts.
-        let recent: Vec<(Uuid, String)> = self
+        let recent: Vec<(Uuid, String, Vec<String>)> = self
             .conversations
             .iter()
             .rev()
             .filter(|conversation| !conversation.archived && !conversation.messages.is_empty())
             .take(3)
-            .map(|conversation| (conversation.id, conversation.display_title()))
+            .map(|conversation| {
+                (
+                    conversation.id,
+                    conversation.display_title(),
+                    composer::conversation_mention_labels(conversation),
+                )
+            })
             .collect();
 
         let conversation_body = if has_messages {
@@ -2731,7 +2789,7 @@ impl Render for AiAssistantView {
 
             if !recent.is_empty() {
                 let mut list = div().flex().flex_col().w_full().min_w(px(0.0)).gap(px(6.0));
-                for (index, (id, title)) in recent.into_iter().enumerate() {
+                for (index, (id, title, labels)) in recent.into_iter().enumerate() {
                     list = list.child(
                         div()
                             .id(("ai-recent", index))
@@ -2757,7 +2815,16 @@ impl Render for AiAssistantView {
                                     .truncate()
                                     .text_size(px(12.5))
                                     .text_color(ShellDeckColors::text_primary())
-                                    .child(title),
+                                    // A user scanning this list is looking for
+                                    // the thread that talked about a given
+                                    // server; the mention is the thing to find.
+                                    .child(composer::styled_mention_text(
+                                        title,
+                                        &labels,
+                                        ShellDeckColors::primary(),
+                                        ShellDeckColors::primary().opacity(0.14),
+                                        window,
+                                    )),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active_conversation = Some(id);

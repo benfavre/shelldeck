@@ -563,6 +563,54 @@ pub fn remove_mention_token(draft: &str, label: &str) -> String {
     format!("{}{}", &draft[..start], &draft[end..])
 }
 
+/// Byte ranges of the `@Label` tokens present in `text`, for the given labels.
+///
+/// This is what lets a mention be *seen* — coloured in the composer while it is
+/// typed, and in the thread once it is sent. Three rules make it predictable:
+///
+/// * **Longest label first.** With both `web` and `web-01` in play, `@web-01`
+///   must colour as one mention, not as `@web` followed by loose text.
+/// * **No overlaps.** A byte belongs to at most one mention.
+/// * **Word boundary before the `@`**, exactly like [`mention_query_at_caret`],
+///   so an e-mail address is never painted as a mention.
+///
+/// Ranges come back sorted by position, which is what a run-splitter needs.
+pub fn mention_spans(text: &str, labels: &[String]) -> Vec<std::ops::Range<usize>> {
+    let mut ordered: Vec<&String> = labels.iter().filter(|label| !label.is_empty()).collect();
+    ordered.sort_by_key(|label| std::cmp::Reverse(label.len()));
+
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    for label in ordered {
+        let token = mention_token(label);
+        if token.len() <= 1 {
+            continue;
+        }
+        let mut from = 0usize;
+        while let Some(found) = text[from..].find(token.as_str()) {
+            let start = from + found;
+            let end = start + token.len();
+            from = end;
+            if start > 0
+                && !text[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+            {
+                continue;
+            }
+            if spans
+                .iter()
+                .any(|existing| start < existing.end && existing.start < end)
+            {
+                continue;
+            }
+            spans.push(start..end);
+        }
+    }
+    spans.sort_by_key(|span| span.start);
+    spans
+}
+
 fn clamp_to_char_boundary(value: &str, offset: usize) -> usize {
     let mut offset = offset.min(value.len());
     while offset > 0 && !value.is_char_boundary(offset) {
@@ -879,5 +927,38 @@ mod tests {
             assert!(!kind.icon().is_empty());
             assert!(kind.label_key().starts_with("ai.mention.kind."));
         }
+    }
+
+    // SDTEST-1655
+    #[test]
+    fn spans_cover_each_token_once_and_prefer_the_longest_label() {
+        let labels = vec!["web".to_string(), "web-01".to_string()];
+        let text = "compare @web-01 et @web";
+        let spans = mention_spans(text, &labels);
+        let painted: Vec<&str> = spans.iter().map(|s| &text[s.clone()]).collect();
+        assert_eq!(painted, vec!["@web-01", "@web"]);
+        // Sorted by position, so a run splitter can walk them in one pass.
+        assert!(spans.windows(2).all(|w| w[0].end <= w[1].start));
+    }
+
+    // SDTEST-1656
+    #[test]
+    fn spans_ignore_an_email_and_an_unmentioned_label() {
+        let labels = vec!["prod".to_string()];
+        assert!(mention_spans("écris à karim@prod.fr", &labels).is_empty());
+        assert!(mention_spans("aucun jeton ici", &labels).is_empty());
+        assert_eq!(mention_spans("sur @prod", &labels).len(), 1);
+    }
+
+    // SDTEST-1657
+    #[test]
+    fn spans_are_byte_exact_on_accented_text() {
+        let labels = vec!["hôte-é".to_string()];
+        let text = "redémarre @hôte-é maintenant";
+        let spans = mention_spans(text, &labels);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(&text[spans[0].clone()], "@hôte-é");
+        // Every boundary must be a char boundary or shaping panics downstream.
+        assert!(text.is_char_boundary(spans[0].start) && text.is_char_boundary(spans[0].end));
     }
 }
