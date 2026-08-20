@@ -67,7 +67,10 @@ mod tests {
             }
             .localized_text()
             .1,
-            "Connexion interrompue : production"
+            // L'espace avant les deux-points est insécable : c'est la
+            // typographie française, pas une coquille. Elle est écrite en
+            // échappement pour rester visible à la relecture.
+            "Connexion interrompue\u{a0}: production"
         );
 
         apply_ui_language(&UiLanguage::En);
