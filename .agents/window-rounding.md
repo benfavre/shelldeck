@@ -75,11 +75,39 @@ the same theme token and the same outer bounds.
    reaches an outer window corner, repeat that corner's radius directly on the
    footer as well. The same ownership rule applies recursively to any opaque
    descendant that reaches the window edge.
-10. Do not stack two rounded silhouettes at the same outer bounds. Once a Sheet
-    panel/body reliably owns and clips a corner, an opaque full-width composer
-    inside it stays square and is clipped by that owner. Repeating the same
-    radius on the composer cuts a second inner arc and can reveal the dim
-    backdrop as a grey triangle. One visible corner gets one silhouette owner.
+10. **The opaque layer that reaches an outer corner owns it — count the
+    ancestors, not the intentions.** A rounded ancestor with
+    `overflow_hidden()` does *not* reliably clip an opaque descendant's fill,
+    even two of them with the identical radius. Measured on 2026-08-20: the
+    assistant composer sat inside a Sheet panel *and* a Sheet body, both
+    `rounded_br(radius_xl)` and both `overflow_hidden()`, and its flat fill
+    still covered the arc — only the window's own 1 px border survived.
+
+    This file previously stated the opposite for that exact case, on the
+    assumption that the panel clipped the composer. It did not. If a layer's
+    background reaches the corner, give that layer the radius.
+
+    The grey-triangle failure is real but narrower than it was written: it
+    happens when the inner layer's radius or outer bounds differ from the
+    owner's, cutting a second, larger arc and exposing the backdrop between
+    them. Same radius token and same bounds produce one silhouette, not two.
+
+### Settle it by measuring, not by looking
+
+A corner is eight pixels. Screenshot the window and print, for each of the
+four corners, how many background pixels precede the first opaque one on each
+of the first ten rows:
+
+```
+tl: [8, 6, 4, 3, 2, 2, 1, 1, 0, 0]   ← a real arc
+br: [8, 6, 1, 1, 1, 1, 1, 1, 0, 0]   ← flat fill over the arc
+```
+
+A smooth decreasing ramp is a rounded corner. A ramp that collapses to a
+constant is an opaque layer painting over it. All zeros is a square corner,
+which is what a maximized window must show on all four. Comparing a suspect
+corner against a known-good one on the same screenshot removes any argument
+about theme, scale or anti-aliasing.
 
 ## Rounded image cards
 
@@ -98,6 +126,10 @@ do not simulate clipping by adding spacing around the media.
   exterior panel shadow.
 - Connection form:
   `crates/shelldeck-ui/src/connection_form.rs::render` follows the same pattern.
+- Assistant composer:
+  `crates/shelldeck-ui/src/ai_assistant/mod.rs` rounds the bottom corner the
+  composer reaches in each host — `rounded_bl` in the Dock, `rounded_br` in the
+  Sheet — and skips it entirely while the window is maximized.
 - AI assistant sheets:
   `patches/adabraka-ui/src/overlays/sheet.rs::Sheet::render` rounds every opaque
   Assistant surface that owns a corner and omits the variant's exterior shadow.
