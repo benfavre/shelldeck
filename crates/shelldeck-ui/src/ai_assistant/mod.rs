@@ -1678,6 +1678,11 @@ impl AiAssistantView {
         let user_bubble_width =
             (reading_width - px(36.0).to_pixels(window.rem_size())).max(gpui::px(0.0)) * 0.88;
         if let Some(conversation) = self.active_conversation() {
+            // The assistant echoes the entity it was asked about, so its reply
+            // is coloured from the thread's resolved labels. Nothing else is
+            // painted: a `@word` the model invented has no label behind it and
+            // stays plain, which is the same rule as everywhere else.
+            let thread_labels = composer::conversation_mention_labels(conversation);
             for message in &conversation.messages {
                 let is_user = message.role == AiChatRole::User;
                 let message_id = message.id;
@@ -1766,8 +1771,17 @@ impl AiAssistantView {
                     // fill, no role label. Its metadata sits underneath, quiet —
                     // not as a permanent button in a card header.
                     let link_handler = Self::markdown_link_handler(cx);
+                    let reply_tokens: Vec<SharedString> = thread_labels
+                        .iter()
+                        .map(|label| SharedString::from(format!("@{label}")))
+                        .collect();
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        .highlight_tokens(
+                            reply_tokens,
+                            ShellDeckColors::primary(),
+                            Some(ShellDeckColors::primary().opacity(0.14)),
+                        )
                         .compact()
                         .on_link_click(move |url, window, cx| link_handler(url, window, cx))
                         .w_full()
@@ -2508,6 +2522,10 @@ impl Render for AiAssistantView {
             })
             .count();
         let active_title = self.active_title();
+        let active_labels = self
+            .active_conversation()
+            .map(composer::conversation_mention_labels)
+            .unwrap_or_default();
         // The single chrome row. In the Dock it belongs to the 424px content
         // column, not to the 480px window: the 56px rail is its full-height
         // sibling. In the Sheet the adabraka `Sheet` draws no header of its own
@@ -2565,7 +2583,15 @@ impl Render for AiAssistantView {
                     .text_size(px(13.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ShellDeckColors::text_primary())
-                    .child(active_title),
+                    // The header names the thread, so it quotes a turn just
+                    // like the history rows do.
+                    .child(composer::styled_mention_text(
+                        active_title,
+                        &active_labels,
+                        ShellDeckColors::primary(),
+                        ShellDeckColors::primary().opacity(0.14),
+                        window,
+                    )),
             ),
         );
         if in_sheet {

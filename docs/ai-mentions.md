@@ -329,6 +329,25 @@ La couleur apparaît aux **deux** endroits, et pour deux raisons différentes :
   d'aujourd'hui repeindrait le message d'hier selon les connexions
   d'aujourd'hui.
 
+#### Où la couleur apparaît, exhaustivement
+
+| Surface | Source des libellés | État |
+|---|---|---|
+| Champ de saisie | références vivantes du brouillon | coloré |
+| Bulle du tour utilisateur | `AiChatMessage::mentions` du message | coloré |
+| Réponse de l'assistant | libellés du fil | coloré quand le modèle écrit le jeton `@…` |
+| En-tête de conversation | libellés du fil actif | coloré |
+| « Reprendre une discussion » | libellés de chaque conversation | coloré |
+| Panneau d'historique | libellés de chaque conversation | coloré |
+| Détail / résultat d'une tâche | — | **non coloré, délibérément** |
+| Résultat Clippy | — | **non coloré, délibérément** |
+
+Les deux dernières sont exclues faute de jeu de libellés démontrable : une
+tâche n'appartient pas à une conversation, et Clippy transforme du
+presse-papiers sans jamais passer par le composer. Colorer avec l'union de tous
+les libellés connus peindrait du texte qui n'est pas une référence *dans ce
+contexte-là* — exactement ce que la règle interdit.
+
 Le fond n'est pas un rectangle : `SDPATCH-041` donne aux fonds de runs une
 géométrie de pastille — un peu d'air de chaque côté, un léger retrait vertical
 et des coins arrondis. Sans ça, la teinte se lisait comme une *sélection* et

@@ -50,6 +50,10 @@ list of rules that must not be broken while working near them.
 - **The tint is a chip, not a highlight** (`SDPATCH-041`): run backgrounds are
   padded, inset and rounded in the gpui fork, so every surface gets the same
   shape. Do not re-implement it per surface.
+- **The surface inventory is closed and written down** — `docs/ai-mentions.md`
+  lists every place the colour appears and the two that deliberately do not
+  (task details, Clippy results: no provable label set). Adding a surface means
+  adding its row.
 - **A quoted turn is coloured too** — recent threads and the history panel go
   through `composer::styled_mention_text`, which shapes the row in one pass and
   therefore keeps its clipping behaviour.
