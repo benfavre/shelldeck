@@ -18,6 +18,7 @@
 //!   undeliverable.
 
 use adabraka_ui::components::icon_source::IconSource;
+use adabraka_ui::components::input_state::TextHighlight;
 use adabraka_ui::prelude::{Button, ButtonSize, ButtonVariant};
 use gpui::prelude::*;
 use gpui::{
@@ -25,9 +26,9 @@ use gpui::{
     Image, MouseButton, SharedString, Window,
 };
 use shelldeck_core::ai::{
-    filter_mention_candidates, insert_mention, mention_query_at_caret, reconcile_mentions,
-    remove_mention_token, validate_attachments, AiAttachment, AiAttachmentKind, AiMention,
-    AttachmentError, MentionCandidate, MentionKind, MentionRef, AI_ATTACHMENT_MAX_COUNT,
+    filter_mention_candidates, insert_mention, mention_query_at_caret, mention_spans,
+    reconcile_mentions, remove_mention_token, validate_attachments, AiAttachment, AiAttachmentKind,
+    AiMention, AttachmentError, MentionCandidate, MentionKind, MentionRef, AI_ATTACHMENT_MAX_COUNT,
     MENTION_PICKER_LIMIT,
 };
 use std::path::PathBuf;
@@ -133,16 +134,20 @@ impl AiAssistantView {
     /// any more — so a sentence that merely contains an `@` does not leave a
     /// panel hanging over the conversation.
     pub(super) fn sync_mention_picker(&mut self, cx: &mut Context<Self>) {
+        let (draft, caret) = {
+            let state = self.prompt_state.read(cx);
+            (state.content().to_string(), state.caret_offset())
+        };
+        // Colouring is independent of the picker: a draft keeps its coloured
+        // mentions long after the picker closed, and must lose them the moment
+        // the text stops carrying them.
+        self.sync_mention_highlights(&draft, cx);
         if !self.mention_directory_ready || self.mention_directory.is_empty() {
             if self.mention_picker.take().is_some() {
                 cx.notify();
             }
             return;
         }
-        let (draft, caret) = {
-            let state = self.prompt_state.read(cx);
-            (state.content().to_string(), state.caret_offset())
-        };
         // A token that was just completed still *looks* like a query — the
         // draft ends in `@prod-web-01 `. Re-opening the picker on it would put
         // a panel back over the conversation the instant the user accepted a
@@ -169,6 +174,31 @@ impl AiAssistantView {
             self.mention_picker = next;
             cx.notify();
         }
+    }
+
+    /// Repaint the `@Label` tokens the draft still carries.
+    ///
+    /// Driven by the same change pass as the picker, so the colour appears on
+    /// the keystroke that completes a mention and disappears on the one that
+    /// breaks it. Only *live* references are painted: text that merely looks
+    /// like a mention gets no colour, which is precisely the signal — the
+    /// colour means "this one resolved", not "this one has an @".
+    fn sync_mention_highlights(&mut self, draft: &str, cx: &mut Context<Self>) {
+        let labels: Vec<String> = reconcile_mentions(draft, &self.mentions)
+            .into_iter()
+            .map(|reference| reference.label)
+            .collect();
+        // Accent colour on the text, same hue at low opacity behind it — the
+        // convention every chat application uses, and the reason a mention is
+        // recognisable at a glance rather than read word by word.
+        let color = ShellDeckColors::primary();
+        let background = ShellDeckColors::primary().opacity(0.14);
+        let spans: Vec<TextHighlight> = mention_spans(draft, &labels)
+            .into_iter()
+            .map(|span| TextHighlight::new(span, color).background(background))
+            .collect();
+        self.prompt_state
+            .update(cx, |state, cx| state.set_highlights(spans, cx));
     }
 
     /// Rows currently offered, already ranked.

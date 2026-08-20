@@ -473,6 +473,10 @@ Existing: **0 tests**.
 | SDTEST-1651 | `config/manage_directory.rs::super_admins_are_dropped_even_when_the_server_marks_them_mentionable` | SDUC-464 | Green | Client-side defense in depth over the server's own verdict. |
 | SDTEST-1655 | `config/cloud_account.rs::api_failures_are_classified_from_the_messages_the_clients_actually_emit` | SDUC-468 | Green | The real strings every Manage client emits — reqwest's URL-bearing transport error, hand-built `HTTP 401/403/404/503`, an unreadable payload — each land on the right `ApiFailure`. |
 
+| SDTEST-1655 | `ai/mentions.rs::spans_cover_each_token_once_and_prefer_the_longest_label` | SDUC-468 | Green | `@web-01` colours as one mention rather than `@web` plus loose text; spans come back sorted for a run splitter. |
+| SDTEST-1656 | `ai/mentions.rs::spans_ignore_an_email_and_an_unmentioned_label` | SDUC-468 | Green | Word-boundary rule: an address is never painted, and a label nobody mentioned produces nothing. |
+| SDTEST-1657 | `ai/mentions.rs::spans_are_byte_exact_on_accented_text` | SDUC-468 | Green | Boundaries land on char boundaries — the shaper panics otherwise. |
+
 ---
 
 ## Retired tests

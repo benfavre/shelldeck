@@ -808,12 +808,18 @@ impl AiAssistantView {
             let mentions = self.resolved_mentions(&prompt);
             let attachments = self.staged_attachments();
             let latest_user_message = prompt.clone();
+            let mention_labels: Vec<String> = mentions
+                .iter()
+                .map(|mention| mention.label.clone())
+                .collect();
             if let Some(conversation) = self
                 .conversations
                 .iter_mut()
                 .find(|conversation| conversation.id == conversation_id)
             {
-                conversation.push(AiChatRole::User, prompt);
+                // The labels ride with the message so the thread can still
+                // colour them once the directory has moved on.
+                conversation.push_with_mentions(AiChatRole::User, prompt, mention_labels);
             }
             self.persist_conversations();
             let prompt = self.conversation_prompt(conversation_id);
@@ -1678,8 +1684,21 @@ impl AiAssistantView {
                     // `justify_end`, which is exactly why the previous version
                     // never aligned anything despite asking for it.
                     let link_handler = Self::markdown_link_handler(cx);
+                    // A mention is worth seeing after it was sent, not only
+                    // while it was typed: it tells the reader which entity the
+                    // answer above is actually about.
+                    let mention_tokens: Vec<SharedString> = message
+                        .mentions
+                        .iter()
+                        .map(|label| SharedString::from(format!("@{label}")))
+                        .collect();
                     let markdown = Markdown::new(content.clone())
                         .base_font_size(px(12.5).to_pixels(window.rem_size()))
+                        .highlight_tokens(
+                            mention_tokens,
+                            ShellDeckColors::primary(),
+                            Some(ShellDeckColors::primary().opacity(0.14)),
+                        )
                         // Conversation blocks follow the prototype's compact
                         // rhythm and leave no document-style tail margin.
                         .compact()

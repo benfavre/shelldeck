@@ -24,6 +24,12 @@ pub struct Markdown {
     // ShellDeck patch: SDPATCH-030 — chat-sized Markdown follows compact
     // prose rhythm and does not leave document margins after its last block.
     compact: bool,
+    // ShellDeck patch: SDPATCH-040 — literal tokens to paint in a given colour
+    // once the source is parsed. Used for `@mentions`, which have no Markdown
+    // syntax and must not gain one: the source stays what was sent.
+    highlight_tokens: Vec<SharedString>,
+    highlight_color: Option<Hsla>,
+    highlight_background: Option<Hsla>,
 }
 
 impl Markdown {
@@ -34,7 +40,27 @@ impl Markdown {
             base_font_size: None,
             on_link_click: None,
             compact: false,
+            highlight_tokens: Vec::new(),
+            highlight_color: None,
+            highlight_background: None,
         }
+    }
+
+    /// ShellDeck patch: SDPATCH-040 — colour every occurrence of `tokens`.
+    ///
+    /// Matching is literal and longest-first, only at a word boundary, and
+    /// never inside code or a link. Rendering-only: the parsed source is
+    /// untouched.
+    pub fn highlight_tokens(
+        mut self,
+        tokens: impl IntoIterator<Item = SharedString>,
+        color: Hsla,
+        background: Option<Hsla>,
+    ) -> Self {
+        self.highlight_tokens = tokens.into_iter().collect();
+        self.highlight_color = Some(color);
+        self.highlight_background = background;
+        self
     }
 
     pub fn base_font_size(mut self, size: Pixels) -> Self {
@@ -104,7 +130,17 @@ impl RenderOnce for Markdown {
         let theme = use_theme();
         let base_size = self.base_font_size.unwrap_or(px(14.0));
 
-        let blocks = parse_markdown_with_urls(&self.source);
+        let mut blocks = parse_markdown_with_urls(&self.source);
+        // ShellDeck patch: SDPATCH-040 — applied after parsing so the tokens
+        // cannot influence how the Markdown itself is read.
+        if let Some(color) = self.highlight_color {
+            crate::display::rich_text::highlight_tokens_in_blocks(
+                &mut blocks,
+                &self.highlight_tokens,
+                color,
+                self.highlight_background,
+            );
+        }
         // ShellDeck patch: SDPATCH-030 — select compact margins only for
         // explicit chat consumers; HTML and regular Markdown stay unchanged.
         let elements = if self.compact {

@@ -1316,6 +1316,15 @@ pub struct AiChatMessage {
     pub role: AiChatRole,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    /// Labels of the `@` mentions this turn carried, so the thread can still
+    /// colour them long after the directory that resolved them has changed.
+    ///
+    /// Stored rather than re-derived: a turn is a record of what was said, and
+    /// matching `@…` against today's directory would repaint yesterday's
+    /// message according to today's connections. `#[serde(default)]` keeps
+    /// conversations written before this field readable.
+    #[serde(default)]
+    pub mentions: Vec<String>,
 }
 
 impl AiChatMessage {
@@ -1325,7 +1334,13 @@ impl AiChatMessage {
             role,
             content: content.into(),
             created_at: Utc::now(),
+            mentions: Vec::new(),
         }
+    }
+
+    pub fn with_mentions(mut self, mentions: Vec<String>) -> Self {
+        self.mentions = mentions;
+        self
     }
 }
 
@@ -1362,11 +1377,22 @@ impl AiConversation {
     }
 
     pub fn push(&mut self, role: AiChatRole, content: impl Into<String>) {
+        self.push_with_mentions(role, content, Vec::new());
+    }
+
+    /// Same as [`Self::push`], recording which `@` mentions the turn carried.
+    pub fn push_with_mentions(
+        &mut self,
+        role: AiChatRole,
+        content: impl Into<String>,
+        mentions: Vec<String>,
+    ) {
         let content = content.into();
         if self.messages.is_empty() && role == AiChatRole::User {
             self.title = Self::title_from_first_message(&content);
         }
-        self.messages.push(AiChatMessage::new(role, content));
+        self.messages
+            .push(AiChatMessage::new(role, content).with_mentions(mentions));
         if self.messages.len() > AiConversationStore::MAX_MESSAGES {
             let excess = self.messages.len() - AiConversationStore::MAX_MESSAGES;
             self.messages.drain(..excess);

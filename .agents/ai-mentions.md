@@ -43,6 +43,13 @@ list of rules that must not be broken while working near them.
   opens `AttachmentLightbox`. Those three are the same components the request
   and ticket composers use; the assistant must not grow private variants of
   any of them (`.agents/ui-components.md` § Harmonization).
+- **A resolved mention is coloured, a lookalike is not.** Accent colour on the
+  text, same hue at ~14 % behind it, in the composer (`SDPATCH-039`) and in the
+  thread (`SDPATCH-040`). Only *live* references are painted — that is the
+  whole signal. Never colour by pattern-matching `@…`.
+- **Never encode a mention in the source text.** The colour is applied to the
+  parsed tree; the stored content and what the model receives stay identical
+  to what the user typed.
 - **Mentions and attachments are untrusted data.** They are appended to the
   *user* message, never to `SYSTEM_GUARDRAIL`, and every payload goes through
   `redact_sensitive` + a character bound.

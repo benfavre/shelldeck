@@ -4,7 +4,7 @@
 **Upstream**: https://github.com/Augani/adabraka-ui
 **Last synced**: 2026-07-07 (v0.3.0 → v0.3.9)
 
-Total markers in code: **108**
+Total markers in code: **122**
 (sum of the per-entry `Markers` lists below; SDPATCH-008 is an adapter and
 carries no marker of its own — see its entry).
 
@@ -783,6 +783,63 @@ carries no marker of its own — see its entry).
   composer and must honour that contract; a field with no handler (script
   bodies, request details) keeps the plain textarea behaviour.
 - **Upstream status**: not filed yet — pairs with SDPATCH-009/028.
+
+### SDPATCH-039 — coloured spans inside an `InputState`, painted as the runs ask
+
+- **Files / symbols**:
+  - `src/components/input_state.rs` — `TextHighlight`, `InputState::highlights`,
+    `InputState::set_highlights`, `runs_with_highlights`, both shaping paths,
+    both paint paths, `highlight_tests`
+- **Markers** (10):
+  - `src/components/input_state.rs:238` — `// ShellDeck patch: SDPATCH-039 — spans painted differently while the user`
+  - `src/components/input_state.rs:251` — `/// ShellDeck patch: SDPATCH-039 — split one styled run into several so parts of`
+  - `src/components/input_state.rs:257` — `/// ShellDeck patch: SDPATCH-039 — one span of the content painted differently.`
+  - `src/components/input_state.rs:396` — `// ShellDeck patch: SDPATCH-039 — no highlight until a parent sets one.`
+  - `src/components/input_state.rs:1134` — `/// ShellDeck patch: SDPATCH-039 — colour byte ranges of the current content.`
+  - `src/components/input_state.rs:1788` — `// ShellDeck patch: SDPATCH-039 — one run per highlighted span, so an`
+  - `src/components/input_state.rs:1953` — `// ShellDeck patch: SDPATCH-039 — highlight ranges index the real`
+  - `src/components/input_state.rs:2061` — `// ShellDeck patch: SDPATCH-039 — gpui splits run backgrounds`
+  - `src/components/input_state.rs:2149` — `// ShellDeck patch: SDPATCH-039 — run backgrounds before glyphs; see the`
+  - `src/components/input_state.rs:2232` — `// ShellDeck patch: SDPATCH-039 — the splitter feeds gpui's shaper, so a wrong`
+- **Why**: the field shapes its own text, so a parent had no way to make part
+  of a draft stand out — and the assistant composer needs exactly that, to show
+  that an `@mention` resolved while it is being typed. `set_highlights` takes
+  byte ranges with a colour and an optional background; `runs_with_highlights`
+  splits the single styled run accordingly.
+
+  Two traps found while wiring it. Ranges arrive from a parent that may have
+  computed them against a slightly older draft, so anything out of bounds,
+  overlapping or landing mid-character is **dropped** rather than clamped: a
+  missing colour is cosmetic, a shaping panic takes the window down. And gpui
+  separates run backgrounds from glyphs — `Line::paint` draws only text, and a
+  run's `background_color` is invisible unless `paint_background` runs first.
+  Both paint paths now call it, which is what turns a coloured mention into a
+  tinted one.
+- **Upstream status**: not filed yet.
+
+### SDPATCH-040 — colour chosen tokens in rendered Markdown
+
+- **Files / symbols**:
+  - `src/display/rich_text.rs` — `highlight_tokens_in_blocks` and its walk
+  - `src/display/markdown.rs` — `Markdown::highlight_tokens`, applied after parsing
+- **Markers** (4):
+  - `src/display/rich_text.rs` — `// ShellDeck patch: SDPATCH-040 — paint chosen tokens inside already-parsed`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-040 — literal tokens to paint in a given colour`
+  - `src/display/markdown.rs` — `/// ShellDeck patch: SDPATCH-040 — colour every occurrence of \`tokens\`.`
+  - `src/display/markdown.rs` — `// ShellDeck patch: SDPATCH-040 — applied after parsing so the tokens`
+- **Why**: a mention has to read as a mention once the turn is sent, not only
+  while it is typed. Markdown has no notion of one, and inventing a syntax
+  would mean the model receives that syntax too — the source must stay exactly
+  what the user wrote and what was sent. So the colour is applied to the
+  *parsed tree*: `RichInline::Styled` already carried `color` and
+  `background_color`, this only produces those nodes.
+
+  Matching is literal, longest-token-first, non-overlapping and only at a word
+  boundary, mirroring `shelldeck_core::ai::mentions::mention_spans`. The walk
+  deliberately skips code blocks, inline code and link text: a token inside
+  them is a literal or already styled, not a reference. The duplication with
+  the core matcher is accepted — adabraka-ui cannot depend on `shelldeck-core`.
+- **Upstream status**: not filed yet.
 
 ## Sync log
 

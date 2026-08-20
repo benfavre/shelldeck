@@ -306,6 +306,30 @@ ten other kinds work in full.
 Duplicate labels are matched by occurrence count, so two hosts sharing an alias
 behave predictably.
 
+### Une mention se voit
+
+Une référence résolue est peinte avec la couleur d'accent, sur un fond de la
+même teinte à faible opacité — la convention des applications de discussion,
+et ce qui permet de reconnaître une mention d'un coup d'œil plutôt que de la
+lire mot à mot.
+
+La couleur apparaît aux **deux** endroits, et pour deux raisons différentes :
+
+- **Dans le champ, pendant la saisie** (`SDPATCH-039`). Elle n'est appliquée
+  qu'aux références encore vivantes : du texte qui ressemble à une mention
+  n'est pas coloré. La couleur signifie donc « celle-ci a résolu », pas
+  « celle-ci contient un `@` ». Elle apparaît sur la frappe qui complète la
+  mention et disparaît sur celle qui la casse.
+- **Dans le fil, une fois envoyé** (`SDPATCH-040`). Les libellés voyagent avec
+  le message (`AiChatMessage::mentions`) plutôt que d'être redérivés : un tour
+  est le compte rendu de ce qui a été dit, et confronter ses `@…` à l'annuaire
+  d'aujourd'hui repeindrait le message d'hier selon les connexions
+  d'aujourd'hui.
+
+La source n'est jamais modifiée. Markdown n'a pas de syntaxe de mention et il
+n'était pas question d'en inventer une : le modèle recevrait cette syntaxe.
+La couleur est donc appliquée à l'arbre *déjà analysé*, jamais au texte.
+
 After a completion is accepted the draft still *looks* like a query
 (`… @prod-web-01 `), so the picker is suppressed for exactly that draft. Editing
 the token clears the suppression and offers completion again.

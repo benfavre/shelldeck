@@ -956,3 +956,183 @@ mod tests {
         assert_eq!(heading_size(6, base, false), px(16.0));
     }
 }
+
+// ShellDeck patch: SDPATCH-040 — paint chosen tokens inside already-parsed
+// inline text.
+//
+// A mention has to read as a mention once the turn is sent, not only while it
+// is typed. Markdown has no notion of one, and inventing a syntax for it would
+// mean the model receives that syntax too. So the colour is applied to the
+// parsed tree instead: the source stays exactly what the user wrote and what
+// was sent, and only the rendering differs.
+//
+// Tokens are matched longest-first and never overlap, mirroring
+// `shelldeck_core::ai::mentions::mention_spans`.
+
+/// Wrap every occurrence of `tokens` in `blocks` with a coloured span.
+pub fn highlight_tokens_in_blocks(
+    blocks: &mut [RichBlock],
+    tokens: &[SharedString],
+    color: Hsla,
+    background: Option<Hsla>,
+) {
+    if tokens.is_empty() {
+        return;
+    }
+    let mut ordered: Vec<&SharedString> = tokens.iter().filter(|t| !t.is_empty()).collect();
+    ordered.sort_by_key(|token| std::cmp::Reverse(token.len()));
+    for block in blocks {
+        highlight_block(block, &ordered, color, background);
+    }
+}
+
+fn highlight_block(
+    block: &mut RichBlock,
+    tokens: &[&SharedString],
+    color: Hsla,
+    background: Option<Hsla>,
+) {
+    match block {
+        RichBlock::Paragraph(inlines) | RichBlock::Heading { content: inlines, .. } => {
+            highlight_inlines(inlines, tokens, color, background)
+        }
+        RichBlock::BlockQuote(children) => {
+            for child in children {
+                highlight_block(child, tokens, color, background);
+            }
+        }
+        RichBlock::OrderedList { items, .. } | RichBlock::UnorderedList { items } => {
+            for item in items {
+                highlight_list_item(item, tokens, color, background);
+            }
+        }
+        RichBlock::Table { headers, rows, .. } => {
+            for cell in headers {
+                highlight_inlines(cell, tokens, color, background);
+            }
+            for row in rows {
+                for cell in row {
+                    highlight_inlines(cell, tokens, color, background);
+                }
+            }
+        }
+        // Code keeps its own styling: a token inside a fenced block is a
+        // literal the user typed, not a reference.
+        RichBlock::CodeBlock { .. } | RichBlock::HorizontalRule | RichBlock::Image { .. } => {}
+    }
+}
+
+fn highlight_list_item(
+    item: &mut ListItem,
+    tokens: &[&SharedString],
+    color: Hsla,
+    background: Option<Hsla>,
+) {
+    highlight_inlines(&mut item.content, tokens, color, background);
+    for child in &mut item.children {
+        highlight_list_item(child, tokens, color, background);
+    }
+}
+
+fn highlight_inlines(
+    inlines: &mut Vec<RichInline>,
+    tokens: &[&SharedString],
+    color: Hsla,
+    background: Option<Hsla>,
+) {
+    let mut out: Vec<RichInline> = Vec::with_capacity(inlines.len());
+    for inline in inlines.drain(..) {
+        match inline {
+            RichInline::Text(text) => out.extend(split_text(&text, tokens, color, background)),
+            RichInline::Bold(mut children) => {
+                highlight_inlines(&mut children, tokens, color, background);
+                out.push(RichInline::Bold(children));
+            }
+            RichInline::Italic(mut children) => {
+                highlight_inlines(&mut children, tokens, color, background);
+                out.push(RichInline::Italic(children));
+            }
+            RichInline::Strikethrough(mut children) => {
+                highlight_inlines(&mut children, tokens, color, background);
+                out.push(RichInline::Strikethrough(children));
+            }
+            RichInline::Styled {
+                mut children,
+                color: own,
+                background_color,
+                bold,
+                italic,
+                font_size,
+            } => {
+                // An explicit colour already set by the source wins.
+                if own.is_none() {
+                    highlight_inlines(&mut children, tokens, color, background);
+                }
+                out.push(RichInline::Styled {
+                    children,
+                    color: own,
+                    background_color,
+                    bold,
+                    italic,
+                    font_size,
+                });
+            }
+            // Link text is already coloured and clickable; code is literal.
+            other => out.push(other),
+        }
+    }
+    *inlines = out;
+}
+
+fn split_text(
+    text: &str,
+    tokens: &[&SharedString],
+    color: Hsla,
+    background: Option<Hsla>,
+) -> Vec<RichInline> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for token in tokens {
+        let mut from = 0usize;
+        while let Some(found) = text[from..].find(token.as_ref()) {
+            let start = from + found;
+            let end = start + token.len();
+            from = end;
+            if start > 0
+                && !text[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+            {
+                continue;
+            }
+            if spans.iter().any(|(s, e)| start < *e && *s < end) {
+                continue;
+            }
+            spans.push((start, end));
+        }
+    }
+    if spans.is_empty() {
+        return vec![RichInline::Text(text.to_string())];
+    }
+    spans.sort_unstable();
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in spans {
+        if start > cursor {
+            out.push(RichInline::Text(text[cursor..start].to_string()));
+        }
+        out.push(RichInline::Styled {
+            children: vec![RichInline::Text(text[start..end].to_string())],
+            color: Some(color),
+            background_color: background,
+            bold: Some(true),
+            italic: None,
+            font_size: None,
+        });
+        cursor = end;
+    }
+    if cursor < text.len() {
+        out.push(RichInline::Text(text[cursor..].to_string()));
+    }
+    out
+}
