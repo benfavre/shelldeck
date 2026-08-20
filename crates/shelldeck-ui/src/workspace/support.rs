@@ -281,7 +281,7 @@ impl Workspace {
                             }
                             v.set_list(r.tickets, r.counts, r.me)
                         }
-                        Err(e) => v.set_error(cloud_account::user_message(&e)),
+                        Err(e) => v.set_error(crate::i18n::api_error_message(&e)),
                     }
                     if let Some(a) = agents {
                         v.set_agents(a);
@@ -346,7 +346,7 @@ impl Workspace {
                     // trips on every selection.
                 }
                 Err(e) => {
-                    let msg = cloud_account::user_message(&e);
+                    let msg = crate::i18n::api_error_message(&e);
                     ws.support.update(cx, |v, cx| {
                         v.set_error(msg);
                         cx.notify();
@@ -520,7 +520,7 @@ impl Workspace {
                         .background_executor()
                         .spawn(async move { issues::download_issue_image_url(&url) })
                         .await
-                        .map_err(|e| cloud_account::user_message(&e))
+                        .map_err(|e| crate::i18n::api_error_message(&e))
                         .and_then(|upload| {
                             AttachmentDraft::from_bytes(upload.filename, upload.bytes)
                         });
@@ -601,7 +601,7 @@ impl Workspace {
                     ws.refresh_support(cx);
                 }
                 Err(e) => {
-                    let msg = cloud_account::user_message(&e);
+                    let msg = crate::i18n::api_error_message(&e);
                     ws.support.update(cx, |v, cx| {
                         v.set_error(msg.clone());
                         cx.notify();

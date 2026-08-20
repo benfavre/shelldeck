@@ -69,7 +69,11 @@ impl Workspace {
                 }
                 Err(e) => {
                     ws.show_toast(
-                        t!("toast.cloud_sync.failed", error = e.to_string()).to_string(),
+                        t!(
+                            "toast.cloud_sync.failed",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     );

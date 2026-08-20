@@ -44,9 +44,73 @@ pub fn rel_time(at_ms: f64) -> String {
     }
 }
 
+/// Phrase à montrer à l'utilisateur quand une requête vers Manage échoue.
+///
+/// Les clients construisent des messages techniques qui embarquent l'URL
+/// interne — `"support list failed: error sending request for url
+/// (http://…/api/manage/shelldeck/support?action=list)"`. Ce texte n'apprend
+/// rien à qui l'utilise et expose l'adresse du portail. Il part donc dans les
+/// journaux, et l'interface reçoit une phrase qui dit quoi faire.
+pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    // Le détail reste accessible : il est indispensable pour diagnostiquer, il
+    // n'a simplement rien à faire dans une bulle de notification.
+    tracing::warn!("requête Manage échouée : {err}");
+
+    let key = match classify_api_error(err) {
+        ApiFailure::Unreachable => "error.api.unreachable",
+        ApiFailure::Timeout => "error.api.timeout",
+        ApiFailure::AuthRejected => "error.api.auth_rejected",
+        ApiFailure::Forbidden => "error.api.forbidden",
+        ApiFailure::NotFound => "error.api.not_found",
+        ApiFailure::ServerError => "error.api.server",
+        ApiFailure::BadResponse => "error.api.bad_response",
+        ApiFailure::Other => "error.api.other",
+    };
+    crate::t!(key).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SDTEST-1656 — appelé dans chaque section de langue du test unique
+    /// ci-dessous, jamais seul : `apply_ui_language` est global au processus.
+    ///
+    /// Pinne la régression qui a motivé `api_error_message` : l'utilisateur
+    /// lisait « error sending request for url
+    /// (http://127.0.0.1:8899/api/manage/shelldeck/sync) » dans une notification.
+    fn assert_portal_failures_stay_readable(language: &str) {
+        use shelldeck_core::error::ShellDeckError;
+
+        let shown = api_error_message(&ShellDeckError::Connection(
+            "cloud sync request failed: error sending request for url \
+             (http://127.0.0.1:8899/api/manage/shelldeck/sync)"
+                .to_string(),
+        ));
+        assert!(
+            !shown.contains("http") && !shown.contains("://"),
+            "URL interne exposée en {language} : {shown}",
+        );
+        assert!(
+            !shown.contains("error sending request"),
+            "jargon reqwest exposé en {language} : {shown}",
+        );
+
+        // Une session morte se dit dans la langue de l'utilisateur, pas en 401.
+        let expired = api_error_message(&ShellDeckError::Connection(
+            "session token rejected (401)".to_string(),
+        ));
+        assert!(
+            !expired.contains("401"),
+            "code HTTP exposé en {language} : {expired}",
+        );
+        assert_ne!(
+            shown, expired,
+            "portail injoignable et session expirée disent la même chose en {language}",
+        );
+    }
 
     /// Single test — `rust_i18n::set_locale` is process-global; parallel tests race.
     #[test]
@@ -72,6 +136,7 @@ mod tests {
             // échappement pour rester visible à la relecture.
             "Connexion interrompue\u{a0}: production"
         );
+        assert_portal_failures_stay_readable("fr");
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
@@ -91,6 +156,7 @@ mod tests {
             .1,
             "Connection interrupted: production"
         );
+        assert_portal_failures_stay_readable("en");
     }
 
     #[test]

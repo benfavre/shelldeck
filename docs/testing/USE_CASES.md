@@ -2280,9 +2280,37 @@ completes an open mention first), Shift+Enter inserts a newline. Multi-line
 fields that were given no commit handler — script bodies, request details —
 keep plain textarea behaviour, where Enter inserts a newline.
 
+### SDUC-468 — A portal failure is reported in the user's own words
+
+Every request ShellDeck sends to Inklura Manage — cloud sync, sites, support,
+requests, the Jean fleet, bext Cloud, the account itself — reports a failure as
+a sentence the reader can act on, in the interface language. What went wrong is
+classified once, from the message the client produced: the portal is
+unreachable, it timed out, the session expired, the account lacks access, the
+item is gone, the portal erred, or its answer could not be read. The technical
+detail — the internal URL, the HTTP status, the transport library's wording —
+goes to the logs and never to the screen.
+
+A portal that cannot be reached degrades the session without truncating it. The
+account stays signed in, and every command the account can run stays reachable
+from the command palette and the application menu alike, so the user can retry
+once the network returns.
+
 ---
 
 ## Change log
+
+- **2026-08-20** — Added SDUC-468 and SDTEST-1655/1656 after a sync failure was
+  reported showing "Connection error: cloud sync request failed: error sending
+  request for url (http://127.0.0.1:8899/api/manage/shelldeck/sync)" in a
+  notification. Manage errors are now classified in
+  `cloud_account::classify_api_error` and rendered by `i18n::api_error_message`;
+  the previous funnel, `cloud_account::user_message`, only stripped the Display
+  prefix and is retired. Verifying the fix surfaced a second defect in the same
+  offline path: the command palette is built once before the account is known,
+  and was only rebuilt when the portal answered — so an unreachable portal at
+  startup silently emptied every signed-in command for the whole session while
+  the menu bar, rebuilt each render, still listed them.
 
 - **2026-08-19** — Amended SDUC-465: the assistant's `+` now reuses the whole
   shared attachment chain rather than half of it. A region capture opens the

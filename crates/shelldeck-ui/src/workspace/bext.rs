@@ -143,7 +143,7 @@ impl Workspace {
                     }
                     Err(e) => {
                         ws.bext_view.update(cx, |v, cx| {
-                            v.set_error(cloud_account::user_message(&e));
+                            v.set_error(crate::i18n::api_error_message(&e));
                             cx.notify();
                         });
                     }
@@ -207,7 +207,7 @@ impl Workspace {
             self.show_toast(
                 t!(
                     "toast.open_browser_failed",
-                    error = cloud_account::user_message(&e)
+                    error = crate::i18n::api_error_message(&e)
                 )
                 .to_string(),
                 ToastLevel::Error,
@@ -252,7 +252,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.bext.connect_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -301,7 +301,11 @@ impl Workspace {
                         cx,
                     ),
                     Err(e) => ws.show_toast(
-                        t!("toast.bext.error", error = cloud_account::user_message(&e)).to_string(),
+                        t!(
+                            "toast.bext.error",
+                            error = crate::i18n::api_error_message(&e)
+                        )
+                        .to_string(),
                         ToastLevel::Error,
                         cx,
                     ),
@@ -332,7 +336,7 @@ impl Workspace {
                     cx.notify();
                 }),
                 Err(e) => ws.bext_view.update(cx, |v, cx| {
-                    v.set_error(cloud_account::user_message(&e));
+                    v.set_error(crate::i18n::api_error_message(&e));
                     cx.notify();
                 }),
             });
@@ -368,7 +372,7 @@ impl Workspace {
                     Err(e) => ws.show_toast(
                         t!(
                             "toast.bext.instance_error",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Error,
@@ -414,7 +418,7 @@ impl Workspace {
                     self.show_toast(
                         t!(
                             "toast.open_failed_generic",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Error,

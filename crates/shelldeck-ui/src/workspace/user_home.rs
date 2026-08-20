@@ -35,7 +35,7 @@ impl Workspace {
             Err(e) => self.show_toast(
                 t!(
                     "toast.open_browser_failed",
-                    error = cloud_account::user_message(&e)
+                    error = crate::i18n::api_error_message(&e)
                 )
                 .to_string(),
                 ToastLevel::Error,

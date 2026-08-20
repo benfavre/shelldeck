@@ -280,14 +280,79 @@ struct LoginResponse {
     error: Option<String>,
 }
 
-/// A user-facing message for an account error — unwraps the inner string of
-/// our `Connection`/`Serialization` errors instead of showing the Display
-/// prefix (e.g. "Connection error: …") in a toast.
-pub fn user_message(err: &ShellDeckError) -> String {
-    match err {
-        ShellDeckError::Connection(m) | ShellDeckError::Serialization(m) => m.clone(),
-        other => other.to_string(),
+/// What a request to Manage actually failed on, whichever client sent it.
+///
+/// The clients all build their errors by hand — `"support list failed: {e}"`,
+/// `"issues request failed: HTTP {s}"` — so the only thing they share is the
+/// message text. Classifying it here means every surface can say something
+/// useful without each one re-parsing the string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiFailure {
+    /// No route to the portal: offline, DNS failure, connection refused.
+    Unreachable,
+    /// The portal accepted the connection but never answered in time.
+    Timeout,
+    /// The token was refused (401). The session is over.
+    AuthRejected,
+    /// The account is signed in but not allowed here (403).
+    Forbidden,
+    /// The record is gone (404).
+    NotFound,
+    /// The portal itself failed (5xx).
+    ServerError,
+    /// The portal answered something we could not read.
+    BadResponse,
+    /// Anything else — the raw text is logged, not shown.
+    Other,
+}
+
+/// Classify a Manage error so callers can show a sentence instead of a stack
+/// of technical detail.
+///
+/// Matching on message text is not elegant, but it is what the clients give
+/// us, and it keeps the mapping in one tested place rather than spread across
+/// forty call sites. Both spellings of a status are accepted: some clients
+/// emit `(401)`, others `HTTP 401`.
+pub fn classify_api_error(err: &ShellDeckError) -> ApiFailure {
+    let message = match err {
+        ShellDeckError::Serialization(_) => return ApiFailure::BadResponse,
+        ShellDeckError::Connection(m) => m.as_str(),
+        _ => return ApiFailure::Other,
+    };
+    let lower = message.to_ascii_lowercase();
+
+    let has_status =
+        |code: u16| lower.contains(&format!("({code})")) || lower.contains(&format!("http {code}"));
+
+    if has_status(401) {
+        return ApiFailure::AuthRejected;
     }
+    if has_status(403) {
+        return ApiFailure::Forbidden;
+    }
+    if has_status(404) {
+        return ApiFailure::NotFound;
+    }
+    if (500..=599).any(has_status) {
+        return ApiFailure::ServerError;
+    }
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return ApiFailure::Timeout;
+    }
+    // reqwest wraps every transport failure — DNS, refused, TLS — in this one
+    // phrase, with the URL appended. That URL is exactly what must not reach
+    // the user.
+    if lower.contains("error sending request")
+        || lower.contains("dns")
+        || lower.contains("connection refused")
+        || lower.contains("failed to build http client")
+    {
+        return ApiFailure::Unreachable;
+    }
+    if lower.contains("invalid") && lower.contains("payload") {
+        return ApiFailure::BadResponse;
+    }
+    ApiFailure::Other
 }
 
 /// True if `err` is an auth rejection (invalid/revoked token or bad creds),
@@ -828,6 +893,42 @@ mod tests {
         assert_eq!(percent_decode("%2F%3D"), "/=");
         // Malformed trailing % is left as-is.
         assert_eq!(percent_decode("abc%"), "abc%");
+    }
+
+    // SDTEST-1655 — les erreurs réelles des clients Manage sont classées, et
+    // l'URL interne que reqwest colle dans son message n'en ressort jamais.
+    #[test]
+    fn api_failures_are_classified_from_the_messages_the_clients_actually_emit() {
+        use ApiFailure::*;
+        let cases = [
+            // Texte exact produit par reqwest quand le portail est injoignable.
+            ("support list failed: error sending request for url (http://127.0.0.1:8899/api/manage/shelldeck/support?action=list)", Unreachable),
+            ("failed to build HTTP client: builder error", Unreachable),
+            ("whoami request failed: operation timed out", Timeout),
+            ("session token rejected (401)", AuthRejected),
+            ("issues request failed: HTTP 401", AuthRejected),
+            ("staff action refused (403)", Forbidden),
+            ("issues request failed: HTTP 403", Forbidden),
+            ("support request failed: HTTP 404", NotFound),
+            ("cloud request failed: HTTP 503", ServerError),
+            ("quelque chose d'inattendu", Other),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(
+                classify_api_error(&ShellDeckError::Connection(message.to_string())),
+                expected,
+                "mal classé : {message}",
+            );
+        }
+
+        // Un payload illisible n'est pas une panne de réseau : le portail a
+        // répondu, on n'a pas su le lire.
+        assert_eq!(
+            classify_api_error(&ShellDeckError::Serialization(
+                "invalid whoami payload: missing field".into()
+            )),
+            BadResponse,
+        );
     }
 
     #[test]

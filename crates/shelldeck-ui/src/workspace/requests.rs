@@ -290,7 +290,7 @@ impl Workspace {
                     Err(error) => ws.show_toast(
                         t!(
                             "toast.issue.attachment_failed",
-                            error = cloud_account::user_message(&error)
+                            error = crate::i18n::api_error_message(&error)
                         )
                         .to_string(),
                         ToastLevel::Error,
@@ -715,7 +715,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.issue.list_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -837,7 +837,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.issue.detail_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -961,7 +961,7 @@ impl Workspace {
                             ws.show_toast(
                                 t!(
                                     "toast.issue.attachment_failed_after_create",
-                                    error = cloud_account::user_message(&error)
+                                    error = crate::i18n::api_error_message(&error)
                                 )
                                 .to_string(),
                                 ToastLevel::Warning,
@@ -973,7 +973,7 @@ impl Workspace {
                     Err(e) => ws.show_toast(
                         t!(
                             "toast.issue.create_failed",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
                         ToastLevel::Error,
@@ -1063,7 +1063,7 @@ impl Workspace {
                     Err(e) => {
                         let message = t!(
                             "toast.issue.comment_failed",
-                            error = cloud_account::user_message(&e)
+                            error = crate::i18n::api_error_message(&e)
                         )
                         .to_string();
                         ws.support.update(cx, |view, cx| {
@@ -1121,7 +1121,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.issue.staff_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -1235,7 +1235,7 @@ impl Workspace {
                     ws.show_toast(
                         t!(
                             "toast.ai.triage_failed",
-                            error = cloud_account::user_message(&error)
+                            error = crate::i18n::api_error_message(&error)
                         )
                         .to_string(),
                         ToastLevel::Error,
@@ -1348,7 +1348,7 @@ impl Workspace {
                 Err(error) => workspace.show_toast(
                     t!(
                         "toast.ai.triage_failed",
-                        error = cloud_account::user_message(&error)
+                        error = crate::i18n::api_error_message(&error)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -1395,7 +1395,7 @@ impl Workspace {
                 Err(e) => ws.show_toast(
                     t!(
                         "toast.issue.delete_failed",
-                        error = cloud_account::user_message(&e)
+                        error = crate::i18n::api_error_message(&e)
                     )
                     .to_string(),
                     ToastLevel::Error,
@@ -1439,7 +1439,7 @@ impl Workspace {
                 Err(error) => ws.show_toast(
                     t!(
                         "toast.issue.attachment_delete_failed",
-                        error = cloud_account::user_message(&error)
+                        error = crate::i18n::api_error_message(&error)
                     )
                     .to_string(),
                     ToastLevel::Error,
