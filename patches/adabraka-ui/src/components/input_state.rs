@@ -235,6 +235,11 @@ pub struct InputState {
     // last observed. Repaints with an unchanged draft/caret must not snap a
     // viewport that the user just moved with the wheel.
     last_caret_snapshot: Option<(SharedString, usize)>,
+    // ShellDeck patch: SDPATCH-039 — spans painted differently while the user
+    // types. The field shapes its own text, so a parent that wants part of the
+    // draft to stand out (the assistant composer colouring an `@mention`) has
+    // no other way in.
+    pub(crate) highlights: Vec<TextHighlight>,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -243,6 +248,88 @@ impl EventEmitter<InputEvent> for InputState {}
 /// inside `InputState` mutation handlers. They often `entity.update` + re-render,
 /// which reads/updates the same `InputState` while it is still leased
 /// ("cannot read InputState while it is already being updated").
+/// ShellDeck patch: SDPATCH-039 — split one styled run into several so parts of
+/// the text can carry their own colour.
+///
+/// A range that is out of bounds, overlapping a previous one, or landing
+/// mid-character is dropped rather than clamped to something arbitrary: a
+/// missing colour is cosmetic, a shaping panic takes the window down.
+/// ShellDeck patch: SDPATCH-039 — one span of the content painted differently.
+///
+/// Carries its own background so a caller can render a token the way chat
+/// applications do — the accent colour for the text, the same hue at low
+/// opacity behind it — without the field having to guess that convention.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextHighlight {
+    pub range: Range<usize>,
+    pub color: Hsla,
+    pub background: Option<Hsla>,
+}
+
+impl TextHighlight {
+    pub fn new(range: Range<usize>, color: Hsla) -> Self {
+        Self {
+            range,
+            color,
+            background: None,
+        }
+    }
+
+    pub fn background(mut self, background: Hsla) -> Self {
+        self.background = Some(background);
+        self
+    }
+}
+
+pub(crate) fn runs_with_highlights(
+    base: &TextRun,
+    text: &str,
+    highlights: &[TextHighlight],
+) -> Vec<TextRun> {
+    let mut ranges: Vec<&TextHighlight> = highlights
+        .iter()
+        .filter(|highlight| {
+            highlight.range.start < highlight.range.end
+                && highlight.range.end <= text.len()
+                && text.is_char_boundary(highlight.range.start)
+                && text.is_char_boundary(highlight.range.end)
+        })
+        .collect();
+    ranges.sort_by_key(|highlight| highlight.range.start);
+
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut cursor = 0usize;
+    for highlight in ranges {
+        let (start, end) = (highlight.range.start, highlight.range.end);
+        if start < cursor {
+            continue;
+        }
+        if start > cursor {
+            runs.push(TextRun {
+                len: start - cursor,
+                ..base.clone()
+            });
+        }
+        runs.push(TextRun {
+            len: end - start,
+            color: highlight.color,
+            background_color: highlight.background,
+            ..base.clone()
+        });
+        cursor = end;
+    }
+    if cursor < text.len() {
+        runs.push(TextRun {
+            len: text.len() - cursor,
+            ..base.clone()
+        });
+    }
+    if runs.is_empty() {
+        runs.push(base.clone());
+    }
+    runs
+}
+
 fn defer_input_callback(
     cb: std::rc::Rc<dyn Fn(SharedString, &mut App)>,
     value: SharedString,
@@ -306,6 +393,8 @@ impl InputState {
             // ShellDeck patch: SDPATCH-018 — the first paint establishes the
             // caret snapshot and, when restored content exists, reveals it.
             last_caret_snapshot: None,
+            // ShellDeck patch: SDPATCH-039 — no highlight until a parent sets one.
+            highlights: Vec::new(),
         }
     }
 
@@ -1042,6 +1131,18 @@ impl InputState {
         }
     }
 
+    /// ShellDeck patch: SDPATCH-039 — colour byte ranges of the current content.
+    ///
+    /// Ranges are validated on use, so a caller that computed them against a
+    /// slightly older draft cannot panic the shaper. Setting identical ranges is
+    /// a no-op, which makes this safe to call from an on-change handler.
+    pub fn set_highlights(&mut self, highlights: Vec<TextHighlight>, cx: &mut Context<Self>) {
+        if self.highlights != highlights {
+            self.highlights = highlights;
+            cx.notify();
+        }
+    }
+
     // ShellDeck patch: SDPATCH-038 — the newline half of the composer contract.
     // Without its own binding, Shift+Enter reached no action at all.
     pub fn shift_enter(&mut self, _: &ShiftEnter, window: &mut Window, cx: &mut Context<Self>) {
@@ -1684,9 +1785,18 @@ impl gpui::Element for InputTextElement {
             } else {
                 None
             };
+            // ShellDeck patch: SDPATCH-039 — one run per highlighted span, so an
+            // `@mention` reads as a mention while it is being typed. Highlights
+            // are skipped in placeholder mode: the ranges describe the content,
+            // not the hint standing in for it.
+            let runs = if placeholder_mode {
+                vec![run]
+            } else {
+                runs_with_highlights(&run, display.as_ref(), &input.highlights)
+            };
             let wrapped: Vec<gpui::WrappedLine> = window
                 .text_system()
-                .shape_text(display.clone(), font_size, &[run], wrap_width, None)
+                .shape_text(display.clone(), font_size, &runs, wrap_width, None)
                 .map(|sv| sv.into_iter().collect())
                 .unwrap_or_default();
 
@@ -1839,8 +1949,14 @@ impl gpui::Element for InputTextElement {
             .into_iter()
             .filter(|run| run.len > 0)
             .collect()
-        } else {
+        } else if input.masked || display_text != input.content {
+            // ShellDeck patch: SDPATCH-039 — highlight ranges index the real
+            // content. A masked field, or a placeholder standing in for an empty
+            // one, is a different string; painting those offsets would colour
+            // arbitrary characters.
             vec![run]
+        } else {
+            runs_with_highlights(&run, display_text.as_ref(), &input.highlights)
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -1942,6 +2058,19 @@ impl gpui::Element for InputTextElement {
             let mut y = bounds.origin.y;
             let mut visual_total = 0usize;
             for line in wrapped.iter() {
+                // ShellDeck patch: SDPATCH-039 — gpui splits run backgrounds
+                // from glyphs: `paint` draws only the text, and a run's
+                // `background_color` is never seen unless `paint_background`
+                // runs first. Painting it here is what turns a coloured
+                // `@mention` into a tinted one.
+                let _ = line.paint_background(
+                    point(bounds.origin.x, y),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
                 let _ = line.paint(
                     point(bounds.origin.x, y),
                     line_h,
@@ -2017,6 +2146,9 @@ impl gpui::Element for InputTextElement {
         // offset computed at prepaint so the caret stays visible when the
         // content overflows the input width.
         let line_origin = point(bounds.origin.x + prepaint.scroll_offset, bounds.origin.y);
+        // ShellDeck patch: SDPATCH-039 — run backgrounds before glyphs; see the
+        // multi-line path above.
+        let _ = line.paint_background(line_origin, window.line_height(), window, cx);
         if line
             .paint(line_origin, window.line_height(), window, cx)
             .is_err()
@@ -2096,3 +2228,91 @@ impl Focusable for InputState {
 }
 
 use regex;
+
+// ShellDeck patch: SDPATCH-039 — the splitter feeds gpui's shaper, so a wrong
+// range is not a cosmetic bug: an out-of-bounds or mid-character boundary
+// panics the text system and takes the window with it.
+#[cfg(test)]
+mod highlight_tests {
+    use super::{runs_with_highlights, TextHighlight};
+    use gpui::{hsla, Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, TextRun};
+
+    fn base(len: usize) -> TextRun {
+        TextRun {
+            len,
+            font: Font {
+                family: "Inter".into(),
+                features: FontFeatures::default(),
+                fallbacks: None::<FontFallbacks>,
+                weight: FontWeight::NORMAL,
+                style: FontStyle::Normal,
+            },
+            color: hsla(0.0, 0.0, 0.0, 1.0),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    // SDTEST-1658
+    #[test]
+    fn runs_tile_the_text_exactly_once() {
+        let text = "salut @prod ici";
+        let color = hsla(0.6, 1.0, 0.5, 1.0);
+        let runs = runs_with_highlights(
+            &base(text.len()),
+            text,
+            &[TextHighlight::new(6..11, color).background(hsla(0.6, 1.0, 0.5, 0.15))],
+        );
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[1].color, color);
+        assert!(runs[1].background_color.is_some());
+        assert_ne!(runs[0].color, color);
+        assert!(runs[0].background_color.is_none());
+    }
+
+    // SDTEST-1659
+    #[test]
+    fn invalid_ranges_are_dropped_rather_than_clamped() {
+        let text = "héllo";
+        let color = hsla(0.6, 1.0, 0.5, 1.0);
+        for range in [
+            0..text.len() + 5, // dépasse la fin
+            2..1,              // inversée
+            2..4,              // commence au milieu du « é »
+            4..4,              // vide
+        ] {
+            let runs =
+                runs_with_highlights(&base(text.len()), text, &[TextHighlight::new(range, color)]);
+            assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+            assert!(runs.iter().all(|r| r.color != color));
+        }
+    }
+
+    // SDTEST-1660
+    #[test]
+    fn overlapping_ranges_keep_the_first_and_never_double_count() {
+        let text = "aaaa bbbb cccc";
+        let color = hsla(0.6, 1.0, 0.5, 1.0);
+        let runs = runs_with_highlights(
+            &base(text.len()),
+            text,
+            &[
+                TextHighlight::new(0..9, color),
+                TextHighlight::new(5..14, color),
+                TextHighlight::new(5..9, color),
+            ],
+        );
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+    }
+
+    // SDTEST-1661
+    #[test]
+    fn no_highlight_yields_the_untouched_run() {
+        let text = "rien à peindre";
+        let runs = runs_with_highlights(&base(text.len()), text, &[]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len, text.len());
+    }
+}

@@ -443,6 +443,17 @@ parallel `cargo test`.
 
 ---
 
+## 8f. `patches/adabraka-ui` — coloured text runs
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1658 | `input_state.rs::runs_tile_the_text_exactly_once` | SDUC-468 | Green | The split runs cover the text exactly once and only the highlighted one carries the colour and its background. |
+| SDTEST-1659 | `input_state.rs::invalid_ranges_are_dropped_rather_than_clamped` | SDUC-468 | Green | Out-of-bounds, inverted, empty and mid-character ranges are dropped; the run lengths still sum to the text. |
+| SDTEST-1660 | `input_state.rs::overlapping_ranges_keep_the_first_and_never_double_count` | SDUC-468 | Green | Overlapping highlights cannot make the run lengths exceed the text, which would panic the shaper. |
+| SDTEST-1661 | `input_state.rs::no_highlight_yields_the_untouched_run` | SDUC-468 | Green | The no-highlight path is the untouched single run. |
+
+---
+
 ## 9. Cross-platform coverage (referenced from everywhere)
 
 CI matrix already runs `cargo check` on all three targets. The SDTEST

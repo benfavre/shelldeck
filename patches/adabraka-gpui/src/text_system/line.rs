@@ -546,13 +546,14 @@ fn paint_line_background(
                         if glyph_origin.x == background_origin.x {
                             background_origin.x -= max_glyph_size.width.half()
                         }
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: *background_origin,
-                                size: size(glyph_origin.x - background_origin.x, line_height),
-                            },
+                        // ShellDeck patch: SDPATCH-041 — chip geometry.
+                        paint_run_background(
+                            window,
+                            *background_origin,
+                            glyph_origin.x - background_origin.x,
+                            line_height,
                             *background_color,
-                        ));
+                        );
                         background_origin.x = origin.x;
                         background_origin.y += line_height;
                     }
@@ -606,13 +607,14 @@ fn paint_line_background(
                     if background_origin.x == glyph_origin.x {
                         background_origin.x -= max_glyph_size.width.half();
                     };
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: background_origin,
-                            size: size(width, line_height),
-                        },
+                    // ShellDeck patch: SDPATCH-041 — chip geometry.
+                    paint_run_background(
+                        window,
+                        background_origin,
+                        width,
+                        line_height,
                         background_color,
-                    ));
+                    );
                 }
             }
         }
@@ -628,17 +630,67 @@ fn paint_line_background(
             if last_line_end_x == background_origin.x {
                 background_origin.x -= max_glyph_size.width.half()
             };
-            window.paint_quad(fill(
-                Bounds {
-                    origin: background_origin,
-                    size: size(last_line_end_x - background_origin.x, line_height),
-                },
+            // ShellDeck patch: SDPATCH-041 — chip geometry.
+            paint_run_background(
+                window,
+                background_origin,
+                last_line_end_x - background_origin.x,
+                line_height,
                 background_color,
-            ));
+            );
         }
 
         Ok(())
     })
+}
+
+
+// ShellDeck patch: SDPATCH-041 — a run background is a chip, not a rectangle
+// glued to the glyphs.
+//
+// `TextRun::background_color` used to paint a bare rect of exactly the run's
+// advance and the full line height. That reads as a selection, not as a token:
+// the first and last letters touch the fill, and the square corners collide
+// with the surrounding prose. ShellDeck paints `@mentions` this way, and a
+// mention has to look like one thing you could click, not like highlighted
+// text.
+//
+// So every run background gains a little breathing room on each side, a small
+// vertical inset, and rounded corners. The geometry is deliberately modest:
+// enough to read as a chip, small enough that it never collides with the glyph
+// before or after it — a mention is always preceded by whitespace.
+//
+// A run that wraps is painted once per visual line, so each fragment is
+// rounded on its own. That is what browsers do with an inline background, and
+// it keeps the fragments legible instead of producing one shape with a hole.
+const RUN_BACKGROUND_PAD_X: f32 = 3.0;
+const RUN_BACKGROUND_INSET_Y: f32 = 1.5;
+const RUN_BACKGROUND_RADIUS: f32 = 4.0;
+
+fn paint_run_background(
+    window: &mut Window,
+    origin: Point<Pixels>,
+    width: Pixels,
+    line_height: Pixels,
+    color: Hsla,
+) {
+    if width <= px(0.0) {
+        return;
+    }
+    let inset = px(RUN_BACKGROUND_INSET_Y).min(line_height.half());
+    window.paint_quad(
+        fill(
+            Bounds {
+                origin: point(origin.x - px(RUN_BACKGROUND_PAD_X), origin.y + inset),
+                size: size(
+                    width + px(RUN_BACKGROUND_PAD_X * 2.0),
+                    line_height - inset - inset,
+                ),
+            },
+            color,
+        )
+        .corner_radii(px(RUN_BACKGROUND_RADIUS)),
+    );
 }
 
 fn aligned_origin_x(
