@@ -1,0 +1,17 @@
+# Hôtes de démonstration — entièrement fictifs.
+Host boutique-web-01
+    HostName 10.20.0.11
+    User deploy
+Host boutique-web-02
+    HostName 10.20.0.12
+    User deploy
+Host boutique-db-01
+    HostName 10.20.0.21
+    User postgres
+Host boutique-staging
+    HostName 10.30.0.10
+    Port 2222
+    User deploy
+Host atelier-ci
+    HostName 10.40.0.5
+    User runner
