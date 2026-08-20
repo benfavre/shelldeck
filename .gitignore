@@ -21,3 +21,5 @@ node_modules/
 /.obsidian/
 # Claude Code local runtime state (locks, etc.) — not project content.
 /.claude/*.lock
+# Outils de confort locaux, gardés hors du dépôt et lancés à la demande.
+/scripts/typo-fr.py
