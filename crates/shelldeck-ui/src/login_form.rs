@@ -10,6 +10,7 @@ use gpui::*;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
+use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -384,19 +385,11 @@ impl Render for LoginForm {
         card = card.child(body);
 
         // Full-screen focused overlay capturing keystrokes.
-        div()
-            .id("login-form-overlay")
+        window_backdrop("login-form-overlay", window.is_maximized())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .justify_center()
             .items_center()

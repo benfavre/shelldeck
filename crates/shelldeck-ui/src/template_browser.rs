@@ -6,6 +6,7 @@ use gpui::*;
 use shelldeck_core::models::script::{Script, ScriptCategory};
 use shelldeck_core::models::templates::{all_templates, ScriptTemplate};
 
+use crate::overlay::window_backdrop;
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -404,19 +405,11 @@ impl Render for TemplateBrowser {
         }
 
         // Main overlay
-        div()
-            .id("template-browser-overlay")
+        window_backdrop("template-browser-overlay", window.is_maximized())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .justify_center()
             .items_center()

@@ -10,6 +10,7 @@ use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;
 
 use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
+use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -538,19 +539,11 @@ impl Render for PortForwardForm {
             );
         }
 
-        div()
-            .id("port-forward-form-overlay")
+        window_backdrop("port-forward-form-overlay", window.is_maximized())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .justify_center()
             .items_center()

@@ -8,6 +8,7 @@ use adabraka_ui::prelude::*;
 use shelldeck_core::models::connection::Connection;
 use uuid::Uuid;
 
+use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -519,25 +520,11 @@ impl Render for ConnectionForm {
         // less blocking than the previous centered modal — the sidebar/list
         // behind stays partially visible.
         let is_maximized = window.is_maximized();
-        let mut overlay = div()
-            .id("connection-form-overlay")
+        window_backdrop("connection-form-overlay", is_maximized)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
-            .overflow_hidden();
-        if !is_maximized {
-            overlay = overlay.rounded(use_theme().tokens.radius_xl);
-        }
-
-        overlay
             // Clicking on the dimmed area behind the sheet cancels the form.
             .on_mouse_down(
                 MouseButton::Left,
