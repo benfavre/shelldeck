@@ -23,6 +23,14 @@ const slugs = [
   "dev-05-ai",
   "dev-06-modes",
 ];
+const onlyArgs = process.argv
+  .filter((arg) => arg.startsWith("--only="))
+  .flatMap((arg) => arg.slice("--only=".length).split(","))
+  .filter(Boolean);
+const exportsToRun = onlyArgs.length > 0 ? onlyArgs : slugs;
+for (const slug of exportsToRun) {
+  if (!slugs.includes(slug)) throw new Error(`Unknown export slug: ${slug}`);
+}
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
@@ -46,7 +54,7 @@ function run(command, args) {
 await fs.mkdir(outputDir, { recursive: true });
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "shelldeck-onboarding-"));
 try {
-  for (const slug of slugs) {
+  for (const slug of exportsToRun) {
     const url = new URL(pathToFileURL(source));
     url.searchParams.set("export", slug);
     const screenshot = path.join(tempDir, `${slug}.png`);
