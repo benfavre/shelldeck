@@ -71,6 +71,23 @@ pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String 
     crate::t!(key).to_string()
 }
 
+/// Comme [`api_error_message`], mais pour un échec du **formulaire de
+/// connexion**.
+///
+/// Un 401 n'y veut pas dire la même chose qu'ailleurs : pendant une session
+/// c'est un jeton périmé, sur ce formulaire ce sont des identifiants refusés.
+/// Répondre « Votre session a expiré » à quelqu'un qui vient de taper son mot
+/// de passe l'envoie chercher un problème qui n'existe pas.
+pub fn login_error_message(err: &shelldeck_core::error::ShellDeckError) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    if classify_api_error(err) == ApiFailure::AuthRejected {
+        tracing::warn!("connexion refusée par le portail : {err}");
+        return crate::t!("error.login.rejected").to_string();
+    }
+    api_error_message(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

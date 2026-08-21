@@ -10,7 +10,7 @@ use gpui::*;
 
 use adabraka_ui::components::input::{Input, InputSize, InputState};
 
-use crate::overlay::window_backdrop;
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -386,6 +386,14 @@ impl Render for LoginForm {
 
         // Full-screen focused overlay capturing keystrokes.
         window_backdrop("login-form-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus :
+            // le contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|this, _: &InputEscape, _window, cx| {
+                let _ = &this;
+                if !this.busy {
+                    cx.emit(LoginFormEvent::Cancel);
+                }
+            }))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
