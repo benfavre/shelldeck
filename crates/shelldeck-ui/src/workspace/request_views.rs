@@ -81,7 +81,41 @@ impl Workspace {
                     .overflow_hidden(),
             );
         }
+        // Deux informations que la file Support affichait déjà et que le
+        // client, propriétaire de la demande, n'avait pas : depuis quand elle
+        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
+        // savoir que le support a écrit.
+        if iss.comment_count > 0 {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    // `messages-square` : le lot Lucide embarqué ne contient
+                    // pas `message-square` au singulier, et un slug absent ne
+                    // dessine rien du tout (`.agents/icons.md`).
+                    .child(lucide_icon(
+                        "messages-square",
+                        11.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                    .child(iss.comment_count.to_string()),
+            );
+        }
         row = row.child(priority_badge(&iss.priority));
+        let updated = crate::i18n::rel_time(iss.updated_at);
+        if !updated.is_empty() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(updated),
+            );
+        }
         if let Some(g) = &iss.github {
             row = row.child(
                 div()
@@ -1653,6 +1687,14 @@ impl Workspace {
         // (bg / border / rounded) so the sheet reads as a single surface. Only
         // this thread scrolls; the reply composer is rendered by the fixed
         // sheet footer below.
+        //
+        // Le fil reste ancré en haut, contrairement à celui des tickets côté
+        // Support : là-bas c'est une `uniform_list` virtualisée qui se place
+        // en fin de liste, ici un simple bloc défilant. Un intercalaire
+        // extensible ne suffit pas — le conteneur n'a pas de hauteur de
+        // référence dans un parent `overflow_y_scroll`. Passer par un
+        // `ScrollHandle` positionné à l'ouverture est le vrai correctif ;
+        // il reste à écrire (UX-023).
         div()
             .flex()
             .flex_col()

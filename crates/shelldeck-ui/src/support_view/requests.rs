@@ -381,7 +381,7 @@ impl SupportView {
         if iss.comment_count > 0 {
             meta.push_str(&format!(
                 " · {}",
-                t!("support.meta.comments", count = iss.comment_count)
+                crate::support_view::issue_comment_count_label(iss.comment_count)
             ));
         }
         if let Some(g) = &iss.github {
@@ -499,7 +499,7 @@ impl SupportView {
     pub(super) fn render_empty_issue_detail(&self) -> Div {
         support_empty_detail(
             lucide_icon("tag", 22.0, ShellDeckColors::primary()),
-            t!("support.empty.requests_open").to_string(),
+            t!("support.empty.no_request_selected").to_string(),
             t!("support.empty.requests_hint").to_string(),
         )
     }

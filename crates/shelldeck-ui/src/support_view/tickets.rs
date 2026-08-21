@@ -1458,13 +1458,16 @@ impl SupportView {
     /// Empty conversation pane — shown when no ticket is selected. Friendly
     /// onboarding block instead of a bare "Sélectionnez un ticket" so a
     /// first-time agent knows what the pane is for and how to get started.
+    ///
+    /// Le titre dit « rien de sélectionné », jamais « aucun ticket ouvert » :
+    /// il s'affichait au-dessus d'une liste qui en contenait quatre, et son
+    /// propre corps de texte le contredisait.
     pub(super) fn render_empty_conversation(&self) -> Div {
         support_empty_detail(
-            div()
-                .text_size(px(22.0))
-                .text_color(ShellDeckColors::primary())
-                .child("💬"),
-            t!("support.empty.tickets").to_string(),
+            // Icône du lot Lucide embarqué, comme la file Demandes : l'emoji
+            // qui était ici suivait la police système et non le thème.
+            lucide_icon("messages-square", 22.0, ShellDeckColors::primary()),
+            t!("support.empty.no_ticket_selected").to_string(),
             t!("support.empty.tickets_hint").to_string(),
         )
     }
