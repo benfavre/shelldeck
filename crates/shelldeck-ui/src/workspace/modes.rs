@@ -259,5 +259,11 @@ impl Workspace {
         self.sync_fleet_view_poll(cx);
         self.sync_runtime_loop(cx);
         self.sync_issues_poll(cx);
+        // Les entrées de la palette sont filtrées par mode à la construction :
+        // sans cette reconstruction, passer de Dev à Support laissait « Nouveau
+        // terminal », « Basculer barre latérale », « Fermer l'onglet » et
+        // « Onglet suivant » dans une surface qui n'a ni terminal, ni barre
+        // latérale, ni onglets.
+        self.refresh_command_palette(cx);
     }
 }

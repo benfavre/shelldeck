@@ -7,7 +7,7 @@ use gpui::*;
 
 use shelldeck_core::models::script::{Script, ScriptVariable};
 
-use crate::overlay::window_backdrop;
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -204,6 +204,11 @@ impl Render for VariablePrompt {
 
         // Main overlay
         window_backdrop("variable-prompt-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus : le
+            // contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|_this, _: &InputEscape, _window, cx| {
+                cx.emit(VariablePromptEvent::Cancel);
+            }))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);

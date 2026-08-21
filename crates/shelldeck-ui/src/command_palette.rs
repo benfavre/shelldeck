@@ -1,6 +1,9 @@
 use crate::icons::lucide_icon;
 use crate::scale::px;
-use adabraka_ui::components::input::{Input, InputSize, InputState};
+use adabraka_ui::components::input::{
+    Down as InputDown, End as InputEnd, Escape as InputEscape, Home as InputHome, Input, InputSize,
+    InputState, ShiftTab as InputShiftTab, Tab as InputTab, Up as InputUp,
+};
 use adabraka_ui::prelude::scrollable_vertical;
 use gpui::prelude::*;
 use gpui::*;
@@ -366,64 +369,32 @@ impl CommandPalette {
         cx.notify();
     }
 
-    /// Non-text keys only — typing is handled inside the focused `Input`
-    /// widget (which also fires `on_enter` for Enter). We intercept the
-    /// list-navigation keys and Escape. Tab stays inside this composite
-    /// control and moves the active result, matching Shift+Tab in reverse.
+    /// Fermer la palette depuis une action clavier.
+    fn dismiss_from_key(&mut self, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        cx.emit(CommandPaletteEvent::Dismissed);
+        self.dismiss(cx);
+        cx.notify();
+    }
+
+    /// Déplacer la sélection depuis une action clavier.
+    fn navigate_from_key(&mut self, navigation: PaletteNavigation, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        self.selected_index = navigated_index(self.selected_index, self.filtered.len(), navigation);
+        self.emit_selection_preview(cx);
+        cx.notify();
+    }
+
+    /// Les seules touches que l'`Input` focalisé ne réclame pas.
+    ///
+    /// Page précédente / suivante n'ont pas de liaison dans le contexte
+    /// `Input`, elles arrivent donc encore comme événements clavier bruts.
+    /// Tout le reste — Échap, les flèches, Origine/Fin, Tab — est capté par
+    /// les actions déclarées plus bas ; voir le commentaire de `render`.
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
-            "escape" => {
-                cx.stop_propagation();
-                cx.emit(CommandPaletteEvent::Dismissed);
-                self.dismiss(cx);
-                cx.notify();
-            }
-            "up" => {
-                cx.stop_propagation();
-                self.select_prev();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "down" => {
-                cx.stop_propagation();
-                self.select_next();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "home" => {
-                cx.stop_propagation();
-                self.select_first();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "end" => {
-                cx.stop_propagation();
-                self.select_last();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "pageup" => {
-                cx.stop_propagation();
-                self.select_page_up();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "pagedown" => {
-                cx.stop_propagation();
-                self.select_page_down();
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
-            "tab" => {
-                cx.stop_propagation();
-                if event.keystroke.modifiers.shift {
-                    self.select_prev();
-                } else {
-                    self.select_next();
-                }
-                self.emit_selection_preview(cx);
-                cx.notify();
-            }
+            "pageup" => self.navigate_from_key(PaletteNavigation::PageUp, cx),
+            "pagedown" => self.navigate_from_key(PaletteNavigation::PageDown, cx),
             _ => {}
         }
     }
@@ -692,8 +663,35 @@ impl Render for CommandPalette {
                 .bg(ShellDeckColors::bg_surface())
                 .child(panel)
         } else {
+            // Échap et les flèches n'arrivent jamais ici comme touches : le
+            // champ de saisie focalisé déclare un contexte `Input` qui les lie
+            // à des actions (`escape`, `up`, `down`, `home`, `end`, `tab`), et
+            // GPUI résout l'action au lieu de délivrer l'événement clavier aux
+            // ancêtres. On écoute donc les actions elles-mêmes, en phase de
+            // capture pour passer avant que le champ ne déplace son curseur.
             window_backdrop("command-palette", window.is_maximized())
                 .track_focus(&self.focus_handle)
+                .capture_action(cx.listener(|this, _: &InputEscape, _window, cx| {
+                    this.dismiss_from_key(cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputUp, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::Previous, cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputDown, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::Next, cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputHome, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::First, cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputEnd, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::Last, cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputTab, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::Next, cx);
+                }))
+                .capture_action(cx.listener(|this, _: &InputShiftTab, _window, cx| {
+                    this.navigate_from_key(PaletteNavigation::Previous, cx);
+                }))
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                     this.handle_key_down(event, cx);
                 }))
