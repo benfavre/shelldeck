@@ -9,7 +9,7 @@ La production finale se trouve dans
 
 Les quinze images font exactement **1120 × 400 px**. Elles sont exportées en
 **WebP lossless** afin de préserver les textes et les traits des captures UI.
-Le lot complet pèse environ 800 Kio. La planche de contrôle est
+Le lot complet pèse environ 820 Kio. La planche de contrôle est
 `role-aware-contact-sheet.webp`.
 
 ## Reproduire les exports
@@ -20,6 +20,13 @@ pastilles, fils, cartes fantômes et autres ornements en HTML/CSS.
 
 ```bash
 node scripts/export-onboarding-images.mjs
+```
+
+Pour ne régénérer qu’une sélection de scènes :
+
+```bash
+node scripts/export-onboarding-images.mjs \
+  --only=user-03-follow,support-03-context,dev-04-tunnels
 ```
 
 Chrome capture d’abord chaque scène dans un PNG temporaire, puis ImageMagick
