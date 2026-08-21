@@ -188,10 +188,27 @@ enum ModeTransitionPhase {
 struct ModeTransition {
     target: AppMode,
     phase: ModeTransitionPhase,
+    /// Durée du palier retenue pour *cette* transition — voir
+    /// [`MODE_TRANSITION_LOADING_MS`].
+    loading_ms: u64,
+}
+
+impl ModeTransition {
+    fn total_ms(self) -> u64 {
+        MODE_TRANSITION_OUT_MS + self.loading_ms + MODE_TRANSITION_IN_MS
+    }
 }
 
 const MODE_TRANSITION_OUT_MS: u64 = 180;
+/// Palier de la première entrée dans un mode : le temps de voir la mascotte
+/// prendre sa personnalité (`docs/design/mode-transitions.md`) et, côté
+/// Support, de laisser la première requête aboutir.
 const MODE_TRANSITION_LOADING_MS: u64 = 2_540;
+/// Palier des entrées suivantes. Rien ne charge lors d'un retour : les
+/// entités Dev sont masquées et non détruites, précisément pour que les
+/// terminaux survivent. Payer trois secondes à chaque aller-retour
+/// Support ↔ Dev revenait à facturer une animation déjà vue.
+const MODE_TRANSITION_LOADING_REPEAT_MS: u64 = 420;
 const MODE_TRANSITION_IN_MS: u64 = 280;
 const MODE_TRANSITION_TOTAL_MS: u64 =
     MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS + MODE_TRANSITION_IN_MS;
@@ -420,6 +437,9 @@ pub struct Workspace {
     login_form: Option<Entity<LoginForm>>,
     post_login_splash: Option<PostLoginSplash>,
     mode_transition: Option<ModeTransition>,
+    /// Modes déjà ouverts depuis le lancement. La transition longue n'est due
+    /// qu'à la première entrée dans chacun.
+    modes_seen: Vec<AppMode>,
     onboarding: Option<Entity<OnboardingView>>,
     port_forward_form: Option<Entity<PortForwardForm>>,
     script_form: Option<Entity<ScriptForm>>,
@@ -1250,6 +1270,7 @@ impl Workspace {
             login_form: None,
             post_login_splash: None,
             mode_transition: None,
+            modes_seen: Vec::new(),
             onboarding: None,
             port_forward_form: None,
             script_form: None,
