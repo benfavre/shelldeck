@@ -1779,6 +1779,18 @@ pub struct AiDraft {
     pub model: String,
 }
 
+/// Nombre de commentaires d'une demande, accordé.
+///
+/// Partagé entre la file Support et « Mes demandes » : la même donnée doit se
+/// lire pareil des deux côtés (`.agents/ui-components.md` § Harmonisation).
+pub(crate) fn issue_comment_count_label(count: i64) -> String {
+    if count == 1 {
+        t!("support.meta.comments.one").to_string()
+    } else {
+        t!("support.meta.comments.many", count = count).to_string()
+    }
+}
+
 pub(crate) fn issue_status_label(s: &str) -> String {
     match s {
         "open" => t!("support.issue_status.open").to_string(),

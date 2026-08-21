@@ -39,6 +39,10 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-019 | User / Accueil | La pastille de comptage de la bannière tombait sur l'illustration selon le recadrage et devenait illisible, avec un accord au pluriel faux. | P0 | À valider | Bannière lue avec un seul site, à plusieurs largeurs de fenêtre. |
 | UX-020 | User / Nouvelle demande | « Créer » restait en bleu plein avec un titre vide alors que `create_issue_now` retournait en silence : le clic ne produisait rien et rien ne l'expliquait. | P0 | À valider | Bouton grisé à vide, plein dès que le titre est saisi. |
 | UX-021 | Connexion | Un refus d'identifiants affichait « Votre session a expiré », message d'un jeton périmé et non d'un mot de passe erroné, et il était répété à l'identique dans une bulle en bas à droite. | P0 | À valider | Échec de connexion : message unique, sous les champs, qui parle d'identifiants. |
+| UX-022 | User / Mes demandes | Les lignes n'affichaient ni date de mise à jour ni nombre de commentaires, là où la même demande côté Support porte les deux. Un client ne pouvait pas voir que le support avait répondu. | P1 | À valider | Ligne client et ligne Support côte à côte sur la même demande. |
+| UX-023 | User / Détail demande | Le fil est ancré en haut, contre celui des tickets qui est ancré en bas : plusieurs centaines de pixels de vide séparent le dernier message du compositeur. | P1 | Ouvert | Fil court : le dernier message doit toucher le compositeur. |
+| UX-024 | Support / États vides | Le volet de détail annonçait « Aucun ticket ouvert » au-dessus d'une liste qui en contenait quatre — le sens réel étant « rien de sélectionné » — et son corps de texte tutoyait, seul de toute l'application. | P1 | À valider | Les deux files, sans sélection. |
+| UX-025 | Paramètres / Raccourci global | Le `Debug` Rust d'une erreur X11 s'affichait tel quel, tronqué en plein milieu, dès qu'une autre application détenait déjà la combinaison — le cas courant. | P1 | À valider | Raccourci déjà pris : message en français, pastille contenue. |
 
 ## Règle de mise à jour
 
@@ -191,3 +195,25 @@ ligne existante.
   — correctement pour ses propres appelants — comme une session expirée.
   L'échec ne s'affiche plus qu'à un seul endroit : sous les champs, où se porte
   le regard ; la bulle ne sert plus que si la modale n'est pas montée.
+
+- **2026-08-21 — UX-022 → À valider.** Les lignes de « Mes demandes » portent le
+  compteur de commentaires et la date relative, avec le libellé partagé
+  `issue_comment_count_label` pour que la même donnée se lise pareil des deux
+  côtés. `support.meta.comments` abandonne au passage l'abréviation « comm. »,
+  ambiguë en français, et suit la convention `.one` / `.many`.
+- **2026-08-21 — UX-023 conservé Ouvert.** Une première tentative d'ancrage par
+  intercalaire extensible n'a rien changé et a été retirée plutôt que laissée
+  en place : le conteneur n'a pas de hauteur de référence dans un parent
+  `overflow_y_scroll`. Côté Support le fil est une `uniform_list` virtualisée
+  qui se place en fin de liste ; ici c'est un bloc défilant ordinaire. Le vrai
+  correctif passe par un `ScrollHandle` positionné à l'ouverture de la feuille.
+- **2026-08-21 — UX-024 → À valider.** Deux clés dédiées
+  (`support.empty.no_ticket_selected`, `no_request_selected`) remplacent des
+  titres qui annonçaient l'inverse de ce qu'ils voulaient dire, et les deux
+  textes passent au vouvoiement comme le reste de l'application. L'emoji « 💬 »
+  du volet Tickets devient `messages-square` du lot Lucide embarqué, aligné sur
+  le volet Demandes.
+- **2026-08-21 — UX-025 → À valider.** `classify_shortcut_error` distingue le
+  portail absent, la combinaison déjà prise et le reste ; le détail part dans
+  les journaux. SDTEST-1668 pinne les trois cas, dont la forme exacte relevée
+  sur cette machine.
