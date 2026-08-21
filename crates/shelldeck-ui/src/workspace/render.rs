@@ -1,11 +1,14 @@
 use super::*;
 use crate::monolith::{animated_monolith, MonolithMotion};
 
-fn mode_transition_overlay_opacity(delta: f32) -> f32 {
+/// Courbe du voile de transition, rapportée à la durée *de cette*
+/// transition : le palier n'est plus constant depuis que le retour dans un
+/// mode déjà ouvert est court.
+fn mode_transition_overlay_opacity(delta: f32, loading_ms: u64) -> f32 {
+    let total_ms = (MODE_TRANSITION_OUT_MS + loading_ms + MODE_TRANSITION_IN_MS) as f32;
     let delta = delta.clamp(0.0, 1.0);
-    let fade_out_end = MODE_TRANSITION_OUT_MS as f32 / MODE_TRANSITION_TOTAL_MS as f32;
-    let fade_in_start = (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS) as f32
-        / MODE_TRANSITION_TOTAL_MS as f32;
+    let fade_out_end = MODE_TRANSITION_OUT_MS as f32 / total_ms;
+    let fade_in_start = (MODE_TRANSITION_OUT_MS + loading_ms) as f32 / total_ms;
 
     if delta < fade_out_end {
         ease_in_out(delta / fade_out_end)
@@ -84,8 +87,13 @@ impl Workspace {
             )
             .with_animation(
                 SharedString::from(format!("mode-loader-{:?}", transition.target)),
-                Animation::new(std::time::Duration::from_millis(MODE_TRANSITION_TOTAL_MS)),
-                move |element, delta| element.opacity(mode_transition_overlay_opacity(delta)),
+                Animation::new(std::time::Duration::from_millis(transition.total_ms())),
+                move |element, delta| {
+                    element.opacity(mode_transition_overlay_opacity(
+                        delta,
+                        transition.loading_ms,
+                    ))
+                },
             )
     }
 }
@@ -815,18 +823,37 @@ impl Render for Workspace {
 mod tests {
     use super::{
         mode_transition_overlay_opacity, workspace_status_bar_visible, AppMode,
-        MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
+        MODE_TRANSITION_IN_MS, MODE_TRANSITION_LOADING_MS, MODE_TRANSITION_LOADING_REPEAT_MS,
+        MODE_TRANSITION_OUT_MS, MODE_TRANSITION_TOTAL_MS,
     };
 
+    /// SDTEST-1670 — la courbe suit la durée réelle de la transition.
+    ///
+    /// Le palier était constant à 2,54 s, soit trois secondes pleines à chaque
+    /// aller-retour Support ↔ Dev alors que rien ne charge : les entités Dev
+    /// sont masquées, pas détruites. Il est désormais long à la première
+    /// entrée dans un mode et court ensuite — la courbe doit donc rester
+    /// correcte pour les deux, sinon le voile disparaît avant la fin ou reste
+    /// après.
     #[test]
     fn mode_transition_loader_fades_in_holds_then_fades_out() {
-        let hold_delta = (MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS / 2) as f32
-            / MODE_TRANSITION_TOTAL_MS as f32;
+        for loading_ms in [
+            MODE_TRANSITION_LOADING_MS,
+            MODE_TRANSITION_LOADING_REPEAT_MS,
+        ] {
+            let total = (MODE_TRANSITION_OUT_MS + loading_ms + MODE_TRANSITION_IN_MS) as f32;
+            let hold_delta = (MODE_TRANSITION_OUT_MS + loading_ms / 2) as f32 / total;
 
-        assert_eq!(mode_transition_overlay_opacity(0.0), 0.0);
-        assert_eq!(mode_transition_overlay_opacity(hold_delta), 1.0);
-        assert_eq!(mode_transition_overlay_opacity(1.0), 0.0);
+            assert_eq!(mode_transition_overlay_opacity(0.0, loading_ms), 0.0);
+            assert_eq!(mode_transition_overlay_opacity(hold_delta, loading_ms), 1.0);
+            assert_eq!(mode_transition_overlay_opacity(1.0, loading_ms), 0.0);
+        }
         assert_eq!(MODE_TRANSITION_TOTAL_MS, 3_000);
+        assert!(
+            MODE_TRANSITION_LOADING_REPEAT_MS < MODE_TRANSITION_LOADING_MS,
+            "un retour dans un mode déjà ouvert ne doit pas coûter plus cher \
+             que la première entrée"
+        );
     }
 
     // SDTEST-1616

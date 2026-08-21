@@ -216,17 +216,39 @@ impl SidebarSection {
     /// `false` means selecting it switches the main view and collapses the
     /// panel, so the view gets the full width instead of sitting next to a
     /// list that has nothing to say.
+    ///
+    /// **Le critère est unique : le panneau montre-t-il quelque chose que sa
+    /// propre vue ne montre pas ?** Sinon il coûte 250 px de navigation
+    /// dupliquée avant le premier pixel de contenu. La première version du rail
+    /// donnait un panneau à sept activités sur huit, et cinq d'entre eux
+    /// répétaient la liste que la vue affichait déjà juste à côté — Scripts en
+    /// donnait le cas d'école, six lignes identiques côte à côte.
     pub fn has_panel(&self) -> bool {
-        matches!(
-            self,
-            SidebarSection::Connections
-                | SidebarSection::Terminals
-                | SidebarSection::Scripts
-                | SidebarSection::PortForwards
-                | SidebarSection::Sites
-                | SidebarSection::Recent
-                | SidebarSection::FileEditor
-        )
+        match self {
+            // Aucune vue principale ne liste les hôtes : le panneau est la
+            // seule navigation vers eux, groupes et épingles compris.
+            SidebarSection::Connections => true,
+            // Les sites du locataire Manage, que la vue — qui liste les sites
+            // *découverts* par un scan de serveurs — ne connaît pas.
+            SidebarSection::Sites => true,
+            // La vue porte déjà sa propre barre d'onglets, avec les mêmes
+            // sessions et le même état actif.
+            SidebarSection::Terminals => false,
+            // L'éditeur de scripts a sa colonne de liste, avec recherche et
+            // filtres par catégorie que le panneau n'a pas.
+            SidebarSection::Scripts => false,
+            // La vue a le tableau complet et la carte des tunnels.
+            SidebarSection::PortForwards => false,
+            // La vue a la recherche et onze pastilles de filtre sur les mêmes
+            // entrées.
+            SidebarSection::Recent => false,
+            // La vue a la barre d'onglets des tampons ouverts *et* l'arbre de
+            // fichiers ; le panneau ajoutait une troisième colonne.
+            SidebarSection::FileEditor => false,
+            // Écran plein cadre, sans liste.
+            SidebarSection::ServerSync => false,
+            _ => false,
+        }
     }
 
     /// Localized empty-state line for an activity whose panel has no rows yet.
@@ -1331,17 +1353,24 @@ mod tests {
                 "{excluded:?} is a destination, not a rail activity"
             );
         }
-        // Every rail entry either has a panel or is a known main-view entry.
-        for section in rail {
-            assert!(
-                section.has_panel()
-                    || matches!(
-                        section,
-                        super::SidebarSection::ServerSync | super::SidebarSection::Agents
-                    ),
-                "{section:?} sits in the rail with neither a panel nor an exemption"
-            );
-        }
+        // SDTEST-1669 — un panneau ne se justifie que s'il montre ce que sa
+        // propre vue ne montre pas. Cinq activités affichaient la liste que la
+        // vue rendait déjà juste à côté ; la liste ci-dessous est donc close et
+        // toute addition doit être argumentée dans `has_panel`.
+        let with_panel: Vec<_> = rail
+            .iter()
+            .filter(|section| section.has_panel())
+            .copied()
+            .collect();
+        assert_eq!(
+            with_panel,
+            vec![
+                super::SidebarSection::Connections,
+                super::SidebarSection::Sites,
+            ],
+            "seules les activités dont le panneau apporte une information \
+             absente de leur vue en gardent un"
+        );
     }
 
     // ── fuzzy_match_indices ────────────────────────────────────────────
