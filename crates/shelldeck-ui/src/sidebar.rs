@@ -226,9 +226,13 @@ impl SidebarSection {
             // Aucune vue principale ne liste les hôtes : le panneau est la
             // seule navigation vers eux, groupes et épingles compris.
             SidebarSection::Connections => true,
-            // Les sites du locataire Manage, que la vue — qui liste les sites
-            // *découverts* par un scan de serveurs — ne connaît pas.
-            SidebarSection::Sites => true,
+            // Le panneau listait les sites du locataire Manage pendant que la
+            // vue annonçait « Aucun site détecté » : deux collections
+            // différentes sous un seul mot, côte à côte. L'activité porte sur
+            // les sites *détectés* par un scan de serveurs ; les sites Manage
+            // ont déjà leur propre sélecteur dans la barre de titre et leur
+            // entrée « Changer de site actif » dans la palette.
+            SidebarSection::Sites => false,
             // La vue porte déjà sa propre barre d'onglets, avec les mêmes
             // sessions et le même état actif.
             SidebarSection::Terminals => false,
@@ -1360,10 +1364,7 @@ mod tests {
             .collect();
         assert_eq!(
             with_panel,
-            vec![
-                super::SidebarSection::Connections,
-                super::SidebarSection::Sites,
-            ],
+            vec![super::SidebarSection::Connections],
             "seules les activités dont le panneau apporte une information \
              absente de leur vue en gardent un"
         );
