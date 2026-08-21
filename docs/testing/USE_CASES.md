@@ -1917,8 +1917,34 @@ stale search and advanced constraints so the visible rows agree with the
 announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail.
-Operational lists remain separate tabs. Onboarding only describes modes and
-shortcuts the signed-in role can actually reach.
+Operational lists remain separate tabs. The first-run tour that follows a
+sign-in is role-aware in its own right — see SDUC-469.
+
+### SDUC-469 — The first-run tour is built for the mode the account lands in
+
+The post-login tour is three sequences, not one. The run is chosen from the
+mode the account actually lands in (`Workspace::effective_mode`): User gets
+welcome / request / follow / ai, Support gets welcome / prioritize / context /
+ai, Dev gets welcome / terminal / scripts / tunnels / ai. A customer is never
+shown a terminal, and platform staff are never taught to file a request.
+
+A closing mode-switching slide is appended only when `allowed_modes` holds more
+than one mode, and it carries the artwork of the highest surface the account can
+reach — `dev-06-modes` when Dev is reachable, `support-05-modes` otherwise. Its
+bullets enumerate the modes that account can actually reach, so the tour never
+advertises a surface the user would find missing. Run and capability are
+independent: a super-admin sitting in User mode gets the User run closed by the
+Dev-accented modes slide.
+
+Shortcuts no longer own a slide. The last slide of every run ends on a strip
+that lists the palette and settings bindings for everyone, plus the terminal and
+sidebar bindings only for a Dev-capable account.
+
+Every slide carries role-aware artwork from
+`assets/images/onboarding/role-aware/`, embedded and listed in `main.rs`, and
+resolves its own `title` / `intro` / `media_caption` plus a title/body pair per
+bullet in both locales. The card is capped at 90% of the window height with a
+scrolling body, so the footer stays reachable on the longest run.
 
 ---
 
@@ -2400,6 +2426,12 @@ once the network returns.
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
+- **2026-08-21** — Added SDUC-469 and SDTEST-1662..1665, and amended SDUC-440,
+  for the role-aware first-run tour. The single four-step sequence became three
+  runs chosen from the effective mode, the shortcuts slide became a strip on the
+  last slide, and the mode slide is appended only for an account that can
+  switch. Capping the card at a window-relative height with a scrolling body
+  fixed a footer clipped off the bottom of the longest run.
 - **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
   Requests refresh control. Tickets and Requests now share one standard,
   labeled button while retaining their separate read-only refresh events.
