@@ -145,7 +145,8 @@ impl Workspace {
             return;
         }
         let allowed_modes = self.allowed_modes();
-        let form = cx.new(|form_cx| OnboardingView::new(allowed_modes, form_cx));
+        let mode = self.effective_mode();
+        let form = cx.new(|form_cx| OnboardingView::new(mode, allowed_modes, form_cx));
         let sub = cx.subscribe(
             &form,
             |this, _form, event: &OnboardingEvent, cx| match event {

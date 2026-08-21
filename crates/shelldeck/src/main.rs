@@ -300,19 +300,53 @@ impl AssetSource for Assets {
             "images/brand/png/themes/monolith-rose-pine-128.png" => {
                 include_bytes!("../assets/images/brand/png/themes/monolith-rose-pine-128.png")
             }
-            // First-run onboarding artwork — exported at 2× from the editable
-            // HTML/CSS brand study under docs/design/.
-            "images/onboarding/welcome.png" => {
-                include_bytes!("../assets/images/onboarding/welcome.png")
+            // First-run onboarding artwork — one set per role, exported at
+            // 1120x400 by scripts/export-onboarding-images.mjs from the
+            // composition in docs/design/onboarding-role-visuals.html.
+            "images/onboarding/role-aware/user-01-welcome.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/user-01-welcome.webp")
             }
-            "images/onboarding/modes.png" => {
-                include_bytes!("../assets/images/onboarding/modes.png")
+            "images/onboarding/role-aware/user-02-request.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/user-02-request.webp")
             }
-            "images/onboarding/surfaces.png" => {
-                include_bytes!("../assets/images/onboarding/surfaces.png")
+            "images/onboarding/role-aware/user-03-follow.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/user-03-follow.webp")
             }
-            "images/onboarding/shortcuts.png" => {
-                include_bytes!("../assets/images/onboarding/shortcuts.png")
+            "images/onboarding/role-aware/user-04-ai.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/user-04-ai.webp")
+            }
+            "images/onboarding/role-aware/support-01-welcome.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/support-01-welcome.webp")
+            }
+            "images/onboarding/role-aware/support-02-prioritize.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/support-02-prioritize.webp")
+            }
+            "images/onboarding/role-aware/support-03-context.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/support-03-context.webp")
+            }
+            "images/onboarding/role-aware/support-04-ai.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/support-04-ai.webp")
+            }
+            "images/onboarding/role-aware/support-05-modes.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/support-05-modes.webp")
+            }
+            "images/onboarding/role-aware/dev-01-welcome.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-01-welcome.webp")
+            }
+            "images/onboarding/role-aware/dev-02-terminal.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-02-terminal.webp")
+            }
+            "images/onboarding/role-aware/dev-03-scripts.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-03-scripts.webp")
+            }
+            "images/onboarding/role-aware/dev-04-tunnels.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-04-tunnels.webp")
+            }
+            "images/onboarding/role-aware/dev-05-ai.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-05-ai.webp")
+            }
+            "images/onboarding/role-aware/dev-06-modes.webp" => {
+                include_bytes!("../assets/images/onboarding/role-aware/dev-06-modes.webp")
             }
             // Dashboard-specific artwork. It deliberately leaves the right
             // half quiet so localized copy remains readable over the image.
@@ -385,10 +419,21 @@ impl AssetSource for Assets {
             SharedString::from("images/brand/png/themes/monolith-one-dark-128.png"),
             SharedString::from("images/brand/png/themes/monolith-monokai-128.png"),
             SharedString::from("images/brand/png/themes/monolith-rose-pine-128.png"),
-            SharedString::from("images/onboarding/welcome.png"),
-            SharedString::from("images/onboarding/modes.png"),
-            SharedString::from("images/onboarding/surfaces.png"),
-            SharedString::from("images/onboarding/shortcuts.png"),
+            SharedString::from("images/onboarding/role-aware/user-01-welcome.webp"),
+            SharedString::from("images/onboarding/role-aware/user-02-request.webp"),
+            SharedString::from("images/onboarding/role-aware/user-03-follow.webp"),
+            SharedString::from("images/onboarding/role-aware/user-04-ai.webp"),
+            SharedString::from("images/onboarding/role-aware/support-01-welcome.webp"),
+            SharedString::from("images/onboarding/role-aware/support-02-prioritize.webp"),
+            SharedString::from("images/onboarding/role-aware/support-03-context.webp"),
+            SharedString::from("images/onboarding/role-aware/support-04-ai.webp"),
+            SharedString::from("images/onboarding/role-aware/support-05-modes.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-01-welcome.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-02-terminal.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-03-scripts.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-04-tunnels.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-05-ai.webp"),
+            SharedString::from("images/onboarding/role-aware/dev-06-modes.webp"),
             SharedString::from("images/home/user-dashboard-colorful-v2.webp"),
             SharedString::from("images/search.svg"),
             SharedString::from("images/kebab.svg"),
