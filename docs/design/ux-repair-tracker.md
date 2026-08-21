@@ -43,6 +43,8 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-023 | User / Détail demande | Le fil est ancré en haut, contre celui des tickets qui est ancré en bas : plusieurs centaines de pixels de vide séparent le dernier message du compositeur. | P1 | Ouvert | Fil court : le dernier message doit toucher le compositeur. |
 | UX-024 | Support / États vides | Le volet de détail annonçait « Aucun ticket ouvert » au-dessus d'une liste qui en contenait quatre — le sens réel étant « rien de sélectionné » — et son corps de texte tutoyait, seul de toute l'application. | P1 | À valider | Les deux files, sans sélection. |
 | UX-025 | Paramètres / Raccourci global | Le `Debug` Rust d'une erreur X11 s'affichait tel quel, tronqué en plein milieu, dès qu'une autre application détenait déjà la combinaison — le cas courant. | P1 | À valider | Raccourci déjà pris : message en français, pastille contenue. |
+| UX-026 | Dev / Barre latérale | Cinq activités sur huit ouvraient un panneau qui répétait la liste que leur propre vue affichait juste à côté — Scripts en donnait le cas d'école, six lignes identiques côte à côte, 570 px de navigation avant le premier pixel de contenu. | P1 | À valider | Scripts, Redirections, Éditeur, Terminaux et Activité doivent occuper toute la largeur ; Connexions et Sites gardent leur panneau. |
+| UX-027 | Transitions de mode | Trois secondes pleines à chaque changement de mode, alors que rien ne charge au retour : les entités Dev sont masquées et non détruites. Un agent qui fait des allers-retours Support ↔ Dev payait six secondes par aller-retour. | P1 | À valider | Première entrée dans un mode : palier long conservé. Retour : voile déjà refermé sous la seconde. |
 
 ## Règle de mise à jour
 
@@ -217,3 +219,18 @@ ligne existante.
   portail absent, la combinaison déjà prise et le reste ; le détail part dans
   les journaux. SDTEST-1668 pinne les trois cas, dont la forme exacte relevée
   sur cette machine.
+
+- **2026-08-21 — UX-026 → À valider.** `has_panel` répondait à la question
+  « cette activité a-t-elle une liste ? » au lieu de « le panneau montre-t-il
+  ce que la vue ne montre pas ? ». Seules Connexions — aucune vue principale ne
+  liste les hôtes — et Sites — les sites du locataire Manage, que la vue des
+  sites *découverts* ne connaît pas — en gardent un. La fonction porte
+  désormais la raison de chaque réponse, et SDTEST-1669 ferme la liste au lieu
+  de tolérer une exception nommée.
+- **2026-08-21 — UX-027 → À valider.** Le palier devient variable : complet à
+  la première entrée dans un mode depuis le lancement, 420 ms ensuite. La
+  personnalité de la mascotte, spécifiée dans `mode-transitions.md`, est donc
+  vue en entier une fois par mode et par session, sans être refacturée à chaque
+  aller-retour. La courbe du voile suit la durée réellement en cours, sinon il
+  disparaissait avant la fin ou restait après ; SDTEST-1670 le vérifie pour les
+  deux durées.

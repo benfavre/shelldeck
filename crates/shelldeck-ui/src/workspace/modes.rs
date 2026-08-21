@@ -109,9 +109,22 @@ impl Workspace {
         self.mode_menu_open = false;
         self.site_menu_open = false;
         self.reset_issue_selection(cx);
+        // Première entrée dans ce mode depuis le lancement : palier complet,
+        // le temps de la mascotte et de la première requête. Retour : palier
+        // court, rien ne charge.
+        let first_visit = !self.modes_seen.contains(&mode);
+        if first_visit {
+            self.modes_seen.push(mode);
+        }
+        let loading_ms = if first_visit {
+            MODE_TRANSITION_LOADING_MS
+        } else {
+            MODE_TRANSITION_LOADING_REPEAT_MS
+        };
         self.mode_transition = Some(ModeTransition {
             target: mode,
             phase: ModeTransitionPhase::FadeOut,
+            loading_ms,
         });
         cx.notify();
 
@@ -124,6 +137,7 @@ impl Workspace {
                 let expected = ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::FadeOut,
+                    loading_ms,
                 };
                 if workspace.mode_transition != Some(expected) || !workspace.can_access_mode(mode) {
                     workspace.mode_transition = None;
@@ -135,6 +149,7 @@ impl Workspace {
                 workspace.mode_transition = Some(ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::Loading,
+                    loading_ms,
                 });
                 cx.notify();
                 true
@@ -146,12 +161,13 @@ impl Workspace {
             }
 
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(MODE_TRANSITION_LOADING_MS))
+                .timer(std::time::Duration::from_millis(loading_ms))
                 .await;
             let Ok(continue_transition) = this.update(cx, |workspace, cx| {
                 let expected = ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::Loading,
+                    loading_ms,
                 };
                 if workspace.mode_transition != Some(expected) {
                     return false;
@@ -159,6 +175,7 @@ impl Workspace {
                 workspace.mode_transition = Some(ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::FadeIn,
+                    loading_ms,
                 });
                 cx.notify();
                 true
@@ -176,6 +193,7 @@ impl Workspace {
                 let expected = ModeTransition {
                     target: mode,
                     phase: ModeTransitionPhase::FadeIn,
+                    loading_ms,
                 };
                 if workspace.mode_transition == Some(expected) {
                     workspace.mode_transition = None;
