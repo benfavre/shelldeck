@@ -4525,7 +4525,8 @@ impl TerminalView {
     fn launcher_card(
         id: &'static str,
         title: String,
-        command: String,
+        caption: String,
+        command: SharedString,
         accent: Hsla,
         logo: AnyElement,
     ) -> Stateful<Div> {
@@ -4562,9 +4563,18 @@ impl TerminalView {
                             .text_ellipsis()
                             .text_size(px(10.0))
                             .text_color(gpui::white().opacity(0.85))
-                            .child(command),
+                            .child(caption),
                     ),
             )
+            // La commande exacte reste consultable, mais au survol : dans la
+            // carte elle se coupait en plein mot — « --dangerously-skip-permiss »
+            // — ce qui déforme précisément l'information qui compte.
+            .tooltip(move |_, cx| {
+                cx.new(|_| TerminalToolbarTooltip {
+                    label: command.clone(),
+                })
+                .into()
+            })
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4620,6 +4630,7 @@ impl TerminalView {
                     "empty-launch-terminal",
                     t!("terminal.empty.open_terminal").to_string(),
                     t!("terminal.empty.open_terminal_cmd").to_string(),
+                    SharedString::from(t!("terminal.empty.open_terminal_cmd").to_string()),
                     ShellDeckColors::primary(),
                     Self::terminal_logo(26.0).into_any_element(),
                 )
@@ -4636,7 +4647,8 @@ impl TerminalView {
                 Self::launcher_card(
                     "empty-launch-claude",
                     t!("terminal.empty.launch_claude").to_string(),
-                    t!("terminal.empty.launch_claude_cmd").to_string(),
+                    t!("terminal.empty.launch_claude_caption").to_string(),
+                    SharedString::from(CLAUDE_CLI_COMMAND),
                     Self::claude_orange(),
                     Self::claude_logo(26.0).into_any_element(),
                 )
@@ -4652,7 +4664,8 @@ impl TerminalView {
                 Self::launcher_card(
                     "empty-launch-codex",
                     t!("terminal.empty.launch_codex").to_string(),
-                    t!("terminal.empty.launch_codex_cmd").to_string(),
+                    t!("terminal.empty.launch_codex_caption").to_string(),
+                    SharedString::from(CODEX_CLI_COMMAND),
                     Self::codex_green(),
                     Self::codex_logo(26.0).into_any_element(),
                 )
@@ -4669,7 +4682,12 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .size_full()
-            .bg(self.palette.background_color())
+            // Chrome applicatif, pas sortie de terminal : cet écran suit le
+            // thème de l'application (`.agents/theming.md`). Il peignait le
+            // fond de la palette *terminal*, si bien qu'un thème clair
+            // affichait un panneau noir plein cadre avec une carte claire
+            // posée dessus.
+            .bg(ShellDeckColors::bg_primary())
             .gap(px(24.0))
             // Icon + heading
             .child(

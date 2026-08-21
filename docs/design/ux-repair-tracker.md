@@ -45,6 +45,8 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-025 | Paramètres / Raccourci global | Le `Debug` Rust d'une erreur X11 s'affichait tel quel, tronqué en plein milieu, dès qu'une autre application détenait déjà la combinaison — le cas courant. | P1 | À valider | Raccourci déjà pris : message en français, pastille contenue. |
 | UX-026 | Dev / Barre latérale | Cinq activités sur huit ouvraient un panneau qui répétait la liste que leur propre vue affichait juste à côté — Scripts en donnait le cas d'école, six lignes identiques côte à côte, 570 px de navigation avant le premier pixel de contenu. | P1 | À valider | Scripts, Redirections, Éditeur, Terminaux et Activité doivent occuper toute la largeur ; Connexions et Sites gardent leur panneau. |
 | UX-027 | Transitions de mode | Trois secondes pleines à chaque changement de mode, alors que rien ne charge au retour : les entités Dev sont masquées et non détruites. Un agent qui fait des allers-retours Support ↔ Dev payait six secondes par aller-retour. | P1 | À valider | Première entrée dans un mode : palier long conservé. Retour : voile déjà refermé sous la seconde. |
+| UX-028 | Dev / Sites | Le panneau listait les sites du locataire Manage pendant que la vue annonçait « Aucun site découvert » : deux collections différentes, un seul mot, côte à côte. « Tout effacer », rouge, restait par ailleurs cliquable au-dessus d'un écran vide. | P1 | À valider | L'activité ne doit désigner qu'une chose ; l'action destructive ne doit apparaître que s'il y a quelque chose à effacer. |
+| UX-029 | Dev / Terminal | L'état vide peignait le fond de la palette *terminal* : en thème clair, un panneau noir plein cadre avec une carte claire posée dessus. La carte « Lancer Claude Code » affichait par ailleurs `claude --dangerously-skip-permiss`, coupé en plein mot — précisément sur l'information qui compte. | P1 | À valider | Thème clair : l'écran suit le thème. Carte Claude : légende lisible, commande exacte au survol. |
 
 ## Règle de mise à jour
 
@@ -234,3 +236,17 @@ ligne existante.
   aller-retour. La courbe du voile suit la durée réellement en cours, sinon il
   disparaissait avant la fin ou restait après ; SDTEST-1670 le vérifie pour les
   deux durées.
+
+- **2026-08-21 — UX-028 → À valider.** Renommer les deux surfaces ne suffisait
+  pas : la première tentative a donné un panneau intitulé « Sites détectés » qui
+  listait des sites Manage, soit la contradiction aggravée. L'activité du rail
+  porte sur les sites *détectés* par un scan ; les sites Manage ont déjà leur
+  sélecteur dans la barre de titre et leur entrée « Changer de site actif » dans
+  la palette. Le panneau disparaît donc, et `has_panel` se réduit à Connexions
+  — seule activité dont le panneau montre ce qu'aucune vue ne montre.
+- **2026-08-21 — UX-029 → À valider.** L'état vide du terminal est du chrome
+  applicatif et suit désormais `ShellDeckColors` et non la palette du terminal
+  (`.agents/theming.md`). Les légendes des cartes CLI disent ce que le bouton
+  fait — « Sans confirmation des actions », « Bac à sable, accord à la
+  demande » — et la commande exacte passe en infobulle : tronquée dans la
+  carte, elle déformait l'avertissement au lieu de le porter.
