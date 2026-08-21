@@ -1339,11 +1339,18 @@ impl Workspace {
             self.issue_attachments_open || !self.issue_new_attachments.is_empty();
         let attachment_count = self.issue_new_attachments.len();
 
+        // `create_issue_now` refuse un titre vide par un `return` silencieux :
+        // sans cette condition le bouton restait plein, le clic ne produisait
+        // rien du tout, et rien n'expliquait pourquoi. Le formulaire de
+        // connexion désactive déjà son action principale de la même façon.
+        let title_filled = !self.issue_title_state.read(cx).content().trim().is_empty();
+
         let mut composer =
             Composer::new("user-new-request-composer", &self.issue_body_state)
                 .placeholder(t!("user.requests.body_placeholder").to_string())
                 .min_rows(5)
                 .max_rows(14)
+                .commit_enabled(title_filled && !self.issue_attachment_busy)
                 .commit(ComposerCommit::Labeled(
                     t!("user.requests.create").to_string().into(),
                 ))

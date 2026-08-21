@@ -13,6 +13,22 @@
 //! cadre passe par ici plutôt que de recomposer la chaîne à la main.
 
 use crate::theme::ShellDeckColors;
+/// Les actions déclarées par le contexte `Input` d'adabraka.
+///
+/// Un calque dont un champ de saisie peut prendre le focus **doit** écouter
+/// ces actions plutôt que les touches : `Input` déclare `key_context("Input")`
+/// et lie `escape`, `up`, `down`, `home`, `end`, `tab` à des actions. GPUI
+/// résout alors l'action et ne délivre jamais l'événement clavier aux
+/// ancêtres — un `on_key_down` / `capture_key_down` posé sur la racine du
+/// calque est du code mort pour exactement les touches qu'il vise.
+///
+/// À brancher en `capture_action`, pour passer avant que le champ ne déplace
+/// son curseur ou n'émette son `Blur`.
+pub use adabraka_ui::components::input::{
+    Down as InputDown, End as InputEnd, Escape as InputEscape, Home as InputHome,
+    ShiftTab as InputShiftTab, Tab as InputTab, Up as InputUp,
+};
+
 use adabraka_ui::theme::use_theme;
 use gpui::prelude::*;
 use gpui::{div, Div, Stateful};

@@ -656,6 +656,13 @@ impl Workspace {
                         ),
                 )
         };
+        // Accord du compteur de sites : le projet sépare `.one` et `.many`
+        // plutôt que d'écrire « 1 sites » (cf. `tray.counter.*`).
+        let directory_count = if sites == 1 {
+            t!("user.home.directory_count.one").to_string()
+        } else {
+            t!("user.home.directory_count.many", count = sites).to_string()
+        };
         let entity = cx.entity();
         let sync_action = Button::new("home-sync", t!("user.home.sync").to_string())
             .variant(ButtonVariant::Outline)
@@ -735,21 +742,31 @@ impl Workspace {
                             .justify_center()
                             .items_start()
                             .gap(px(7.0))
-                            .px(px(24.0))
+                            // Marge gauche plus généreuse que la droite : le
+                            // bord du champ bleu vit dans l'illustration et se
+                            // déplace avec le recadrage, on s'en écarte.
+                            .pl(px(44.0))
+                            .pr(px(24.0))
                             .child(
                                 div()
                                     .px(px(8.0))
                                     .py(px(3.0))
                                     .rounded_full()
-                                    .bg(ShellDeckColors::primary().opacity(0.22))
+                                    // Fond sombre plein, et non une teinte à
+                                    // 22 % : le champ bleu de la bannière est
+                                    // peint dans l'illustration, dont le
+                                    // recadrage `Cover` déplace le bord selon
+                                    // la largeur de fenêtre. À certaines
+                                    // tailles la pastille retombait sur la
+                                    // pâte à modeler claire, et son texte
+                                    // disparaissait.
+                                    .bg(ShellDeckColors::backdrop())
                                     .border_1()
-                                    .border_color(ShellDeckColors::primary().opacity(0.45))
+                                    .border_color(ShellDeckColors::primary().opacity(0.55))
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(hsla(0.47, 0.78, 0.72, 1.0))
-                                    .child(
-                                        t!("user.home.directory_count", count = sites).to_string(),
-                                    ),
+                                    .child(directory_count.clone()),
                             )
                             .child(
                                 div()
@@ -916,7 +933,7 @@ impl Workspace {
                                     .child(status_row(
                                         "database",
                                         t!("user.home.directory").to_string(),
-                                        t!("user.home.directory_count", count = sites).to_string(),
+                                        directory_count.clone(),
                                         ShellDeckColors::success(),
                                     ))
                                     .child(

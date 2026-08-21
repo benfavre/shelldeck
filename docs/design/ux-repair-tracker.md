@@ -34,6 +34,11 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-014 | IA / Feuilles d'assistant | Toute feuille IA était **inerte** dès qu'un formulaire modal était ouvert : `render.rs` ajoutait les feuilles avant le `modal_layer`, un `occlude()` plein écran. Le nommage IA d'un script ou d'un tunnel, dont le seul point d'entrée est un bouton *dans* ce modal, était donc inutilisable — aucun clic n'atteignait Envoyer, Accepter, ni même la croix. | P0 | À valider | Ouvrir « Nouveau script » → **Nommer** → la feuille répond, l'IA génère, Accepter renseigne le champ Nom. Vérifier aussi les quatre coins de la fenêtre feuille ouverte. |
 | UX-015 | Toute l'application / Calques | Les fonds plein cadre (palette, modales, feuilles) ne portaient pas le rayon de la fenêtre : ouvrir n'importe lequel carrait les quatre coins. Sept des neuf sites avaient oublié la condition, recopiée à la main. | P0 | À valider | Rampes des quatre coins mesurées, calque par calque, contre la fenêtre au repos. |
 | UX-016 | User / Support / Bienvenue | UX-004 a retiré la barre d'état de ces trois surfaces sans transférer la propriété des coins bas. Leur racine opaque est devenue la couche la plus basse et carrait le bas de la fenêtre — visible en permanence, et flagrant sous un fond assombri. | P0 | À valider | Les trois surfaces doivent produire les mêmes rampes basses que le mode Dev, qui n'était pas touché. |
+| UX-017 | Toute l'application / Calques | Échap ne fermait aucun calque et les flèches ne déplaçaient pas la sélection de la palette : le champ focalisé déclare un contexte `Input` qui lie ces touches à des actions, que GPUI résout sans jamais délivrer l'événement clavier aux ancêtres. | P0 | À valider | Échap sur la palette et sur la modale de connexion ; flèches dans la palette. |
+| UX-018 | Palette de commandes | « Quitter » ouvrait la liste en position présélectionnée, et les commandes Dev restaient offertes en mode Support faute de reconstruction au changement de mode. | P0 | À valider | Ouvrir la palette en Support après un passage par Dev ; vérifier la première ligne. |
+| UX-019 | User / Accueil | La pastille de comptage de la bannière tombait sur l'illustration selon le recadrage et devenait illisible, avec un accord au pluriel faux. | P0 | À valider | Bannière lue avec un seul site, à plusieurs largeurs de fenêtre. |
+| UX-020 | User / Nouvelle demande | « Créer » restait en bleu plein avec un titre vide alors que `create_issue_now` retournait en silence : le clic ne produisait rien et rien ne l'expliquait. | P0 | À valider | Bouton grisé à vide, plein dès que le titre est saisi. |
+| UX-021 | Connexion | Un refus d'identifiants affichait « Votre session a expiré », message d'un jeton périmé et non d'un mot de passe erroné, et il était répété à l'identique dans une bulle en bas à droite. | P0 | À valider | Échec de connexion : message unique, sous les champs, qui parle d'identifiants. |
 
 ## Règle de mise à jour
 
@@ -154,3 +159,35 @@ ligne existante.
   portait déjà ses coins. Avant : `bl [7,1,1,1,1,0,0,0]`, `br
   [7,1,1,1,1,1,1,0]`. Après : `bl [7,5,4,3,2,0,0,0]`, `br [7,5,4,3,2,1,1,0]`,
   identiques au mode Dev sur la même capture.
+
+- **2026-08-21 — UX-017 → À valider.** L'`Input` adabraka déclare
+  `key_context("Input")` et lie `escape`, `up`, `down`, `home`, `end`, `tab` à
+  des actions ; GPUI résout l'action et ne délivre jamais la touche aux
+  ancêtres, si bien que le `capture_key_down` de la palette et les
+  `on_key_down` des sept modales étaient du code mort pour exactement les
+  touches qu'ils visaient. Les calques écoutent désormais les actions
+  elles-mêmes, en phase de capture pour passer avant que le champ ne déplace
+  son curseur. `crate::overlay` réexporte ces actions avec l'explication, pour
+  que le prochain calque ne retombe pas dedans.
+- **2026-08-21 — UX-018 → À valider.** `activate_current_mode` ne reconstruisait
+  pas la palette : les entrées sont filtrées par mode à la construction, donc
+  passer de Dev à Support laissait « Nouveau terminal », « Basculer barre
+  latérale », « Fermer l'onglet » et « Onglet suivant » dans une surface sans
+  terminal, sans barre latérale et sans onglets. « Quitter » passe par ailleurs
+  en dernière position ; SDTEST-1667 verrouille l'invariant sur les quatre
+  combinaisons de rôle.
+- **2026-08-21 — UX-019 → À valider.** Le champ bleu de la bannière est peint
+  dans l'illustration, dont le recadrage `Cover` déplace le bord avec la
+  largeur de fenêtre : la pastille retombait sur la pâte à modeler claire. Fond
+  sombre plein au lieu d'une teinte à 22 %, colonne de texte écartée de 44 px,
+  et le compteur suit la convention `.one` / `.many` déjà en place pour les
+  compteurs de la zone de notification.
+- **2026-08-21 — UX-020 → À valider.** `commit_enabled` sur le compositeur de
+  création, aligné sur le compositeur de commentaire qui l'utilisait déjà — et
+  sur la modale de connexion, qui désactivait correctement son action
+  principale.
+- **2026-08-21 — UX-021 → À valider.** `login_error_message` traite le 401 du
+  formulaire comme un refus d'identifiants, là où `api_error_message` le traite
+  — correctement pour ses propres appelants — comme une session expirée.
+  L'échec ne s'affiche plus qu'à un seul endroit : sous les champs, où se porte
+  le regard ; la bulle ne sert plus que si la modale n'est pas montée.
