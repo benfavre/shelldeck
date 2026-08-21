@@ -144,7 +144,7 @@ impl Render for Workspace {
         // Pre-login landing: intercepts before `effective_mode()` gets a say.
         // There is no guest/local bypass; logout returns here as well.
         if self.show_welcome() {
-            main_area = main_area.child(self.render_welcome_screen(_cx));
+            main_area = main_area.child(self.render_welcome_screen(is_maximized, _cx));
             // Fall through to render titlebar + status bar chrome around
             // the welcome — no sidebar, no mode-specific children.
         } else if self.settings_open {
@@ -158,7 +158,7 @@ impl Render for Workspace {
                     main_area = main_area.child(self.support.clone());
                 }
                 AppMode::User => {
-                    main_area = main_area.child(self.render_user_home(_cx));
+                    main_area = main_area.child(self.render_user_home(is_maximized, _cx));
                 }
                 AppMode::Dev => {
                     // Always rendered: the activity rail stays on screen even

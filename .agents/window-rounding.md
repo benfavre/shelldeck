@@ -92,6 +92,47 @@ the same theme token and the same outer bounds.
     owner's, cutting a second, larger arc and exposing the backdrop between
     them. Same radius token and same bounds produce one silhouette, not two.
 
+### Removing the bottom chrome transfers corner ownership
+
+The status bar is the bottom-most opaque layer in Dev mode and owns the two
+bottom corners. UX-004 stopped mounting it in User, Support and the welcome
+screen — which silently promoted each mode's own root to bottom-most layer
+without giving it the radius. All three squared off the bottom of the window,
+permanently, in every theme.
+
+Nobody noticed for weeks because a flat bottom edge on a light surface over a
+light desktop is nearly invisible. It only became obvious once the overlay
+backdrops were fixed: a correctly rounded dark backdrop puts the square edge
+underneath it in high contrast.
+
+**How to apply:**
+
+- **Whenever you add, remove or conditionally hide a full-width chrome row at
+  the top or bottom of the window, ask which layer now touches that edge** and
+  give it the radius. `shelldeck_ui::overlay::round_window_bottom` exists for
+  exactly this and takes the maximized flag.
+- **Fixing an overlay is not fixing the window.** A backdrop and the surface
+  beneath it are two separate corner owners. After correcting one, re-measure
+  with the other visible.
+- `shelldeck_ui::overlay::window_backdrop` is the single remaining caller of
+  `ShellDeckColors::backdrop()`. Build new full-window layers with it rather
+  than recomposing the chain — seven of nine hand-written copies had dropped
+  the radius.
+
+### Measuring: take the background reference on the same row
+
+The ramp method below is right, but the reference matters. Sampling one
+background colour for the whole screenshot fails on a desktop with a gradient
+wallpaper or another window nearby: corners get compared against a colour that
+never appears next to them, and read as square when they are round — or, worse,
+as round when they are flat.
+
+Capture the window **plus a margin**, then for each row take the reference from
+a pixel just outside the window **on that same row**, and raise the window above
+any other app first. Measuring a second ShellDeck instance stacked on top of the
+one under test produced a full set of green ramps for a window that was visibly
+broken.
+
 ### Settle it by measuring, not by looking
 
 A corner is eight pixels. Screenshot the window and print, for each of the

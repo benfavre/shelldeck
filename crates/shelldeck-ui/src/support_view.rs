@@ -48,6 +48,7 @@ use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportMessageDelivery, SupportTicket,
 };
 
+use crate::overlay::round_window_bottom;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -1527,7 +1528,7 @@ impl SupportView {
 }
 
 impl Render for SupportView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search_query(cx);
         let filtered_count = self
             .tickets
@@ -1617,7 +1618,7 @@ impl Render for SupportView {
             .into_any_element()
         };
 
-        let compact = support_compact_layout(_window.viewport_size().width, _window.rem_size());
+        let compact = support_compact_layout(window.viewport_size().width, window.rem_size());
         let mut left = support_list_column(compact).child(header);
         if self.jean_available {
             left = left.child(self.render_jean_strip(cx));
@@ -1645,15 +1646,22 @@ impl Render for SupportView {
             SupportSection::Requests => self.render_requests(compact, cx).into_any_element(),
         };
 
-        let mut root = div()
-            .relative()
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(ShellDeckColors::bg_primary())
-            .child(self.render_section_tabs(cx))
-            .child(content);
+        // Le mode Support n'a pas de barre d'état sous lui (UX-004) : cette
+        // racine opaque est la couche la plus basse et porte donc elle-même
+        // les deux coins bas de la fenêtre.
+        let mut root = round_window_bottom(
+            div()
+                .relative()
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(ShellDeckColors::bg_primary())
+                .overflow_hidden(),
+            window.is_maximized(),
+        )
+        .child(self.render_section_tabs(cx))
+        .child(content);
 
         if self.filter_modal_open && self.section == SupportSection::Tickets {
             root = root.child(self.render_filter_modal(cx));
