@@ -28,6 +28,7 @@ pub mod monique_view;
 pub(crate) mod monolith;
 pub(crate) mod motion;
 pub mod onboarding_view;
+pub mod overlay;
 pub mod port_forward_form;
 pub mod port_forward_view;
 pub mod recent_view;

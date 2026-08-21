@@ -32,6 +32,8 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-012 | Support / En-têtes | Statut, priorité et assignation sont modifiables directement depuis l'en-tête des Tickets et Demandes. | P1 | Validé | Les six menus ont été contrôlés ; les mutations ticket ont été exercées en mémoire et les écritures HTTP sont couvertes par les mocks. |
 | UX-013 | Support / Fils | Les messages, pièces jointes, notes et brouillons utilisent les primitives de fil partagées sans superposition observée. | P0 | Validé | Deux fils longs contrôlés avec images, fichiers, lien, notes, citations et brouillons. |
 | UX-014 | IA / Feuilles d'assistant | Toute feuille IA était **inerte** dès qu'un formulaire modal était ouvert : `render.rs` ajoutait les feuilles avant le `modal_layer`, un `occlude()` plein écran. Le nommage IA d'un script ou d'un tunnel, dont le seul point d'entrée est un bouton *dans* ce modal, était donc inutilisable — aucun clic n'atteignait Envoyer, Accepter, ni même la croix. | P0 | À valider | Ouvrir « Nouveau script » → **Nommer** → la feuille répond, l'IA génère, Accepter renseigne le champ Nom. Vérifier aussi les quatre coins de la fenêtre feuille ouverte. |
+| UX-015 | Toute l'application / Calques | Les fonds plein cadre (palette, modales, feuilles) ne portaient pas le rayon de la fenêtre : ouvrir n'importe lequel carrait les quatre coins. Sept des neuf sites avaient oublié la condition, recopiée à la main. | P0 | À valider | Rampes des quatre coins mesurées, calque par calque, contre la fenêtre au repos. |
+| UX-016 | User / Support / Bienvenue | UX-004 a retiré la barre d'état de ces trois surfaces sans transférer la propriété des coins bas. Leur racine opaque est devenue la couche la plus basse et carrait le bas de la fenêtre — visible en permanence, et flagrant sous un fond assombri. | P0 | À valider | Les trois surfaces doivent produire les mêmes rampes basses que le mode Dev, qui n'était pas touché. |
 
 ## Règle de mise à jour
 
@@ -130,3 +132,25 @@ ligne existante.
   riche, séparateurs de jour, notes de statut/GitHub/système, indicateur de
   saisie, brouillon IA, brouillon local et échec d'envoi restent contenus. Le
   compositeur demeure ancré et aucune superposition n'a été observée.
+
+- **2026-08-21 — UX-015 → À valider.** Les neuf fonds plein cadre passent par
+  `shelldeck_ui::overlay::window_backdrop`, seul appelant restant de
+  `ShellDeckColors::backdrop()` : la condition « arrondi sauf si maximisé » ne
+  peut plus être oubliée par un dixième calque. `SDPATCH-032` a par ailleurs été
+  élargi — le rayon du fond de la feuille adabraka était conditionné à la
+  variante Assistant, alors que le fond couvre la fenêtre quelle que soit la
+  variante ; une feuille `Default` (détail d'un job Fleet) carrait donc la
+  fenêtre. Mesures : palette, formulaire de connexion, nouveau script,
+  navigateur de modèles, nouvelle redirection, formulaire de connexion d'hôte et
+  feuille de demande produisent tous les rampes de la fenêtre au repos ;
+  maximisée, les quatre coins restent pleins avec et sans calque.
+- **2026-08-21 — UX-016 → À valider.** Cause distincte de UX-015, révélée par
+  celle-ci : une fois les fonds correctement arrondis, le bas restait carré
+  parce que la surface *sous* le fond l'était. `round_window_bottom` donne les
+  deux coins bas à la couche opaque la plus basse — racine de
+  `render_user_home`, racine de `SupportView`, racine de
+  `render_welcome_screen` — conformément à la règle 10 de
+  `.agents/window-rounding.md`. Dev n'était pas concerné : sa barre d'état
+  portait déjà ses coins. Avant : `bl [7,1,1,1,1,0,0,0]`, `br
+  [7,1,1,1,1,1,1,0]`. Après : `bl [7,5,4,3,2,0,0,0]`, `br [7,5,4,3,2,1,1,0]`,
+  identiques au mode Dev sur la même capture.

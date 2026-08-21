@@ -1,4 +1,5 @@
 use super::*;
+use crate::overlay::window_backdrop;
 use adabraka_ui::components::input::InputVariant;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
 use shelldeck_core::ai::AiBackend;
@@ -269,24 +270,9 @@ impl Workspace {
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
-        let mut sheet = div()
-            .id(id)
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
-            .overflow_hidden();
-        if !is_maximized {
-            // Apply the window clip directly to the element that paints the
-            // full-screen backdrop. A nested absolute overlay can escape a
-            // rounded ancestor's clip in GPUI and square off all four corners.
-            sheet = sheet.rounded(use_theme().tokens.radius_xl);
-        }
-
-        sheet
+        // Le rayon de la fenêtre est porté par la couche qui peint réellement
+        // le fond, jamais par un ancêtre : voir `crate::overlay`.
+        window_backdrop(id, is_maximized)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _window, cx| {

@@ -7,6 +7,7 @@ use gpui::*;
 use shelldeck_core::config::app_config::ThemePreference;
 use shelldeck_core::config::cloud_account::AppMode;
 
+use crate::overlay::window_backdrop;
 use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
@@ -678,25 +679,25 @@ impl Render for CommandPalette {
                 });
         }
 
-        let root = div()
-            .id("command-palette")
-            .track_focus(&self.focus_handle)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                this.handle_key_down(event, cx);
-            }));
         if self.standalone {
-            root.size_full()
+            // Fenêtre autonome : la palette *est* la fenêtre, il n'y a pas de
+            // fond à peindre par-dessus une autre surface.
+            div()
+                .id("command-palette")
+                .track_focus(&self.focus_handle)
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    this.handle_key_down(event, cx);
+                }))
+                .size_full()
                 .overflow_hidden()
                 .bg(ShellDeckColors::bg_surface())
                 .child(panel)
         } else {
-            root.occlude()
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .bg(ShellDeckColors::backdrop())
+            window_backdrop("command-palette", window.is_maximized())
+                .track_focus(&self.focus_handle)
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    this.handle_key_down(event, cx);
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _e, _window, cx| {

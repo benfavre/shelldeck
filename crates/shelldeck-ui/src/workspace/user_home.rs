@@ -1,4 +1,5 @@
 use super::*;
+use crate::overlay::round_window_bottom;
 
 impl Workspace {
     pub(super) fn render_site_section_header(label: &str) -> impl IntoElement {
@@ -1175,7 +1176,13 @@ impl Workspace {
     ///
     /// Kept inside a `scrollable_vertical` because on small windows the
     /// marketing block would push the CTAs offscreen.
-    pub(super) fn render_welcome_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `is_maximized` : comme le mode Utilisateur, l'écran de bienvenue est la
+    /// couche opaque la plus basse — la barre d'état n'est pas montée ici.
+    pub(super) fn render_welcome_screen(
+        &self,
+        is_maximized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Small helper for the four Inklura value-prop cards — same shape
         // so the row reads as a set.
         fn stat_card(icon: &'static str, value: String, label: String) -> impl IntoElement {
@@ -1429,29 +1436,40 @@ impl Workspace {
             );
 
         // Full page — scrolls if the three blocks don't fit the window.
-        div()
-            .size_full()
-            .bg(ShellDeckColors::bg_primary())
-            .child(scrollable_vertical(
-                div()
-                    .id("welcome-body")
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .w_full()
-                            .child(hero)
-                            .child(inklura)
-                            .child(made_by),
-                    ),
-            ))
+        round_window_bottom(
+            div()
+                .size_full()
+                .bg(ShellDeckColors::bg_primary())
+                .overflow_hidden(),
+            is_maximized,
+        )
+        .child(scrollable_vertical(
+            div()
+                .id("welcome-body")
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .w_full()
+                        .child(hero)
+                        .child(inklura)
+                        .child(made_by),
+                ),
+        ))
     }
 
-    pub(super) fn render_user_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `is_maximized` sert uniquement aux deux coins bas : cette surface est la
+    /// couche opaque la plus basse du mode Utilisateur, il n'y a pas de barre
+    /// d'état sous elle pour les porter.
+    pub(super) fn render_user_home(
+        &self,
+        is_maximized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let account = self.app_config.account.clone().unwrap_or_default();
         let server = self.account_base_url();
         let payload = self.site_directory.clone().unwrap_or_default();
@@ -1841,11 +1859,15 @@ impl Workspace {
             }
         }
 
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(ShellDeckColors::bg_primary())
-            .child(scrollable_vertical(body))
+        round_window_bottom(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(ShellDeckColors::bg_primary())
+                .overflow_hidden(),
+            is_maximized,
+        )
+        .child(scrollable_vertical(body))
     }
 }
