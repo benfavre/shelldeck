@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ShellDeck — Onboarding par rôle</title>
+  <style>
+    @font-face{font-family:Inter;src:url('../../cloudflare/update-worker/public/campaign/roles-v1/inter-regular.woff2') format('woff2');font-weight:400}
+    @font-face{font-family:Inter;src:url('../../cloudflare/update-worker/public/campaign/roles-v1/inter-semibold.woff2') format('woff2');font-weight:600}
+    @font-face{font-family:Inter;src:url('../../cloudflare/update-worker/public/campaign/roles-v1/inter-bold.woff2') format('woff2');font-weight:700}
+    :root{--blue:#146bff;--blue-dark:#0d42bf;--coral:#f1644a;--yellow:#ffc84a;--ink:#111318;--green:#079a74;--muted:#5d6470;--violet:#6d46e7;--line:#dfe4ec;--paper:#fffdf9;--soft:#f5f7fa}
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;font-family:Inter,Arial,sans-serif;color:var(--ink);background:#e9edf3;-webkit-font-smoothing:antialiased}
+    body{padding:40px}
+    header{width:1120px;margin:0 auto 24px;display:flex;align-items:end;justify-content:space-between}
+    h1{margin:0;font-size:32px;line-height:1;letter-spacing:-.055em}
+    header p{width:470px;margin:0;color:var(--muted);font-size:13px;line-height:1.55}
+    main{display:grid;gap:28px;width:1120px;margin:auto}
+    article{overflow:hidden;border-radius:24px;background:var(--paper);box-shadow:0 24px 70px rgba(15,45,86,.14)}
+    .meta{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-top:1px solid var(--line);background:white;color:var(--muted);font-size:12px}
+    .meta strong{color:var(--ink);font-size:13px}
+    .banner{--accent:var(--blue);position:relative;width:1120px;height:400px;overflow:hidden;isolation:isolate;background:var(--paper)}
+    .banner.support{--accent:var(--coral)}.banner.dev{--accent:var(--violet)}
+    .paper{position:absolute;inset:0;z-index:-4;width:100%;height:100%;object-fit:cover;opacity:.52}
+    .banner.user .paper{content:url('onboarding/watercolor-user.webp')}
+    .banner.support .paper{content:url('onboarding/watercolor-support.webp')}
+    .banner.dev .paper{content:url('onboarding/watercolor-dev.webp')}
+    .wash{position:absolute;z-index:-3;width:610px;height:360px;border-radius:48% 52% 57% 43%;background:var(--accent);opacity:.075;filter:blur(5px);transform:rotate(-8deg)}
+    .wash::after{content:"";position:absolute;inset:35px -90px -28px 100px;border-radius:50%;border:26px solid var(--accent);opacity:.25;filter:blur(18px)}
+    .eyebrow{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+    .eyebrow::before{content:"";width:22px;height:3px;border-radius:3px;background:var(--accent)}
+    .window{position:absolute;overflow:hidden;border:1px solid rgba(16,34,58,.2);border-radius:18px;background:white;box-shadow:0 30px 70px rgba(15,45,86,.2),0 4px 10px rgba(15,45,86,.12)}
+    .window>img{display:block;width:100%;height:100%;object-fit:fill}
+    .number{position:absolute;z-index:12;display:grid;width:52px;height:52px;place-items:center;border:8px solid var(--paper);border-radius:50%;color:white;background:var(--accent);box-shadow:0 6px 20px rgba(15,45,86,.15);font-size:13px;font-weight:700}
+    .pill{display:flex;align-items:center;gap:8px;padding:10px 13px;border:1px solid var(--line);border-radius:12px;color:var(--muted);background:rgba(255,253,249,.96);box-shadow:0 12px 28px rgba(15,45,86,.1);font-size:11px;font-weight:600}
+    .pill img{width:15px;height:15px;opacity:.72}
+
+    /* Welcome slides */
+    .welcome .wash{right:-55px;top:22px;width:600px;height:375px}
+    .welcome .paper{object-position:center;opacity:.56}
+    .welcome-copy{position:absolute;left:92px;top:96px}
+    .welcome-copy .eyebrow{margin-bottom:28px}
+    .wordmark{display:flex;align-items:center;gap:20px;font-size:66px;font-weight:700;letter-spacing:-.075em;line-height:.95}
+    .wordmark img{width:76px;height:76px;filter:drop-shadow(0 14px 22px rgba(15,45,86,.15))}
+    .wordmark .accent-word{position:relative;color:var(--accent)}
+    .wordmark .accent-word::after{content:"";position:absolute;left:2px;right:-2px;bottom:-10px;height:5px;border-radius:9px;background:var(--yellow);transform:rotate(-1deg)}
+    .welcome .number{right:127px;top:84px}
+    .queue-lines{position:absolute;left:205px;top:273px;display:grid;gap:12px;width:245px}
+    .queue-lines i{height:7px;border-radius:8px;background:var(--line)}
+    .queue-lines i:nth-child(2){width:78%}.queue-lines i:nth-child(3){width:52%}
+    .terminal-line{position:absolute;left:202px;top:280px;width:330px;height:45px;border-radius:12px;background:var(--ink);box-shadow:0 12px 26px rgba(17,19,24,.16)}
+    .terminal-line::before{content:"";position:absolute;left:18px;top:17px;width:64px;height:9px;border-radius:5px;background:rgba(255,255,255,.1)}
+    .terminal-line::after{content:"";position:absolute;left:94px;top:15px;width:5px;height:15px;border-radius:2px;background:var(--green)}
+
+    /* User */
+    #user-02 .wash{left:-130px;top:35px}
+    #user-02 .window{right:-24px;top:25px;width:470px;height:397px;transform:rotate(-2deg)}
+    #user-02 .number{right:406px;bottom:18px}
+    #user-02 .eyebrow{position:absolute;left:82px;top:72px}
+    #user-02 .float-pills{position:absolute;left:108px;top:130px;display:grid;gap:17px}
+    #user-02 .float-pills .pill:nth-child(2){transform:translateX(42px)}
+    #user-02 .float-pills .pill:nth-child(3){transform:translateX(8px)}
+    #user-03 .paper{opacity:.25}
+    #user-03 .ghosts{position:absolute;inset:28px 100px;display:grid;grid-template-columns:1fr 1fr;gap:160px}
+    #user-03 .ghost-col{display:grid;gap:12px}
+    #user-03 .ghost{height:55px;border:1px solid #edf0f4;border-radius:18px;background:rgba(245,247,250,.86)}
+    #user-03 .window{left:258px;top:126px;width:606px;height:136px}
+    #user-03 .number{left:96px;top:174px}
+    #user-03 .route-line{position:absolute;left:140px;top:201px;width:123px;height:76px;border-left:2px solid var(--line);border-top:2px solid var(--line);border-radius:34px 0 0 0;transform:translateY(-1px)}
+    #user-04 .wash{right:-130px;bottom:-55px}
+    #user-04 .window{right:38px;bottom:-20px;width:650px;height:191px}
+    #user-04 .drafts{position:absolute;left:185px;top:66px;display:grid;gap:18px}
+    #user-04 .draft{width:410px;height:92px;padding:22px 25px;border:1px solid rgba(20,107,255,.35);border-radius:18px;background:var(--soft);box-shadow:0 12px 26px rgba(15,45,86,.07)}
+    #user-04 .draft:nth-child(2){width:330px;transform:translateX(86px)}
+    #user-04 .draft i{display:block;width:82%;height:7px;margin-bottom:11px;border-radius:6px;background:#d8dde6}
+    #user-04 .draft i:nth-child(2){width:61%}
+    #user-04 .sparkle{position:absolute;left:586px;top:77px;width:31px;height:31px;filter:invert(31%) sepia(97%) saturate(3554%) hue-rotate(213deg) brightness(104%)}
+    #user-04 .number{left:92px;bottom:62px}
+
+    /* Support */
+    #support-02 .wash{right:-160px;top:-30px}
+    #support-02 .window{left:-22px;top:56px;width:548px;height:308px}
+    #support-02 .number{right:78px;top:55px}
+    #support-02 .filters{position:absolute;right:102px;top:138px;display:grid;gap:16px}
+    #support-02 .filter{min-width:210px;padding:13px 18px;border:1px solid var(--line);border-radius:13px;background:white;box-shadow:0 14px 28px rgba(15,45,86,.1);font-size:15px;font-weight:600}
+    #support-02 .filter:nth-child(2){transform:translateX(-42px);color:var(--coral);border-color:rgba(241,100,74,.24);background:rgba(241,100,74,.12)}
+    #support-02 .filter:nth-child(3){transform:translateX(-8px)}
+    #support-03 .paper{opacity:.22}
+    #support-03 .thread-window{position:absolute;left:70px;right:70px;top:33px;height:382px;overflow:hidden;border:1px solid rgba(16,34,58,.2);border-radius:18px;background:var(--soft);box-shadow:0 30px 70px rgba(15,45,86,.18),0 4px 10px rgba(15,45,86,.1)}
+    #support-03 .header-shot{position:absolute;left:0;right:0;top:0;width:100%;height:55px}
+    #support-03 .reply-shot{position:absolute;left:0;right:0;bottom:0;width:100%;height:77px}
+    #support-03 .thread{position:absolute;inset:76px 44px 96px;display:grid;align-content:center;gap:14px}
+    #support-03 .bubble{width:42%;height:36px;border-radius:12px;background:#e7ebf0}
+    #support-03 .bubble:nth-child(2){justify-self:end;width:35%;background:rgba(241,100,74,.1)}
+    #support-03 .bubble:nth-child(3){width:27%}
+    #support-03 .number{left:45px;top:176px}
+    #support-04 .wash{left:-130px;top:28px}
+    #support-04 .window{right:30px;top:50px;width:622px;height:275px;transform:rotate(2deg)}
+    #support-04 .message-source{position:absolute;left:92px;top:145px;width:305px;height:92px;padding:22px;border:1px solid var(--line);border-radius:18px;background:var(--soft)}
+    #support-04 .message-source i{display:block;width:86%;height:7px;margin-bottom:12px;border-radius:7px;background:#d8dde6}
+    #support-04 .message-source i:nth-child(2){width:58%}
+    #support-04 .arrow{position:absolute;left:392px;top:166px;width:104px;height:58px;border-top:2px solid var(--muted);border-radius:50%;transform:rotate(12deg)}
+    #support-04 .arrow::after{content:"";position:absolute;right:-1px;top:-7px;width:10px;height:10px;border-top:2px solid var(--muted);border-right:2px solid var(--muted);transform:rotate(45deg)}
+    #support-04 .number{left:55px;bottom:47px}
+    #support-05 .switch-cards{position:absolute;left:255px;right:255px;top:82px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+    #support-05 .switch-card{position:relative;height:185px;overflow:hidden;border:1px solid var(--line);border-radius:18px;background:linear-gradient(145deg,rgba(20,107,255,.09),rgba(255,253,249,.97) 62%);box-shadow:0 14px 30px rgba(15,45,86,.08);display:flex;align-items:center;justify-content:center;gap:13px;font-size:18px;font-weight:600}
+    #support-05 .switch-card:last-child{background:linear-gradient(145deg,rgba(241,100,74,.13),rgba(255,253,249,.98) 62%);box-shadow:0 24px 44px rgba(241,100,74,.14);transform:translateY(-12px)}
+    #support-05 .switch-watermark{position:absolute;right:-50px;bottom:-82px;width:220px;height:220px;object-fit:contain;opacity:.065}
+    #support-05 .switch-icon{position:relative;z-index:2;width:28px;height:28px;object-fit:contain}
+    #support-05 .switch-card span{position:relative;z-index:2}
+    #support-05 .switch-card:first-child img{filter:invert(32%) sepia(99%) saturate(4635%) hue-rotate(216deg) brightness(101%) contrast(101%)}
+    #support-05 .switch-card:last-child img{filter:invert(52%) sepia(73%) saturate(3121%) hue-rotate(335deg) brightness(101%) contrast(89%)}
+    #support-05 .switch-label{position:absolute;left:472px;bottom:58px}
+    #support-05 .number{left:205px;top:156px}
+
+    /* Dev */
+    #dev-02 .paper{opacity:.22}
+    #dev-02 .ghost-window{position:absolute;width:900px;height:150px;border:1px solid var(--line);border-radius:18px;background:rgba(245,247,250,.9)}
+    #dev-02 .ghost-window.g1{left:150px;top:61px;transform:rotate(-2deg)}
+    #dev-02 .ghost-window.g2{left:183px;top:105px;transform:rotate(1deg)}
+    #dev-02 .window{left:122px;top:145px;width:1018px;height:150px;transform:rotate(2deg);background:var(--ink);padding-top:42px}
+    #dev-02 .window::before{content:"";position:absolute;left:18px;top:15px;width:8px;height:8px;border-radius:50%;background:#f1644a;box-shadow:16px 0 #ffc84a,32px 0 #079a74}
+    #dev-02 .window>img{height:92px}
+    #dev-02 .hosts{position:absolute;left:64px;top:145px;display:grid;gap:32px}
+    #dev-02 .hosts::before{content:"";position:absolute;left:6px;top:7px;width:2px;height:82px;background:var(--line)}
+    #dev-02 .hosts i{z-index:1;width:14px;height:14px;border:3px solid var(--paper);border-radius:50%;background:var(--green)}
+    #dev-02 .number{left:48px;bottom:44px}
+    #dev-03 .wash{right:-140px;bottom:-80px}
+    #dev-03 .script-list{position:absolute;left:72px;top:52px;width:180px;height:334px;overflow:hidden;border:1px solid var(--line);border-radius:18px;background:white;box-shadow:0 20px 45px rgba(15,45,86,.12);filter:blur(.45px);opacity:.72;transform:rotate(-2deg)}
+    #dev-03 .script-list img{width:100%;height:100%;object-fit:cover}
+    #dev-03 .window{right:-25px;top:100px;width:895px;height:188px;transform:rotate(2deg)}
+    #dev-03 .execute-label{position:absolute;right:101px;top:314px;padding:9px 13px;border-radius:10px;color:white;background:var(--violet);box-shadow:0 10px 22px rgba(109,70,231,.25);font-size:11px;font-weight:700}
+    #dev-03 .execute-label::before{content:"";position:absolute;right:28px;bottom:100%;width:1px;height:53px;background:var(--violet);transform:rotate(22deg);transform-origin:bottom}
+    #dev-03 .number{left:38px;top:62px}
+    #dev-04 .wash{left:250px;top:50px;width:730px}
+    #dev-04 .tunnel-frame{position:absolute;left:46px;right:46px;top:35px;height:352px;padding:29px 24px;border:1px solid rgba(16,34,58,.2);border-radius:18px;background:rgba(255,255,255,.97);box-shadow:0 30px 70px rgba(15,45,86,.16),0 4px 10px rgba(15,45,86,.1)}
+    #dev-04 .tunnel-frame img{display:block;width:100%;height:96px}
+    #dev-04 .tunnel-frame img:last-child{position:absolute;left:24px;right:24px;bottom:25px;width:calc(100% - 48px);height:92px}
+    #dev-04 .flow{position:absolute;left:230px;right:230px;top:186px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
+    #dev-04 .flow::before{content:"";position:absolute;left:58px;right:75px;top:6px;height:2px;background:var(--muted);opacity:.55}
+    #dev-04 .flow::after{content:"";position:absolute;right:67px;top:1px;width:9px;height:9px;border-top:2px solid var(--muted);border-right:2px solid var(--muted);transform:rotate(45deg)}
+    #dev-04 .number{left:22px;top:174px}
+    #dev-05 .paper{opacity:.3}
+    #dev-05 .window{left:190px;top:148px;width:740px;height:218px}
+    #dev-05 .mentions{position:absolute;left:245px;top:55px;display:flex;gap:22px}
+    #dev-05 .mention{display:flex;align-items:center;gap:7px;padding:8px 11px;border-radius:4px;color:var(--blue);background:rgba(20,107,255,.14);font-size:11px;font-weight:600}
+    #dev-05 .mention img{width:15px;height:15px;filter:invert(31%) sepia(97%) saturate(3554%) hue-rotate(213deg) brightness(104%)}
+    #dev-05 .mention:nth-child(1){transform:translateY(22px) rotate(-2deg)}
+    #dev-05 .mention:nth-child(3){transform:translateY(16px) rotate(2deg)}
+    #dev-05 .drop-line{position:absolute;top:111px;width:1px;height:42px;background:rgba(20,107,255,.35)}
+    #dev-05 .l1{left:317px}#dev-05 .l2{left:507px}#dev-05 .l3{left:706px}
+    #dev-05 .number{left:145px;top:178px}
+    #dev-06 .paper{opacity:.2}
+    #dev-06 .mode-cards{position:absolute;left:126px;right:126px;top:42px;display:grid;grid-template-columns:repeat(3,1fr);gap:26px}
+    #dev-06 .mode-card{position:relative;height:268px;overflow:hidden;border:1px solid var(--line);border-radius:18px;box-shadow:0 14px 30px rgba(15,45,86,.08);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:42px 20px 20px;font-size:18px;font-weight:600;letter-spacing:-.05em}
+    #dev-06 .mode-card:nth-child(1){background:linear-gradient(145deg,rgba(20,107,255,.12),rgba(255,253,249,.98) 64%)}
+    #dev-06 .mode-card:nth-child(2){background:linear-gradient(145deg,rgba(241,100,74,.12),rgba(255,253,249,.98) 64%)}
+    #dev-06 .mode-card:nth-child(3){background:linear-gradient(145deg,rgba(109,70,231,.14),rgba(255,253,249,.98) 64%);transform:translateY(-9px);box-shadow:0 25px 48px rgba(109,70,231,.15)}
+    #dev-06 .mode-watermark{position:absolute;right:-58px;bottom:-92px;width:250px;height:250px;object-fit:contain;opacity:.075}
+    #dev-06 .mode-icon{position:relative;z-index:2;display:block;width:78px;height:78px;margin-bottom:28px;object-fit:contain;filter:drop-shadow(0 12px 18px rgba(15,45,86,.12))}
+    #dev-06 .mode-card:nth-child(1) img{filter:invert(32%) sepia(99%) saturate(4635%) hue-rotate(216deg) brightness(101%) contrast(101%)}
+    #dev-06 .mode-card:nth-child(2) img{filter:invert(52%) sepia(73%) saturate(3121%) hue-rotate(335deg) brightness(101%) contrast(89%)}
+    #dev-06 .mode-card:nth-child(3) img{filter:invert(35%) sepia(70%) saturate(1966%) hue-rotate(236deg) brightness(91%) contrast(99%)}
+    #dev-06 .mode-name{position:relative;z-index:2;line-height:1.1}
+    #dev-06 .keys{position:absolute;left:475px;bottom:20px;display:flex;align-items:center;gap:9px}
+    #dev-06 .key{display:grid;height:38px;min-width:46px;padding:0 12px;place-items:center;border:1px solid var(--line);border-bottom-width:4px;border-radius:6px;background:white;box-shadow:0 8px 16px rgba(15,45,86,.08);font-size:12px;font-weight:600}
+    #dev-06 .number{left:82px;top:174px}
+
+    body.export{padding:0;background:transparent;overflow:hidden}
+    body.export header,body.export .meta{display:none}
+    body.export main{display:block;width:1120px;margin:0}
+    body.export article{display:none;border-radius:0;box-shadow:none}
+    body.export article.selected{display:block}
+  </style>
+</head>
+<body>
+  <header><div><div class="eyebrow">Direction artistique</div><h1>Onboarding par rôle</h1></div><p>Quinze bannières 1120 × 400 composées autour des captures produit réelles. Utilisateur en bleu, Support en corail, Dev en violet.</p></header>
+  <main>
+    <article data-export="user-01-welcome"><section class="banner user welcome" id="user-01"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="welcome-copy"><div class="eyebrow">Votre lien direct</div><div class="wordmark"><img src="../../crates/shelldeck/assets/images/brand/svg/expressions/light-default-logo.svg" alt=""><span>Shell<span class="accent-word">Deck</span></span></div></div><div class="number">01</div></section><div class="meta"><strong>Utilisateur · Bienvenue</strong><span>U-01</span></div></article>
+    <article data-export="user-02-request"><section class="banner user" id="user-02"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="eyebrow">Une demande, au bon endroit</div><div class="float-pills"><div class="pill">SITE</div><div class="pill">PRIORITÉ</div><div class="pill"><img src="../../crates/shelldeck/assets/icons/lucide/paperclip.svg" alt=""> PIÈCE JOINTE</div></div><div class="window"><img src="onboarding/fragments/user-request-panel.png" alt=""></div><div class="number">02</div></section><div class="meta"><strong>Utilisateur · Déposer une demande</strong><span>U-02</span></div></article>
+    <article data-export="user-03-follow"><section class="banner user" id="user-03"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="ghosts"><div class="ghost-col"><div class="ghost"></div><div class="ghost"></div></div><div class="ghost-col"><div class="ghost"></div><div class="ghost"></div></div></div><div class="window"><img src="onboarding/fragments/user-identity-tabs.png" alt=""></div><div class="route-line"></div><div class="number">03</div></section><div class="meta"><strong>Utilisateur · Suivre ses demandes et ses sites</strong><span>U-03</span></div></article>
+    <article data-export="user-04-ai"><section class="banner user" id="user-04"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="drafts"><div class="draft"><i></i><i></i></div><div class="draft"><i></i><i></i></div></div><img class="sparkle" src="../../crates/shelldeck/assets/icons/lucide/sparkles.svg" alt=""><div class="window"><img src="onboarding/fragments/ai-composer.png" alt=""></div><div class="number">04</div></section><div class="meta"><strong>Utilisateur · L’IA prépare le brouillon</strong><span>U-04</span></div></article>
+
+    <article data-export="support-01-welcome"><section class="banner support welcome" id="support-01"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="welcome-copy"><div class="eyebrow">Une file, tout le contexte</div><div class="wordmark"><img src="../../crates/shelldeck/assets/images/brand/svg/expressions/light-default-logo.svg" alt=""><span>Shell<span class="accent-word">Deck</span></span></div></div><div class="queue-lines"><i></i><i></i><i></i></div><div class="number">01</div></section><div class="meta"><strong>Support · Bienvenue</strong><span>S-01</span></div></article>
+    <article data-export="support-02-prioritize"><section class="banner support" id="support-02"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="window"><img src="onboarding/fragments/support-queue.png" alt=""></div><div class="filters"><div class="filter">À traiter</div><div class="filter">En cours</div><div class="filter">Résolues</div></div><div class="number">02</div></section><div class="meta"><strong>Support · Filtrer, assigner, prioriser</strong><span>S-02</span></div></article>
+    <article data-export="support-03-context"><section class="banner support" id="support-03"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="thread-window"><img class="header-shot" src="onboarding/fragments/support-detail-header.png" alt=""><div class="thread"><div class="bubble"></div><div class="bubble"></div><div class="bubble"></div></div><img class="reply-shot" src="onboarding/fragments/support-reply-composer.png" alt=""></div><div class="number">03</div></section><div class="meta"><strong>Support · Répondre dans le contexte</strong><span>S-03</span></div></article>
+    <article data-export="support-04-ai"><section class="banner support" id="support-04"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="message-source"><i></i><i></i></div><div class="arrow"></div><div class="window"><img src="onboarding/fragments/ai-assistant-hero.png" alt=""></div><div class="number">04</div></section><div class="meta"><strong>Support · L’IA prépare la réponse</strong><span>S-04</span></div></article>
+    <article data-export="support-05-modes"><section class="banner support" id="support-05"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="switch-cards"><div class="switch-card"><img class="switch-watermark" src="../../crates/shelldeck/assets/icons/lucide/user.svg" alt=""><img class="switch-icon" src="../../crates/shelldeck/assets/icons/lucide/user.svg" alt=""><span>Utilisateur</span></div><div class="switch-card"><img class="switch-watermark" src="../../crates/shelldeck/assets/icons/lucide/shield-check.svg" alt=""><img class="switch-icon" src="../../crates/shelldeck/assets/icons/lucide/shield-check.svg" alt=""><span>Support</span></div></div><div class="eyebrow switch-label">Changer de mode</div><div class="number">05</div></section><div class="meta"><strong>Support · Basculer de mode</strong><span>S-05</span></div></article>
+
+    <article data-export="dev-01-welcome"><section class="banner dev welcome" id="dev-01"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="welcome-copy"><div class="eyebrow">Le poste de pilotage complet</div><div class="wordmark"><img src="../../crates/shelldeck/assets/images/brand/svg/expressions/light-default-logo.svg" alt=""><span>Shell<span class="accent-word">Deck</span></span></div></div><div class="terminal-line"></div><div class="number">01</div></section><div class="meta"><strong>Dev · Bienvenue</strong><span>D-01</span></div></article>
+    <article data-export="dev-02-terminal"><section class="banner dev" id="dev-02"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="ghost-window g1"></div><div class="ghost-window g2"></div><div class="hosts"><i></i><i></i><i></i></div><div class="window"><img src="onboarding/fragments/dev-terminal-output.png" alt=""></div><div class="number">02</div></section><div class="meta"><strong>Dev · Terminaux et SSH</strong><span>D-02</span></div></article>
+    <article data-export="dev-03-scripts"><section class="banner dev" id="dev-03"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="script-list"><img src="onboarding/fragments/dev-script-list.png" alt=""></div><div class="window"><img src="onboarding/fragments/dev-script-editor.png" alt=""></div><div class="execute-label">Exécuter</div><div class="number">03</div></section><div class="meta"><strong>Dev · Scripts réutilisables</strong><span>D-03</span></div></article>
+    <article data-export="dev-04-tunnels"><section class="banner dev" id="dev-04"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="wash"></div><div class="tunnel-frame"><img src="onboarding/fragments/dev-tunnel-presets.png" alt=""><img src="onboarding/fragments/dev-tunnel-table.png" alt=""></div><div class="flow"><span>local</span><span>distant</span></div><div class="number">04</div></section><div class="meta"><strong>Dev · Tunnels et redirections</strong><span>D-04</span></div></article>
+    <article data-export="dev-05-ai"><section class="banner dev" id="dev-05"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="mentions"><div class="mention"><img src="../../crates/shelldeck/assets/icons/lucide/server.svg" alt="">Serveur</div><div class="mention"><img src="../../crates/shelldeck/assets/icons/lucide/tag.svg" alt="">Ticket</div><div class="mention"><img src="../../crates/shelldeck/assets/icons/lucide/route.svg" alt="">Tunnel</div></div><div class="drop-line l1"></div><div class="drop-line l2"></div><div class="drop-line l3"></div><div class="window"><img src="onboarding/fragments/ai-composer.png" alt=""></div><div class="number">05</div></section><div class="meta"><strong>Dev · L’assistant et ses mentions</strong><span>D-05</span></div></article>
+    <article data-export="dev-06-modes"><section class="banner dev" id="dev-06"><img class="paper" src="onboarding/watercolor-user.webp" alt=""><div class="mode-cards"><div class="mode-card"><img class="mode-watermark" src="../../crates/shelldeck/assets/icons/lucide/user.svg" alt=""><img class="mode-icon" src="../../crates/shelldeck/assets/icons/lucide/user.svg" alt=""><span class="mode-name">User</span></div><div class="mode-card"><img class="mode-watermark" src="../../crates/shelldeck/assets/icons/lucide/shield-check.svg" alt=""><img class="mode-icon" src="../../crates/shelldeck/assets/icons/lucide/shield-check.svg" alt=""><span class="mode-name">Support</span></div><div class="mode-card"><img class="mode-watermark" src="../../crates/shelldeck/assets/icons/lucide/cpu.svg" alt=""><img class="mode-icon" src="../../crates/shelldeck/assets/icons/lucide/cpu.svg" alt=""><span class="mode-name">Dev</span></div></div><div class="keys"><div class="key">Ctrl</div><div class="key">K</div></div><div class="number">06</div></section><div class="meta"><strong>Dev · Modes et raccourcis</strong><span>D-06</span></div></article>
+  </main>
+  <script>
+    const slug = new URLSearchParams(location.search).get('export');
+    if (slug) {
+      document.body.classList.add('export');
+      const selected = document.querySelector(`[data-export="${slug}"]`);
+      if (selected) selected.classList.add('selected');
+    }
+  </script>
+</body>
+</html>
