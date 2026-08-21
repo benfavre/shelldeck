@@ -791,7 +791,11 @@ mod tests {
         ];
 
         for (mode, allowed, expected) in cases {
-            assert_eq!(run(mode, allowed), expected, "run for {mode:?} / {allowed:?}");
+            assert_eq!(
+                run(mode, allowed),
+                expected,
+                "run for {mode:?} / {allowed:?}"
+            );
         }
 
         // Across every tier and landing mode: the modes slide, when present,
