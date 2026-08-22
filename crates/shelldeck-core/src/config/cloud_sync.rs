@@ -268,7 +268,7 @@ fn parse_response(resp: reqwest::blocking::Response) -> Result<SyncPayload> {
     let status = resp.status();
     if status.as_u16() == 401 {
         return Err(ShellDeckError::Connection(
-            "sync token rejected (401) — check the cloud_sync token in shelldeck.toml".to_string(),
+            "account token rejected (401) — sign in to Inklura Manage again".to_string(),
         ));
     }
     if !status.is_success() {

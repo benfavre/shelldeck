@@ -51,9 +51,9 @@ pub enum MentionKind {
     Terminal,
     /// A file open in the editor.
     File,
-    /// A Monique fleet runtime instance.
+    /// An authority-qualified platform node.
     Instance,
-    /// A Monique fleet job.
+    /// An authority-qualified platform job.
     Job,
     /// A person the caller is allowed to address.
     Person,
