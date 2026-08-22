@@ -464,7 +464,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A Jean/issues surface is on screen (User home, or Support mode).
+    /// A Monique/issues surface is on screen (User home, or Support mode).
     pub(super) fn issues_relevant(&self) -> bool {
         self.should_poll(super::polling::PolledSurface::Issues)
     }

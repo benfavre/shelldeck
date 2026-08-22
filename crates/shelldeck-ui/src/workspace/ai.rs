@@ -199,13 +199,13 @@ impl Workspace {
                 t!("ai.context.script").to_string(),
                 self.script_ai_context_data(cx),
             ),
-            ActiveView::JeanConsole | ActiveView::Fleet => AiContext::new(
-                AiSurface::Jean,
-                t!("ai.context.jean").to_string(),
-                self.ai_context_data_with_hosts(
-                    serde_json::to_value(&self.jean_state)
-                        .unwrap_or_else(|_| serde_json::json!({ "jean": null })),
-                ),
+            ActiveView::MoniqueConsole | ActiveView::Fleet => AiContext::new(
+                AiSurface::Monique,
+                t!("ai.context.monique").to_string(),
+                self.ai_context_data_with_hosts(serde_json::json!({
+                    "status": &self.monique_status,
+                    "processes": &self.monique_processes,
+                })),
             ),
             ActiveView::Recent | ActiveView::Dashboard => AiContext::new(
                 AiSurface::Recent,
@@ -977,8 +977,8 @@ impl Workspace {
         }
     }
 
-    pub(super) fn prepare_jean_dispatch(&mut self, prompt: String, cx: &mut Context<Self>) {
-        if self.effective_jean_config().is_none() || prompt.trim().is_empty() {
+    pub(super) fn prepare_monique_dispatch(&mut self, prompt: String, cx: &mut Context<Self>) {
+        if !self.has_monique() || prompt.trim().is_empty() {
             return;
         }
         let model = if self.app_config.ai.model.trim().is_empty() {
@@ -990,17 +990,17 @@ impl Workspace {
             .support
             .read(cx)
             .selected_ticket_identity()
-            .unwrap_or_else(|| ("jean".to_string(), "JeanClaude".to_string()));
+            .unwrap_or_else(|| ("monique".to_string(), "Monique".to_string()));
         match AiActionPlan::new(AiActionPlanSpec {
-            capability: shelldeck_core::ai::AiCapability::JeanDispatch,
-            kind: AiActionKind::JeanDispatch,
+            capability: shelldeck_core::ai::AiCapability::MoniqueDispatch,
+            kind: AiActionKind::MoniqueDispatch,
             risk: AiActionRisk::Moderate,
             target_id,
             target_label,
             backend: self.app_config.ai.backend,
             model,
             timeout_secs: 30,
-            payload: AiActionPayload::JeanDispatch { prompt },
+            payload: AiActionPayload::MoniqueDispatch { prompt },
         }) {
             Ok(plan) => self.stage_ai_action(plan, cx),
             Err(error) => self.show_toast(error.to_string(), ToastLevel::Error, cx),
@@ -1086,7 +1086,7 @@ impl Workspace {
             AiActionKind::TerminalCommand => ActivityKind::Terminal,
             AiActionKind::ScriptExecution => ActivityKind::Script,
             AiActionKind::SupportSend => ActivityKind::Support,
-            AiActionKind::JeanDispatch => ActivityKind::Jean,
+            AiActionKind::MoniqueDispatch => ActivityKind::Monique,
             AiActionKind::FleetDispatch => ActivityKind::Fleet,
             AiActionKind::ClippyReplaceSelection => ActivityKind::Script,
         };
@@ -1319,8 +1319,8 @@ impl Workspace {
                 self.close_ai_workflow(cx);
                 self.execute_ai_support_send(plan, body, cx);
             }
-            AiActionPayload::JeanDispatch { prompt } => {
-                self.execute_ai_jean_dispatch(plan, prompt, cx);
+            AiActionPayload::MoniqueDispatch { prompt } => {
+                self.execute_ai_monique_dispatch(plan, prompt, cx);
             }
             AiActionPayload::FleetDispatch {
                 issue_id,
@@ -1391,13 +1391,13 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn execute_ai_jean_dispatch(
+    pub(super) fn execute_ai_monique_dispatch(
         &mut self,
         plan: AiActionPlan,
         prompt: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(config) = self.effective_jean_config() else {
+        let Some(config) = self.effective_monique_config() else {
             self.audit_ai_action(&plan, "target_changed", cx);
             return;
         };
@@ -1405,14 +1405,18 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { jeanclaude::say(&config, &prompt) })
+                .spawn(async move { monique_client::chat(&config, &prompt) })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
                 match result {
-                    Ok(_) => {
+                    Ok(response) => {
                         workspace.audit_ai_action(&plan, "succeeded", cx);
+                        workspace.monique_view.update(cx, |view, cx| {
+                            view.apply_response(response);
+                            cx.notify();
+                        });
                         workspace.show_toast(
-                            t!("toast.jean.sent").to_string(),
+                            t!("toast.monique.sent").to_string(),
                             ToastLevel::Success,
                             cx,
                         );
@@ -1421,7 +1425,7 @@ impl Workspace {
                         workspace.audit_ai_action(&plan, "failed", cx);
                         workspace.show_toast(
                             t!(
-                                "toast.jean.error",
+                                "toast.monique.error",
                                 error = crate::i18n::api_error_message(&error)
                             )
                             .to_string(),
@@ -1430,7 +1434,7 @@ impl Workspace {
                         );
                     }
                 }
-                workspace.refresh_jean_state(cx);
+                workspace.refresh_monique(cx);
             });
         })
         .detach();
@@ -2260,16 +2264,16 @@ impl Workspace {
                     cx,
                 );
             }
-            AiAssistantAction::JeanDispatch { prompt } => {
-                if self.effective_jean_config().is_none() {
+            AiAssistantAction::MoniqueDispatch { prompt } => {
+                if !self.has_monique() {
                     self.show_toast(
-                        t!("toast.jean.not_configured").to_string(),
+                        t!("toast.monique.not_configured").to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
                     return;
                 }
-                self.prepare_jean_dispatch(prompt, cx);
+                self.prepare_monique_dispatch(prompt, cx);
             }
             AiAssistantAction::OpenRequest { issue_id, query } => {
                 if !self.signed_in() {
@@ -2362,8 +2366,8 @@ impl Workspace {
                     });
                 }
             }
-            AiSurface::Jean => {
-                self.active_view = ActiveView::JeanConsole;
+            AiSurface::Monique => {
+                self.active_view = ActiveView::MoniqueConsole;
             }
             AiSurface::Naming => {
                 if task.target_kind.as_deref() == Some("naming_terminal") {

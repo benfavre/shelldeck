@@ -156,21 +156,21 @@ impl Workspace {
         self.active_view = view;
     }
 
-    /// Open the JeanClaude console (palette / action). Switches to Dev mode for
+    /// Open the Monique console (palette / action). Switches to Dev mode for
     /// super-admins so the console is actually on screen.
-    pub fn open_jean_console(&mut self, cx: &mut Context<Self>) {
+    pub fn open_monique_console(&mut self, cx: &mut Context<Self>) {
         if !self.enter_dev_mode(cx) {
             return;
         }
-        if !self.has_jean() {
+        if !self.has_monique() {
             self.show_toast(
-                t!("toast.jean.not_configured").to_string(),
+                t!("toast.monique.not_configured").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
             return;
         }
-        self.active_view = ActiveView::JeanConsole;
+        self.active_view = ActiveView::MoniqueConsole;
         self.on_active_view_changed(cx);
         cx.notify();
     }
@@ -288,7 +288,7 @@ impl Workspace {
                 self.select_support_ticket(id, cx);
                 cx.notify();
             }
-            DeepLink::JeanConfirm(job_id) => {
+            DeepLink::FleetConfirm(job_id) => {
                 self.pending_fleet_job_focus = Some(job_id);
                 self.open_fleet(cx);
                 self.focus_pending_fleet_job(cx);
@@ -296,70 +296,47 @@ impl Workspace {
         }
     }
 
-    /// Key handling for the User-mode "Demander à JeanClaude" composer.
-    pub(super) fn handle_jean_ask_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    /// Key handling for the User-mode "Ask Monique" composer.
+    pub(super) fn handle_monique_ask_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         match key {
             "enter" => {
                 if event.keystroke.modifiers.shift {
-                    self.jean_ask_input.push('\n');
+                    self.monique_ask_input.push('\n');
                     cx.notify();
                 } else {
-                    self.submit_jean_ask(cx);
+                    self.submit_monique_ask(cx);
                 }
             }
             "backspace" => {
-                self.jean_ask_input.pop();
+                self.monique_ask_input.pop();
                 cx.notify();
             }
             _ => {
                 if let Some(ref kc) = event.keystroke.key_char {
                     if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
-                        self.jean_ask_input.push_str(kc);
+                        self.monique_ask_input.push_str(kc);
                         cx.notify();
                     }
                 } else if key.len() == 1
                     && !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                 {
-                    self.jean_ask_input.push_str(key);
+                    self.monique_ask_input.push_str(key);
                     cx.notify();
                 }
             }
         }
     }
 
-    pub(super) fn submit_jean_ask(&mut self, cx: &mut Context<Self>) {
-        let text = self.jean_ask_input.trim().to_string();
+    pub(super) fn submit_monique_ask(&mut self, cx: &mut Context<Self>) {
+        let text = self.monique_ask_input.trim().to_string();
         if text.is_empty() {
             return;
         }
-        let name = self
-            .app_config
-            .account
-            .as_ref()
-            .map(|a| a.display_name())
-            .unwrap_or_default();
-        let full = shelldeck_core::config::jeanclaude::format_via_shelldeck(&name, &text);
-        self.jean_ask_input.clear();
-        self.jean_say(full, cx);
+        self.monique_ask_input.clear();
+        self.prepare_monique_dispatch(text, cx);
         cx.notify();
-    }
-
-    /// Toggle JeanClaude's paused state (palette / action).
-    pub fn jean_toggle_pause(&mut self, cx: &mut Context<Self>) {
-        if !self.enter_dev_mode(cx) {
-            return;
-        }
-        if !self.has_jean() {
-            return;
-        }
-        let paused = self
-            .jean_state
-            .as_ref()
-            .map(|s| s.bot.paused)
-            .unwrap_or(false);
-        self.jean_action(cx, move |c| jeanclaude::set_paused(&c, !paused));
     }
 
     pub(super) fn populate_script_editor_connections(&self, cx: &mut Context<Self>) {
@@ -419,7 +396,7 @@ impl Workspace {
             SidebarSection::Sites => ActiveView::Sites,
             SidebarSection::Recent => ActiveView::Recent,
             SidebarSection::FileEditor => ActiveView::FileEditor,
-            SidebarSection::JeanConsole => ActiveView::JeanConsole,
+            SidebarSection::MoniqueConsole => ActiveView::MoniqueConsole,
             SidebarSection::Fleet => ActiveView::Fleet,
             SidebarSection::BextCloud => ActiveView::BextCloud,
             SidebarSection::Settings => ActiveView::Settings,
@@ -439,10 +416,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Called when the active Dev view changes — (re)start the Jean poll if the
+    /// Called when the active Dev view changes — (re)start the Monique poll if the
     /// console just became visible.
     pub(super) fn on_active_view_changed(&mut self, cx: &mut Context<Self>) {
-        self.sync_jean_poll(cx);
+        self.sync_monique_poll(cx);
         self.sync_fleet_view_poll(cx);
         self.sync_bext_poll(cx);
         self.refresh_command_palette(cx);

@@ -1,6 +1,6 @@
 //! Which network polls may run, decided in one pure place.
 //!
-//! Support, Issues, Jean and bext Cloud each poll a remote endpoint on a
+//! Support, Issues, Monique and bext Cloud each poll a remote endpoint on a
 //! timer. Each scheduler used to carry its own inline predicate, and the rules
 //! they share — Settings covers the surface, a signed-out session shows the
 //! welcome screen — were repeated four times with no single place to check
@@ -18,7 +18,7 @@ use shelldeck_core::config::cloud_account::AppMode;
 pub(super) enum PolledSurface {
     Support,
     Issues,
-    Jean,
+    Monique,
     Bext,
 }
 
@@ -31,8 +31,8 @@ pub(super) struct PollContext {
     pub signed_in: bool,
     /// `can_access_mode(Support)` — the account may reach the Support surface.
     pub support_allowed: bool,
-    /// `has_jean()` — a Jean endpoint resolves for this session.
-    pub jean_configured: bool,
+    /// `has_monique()` — a Monique endpoint resolves for this session.
+    pub monique_configured: bool,
 }
 
 /// Whether `surface` is on screen, and therefore worth polling.
@@ -44,7 +44,7 @@ pub(super) fn should_poll(ctx: PollContext, surface: PolledSurface) -> bool {
     // screen any more. A signed-out session renders the welcome screen, so no
     // authenticated surface exists to refresh. The signed-out case was already
     // implied by each individual predicate (`effective_mode` forces User when
-    // signed out, and both `has_jean` and `can_access_mode` need an account),
+    // signed out, and both `has_monique` and `can_access_mode` need an account),
     // but implied is not testable.
     if ctx.settings_open || !ctx.signed_in {
         return false;
@@ -53,13 +53,13 @@ pub(super) fn should_poll(ctx: PollContext, surface: PolledSurface) -> bool {
     match surface {
         PolledSurface::Support => ctx.support_allowed && ctx.mode == AppMode::Support,
         PolledSurface::Issues => matches!(ctx.mode, AppMode::User | AppMode::Support),
-        // Jean is reachable from the User and Support home surfaces, but in Dev
+        // Monique is reachable from the User and Support home surfaces, but in Dev
         // it lives behind its own view.
-        PolledSurface::Jean => {
-            ctx.jean_configured
+        PolledSurface::Monique => {
+            ctx.monique_configured
                 && match ctx.mode {
                     AppMode::User | AppMode::Support => true,
-                    AppMode::Dev => ctx.active_view == ActiveView::JeanConsole,
+                    AppMode::Dev => ctx.active_view == ActiveView::MoniqueConsole,
                 }
         }
         PolledSurface::Bext => ctx.mode == AppMode::Dev && ctx.active_view == ActiveView::BextCloud,
@@ -74,7 +74,7 @@ impl Workspace {
             active_view: self.active_view,
             signed_in: self.signed_in(),
             support_allowed: self.can_access_mode(AppMode::Support),
-            jean_configured: self.has_jean(),
+            monique_configured: self.has_monique(),
         }
     }
 
@@ -94,14 +94,14 @@ mod tests {
             active_view,
             signed_in: true,
             support_allowed: true,
-            jean_configured: true,
+            monique_configured: true,
         }
     }
 
     const ALL: [PolledSurface; 4] = [
         PolledSurface::Support,
         PolledSurface::Issues,
-        PolledSurface::Jean,
+        PolledSurface::Monique,
         PolledSurface::Bext,
     ];
 
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn no_surface_polls_behind_settings_or_while_signed_out() {
         for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
-            for view in [ActiveView::JeanConsole, ActiveView::BextCloud] {
+            for view in [ActiveView::MoniqueConsole, ActiveView::BextCloud] {
                 for surface in ALL {
                     let mut ctx = on_screen(mode, view);
                     ctx.settings_open = true;
@@ -164,23 +164,23 @@ mod tests {
             PolledSurface::Issues,
         ));
 
-        // Jean rides the User/Support home surfaces, but in Dev it only polls
+        // Monique rides the User/Support home surfaces, but in Dev it only polls
         // behind its own view.
         assert!(should_poll(
             on_screen(AppMode::User, ActiveView::Dashboard),
-            PolledSurface::Jean,
+            PolledSurface::Monique,
         ));
         assert!(should_poll(
-            on_screen(AppMode::Dev, ActiveView::JeanConsole),
-            PolledSurface::Jean,
+            on_screen(AppMode::Dev, ActiveView::MoniqueConsole),
+            PolledSurface::Monique,
         ));
         assert!(!should_poll(
             on_screen(AppMode::Dev, ActiveView::Dashboard),
-            PolledSurface::Jean,
+            PolledSurface::Monique,
         ));
         let mut unconfigured = on_screen(AppMode::User, ActiveView::Dashboard);
-        unconfigured.jean_configured = false;
-        assert!(!should_poll(unconfigured, PolledSurface::Jean));
+        unconfigured.monique_configured = false;
+        assert!(!should_poll(unconfigured, PolledSurface::Monique));
 
         // bext Cloud is a Dev destination: its own view, nothing else.
         assert!(should_poll(
@@ -188,7 +188,7 @@ mod tests {
             PolledSurface::Bext,
         ));
         assert!(!should_poll(
-            on_screen(AppMode::Dev, ActiveView::JeanConsole),
+            on_screen(AppMode::Dev, ActiveView::MoniqueConsole),
             PolledSurface::Bext,
         ));
         assert!(!should_poll(

@@ -661,7 +661,7 @@ impl CompanionRoot {
                         active_ssh: counters.active_ssh,
                         open_tunnels: counters.open_tunnels,
                         unread_tickets: counters.unread_tickets,
-                        jean_pending: counters.jean_pending,
+                        monique_pending: counters.monique_pending,
                         ai_tasks_running: counters.ai_tasks_running,
                         pinned_connections: counters
                             .pinned_connections
@@ -2177,17 +2177,9 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
-                    move |_: &OpenJeanConsole, cx| {
+                    move |_: &OpenMoniqueConsole, cx| {
                         if let Some(ws) = w.upgrade() {
-                            ws.update(cx, |ws, cx| ws.open_jean_console(cx));
-                        }
-                    }
-                });
-                cx.on_action({
-                    let w = w.clone();
-                    move |_: &JeanTogglePause, cx| {
-                        if let Some(ws) = w.upgrade() {
-                            ws.update(cx, |ws, cx| ws.jean_toggle_pause(cx));
+                            ws.update(cx, |ws, cx| ws.open_monique_console(cx));
                         }
                     }
                 });
@@ -2201,9 +2193,9 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
-                    move |_: &ToggleJeanRuntime, cx| {
+                    move |_: &ToggleMoniqueRuntime, cx| {
                         if let Some(ws) = w.upgrade() {
-                            ws.update(cx, |ws, cx| ws.toggle_jean_runtime(cx));
+                            ws.update(cx, |ws, cx| ws.toggle_monique_runtime(cx));
                         }
                     }
                 });

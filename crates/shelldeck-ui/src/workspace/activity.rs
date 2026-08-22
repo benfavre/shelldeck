@@ -153,7 +153,7 @@ impl Workspace {
                 self.user_home_tab = UserHomeTab::Sites;
                 cx.notify();
             }
-            ActivityAction::OpenJean => self.open_jean_console(cx),
+            ActivityAction::OpenMonique => self.open_monique_console(cx),
             ActivityAction::OpenFleet => self.open_fleet(cx),
             ActivityAction::OpenBext => self.open_bext_cloud(cx),
         }

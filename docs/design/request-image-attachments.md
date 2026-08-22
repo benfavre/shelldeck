@@ -434,7 +434,7 @@ cache les octets avec le client réseau ShellDeck.
 
 Le support multipart de `reqwest` devra également être activé dans le workspace.
 
-## GitHub et agents Jean
+## GitHub et agents Monique
 
 ### GitHub
 
@@ -446,7 +446,7 @@ Lorsqu'une demande est poussée vers GitHub :
 - une synchronisation GitHub ultérieure ne doit pas effacer les métadonnées
   structurées des pièces jointes ShellDeck.
 
-### Jean et la fleet
+### Monique et la fleet
 
 Ajouter seulement une URL au prompt ne garantit pas que l'agent puisse lire
 l'image. Pour une véritable analyse visuelle, le runtime devrait :
@@ -509,7 +509,7 @@ Politique proposée :
 - rendre les images dans les vues User et Support ;
 - ajouter les libellés français et anglais.
 
-### 5. GitHub et Jean
+### 5. GitHub et Monique
 
 - propager les liens selon le niveau de confidentialité retenu ;
 - matérialiser les images localement pour les jobs qui doivent les analyser.

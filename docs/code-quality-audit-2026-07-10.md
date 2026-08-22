@@ -194,7 +194,7 @@ Chaque finding référence `file:line` pour retrouver la zone rapidement.
   fix correct, bien commenté.
 - Migration i18n de `variable_prompt.rs`, `workspace/{scripts,forwards,
   ssh,discovery}.rs`, `terminal_view.rs`, `status_bar.rs`,
-  `bext_cloud_view.rs`, `jean_view.rs` : mécanique et correcte.
+  `bext_cloud_view.rs`, `monique_view.rs` : mécanique et correcte.
 - Dashboard : `stat cards` correctement migrés à adabraka `Card`.
 - `EditorConfig` (`app_config.rs`) : struct légitime + round-trip test.
 - Markdown highlighter (`highlighter.rs`) : wiring légitime.

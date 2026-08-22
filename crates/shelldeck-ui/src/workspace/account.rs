@@ -451,7 +451,8 @@ impl Workspace {
         self.last_whoami = None;
         self.user_home_tab = UserHomeTab::Home;
         self.site_directory = None;
-        self.jean_state = None;
+        self.monique_status = None;
+        self.monique_processes = None;
         self.fleet_snapshot = None;
         self.runtime_instance = None;
         self.runtime_awaiting.clear();
@@ -487,7 +488,7 @@ impl Workspace {
         }
         self._support_poll_task = None;
         self._issues_poll = None;
-        self._jean_poll_task = None;
+        self._monique_poll_task = None;
         self._fleet_view_poll = None;
         self._runtime_loop = None;
         self._bext_poll = None;
@@ -495,7 +496,7 @@ impl Workspace {
             support.set_list(Vec::new(), Default::default(), Default::default());
             support.set_agents(Vec::new());
             support.set_issues(Vec::new(), false, Vec::new());
-            support.set_jean_brief(false, Vec::new(), 0);
+            support.set_monique_available(false);
             support.clear_selection();
             cx.notify();
         });

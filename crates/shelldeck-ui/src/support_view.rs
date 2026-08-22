@@ -387,11 +387,8 @@ pub enum SupportViewEvent {
         id: String,
         resolution: String,
     },
-    /// Confirm/reject a JeanClaude pending ticket from the Support strip.
-    JeanConfirm(String),
-    JeanReject(String),
-    /// File the selected ticket to JeanClaude (the composed text via /api/say).
-    SendToJean(String),
+    /// Send the selected support context to Monique's reviewed chat workflow.
+    SendToMonique(String),
     /// Convert a support ticket into a tracked request (source="support").
     ConvertToIssue {
         title: String,
@@ -617,10 +614,8 @@ pub struct SupportView {
     error: Option<String>,
     /// Popover menu for ticket actions (header kebab or list row).
     popover_menu: Option<(SupportMenuKind, Point<Pixels>)>,
-    // JeanClaude strip (fed by the workspace when Jean config is present).
-    jean_available: bool,
-    jean_pending: Vec<(String, String)>,
-    jean_active: usize,
+    // Monique dispatch is offered only when its authenticated config is present.
+    monique_available: bool,
     // Requests (issues) tab, fed by the workspace.
     section: SupportSection,
     issues: Vec<Issue>,
@@ -732,9 +727,7 @@ impl SupportView {
             loading: false,
             error: None,
             popover_menu: None,
-            jean_available: false,
-            jean_pending: Vec::new(),
-            jean_active: 0,
+            monique_available: false,
             section: SupportSection::Home,
             issues: Vec::new(),
             issues_staff: false,
@@ -869,20 +862,12 @@ impl SupportView {
         self.issue_popover_menu = None;
     }
 
-    /// Feed the JeanClaude strip (workspace pushes this from the cached state).
-    pub fn set_jean_brief(
-        &mut self,
-        available: bool,
-        pending: Vec<(String, String)>,
-        active: usize,
-    ) {
-        self.jean_available = available;
-        self.jean_pending = pending;
-        self.jean_active = active;
+    pub fn set_monique_available(&mut self, available: bool) {
+        self.monique_available = available;
     }
 
-    /// Compose the "Envoyer à Jean" text from the open ticket.
-    fn jean_ticket_text(&self) -> Option<String> {
+    /// Compose the "Send to Monique" text from the open ticket.
+    fn monique_ticket_text(&self) -> Option<String> {
         let t = self.detail.as_ref()?;
         let last_customer = t
             .messages
@@ -1467,8 +1452,6 @@ impl SupportView {
 
     // ── render helpers ───────────────────────────────────────────────────
 
-    /// Compact JeanClaude strip: pending confirmations (confirm/reject inline)
-    /// + active-ticket count. Shown only when Jean config is present.
     fn render_section_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tab =
             |label: String, icon: &'static str, section: SupportSection, cx: &mut Context<Self>| {
@@ -1619,9 +1602,6 @@ impl Render for SupportView {
 
         let compact = support_compact_layout(_window.viewport_size().width, _window.rem_size());
         let mut left = support_list_column(compact).child(header);
-        if self.jean_available {
-            left = left.child(self.render_jean_strip(cx));
-        }
         left = left.child(self.render_filters(cx)).child(list);
 
         let content = match self.section {

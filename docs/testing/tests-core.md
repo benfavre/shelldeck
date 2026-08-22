@@ -79,13 +79,13 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-060 | `app_config.rs::round_trip_non_default` | SDUC-080 | Green | |
 | SDTEST-061 | `app_config.rs::cloud_sync_round_trips` | SDUC-080 | Green | |
 | SDTEST-062 | `app_config.rs::account_round_trips_and_omits_when_logged_out` | SDUC-082 | Green | |
-| SDTEST-063 | `app_config.rs::jeanclaude_override_round_trips_and_omits_when_unset` | SDUC-083 | Green | |
-| SDTEST-064 | `app_config.rs::jean_runtime_round_trips_and_defaults_off` | SDUC-084 | Green | |
+| SDTEST-063 | `app_config.rs::monique_override_round_trips_and_omits_when_unset` | SDUC-083 | Green | Superseded by the expanded SDTEST-1666 contract. |
+| SDTEST-064 | `app_config.rs::monique_runtime_round_trips_and_defaults_off` | SDUC-084 | Green | |
 | SDTEST-065 | `app_config.rs::config_without_cloud_sync_section_still_parses` | SDUC-081 | Green | |
 | SDTEST-066 | `app_config.rs::load_from_missing_creates_defaults` | SDUC-085 | Green | |
 | SDTEST-067 | `app_config.rs::load_from_corrupt_returns_err` | SDUC-086 | Green | |
 | SDTEST-068 | *to write* — config with unknown fields still loads (forward compat) | SDUC-081 | **Red / P1** | Server may add a `[foo]` we don't know about yet; must not Err. |
-| SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/jean_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
+| SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/monique_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
 | SDTEST-070 | `app_config.rs::save_to_replaces_config_file_atomically` | SDUC-091 | Green | A hard link preserves the prior file identity and contents while `save_to` atomically replaces the configured path. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 | SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
@@ -248,40 +248,37 @@ Existing: **0 tests**.
 
 ---
 
-## 14. `config/jeanclaude.rs`
+## 14. `config/monique.rs`
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-240 | `jeanclaude.rs::parse_state` | SDUC-180 | Green | |
-| SDTEST-241 | `jeanclaude.rs::parse_history_ticket_targets_memory` | SDUC-181 | Green | |
-| SDTEST-242 | `jeanclaude.rs::post_actions_and_error_surface` | SDUC-182 | Green | |
-| SDTEST-243 | `jeanclaude.rs::wrong_credentials_surface_401` | SDUC-183 | Green | |
-| SDTEST-244 | `jeanclaude.rs::is_set_semantics` | SDUC-184 | Green | |
-| SDTEST-245 | *to write* — Basic auth header exact base64 shape | SDUC-183 | **Red / P1** | Right now the mock accepts *any* Basic auth. Assert the encoded `user:pass`. |
-| SDTEST-246 | `jeanclaude.rs::format_via_shelldeck_prefix_shape_is_pinned` + `format_via_shelldeck_empty_name_still_brackets_cleanly` + `format_via_shelldeck_preserves_text_verbatim` | SDUC-187 | Green | 3 tests, added 2026-07-09. Extracted `jeanclaude::format_via_shelldeck(name, text) -> String` as a pure helper (the inline `format!` in `Workspace::send_jean_ask` now calls this). Contract pinned: square brackets, U+2014 em-dash, trailing space after `]`. Empty-name case still brackets so Slack channel filters stay greppable. Text payload copied byte-for-byte (multi-line + unicode preserved). |
-| SDTEST-247 | *to write* — numeric epoch-ms timestamps parse into DateTime<Utc> | SDUC-186 | **Red / P1** | Currently only implicitly checked via history parse — an explicit round-trip test protects it. |
-| SDTEST-1054 (jean) | `jeanclaude.rs::resolve_effective_local_wins_over_server` + `resolve_effective_falls_back_to_server_when_local_unset` + `resolve_effective_falls_back_to_server_when_local_none` + `resolve_effective_none_when_neither_set` | SDUC-185 | Green | 4 tests, added 2026-07-09. Ported `JeanConfig::resolve_effective(local, server) -> Option<JeanConfig>` as a pure fn. Local `[jeanclaude]` wins when `is_set()`; unset local falls through to server; neither set → None (feature unavailable). Also see UI inventory (SDTEST-1054). |
+| SDTEST-1662 | `monique.rs::sdtest_monique_contract_reads_runtime_and_conversation` | SDUC-470, SDUC-471 | Green | Mock server pins Basic auth, status/process/history routes, typed response fields and the chat request body. |
+| SDTEST-1663 | `monique.rs::sdtest_monique_contract_sends_explicit_action_decisions` | SDUC-471 | Green | Approval carries the exact action id and closed `approve` decision; new chat uses its dedicated endpoint. |
+| SDTEST-1664 | `monique.rs::sdtest_monique_config_requires_complete_credentials_and_prefers_local` | SDUC-469 | Green | Partial local credentials fall through to the complete server configuration. |
+| SDTEST-1665 | `monique.rs::sdtest_monique_auth_failure_is_explicit` | SDUC-472 | Green | A 401 is surfaced with its bounded structured category and no credential. |
+| SDTEST-1666 | `app_config.rs::monique_override_round_trips_and_omits_when_unset` | SDUC-469 | Green | Older configs omit the table; a deliberate local override round-trips all required fields. |
+| SDTEST-1668 | `manage_sites.rs::sites_payload_parses_contract_example` | SDUC-469 | Green | The super-admin sites contract parses the complete typed Monique configuration. |
 
 ---
 
-## 15. `config/jean_fleet.rs`
+## 15. `config/monique_fleet.rs`
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-260 | `jean_fleet.rs::get_fleet_parses` | SDUC-200 | Green | |
-| SDTEST-261 | `jean_fleet.rs::register_heartbeat_dispatch` | SDUC-201 | Green | |
-| SDTEST-262 | `jean_fleet.rs::auto_tick_claims_and_executes` | SDUC-204 | Green | |
-| SDTEST-263 | `jean_fleet.rs::confirm_tick_claims_but_does_not_execute` | SDUC-205 | Green | |
-| SDTEST-264 | `jean_fleet.rs::wrong_auth_surfaces_401` | SDUC-208 | Green | |
-| SDTEST-265 | `jean_fleet.rs::parses_iso_and_null_timestamps` | SDUC-200 | Green | |
-| SDTEST-266 | `jean_fleet.rs::parse_stream_json_finds_result` | SDUC-203 | Green | |
-| SDTEST-267 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | Inspects the non-spawned `Command` builder, including optional-model omission. |
-| SDTEST-268 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `ANTHROPIC_API_KEY` is explicitly removed before spawn. |
-| SDTEST-269 | `jean_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `CLAUDE_CODE_OAUTH_TOKEN` is not overridden or removed, so parent inheritance remains intact. |
+| SDTEST-260 | `monique_fleet.rs::get_fleet_parses` | SDUC-200 | Green | |
+| SDTEST-261 | `monique_fleet.rs::register_heartbeat_dispatch` | SDUC-201 | Green | |
+| SDTEST-262 | `monique_fleet.rs::auto_tick_claims_and_executes` | SDUC-204 | Green | |
+| SDTEST-263 | `monique_fleet.rs::confirm_tick_claims_but_does_not_execute` | SDUC-205 | Green | |
+| SDTEST-264 | `monique_fleet.rs::wrong_auth_surfaces_401` | SDUC-208 | Green | |
+| SDTEST-265 | `monique_fleet.rs::parses_iso_and_null_timestamps` | SDUC-200 | Green | |
+| SDTEST-266 | `monique_fleet.rs::parse_stream_json_finds_result` | SDUC-203 | Green | |
+| SDTEST-267 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | Inspects the non-spawned `Command` builder, including optional-model omission. |
+| SDTEST-268 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `ANTHROPIC_API_KEY` is explicitly removed before spawn. |
+| SDTEST-269 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `CLAUDE_CODE_OAUTH_TOKEN` is not overridden or removed, so parent inheritance remains intact. |
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
 | SDTEST-272 | `workspace/fleet.rs::runtime_loop_requested_requires_explicit_enablement_and_credentials` | SDUC-206 | Green | The Workspace gate is the layer that prevents `runtime_tick` from ever being reached while disabled; its complete enablement/credentials truth table is pinned in `shelldeck-ui`. |
-| SDTEST-1584 | `jean_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Green | Added 2026-08-06, activated in CI 2026-08-18. The `Core tests (windows-x86_64)` job runs the `.cmd` batch fake through the real `JcodeExecutor` spawn→parse path on `windows-latest`. |
+| SDTEST-1584 | `monique_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Green | Added 2026-08-06, activated in CI 2026-08-18. The `Core tests (windows-x86_64)` job runs the `.cmd` batch fake through the real `JcodeExecutor` spawn→parse path on `windows-latest`. |
 
 > ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
 > `c5dd9c2`/`148b975` (`jcode_executor_uses_run_ndjson_flags_and_prompt_arg`,
@@ -377,7 +374,7 @@ Existing: **0 tests**.
 | SDTEST-1371 | `ai.rs::diagnostic_plans_are_bounded_and_reject_mutating_or_unbounded_commands` | SDUC-431 | Green | Accepts one to five distinct read-only steps and rejects elevation, mutation, shell operators, duplicate commands, and unbounded follow modes. |
 | SDTEST-1407 | `ai.rs::ai_running_status_excludes_drafts_and_confirmation_waits` | SDUC-429 | Green | The tray-running contract includes only `Generating` and `Executing`; ready/pending drafts, confirmation waits, and terminal states remain excluded. |
 | SDTEST-1427 | `ai.rs::assistant_turn_routes_request_drafts_and_preserves_normal_chat` | SDUC-452, SDUC-445 | Green | A strict `create_request` route yields one validated draft without a chat completion; `chat` preserves Markdown through the normal completion, and malformed routing safely falls back to chat. The latest message is isolated in bounded untrusted context, and a turn with no user message (Clippy clipboard transform) never calls the action router at all. |
-| SDTEST-1430 | `ai.rs::assistant_action_router_accepts_only_bounded_typed_workflow_payloads` | SDUC-454 | Green | Script, Terminal, Support, Jean, and existing-request navigation routes parse into distinct typed actions; empty targets and oversized dispatch content are rejected before Workspace orchestration. |
+| SDTEST-1430 | `ai.rs::assistant_action_router_accepts_only_bounded_typed_workflow_payloads` | SDUC-454 | Green | Script, Terminal, Support, Monique, and existing-request navigation routes parse into distinct typed actions; empty targets and oversized dispatch content are rejected before Workspace orchestration. |
 
 ---
 

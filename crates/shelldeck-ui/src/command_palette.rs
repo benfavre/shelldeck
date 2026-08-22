@@ -11,7 +11,7 @@ use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
     CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAiAssistant, OpenBextCloud,
-    OpenFileEditorView, OpenFleet, OpenJeanConsole, OpenLogin, OpenQuickConnect, OpenRecent,
+    OpenFileEditorView, OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent,
     OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests, OpenTemplateBrowser, PrevTab,
     SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
@@ -136,7 +136,7 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<OpenRecent>()
         || action.as_any().is::<OpenFileEditorView>()
         || action.as_any().is::<SwitchSite>()
-        || action.as_any().is::<OpenJeanConsole>()
+        || action.as_any().is::<OpenMoniqueConsole>()
         || action.as_any().is::<OpenFleet>()
         || action.as_any().is::<NewRequest>()
         || action.as_any().is::<OpenSupportRequests>()

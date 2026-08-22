@@ -51,9 +51,9 @@ pub enum MentionKind {
     Terminal,
     /// A file open in the editor.
     File,
-    /// A Jean fleet runtime instance.
+    /// A Monique fleet runtime instance.
     Instance,
-    /// A Jean fleet job.
+    /// A Monique fleet job.
     Job,
     /// A person the caller is allowed to address.
     Person,

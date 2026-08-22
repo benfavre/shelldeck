@@ -115,7 +115,7 @@ impl AiWorkflowTarget {
             AiCapability::TerminalCommand => Self::TerminalCommand { session_id: target },
             AiCapability::TerminalDiagnose => Self::TerminalDiagnose { session_id: target },
             AiCapability::IssueCompose
-            | AiCapability::JeanDispatch
+            | AiCapability::MoniqueDispatch
             | AiCapability::FleetDispatch
             | AiCapability::ClippyTransform
             | AiCapability::ClippyExplain
@@ -1274,7 +1274,7 @@ mod tests {
 
         let raw_or_structured = [
             AiCapability::Naming,
-            AiCapability::JeanDispatch,
+            AiCapability::MoniqueDispatch,
             AiCapability::FleetDispatch,
             AiCapability::SupportReply,
             AiCapability::SupportTriage,

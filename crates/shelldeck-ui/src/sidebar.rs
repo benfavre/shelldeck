@@ -182,7 +182,7 @@ pub enum SidebarSection {
     Sites,
     Recent,
     FileEditor,
-    JeanConsole,
+    MoniqueConsole,
     Fleet,
     BextCloud,
     Settings,
@@ -192,7 +192,7 @@ impl SidebarSection {
     /// The activities that earn a slot in the rail, in order.
     ///
     /// Deliberately *not* every section: an activity bar lists places with a
-    /// contextual panel behind them. JeanClaude, Fleet and bext Cloud are
+    /// contextual panel behind them. Monique, Fleet and bext Cloud are
     /// destinations, not activities — they are reached from the Aller menu and
     /// the command palette. `Settings` is excluded here because the rail pins
     /// it separately at the bottom.
@@ -252,7 +252,7 @@ impl SidebarSection {
             SidebarSection::Sites => "globe",
             SidebarSection::Recent => "activity",
             SidebarSection::FileEditor => "pencil",
-            SidebarSection::JeanConsole => "cpu",
+            SidebarSection::MoniqueConsole => "cpu",
             SidebarSection::Fleet => "box",
             SidebarSection::BextCloud => "cloud",
             SidebarSection::Settings => "settings",
@@ -269,7 +269,7 @@ impl SidebarSection {
             SidebarSection::Sites => t!("sidebar.nav.sites"),
             SidebarSection::Recent => t!("sidebar.nav.recent"),
             SidebarSection::FileEditor => t!("sidebar.nav.editor"),
-            SidebarSection::JeanConsole => t!("sidebar.nav.jean"),
+            SidebarSection::MoniqueConsole => t!("sidebar.nav.monique"),
             SidebarSection::Fleet => t!("sidebar.nav.fleet"),
             SidebarSection::BextCloud => t!("sidebar.nav.bext"),
             SidebarSection::Settings => t!("sidebar.nav.settings"),
@@ -327,9 +327,9 @@ pub struct SidebarView {
     /// Active Inklura Manage site filter. `Some(id)` hides connections bound to
     /// a *different* site (unbound connections always show); `None` = all sites.
     site_filter: Option<Uuid>,
-    /// Whether the JeanClaude console nav entry should be shown (config present).
-    jean_available: bool,
-    /// Whether the Jean fleet nav entry should be shown (Dev + signed in).
+    /// Whether the Monique console nav entry should be shown (config present).
+    monique_available: bool,
+    /// Whether the Monique fleet nav entry should be shown (Dev + signed in).
     fleet_available: bool,
     /// Contextual panel rows per activity, pushed by the workspace. Keyed by
     /// section so the panel can render whichever activity is selected without
@@ -352,7 +352,7 @@ impl SidebarView {
             search_state: cx.new(InputState::new),
             search_query: String::new(),
             site_filter: None,
-            jean_available: false,
+            monique_available: false,
             fleet_available: false,
             panel_items: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -372,12 +372,12 @@ impl SidebarView {
             .unwrap_or(&[])
     }
 
-    /// Show/hide the JeanClaude console nav entry (Dev mode + config present).
-    pub fn set_jean_available(&mut self, available: bool) {
-        self.jean_available = available;
+    /// Show/hide the Monique console nav entry (Dev mode + config present).
+    pub fn set_monique_available(&mut self, available: bool) {
+        self.monique_available = available;
     }
 
-    /// Show/hide the Jean fleet nav entry (Dev mode + signed in).
+    /// Show/hide the Monique fleet nav entry (Dev mode + signed in).
     pub fn set_fleet_available(&mut self, available: bool) {
         self.fleet_available = available;
     }
@@ -1317,7 +1317,7 @@ mod tests {
     fn rail_lists_activities_not_destinations() {
         let rail = super::SidebarSection::rail_activities();
         for excluded in [
-            super::SidebarSection::JeanConsole,
+            super::SidebarSection::MoniqueConsole,
             super::SidebarSection::Fleet,
             super::SidebarSection::BextCloud,
             super::SidebarSection::Settings,

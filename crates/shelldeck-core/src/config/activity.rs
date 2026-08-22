@@ -18,7 +18,8 @@ pub enum ActivityKind {
     Script,
     Support,
     Issue,
-    Jean,
+    #[serde(alias = "jean")]
+    Monique,
     Fleet,
     Site,
     Bext,
@@ -39,7 +40,7 @@ pub enum ActivityAction {
     OpenTicket,
     OpenIssue,
     OpenSite,
-    OpenJean,
+    OpenMonique,
     OpenFleet,
     OpenBext,
 }

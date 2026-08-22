@@ -438,13 +438,13 @@ convention exists); absence is logged and honestly reported as no sites.
 ### SDUC-080 — Round-trip `AppConfig` (non-default values)
 
 All fields serialize back into the same TOML on disk, including nested
-sections (`[cloud_sync]`, `[account]`, `[jeanclaude]`,
-`[jean_runtime]`).
+sections (`[cloud_sync]`, `[account]`, `[monique]`,
+`[monique_runtime]`).
 
 ### SDUC-081 — Backward compat: missing sections still parse
 
 A pre-cloud-sync `shelldeck.toml` with no `[cloud_sync]`, no
-`[account]`, no `[jeanclaude]`, no `[jean_runtime]` still parses into
+`[account]`, no `[monique]`, no `[monique_runtime]` still parses into
 sane defaults (`#[serde(default)]` on every new section is the
 contract).
 
@@ -454,12 +454,12 @@ contract).
 `account` is `None` (`skip_serializing_if`), so a logout leaves no
 trace in the file.
 
-### SDUC-083 — `[jeanclaude]` overrides survive round-trip and stay absent when unset
+### SDUC-083 — `[monique]` overrides survive round-trip and stay absent when unset
 
-Local `[jeanclaude]` overrides the server-delivered Jean config; when
-`None`, the section is not written back.
+A complete local `[monique]` overrides the server-delivered Monique config;
+when `None`, the section is not written back.
 
-### SDUC-084 — `[jean_runtime]` defaults to disabled
+### SDUC-084 — `[monique_runtime]` defaults to disabled
 
 Fresh config has `enabled = false`. Once persisted `enabled = true`,
 the round-trip preserves it.
@@ -608,7 +608,7 @@ at least one profile back and the merge produces a stable count.
 ### SDUC-120 — Fetch sites returns `SitesPayload`
 
 `fetch_sites()` GETs `…/sites` with the Bearer token and returns
-`SitesPayload { manage_origin, sites, areas, jeanclaude? }`.
+`SitesPayload { manage_origin, sites, areas, monique? }`.
 
 ### SDUC-121 — Sites payload from contract example
 
@@ -817,66 +817,51 @@ glyph variant).
 
 ---
 
-## 10. JeanClaude (native #jean bot client)
+## 10. Monique dashboard client
 
-`crates/shelldeck-core/src/config/jeanclaude.rs`
+### SDUC-469 — Monique configuration is complete and staff-scoped
 
-### SDUC-180 — State: aperçu shape
+`MoniqueConfig` requires an HTTP(S) URL plus both Basic-auth fields. A complete
+local `[monique]` override wins over the server value; otherwise only a signed-in
+super-admin may receive the Manage-delivered configuration.
 
-`get_state()` returns `paused`, `concurrency`, `queue_length`, active
-targets — parses the reference fixture from the bot source.
+### SDUC-470 — Monique runtime state is typed and freshness-aware
 
-### SDUC-181 — History, ticket detail, targets, memory, slack history
+ShellDeck reads `/api/status` and `/api/processes`, preserving queue,
+reconciliation, generation, provider, job, hierarchy and bounded progress
+fields. The console calls Monique ready only when the snapshot is current,
+provider is available and intake is accepting work.
 
-Each read endpoint parses the corresponding fixture without loss.
+### SDUC-471 — Monique conversation and approvals remain durable
 
-### SDUC-182 — Write endpoints send correct bodies
+The native console reads retained history, sends turns through `/api/chat`,
+starts a new conversation through `/api/chat/new`, and renders any returned
+Manage action for an explicit approve/reject decision through
+`/api/chat/action`.
 
-`confirm`, `reject`, `cancel`, `force_ticket`, `set_paused`,
-`set_concurrency`, `say`, `add_target`, `remove_target`, `add_memory`,
-`remove_memory` each POST the expected JSON body.
+### SDUC-472 — Dashboard credentials never cross redirects
 
-### SDUC-183 — Basic auth headers
+The native client uses HTTP Basic only against the configured canonical URL and
+refuses redirects, preventing credentials from being forwarded to a different
+origin. Authentication and structured server errors remain visible without
+printing the credential.
 
-Every request carries `Authorization: Basic base64(user:pass)`;
-wrong credentials surface 401.
+### SDUC-473 — Monique is the sole bot integration
 
-### SDUC-184 — `is_set` semantics
-
-`JeanConfig::is_set()` is true only when URL, user, and password are
-all non-empty.
-
-### SDUC-185 — Config precedence
-
-`Workspace::effective_jean_config()` prefers local `[jeanclaude]` in
-`shelldeck.toml` over the server-delivered `SitesPayload.jeanclaude`
-(which the server only sends to super-admin tokens).
-
-### SDUC-186 — Timestamp shape (epoch ms numbers)
-
-Jean returns timestamps as epoch-ms **numbers** (unlike Support's
-ISO strings). Parsing tolerates both.
-
-### SDUC-187 — Send-to-Jean from support
-
-`SupportView::set_jean_brief` produces a prefilled `say` body that the
-"Envoyer à Jean" button submits with the `[via ShellDeck — <name>]`
-prefix.
-
-### SDUC-188 — Poll while Jean surface visible
-
-10s poll runs only when `ActiveView::JeanConsole` is active.
+The application contains no alternate dashboard client, state poller, action
+transport, or configuration field. An unavailable Monique endpoint surfaces an
+error and cannot activate another service as a fallback.
 
 ---
 
-## 11. Jean fleet runtime
+## 11. Monique fleet runtime
 
-`crates/shelldeck-core/src/config/jean_fleet.rs`
+`crates/shelldeck-core/src/config/monique_fleet.rs`
 
 ### SDUC-200 — Fleet endpoint uses snake_case + ISO timestamps
 
-`get_fleet()` parses `JeanInstance`, `JeanJob`, `FleetSnapshot` with
-snake_case fields (unlike jeanclaude / support) and ISO-string
+`get_fleet()` parses `MoniqueInstance`, `MoniqueJob`, `FleetSnapshot` with
+snake_case fields and ISO-string
 timestamps (`de_flex_millis` → epoch ms).
 
 ### SDUC-201 — Register, heartbeat, claim, update_job, dispatch
@@ -909,7 +894,7 @@ Exécuter/Rejeter — never executes autonomously.
 
 ### SDUC-206 — Runtime disabled by default
 
-`[jean_runtime].enabled` defaults to false; `Workspace::sync_runtime_loop`
+`[monique_runtime].enabled` defaults to false; `Workspace::sync_runtime_loop`
 is a no-op until the user explicitly enables the runtime.
 
 ### SDUC-207 — Concurrency = 1
@@ -925,7 +910,7 @@ Wrong Bearer token surfaces 401 without silently retrying forever.
 
 Fleet jobs run through `jcode run --ndjson|--json --quiet --no-update
 --no-selfdev -C <workdir> [--provider …] [--model …] [--tool-profile …]
-<prompt>` (binary from `[jean_runtime]` config, `$JCODE_BIN`, or `jcode`).
+<prompt>` (binary from `[monique_runtime]` config, `$JCODE_BIN`, or `jcode`).
 Both NDJSON stream events and a final JSON object parse to the job result;
 the workdir is validated before spawn and the child is killed on timeout.
 The ACP transport is explicitly disabled by contract today and falls back to
@@ -939,7 +924,7 @@ without a use-case entry.)*
 ### SDUC-209 — Instance ID persistence
 
 The first successful `register()` persists `instance_id` into
-`[jean_runtime]`; subsequent heartbeats reuse it.
+`[monique_runtime]`; subsequent heartbeats reuse it.
 
 ---
 
@@ -1037,7 +1022,7 @@ contains all thirteen states even while production omits unavailable data.
 Markdown is rendered only where the value is genuinely free-form prose: the
 opening message and comments of Requests/Tickets, both roles in durable AI
 conversations, read-only AI summaries/explanations/reviews, the Clippy result
-preview, Fleet job prompts/results, JeanClaude pending prompts/detail actions,
+preview, Fleet job prompts/results, Monique conversation/actions,
 and managed-site notes. Short previews, names, statuses, errors and control
 metadata remain plain text; editable replies/drafts and the Clippy diff retain
 their exact source; scripts, terminal output and executable AI payloads retain
@@ -1420,12 +1405,12 @@ without erroring.
 
 `DeepLink::parse` turns an OS-delivered URL into a typed variant
 (`Assistant`/`OpenConnection`/`SshConnect`/`TunnelStart`/`OpenSite`/`OpenIssue`/
-`OpenTicket`/`JeanConfirm`). The scheme is case-insensitive; embedded
+`OpenTicket`/`FleetConfirm`). The scheme is case-insensitive; embedded
 UUIDs are validated (bad UUID → `None`); query strings, fragments and
 trailing slashes are ignored; unknown verbs and wrong schemes parse to
 `None` so the router can no-op instead of guessing. Server-side IDs
-(sites/tickets/issues/Jean jobs) keep their original casing.
-`JeanConfirm` retains its job id across an asynchronous Fleet refresh and opens
+(sites/tickets/issues/Monique jobs) keep their original casing.
+`FleetConfirm` retains its job id across an asynchronous Fleet refresh and opens
 the matching job detail rather than only navigating to the Fleet surface.
 
 ### SDUC-407 — Single instance + deep-link hand-off
@@ -1459,7 +1444,7 @@ not prevent the app from opening.
 Dev mode exposes an "Activité" surface with search, kind filters, relative
 timestamps, and contextual open actions. Entries can route back to the
 matching surface when enough target data is present: terminal, connection,
-script, tunnel, support ticket, hosted request, site, Jean, Fleet, or bext.
+script, tunnel, support ticket, hosted request, site, Monique, Fleet, or bext.
 When Recent AI is enabled, a row can explicitly open the assistant with only
 that activity entry and the bounded host directory as context.
 
@@ -1499,7 +1484,7 @@ and reports the provider/model result, but does not become a per-launch lock.
 ### SDUC-414 — Contextual drafts never execute automatically
 
 The shared AI sheet receives bounded structured context from Support,
-requests, scripts, terminal, Jean, naming, or recent activity. Every call is
+requests, scripts, terminal, Monique, naming, or recent activity. Every call is
 explicit and every result remains a draft: ShellDeck never sends a reply,
 executes a terminal command, mutates a request, or overwrites a script from an
 AI response. In the durable assistant conversation, both user and assistant
@@ -1661,7 +1646,7 @@ the exact target, action kind, risk, provider/model, timeout, and payload, then
 opens a second confirmation dialog showing what will affect the real system.
 The final click revalidates target and permissions. Terminal commands target
 the exact active session; generated/fixed scripts run without saving; Support
-replies, Jean sends, and Fleet dispatches reuse their existing service clients.
+replies, Monique sends, and Fleet dispatches reuse their existing service clients.
 
 ### SDUC-428 — Confirmed AI actions are stoppable and safely audited
 
@@ -1694,7 +1679,7 @@ thread that owns its native menu.
 ### SDUC-430 — Executable AI capabilities obey persisted autonomy policies
 
 Settings exposes `Prepare`, `Confirm`, and `Automatic` policies for Support
-send, Support triage, Terminal execution, Script execution, Jean dispatch, and Fleet dispatch;
+send, Support triage, Terminal execution, Script execution, Monique dispatch, and Fleet dispatch;
 surface toggles remain the single disabled state. Older configurations default
 every executable capability to confirmation. Preparation hides or blocks the
 final executable action. Automatic skips the second dialog only for low or
@@ -1739,7 +1724,7 @@ ShellDeck obtains a short-lived, single-use, issue-scoped ticket from Manage,
 uploads the bytes directly to Inklura Share, and sends only opaque receipts
 back to Manage. Manage validates tenant and issue scope before persisting
 structured attachments. Request and comment attachments remain visible to
-User and Support surfaces and are mirrored as image links to GitHub/Jean.
+User and Support surfaces and are mirrored as image links to GitHub/Monique.
 Ticket attachments remain structured in the helpdesk thread and their Share
 viewer links are routed to the originating email, livechat, Manage, or SMS channel.
 Issue uploads never appear in the uploader's personal Share gallery.
@@ -1941,7 +1926,7 @@ User, Support and Dev, and on the pre-login welcome screen. Its contents follow
 the account: logged out it offers only sign-in, quit, interface zoom, command
 palette, documentation and menu recovery;
 User mode omits every SSH, terminal and staff-console command; the staff
-consoles (JeanClaude, Fleet) appear only when both the capability and the
+consoles (Monique, Fleet) appear only when both the capability and the
 configuration are present. Commands route through the same handler the command
 palette and the keyboard shortcuts use. The row can be hidden from View → Menu
 Bar; the preference persists and the terminal grid resizes to match.
@@ -1951,7 +1936,7 @@ Bar; the preference persists and the terminal grid resizes to match.
 Dev mode shows a fixed-width icon rail listing the navigation sections that
 have a contextual panel behind them, with the active one marked, Settings
 pinned to the bottom, and connected-host / open-tab counts carried as badges.
-Destinations without a panel — JeanClaude, Fleet, bext Cloud — are reached from
+Destinations without a panel — Monique, Fleet, bext Cloud — are reached from
 the Aller menu and the command palette rather than taking a rail slot.
 
 The panel follows the selected activity: Connections keeps its grouped host
@@ -2026,10 +2011,10 @@ per surface by SDTEST-1429.
 
 An explicit conversational instruction can open the existing unsaved Script
 form and generate its draft, prepare a command for the currently active
-Terminal workflow, draft a reply for the selected Support ticket, stage a Jean
+Terminal workflow, draft a reply for the selected Support ticket, stage a Monique
 dispatch behind its existing confirmation, or navigate to one visible hosted
 request by exact ID/title or an unambiguous partial match. The assistant never
-executes a command, saves a script, sends a reply, or dispatches to Jean by
+executes a command, saves a script, sends a reply, or dispatches to Monique by
 itself. Missing, stale, unauthorized, or ambiguous targets stop at a localized
 warning instead of being guessed.
 
@@ -2304,7 +2289,7 @@ keep plain textarea behaviour, where Enter inserts a newline.
 ### SDUC-468 — A portal failure is reported in the user's own words
 
 Every request ShellDeck sends to Inklura Manage — cloud sync, sites, support,
-requests, the Jean fleet, bext Cloud, the account itself — reports a failure as
+requests, the Monique fleet, bext Cloud, the account itself — reports a failure as
 a sentence the reader can act on, in the interface language. What went wrong is
 classified once, from the message the client produced: the portal is
 unreachable, it timed out, the session expired, the account lacks access, the
@@ -2367,7 +2352,7 @@ once the network returns.
 - **2026-08-18** — Corrected and completed SDTEST-272 for SDUC-206. The safety
   boundary lives in `Workspace::sync_runtime_loop`, before the core
   `runtime_tick`: its full enablement/credentials truth table now proves that a
-  configured account cannot start Jean while `[jean_runtime].enabled` is
+  configured account cannot start Monique while `[monique_runtime].enabled` is
   false. The existing defense-in-depth check inside `runtime_loop_step` remains
   unchanged.
 - **2026-08-18** — Clarified SDUC-260 and completed SDTEST-332/333: every
@@ -2420,7 +2405,7 @@ once the network returns.
   changing the cached or server-side title.
 - **2026-08-13** — Added SDUC-460 and SDTEST-1604..1609 for the shared secure
   Markdown boundary. Dynamic prose now renders consistently across Support,
-  Assistant, Clippy, Fleet, JeanClaude and site notes; raw/editable/executable
+  Assistant, Clippy, Fleet, Monique and site notes; raw/editable/executable
   content remains outside the rich renderer. Raw HTML and automatic remote
   images are suppressed, unsafe schemes stay inert, and HTTP(S) links require
   the common copy/open confirmation with exact-host external warnings.
@@ -2706,7 +2691,7 @@ once the network returns.
 - **2026-07-09 (G)** — Cluster G cloud_sync P0: SDTEST-152/153/154
   (404/405 → GET fallback, 401 without retry). First mock-based
   cluster of the session; extends the zero-dep `TcpListener` pattern
-  from `jean_fleet` / `issues` / `manage_support` to cover the sync
+  from `monique_fleet` / `issues` / `manage_support` to cover the sync
   entry point. SDTEST-154 is the load-bearing safety test — a bad
   token can never reach `merge_profiles` with an empty payload and
   silently prune every CloudSync connection.
@@ -2715,11 +2700,11 @@ once the network returns.
   forced User), SDTEST-225 (7 support write body shapes + 401),
   SDTEST-295 (create_issue source elision), SDTEST-1053/1057
   (can_switch predicate — palette leak fix drafted), SDTEST-1054/185
-  (JeanConfig::resolve_effective precedence), SDTEST-227/228
+  (MoniqueConfig::resolve_effective precedence), SDTEST-227/228
   (support agents empty + list order preserved), SDTEST-298
   (dispatch_issue instance_id body), SDTEST-246 (format_via_shelldeck
   prefix shape). Ported 4 pure fns to `shelldeck-core` (`AppMode::can_switch`,
-  `AppMode::resolve_effective`, `JeanConfig::resolve_effective`,
+  `AppMode::resolve_effective`, `MoniqueConfig::resolve_effective`,
   `format_via_shelldeck`) so the truth tables are testable outside
   GPUI. Workspace delegate call-sites drafted in the working tree,
   land in a follow-up commit once the concurrent i18n WIP merges.

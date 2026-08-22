@@ -16,13 +16,13 @@ risques par frontière observable et impose une vérification avant correction.
 
 | ID | Origine | Frontière | Risque / preuve manquante | Priorité | Statut | Références et prochaine preuve |
 |---|---|---|---|---|---|---|
-| REL-001 | NEXT-001 | Jean / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
+| REL-001 | NEXT-001 | Monique / activation | Un runtime désactivé ne doit jamais créer sa boucle, même avec des identifiants valides. | P0 | Terminé | SDTEST-272 couvre les quatre cas activation/identifiants ; la garde par itération reste en place. |
 | REL-002 | NEXT-004 | CI multiplateforme | Les branches core macOS et Windows n'étaient pas exécutées avant release. | P1 | Terminé | CI native : 297 tests sur macOS ARM64 et 288 sur Windows x86_64 ; SDTEST-1584/1585 sont exercés. |
 | REL-003 | NEXT-005 | SSH session / ProxyJump / tunnels | Les chemins critiques dépendent encore de vrais transports ou de sockets difficiles à piloter. | P0 | Terminé | Session, ProxyJump et les trois directions de tunnel sont prouvés par SDTEST-520/521/524/525, 528/530 et 562/564/565/566/567. Plus aucune ligne P0 ouverte dans `tests-ssh.md` ; les P1/P2 restants (SDTEST-508/509/522/523/527/529/600/601) restent suivis par l'inventaire, et le pool dormant par DEBT-005. |
 | REL-004 | NEXT-005 | Terminal / PTY | Sortie, entrée, resize, notifier et destruction du processus manquaient de preuve de cycle de vie. | P0 | Terminé | Contrat de `Drop` arrêté et couvert par SDTEST-967/969 ; sortie, entrée, resize et repaint événementiel par SDTEST-980..983. Plus aucune ligne P0 ouverte dans `tests-terminal.md`. Restent les P1 SDTEST-984..986 et la dette protocolaire suivie par REL-010. |
-| REL-005 | — | Jean / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
+| REL-005 | — | Monique / état runtime | La concurrence et la réutilisation de l'instance enregistrée ne sont pas verrouillées. | P1 | À vérifier | Contrôler l'implémentation actuelle, puis SDTEST-270 (`runtime_busy`) et SDTEST-271 (persistance `instance_id`) avec faux executor/store. |
 | REL-006 | NEXT-005 | IA et branchements GPUI | Les confirmations, cibles, politiques, centre de tâches et pièces jointes ont des scénarios P0 sans harnais d'intégration stable. | P0 | En cours | Voie retenue : **extraction de réducteurs purs**, un lot à la fois. Faits : SDTEST-1377 (`base_palette_actions`), SDTEST-1365 (`route_ai_action`) et SDTEST-1366 (`ai_timeout_outcome`). Faits aussi : SDTEST-1363 (`resolve_naming_application`). Restent SDTEST-1360/1361/1368/1370/1372 par la même méthode ; 1375/1376 touchent au rendu et resteront hors de portée sans harnais — 1376 appartient d'ailleurs à `patches/adabraka-ui`. |
-| REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Jean, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
+| REL-007 | — | Polling réseau | Une surface masquée ne doit pas continuer à interroger Support, Issues, Monique, Fleet ou Bext. | P0 | Terminé | Audit : les quatre gardes étaient correctes, y compris hors session. Elles sont désormais un seul prédicat pur couvert par SDTEST-1059. Le sondage git local est hors périmètre — il ne sort pas sur le réseau et suspend déjà son travail fenêtre masquée. |
 | REL-008 | — | Keychain natif | **Aucun backend n'était compilé** : `keyring = "3"` sans feature retombe sur le magasin `mock` en mémoire, sur les trois plateformes. Rien n'a jamais été persisté. | P0 | Terminé | Features `apple-native` / `windows-native` / `sync-secret-service` activées ; SDTEST-120/123 passent enfin, et SDTEST-121/122 s'exécutent sur les runners macOS et Windows. |
 | REL-009 | NEXT-005 | Mise à jour | La cadence de sondage reste couplée au temps réel. | P1 | En cours | Chemins de remplacement du binaire couverts sur les deux plateformes (SDTEST-1242/1243/1244) et exécutés en CI ; la vérification SHA-256 l'était déjà (SDTEST-1240). Reste l'injection d'horloge pour SDTEST-1220/1221, puis 1224/1241. |
 | REL-010 | — | Terminal / protocoles | OSC 7/52, modes souris, styles de curseur, longues chaînes OSC, sélection et caractères larges restent partiellement couverts. | P1 | À vérifier | Reproduire chaque comportement avant de reprendre SDTEST-750..755 et 870..874. |
@@ -107,13 +107,13 @@ risques par frontière observable et impose une vérification avant correction.
 - **2026-08-18 — REL-007 terminé, sans défaut trouvé.** L'audit cherchait une
   surface masquée qui continue d'interroger le réseau ; les quatre gardes
   étaient déjà correctes, y compris le cas « déconnecté » qu'on soupçonnait pour
-  Jean — `effective_jean_config` court-circuite sur `!signed_in()`. Le risque
+  Monique — `effective_monique_config` court-circuite sur `!signed_in()`. Le risque
   réel n'était donc pas une fuite existante mais la dérive : quatre prédicats
   recopiés, aucun endroit où vérifier la règle commune. Ils sont réunis dans
   `workspace/polling.rs`, pur et testable hors GPUI.
 - **2026-08-18 — Un implicite rendu explicite.** « Déconnecté ⇒ aucun polling »
   découlait de trois mécanismes séparés (`resolve_effective` force User,
-  `has_jean` et `can_access_mode` exigent un compte). C'était vrai mais nulle
+  `has_monique` et `can_access_mode` exigent un compte). C'était vrai mais nulle
   part énoncé, donc invérifiable. Le prédicat le pose maintenant en tête : le
   comportement à l'exécution est inchangé, la garantie est devenue testable.
 - **2026-08-18 — REL-008 : le trousseau n'a jamais rien enregistré.** L'audit

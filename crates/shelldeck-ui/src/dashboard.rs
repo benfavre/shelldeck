@@ -87,7 +87,7 @@ impl DashboardView {
             ActivityKind::Forward | ActivityKind::Site | ActivityKind::Bext => {
                 ShellDeckColors::primary()
             }
-            ActivityKind::Script | ActivityKind::Jean | ActivityKind::Fleet => {
+            ActivityKind::Script | ActivityKind::Monique | ActivityKind::Fleet => {
                 ShellDeckColors::warning()
             }
             ActivityKind::Support | ActivityKind::Issue => ShellDeckColors::primary_hover(),

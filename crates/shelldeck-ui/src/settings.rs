@@ -1025,14 +1025,14 @@ impl SettingsView {
                 ),
             ))
             .child(Self::render_setting_row(
-                t!("settings.tray.notify_jean_pending.label").as_ref(),
-                t!("settings.tray.notify_jean_pending.description").as_ref(),
+                t!("settings.tray.notify_monique_pending.label").as_ref(),
+                t!("settings.tray.notify_monique_pending.description").as_ref(),
                 Self::bind_toggle(
-                    "tray-notify-jean-pending",
-                    self.config.tray.notify_jean_pending,
+                    "tray-notify-monique-pending",
+                    self.config.tray.notify_monique_pending,
                     &entity,
                     |this, value| {
-                        this.config.tray.notify_jean_pending = value;
+                        this.config.tray.notify_monique_pending = value;
                     },
                 ),
             ))
@@ -1544,11 +1544,11 @@ impl SettingsView {
             |this, value| this.config.ai.surfaces.terminal = value,
         ))
         .child(ai_surface_row(
-            "ai-surface-jean",
-            "jean",
-            self.config.ai.surfaces.jean,
+            "ai-surface-monique",
+            "monique",
+            self.config.ai.surfaces.monique,
             &entity,
-            |this, value| this.config.ai.surfaces.jean = value,
+            |this, value| this.config.ai.surfaces.monique = value,
         ))
         .child(ai_surface_row(
             "ai-surface-naming",
@@ -1603,11 +1603,11 @@ impl SettingsView {
             |this, value| this.config.ai.policies.script_execute = value,
         ))
         .child(ai_policy_row(
-            "ai-policy-jean-dispatch",
-            "jean_dispatch",
-            self.config.ai.policies.jean_dispatch,
+            "ai-policy-monique-dispatch",
+            "monique_dispatch",
+            self.config.ai.policies.monique_dispatch,
             &entity,
-            |this, value| this.config.ai.policies.jean_dispatch = value,
+            |this, value| this.config.ai.policies.monique_dispatch = value,
         ))
         .child(ai_policy_row(
             "ai-policy-fleet-dispatch",
@@ -3110,7 +3110,7 @@ fn ai_surface_row(
         "issues" => t!("settings.ai.surfaces.issues").to_string(),
         "scripts" => t!("settings.ai.surfaces.scripts").to_string(),
         "terminal" => t!("settings.ai.surfaces.terminal").to_string(),
-        "jean" => t!("settings.ai.surfaces.jean").to_string(),
+        "monique" => t!("settings.ai.surfaces.monique").to_string(),
         "naming" => t!("settings.ai.surfaces.naming").to_string(),
         "recent" => t!("settings.ai.surfaces.recent").to_string(),
         "clippy" => t!("settings.ai.surfaces.clippy").to_string(),
@@ -3135,7 +3135,7 @@ fn ai_policy_row(
         "support_triage" => t!("settings.ai.policies.support_triage").to_string(),
         "terminal_execute" => t!("settings.ai.policies.terminal_execute").to_string(),
         "script_execute" => t!("settings.ai.policies.script_execute").to_string(),
-        "jean_dispatch" => t!("settings.ai.policies.jean_dispatch").to_string(),
+        "monique_dispatch" => t!("settings.ai.policies.monique_dispatch").to_string(),
         "fleet_dispatch" => t!("settings.ai.policies.fleet_dispatch").to_string(),
         "clippy_replace_selection" => t!("ai.tasks.capability.clippy_replace").to_string(),
         _ => name.to_string(),

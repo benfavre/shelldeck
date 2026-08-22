@@ -109,7 +109,7 @@ impl Render for Workspace {
         }
 
         // The menu row reads a dozen pieces of state (mode, sign-in, sidebar,
-        // Jean/Fleet availability, AI); rebuilding it here keeps it honest
+        // Monique/Fleet availability, AI); rebuilding it here keeps it honest
         // without a subscription per input.
         self.rebuild_menu_bar(_cx);
         // Same reasoning: the contextual panel reads several live entities
@@ -183,7 +183,9 @@ impl Render for Workspace {
                         ActiveView::Sites => content = content.child(self.sites.clone()),
                         ActiveView::Recent => content = content.child(self.recent.clone()),
                         ActiveView::FileEditor => content = content.child(self.file_editor.clone()),
-                        ActiveView::JeanConsole => content = content.child(self.jean_view.clone()),
+                        ActiveView::MoniqueConsole => {
+                            content = content.child(self.monique_view.clone())
+                        }
                         ActiveView::Fleet => content = content.child(self.fleet_view.clone()),
                         ActiveView::BextCloud => content = content.child(self.bext_view.clone()),
                         ActiveView::Settings => content = content.child(self.settings.clone()),

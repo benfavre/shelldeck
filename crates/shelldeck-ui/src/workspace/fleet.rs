@@ -5,7 +5,7 @@ fn runtime_loop_requested(runtime_enabled: bool, credentials_available: bool) ->
 }
 
 impl Workspace {
-    // --- Jean fleet runtime ---
+    // --- Monique fleet runtime ---
 
     /// `(base_url, token)` when signed in to Inklura Manage.
     pub(super) fn fleet_base_token(&self) -> Option<(String, String)> {
@@ -53,7 +53,7 @@ impl Workspace {
         let workdir = inst
             .map(|i| i.workdir.clone())
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| self.app_config.jean_runtime.workdir.clone())
+            .or_else(|| self.app_config.monique_runtime.workdir.clone())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| {
                 // util::home_dir() also honors %USERPROFILE% / the platform
@@ -64,7 +64,7 @@ impl Workspace {
                     .unwrap_or_else(|| ".".to_string())
             });
         let fleet_model = inst.map(|i| i.model.clone()).unwrap_or_default();
-        let model = self.app_config.jean_runtime.job_model(&fleet_model);
+        let model = self.app_config.monique_runtime.job_model(&fleet_model);
         (workdir, model)
     }
 
@@ -72,7 +72,7 @@ impl Workspace {
         let (tenant_id, tenant_name) = self.runtime_tenant();
         let name = self
             .app_config
-            .jean_runtime
+            .monique_runtime
             .name
             .clone()
             .filter(|s| !s.trim().is_empty())
@@ -80,7 +80,7 @@ impl Workspace {
         let (workdir, model) = self.runtime_workdir_model();
         let model = (!model.trim().is_empty()).then_some(model);
         Some(RegisterInstance {
-            id: self.app_config.jean_runtime.instance_id.clone(),
+            id: self.app_config.monique_runtime.instance_id.clone(),
             name,
             tenant_id,
             tenant_name,
@@ -90,7 +90,7 @@ impl Workspace {
             model,
             // Only set autonomy on the FIRST register (safe default = confirm);
             // later leave it so an admin can flip it to "auto" in the console.
-            autonomy: if self.app_config.jean_runtime.instance_id.is_none() {
+            autonomy: if self.app_config.monique_runtime.instance_id.is_none() {
                 Some("confirm".to_string())
             } else {
                 None
@@ -109,7 +109,7 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { jean_fleet::get_fleet(&base, &token) })
+                .spawn(async move { monique_fleet::get_fleet(&base, &token) })
                 .await;
             let _ = this.update(cx, |ws, cx| match result {
                 Ok(snap) => {
@@ -131,12 +131,12 @@ impl Workspace {
     }
 
     pub(super) fn push_runtime_status_to_fleet(&mut self, cx: &mut Context<Self>) {
-        let enabled = self.app_config.jean_runtime.enabled;
+        let enabled = self.app_config.monique_runtime.enabled;
         let my_id = self
             .runtime_instance
             .as_ref()
             .map(|i| i.id.clone())
-            .or_else(|| self.app_config.jean_runtime.instance_id.clone());
+            .or_else(|| self.app_config.monique_runtime.instance_id.clone());
         let status = if !enabled {
             "désactivé".to_string()
         } else {
@@ -149,7 +149,7 @@ impl Workspace {
             format!(
                 "{} · {}",
                 base,
-                self.app_config.jean_runtime.executor.self_report_label()
+                self.app_config.monique_runtime.executor.self_report_label()
             )
         };
         let awaiting = self.runtime_awaiting.clone();
@@ -208,7 +208,7 @@ impl Workspace {
         }
         match event {
             FleetViewEvent::Refresh => self.refresh_fleet_view(cx),
-            FleetViewEvent::ToggleRuntime => self.toggle_jean_runtime(cx),
+            FleetViewEvent::ToggleRuntime => self.toggle_monique_runtime(cx),
             FleetViewEvent::ApproveJob(id) => self.approve_fleet_job(id, cx),
             FleetViewEvent::RejectJob(id) => self.reject_fleet_job(id, cx),
         }
@@ -217,26 +217,26 @@ impl Workspace {
     /// Enable/disable THIS machine as a fleet runtime. Off by default; enabling
     /// starts the loop. The safety gate is that the loop only *executes* jobs
     /// when enabled AND the instance autonomy is "auto"; "confirm" needs a click.
-    pub fn toggle_jean_runtime(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_monique_runtime(&mut self, cx: &mut Context<Self>) {
         if !self.enter_dev_mode(cx) {
             return;
         }
         if self.fleet_base_token().is_none() {
             self.show_toast(
-                t!("toast.jean.login_required_runtime").to_string(),
+                t!("toast.monique.login_required_runtime").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
             return;
         }
-        let now = !self.app_config.jean_runtime.enabled;
-        self.app_config.jean_runtime.enabled = now;
+        let now = !self.app_config.monique_runtime.enabled;
+        self.app_config.monique_runtime.enabled = now;
         if let Err(e) = self.app_config.save() {
-            tracing::error!("Failed to save jean_runtime: {}", e);
+            tracing::error!("Failed to save monique_runtime: {}", e);
         }
         if now {
             self.show_toast(
-                t!("toast.jean.runtime_on").to_string(),
+                t!("toast.monique.runtime_on").to_string(),
                 ToastLevel::Success,
                 cx,
             );
@@ -247,7 +247,7 @@ impl Workspace {
             {
                 cx.background_executor()
                     .spawn(async move {
-                        let _ = jean_fleet::heartbeat(
+                        let _ = monique_fleet::heartbeat(
                             &base,
                             &token,
                             &inst.id,
@@ -263,7 +263,7 @@ impl Workspace {
             self.runtime_busy = false;
             self.publish_tray_state(cx);
             self.show_toast(
-                t!("toast.jean.runtime_off").to_string(),
+                t!("toast.monique.runtime_off").to_string(),
                 ToastLevel::Info,
                 cx,
             );
@@ -276,7 +276,7 @@ impl Workspace {
     /// Start/stop the runtime loop from config + auth state.
     pub fn sync_runtime_loop(&mut self, cx: &mut Context<Self>) {
         let want = runtime_loop_requested(
-            self.app_config.jean_runtime.enabled,
+            self.app_config.monique_runtime.enabled,
             self.fleet_base_token().is_some(),
         );
         if want {
@@ -294,14 +294,16 @@ impl Workspace {
                             RuntimeStep::Register(base, token, reg) => {
                                 let r = cx
                                     .background_executor()
-                                    .spawn(async move { jean_fleet::register(&base, &token, &reg) })
+                                    .spawn(
+                                        async move { monique_fleet::register(&base, &token, &reg) },
+                                    )
                                     .await;
                                 let _ = this.update(cx, |ws, cx| ws.apply_register(r, cx));
                             }
                             RuntimeStep::HeartbeatOnly(base, token, id, version) => {
                                 cx.background_executor()
                                     .spawn(async move {
-                                        let _ = jean_fleet::heartbeat(
+                                        let _ = monique_fleet::heartbeat(
                                             &base,
                                             &token,
                                             &id,
@@ -318,7 +320,7 @@ impl Workspace {
                                     .spawn(async move {
                                         let exec = tc.runtime_config.job_executor();
                                         let timeout = tc.runtime_config.job_timeout();
-                                        jean_fleet::runtime_tick(
+                                        monique_fleet::runtime_tick(
                                             &tc.base,
                                             &tc.token,
                                             &tc.instance_id,
@@ -349,7 +351,7 @@ impl Workspace {
     /// Decide this loop iteration's action on the UI thread (keeps all the config
     /// reads + gating in one place). `None` = stop the loop.
     pub(super) fn runtime_loop_step(&mut self, _cx: &mut Context<Self>) -> Option<RuntimeStep> {
-        if !self.app_config.jean_runtime.enabled {
+        if !self.app_config.monique_runtime.enabled {
             return None;
         }
         let (base, token) = self.fleet_base_token()?;
@@ -374,18 +376,18 @@ impl Workspace {
             model,
             autonomy,
             version,
-            runtime_config: self.app_config.jean_runtime.clone(),
+            runtime_config: self.app_config.monique_runtime.clone(),
         }))
     }
 
     pub(super) fn apply_register(
         &mut self,
-        r: shelldeck_core::Result<JeanInstance>,
+        r: shelldeck_core::Result<MoniqueInstance>,
         cx: &mut Context<Self>,
     ) {
         match r {
             Ok(inst) => {
-                self.app_config.jean_runtime.instance_id = Some(inst.id.clone());
+                self.app_config.monique_runtime.instance_id = Some(inst.id.clone());
                 if let Err(e) = self.app_config.save() {
                     tracing::error!("Failed to persist runtime instance id: {}", e);
                 }
@@ -396,7 +398,7 @@ impl Workspace {
                 self.fleet_view.update(cx, |v, cx| {
                     v.set_error(
                         t!(
-                            "toast.jean.register_failed",
+                            "toast.monique.register_failed",
                             error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
@@ -409,7 +411,7 @@ impl Workspace {
 
     pub(super) fn apply_tick_result(
         &mut self,
-        result: shelldeck_core::Result<jean_fleet::TickResult>,
+        result: shelldeck_core::Result<monique_fleet::TickResult>,
         cx: &mut Context<Self>,
     ) {
         match result {
@@ -433,7 +435,7 @@ impl Workspace {
                     }
                     self.runtime_busy = true;
                     self.show_toast(
-                        t!("toast.jean.ticket_awaiting").to_string(),
+                        t!("toast.monique.ticket_awaiting").to_string(),
                         ToastLevel::Warning,
                         cx,
                     );
@@ -463,7 +465,7 @@ impl Workspace {
             return;
         };
         let (workdir, model) = self.runtime_workdir_model();
-        let runtime_config = self.app_config.jean_runtime.clone();
+        let runtime_config = self.app_config.monique_runtime.clone();
         self.runtime_awaiting.retain(|j| j.id != job_id);
         self.publish_tray_state(cx);
         // busy stays true through execution.
@@ -479,7 +481,7 @@ impl Workspace {
             cx,
         );
         self.show_toast(
-            t!("toast.jean.ticket_running").to_string(),
+            t!("toast.monique.ticket_running").to_string(),
             ToastLevel::Info,
             cx,
         );
@@ -491,7 +493,9 @@ impl Workspace {
                 .spawn(async move {
                     let exec = runtime_config.job_executor();
                     let timeout = runtime_config.job_timeout();
-                    jean_fleet::execute_job(&base, &token, &job, &workdir, &model, &exec, timeout)
+                    monique_fleet::execute_job(
+                        &base, &token, &job, &workdir, &model, &exec, timeout,
+                    )
                 })
                 .await;
             let _ = this.update(cx, |ws, cx| {
@@ -512,7 +516,7 @@ impl Workspace {
                     );
                     ws.show_toast(
                         t!(
-                            "toast.jean.ticket_failed",
+                            "toast.monique.ticket_failed",
                             error = crate::i18n::api_error_message(&e)
                         )
                         .to_string(),
@@ -534,7 +538,7 @@ impl Workspace {
                         cx,
                     );
                     ws.show_toast(
-                        t!("toast.jean.ticket_done").to_string(),
+                        t!("toast.monique.ticket_done").to_string(),
                         ToastLevel::Success,
                         cx,
                     );
@@ -582,7 +586,7 @@ impl Workspace {
         let jid = job_id;
         cx.background_executor()
             .spawn(async move {
-                let _ = jean_fleet::update_job(
+                let _ = monique_fleet::update_job(
                     &base,
                     &token,
                     &jid,
@@ -602,7 +606,7 @@ impl Workspace {
         }
         if self.fleet_base_token().is_none() {
             self.show_toast(
-                t!("toast.jean.login_required_fleet").to_string(),
+                t!("toast.monique.login_required_fleet").to_string(),
                 ToastLevel::Warning,
                 cx,
             );
@@ -618,7 +622,7 @@ impl Workspace {
 mod tests {
     use super::runtime_loop_requested;
 
-    // SDTEST-272 — the Jean runtime must never start implicitly.
+    // SDTEST-272 — the Monique runtime must never start implicitly.
     #[test]
     fn runtime_loop_requested_requires_explicit_enablement_and_credentials() {
         assert!(!runtime_loop_requested(false, false));

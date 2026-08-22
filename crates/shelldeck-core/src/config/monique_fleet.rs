@@ -1,4 +1,4 @@
-//! Jean fleet runtime — ShellDeck as a host for tenant/site-aware Jean
+//! Monique fleet runtime — ShellDeck as a host for tenant/site-aware Monique
 //! instances. Reads the fleet, registers this machine as a `runtime="shelldeck"`
 //! instance, heartbeats + claims pending jobs, and (when authorized) executes
 //! them by driving a headless coding agent (Jcode by default, legacy Claude Code
@@ -68,7 +68,7 @@ fn default_timeout_seconds() -> u64 {
 /// Explicit rollout switch for the local fleet executor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum JeanRuntimeExecutorRollout {
+pub enum MoniqueRuntimeExecutorRollout {
     /// Preferred runtime: `jcode run`.
     #[default]
     Jcode,
@@ -100,13 +100,13 @@ pub enum JcodeTransportPreference {
     Auto,
 }
 
-/// `[jean_runtime.executor]` — local agent command + rollout policy.
+/// `[monique_runtime.executor]` — local agent command + rollout policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JeanRuntimeExecutorConfig {
+pub struct MoniqueRuntimeExecutorConfig {
     /// Explicit rollout setting. `jcode` uses `jcode run`; `claude` keeps the
     /// previous Claude Code behavior.
     #[serde(default)]
-    pub rollout: JeanRuntimeExecutorRollout,
+    pub rollout: MoniqueRuntimeExecutorRollout,
     /// Jcode binary path/name. Defaults to `$JCODE_BIN` or `jcode`.
     #[serde(default)]
     pub binary: Option<String>,
@@ -142,10 +142,10 @@ pub struct JeanRuntimeExecutorConfig {
     pub claude_permission_mode: Option<String>,
 }
 
-impl Default for JeanRuntimeExecutorConfig {
+impl Default for MoniqueRuntimeExecutorConfig {
     fn default() -> Self {
         Self {
-            rollout: JeanRuntimeExecutorRollout::Jcode,
+            rollout: MoniqueRuntimeExecutorRollout::Jcode,
             binary: None,
             provider: None,
             model: None,
@@ -160,7 +160,7 @@ impl Default for JeanRuntimeExecutorConfig {
     }
 }
 
-impl JeanRuntimeExecutorConfig {
+impl MoniqueRuntimeExecutorConfig {
     fn configured_model<'a>(&'a self, fleet_model: &'a str) -> &'a str {
         self.model
             .as_deref()
@@ -175,20 +175,20 @@ impl JeanRuntimeExecutorConfig {
 
     pub fn self_report_label(&self) -> String {
         match self.rollout {
-            JeanRuntimeExecutorRollout::Jcode => {
+            MoniqueRuntimeExecutorRollout::Jcode => {
                 let model = self.model.as_deref().unwrap_or("auto");
                 let provider = self.provider.as_deref().unwrap_or("auto");
                 format!("jcode/{provider}/{model}")
             }
-            JeanRuntimeExecutorRollout::Claude => "claude legacy".to_string(),
+            MoniqueRuntimeExecutorRollout::Claude => "claude legacy".to_string(),
         }
     }
 }
 
-/// Persisted `[jean_runtime]` config — whether this machine hosts a Jean
+/// Persisted `[monique_runtime]` config — whether this machine hosts a Monique
 /// runtime, and its identity across restarts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct JeanRuntimeConfig {
+pub struct MoniqueRuntimeConfig {
     /// Master switch. **Default `false`** — enabling this lets ShellDeck run
     /// Claude Code jobs on this machine.
     #[serde(default)]
@@ -205,10 +205,10 @@ pub struct JeanRuntimeConfig {
     pub name: Option<String>,
     /// Executor rollout + command configuration.
     #[serde(default)]
-    pub executor: JeanRuntimeExecutorConfig,
+    pub executor: MoniqueRuntimeExecutorConfig,
 }
 
-impl JeanRuntimeConfig {
+impl MoniqueRuntimeConfig {
     pub fn job_timeout(&self) -> Duration {
         self.executor.timeout()
     }
@@ -233,9 +233,9 @@ pub struct FleetEndpoint {
 }
 
 /// Field names are snake_case per the fleet contract (unlike the camelCase
-/// support/jeanclaude APIs), so no `rename_all` here.
+/// support APIs), so no `rename_all` here.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct JeanInstance {
+pub struct MoniqueInstance {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub id: String,
     #[serde(default, deserialize_with = "de_nullable_string")]
@@ -280,7 +280,7 @@ pub struct JeanInstance {
     pub updated_at: f64,
 }
 
-impl JeanInstance {
+impl MoniqueInstance {
     pub fn is_shelldeck(&self) -> bool {
         self.runtime == "shelldeck"
     }
@@ -290,7 +290,7 @@ impl JeanInstance {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct JeanJob {
+pub struct MoniqueJob {
     #[serde(default, deserialize_with = "de_nullable_string")]
     pub id: String,
     #[serde(default, deserialize_with = "de_nullable_string")]
@@ -334,9 +334,9 @@ pub struct FleetSnapshot {
     #[serde(default)]
     pub ok: bool,
     #[serde(default)]
-    pub instances: Vec<JeanInstance>,
+    pub instances: Vec<MoniqueInstance>,
     #[serde(default)]
-    pub jobs: Vec<JeanJob>,
+    pub jobs: Vec<MoniqueJob>,
     #[serde(default)]
     pub stats: FleetStats,
 }
@@ -360,7 +360,7 @@ struct InstanceResponse {
     #[serde(default)]
     ok: bool,
     #[serde(default)]
-    instance: JeanInstance,
+    instance: MoniqueInstance,
     #[serde(default)]
     error: Option<String>,
 }
@@ -370,7 +370,7 @@ struct JobResponse {
     #[serde(default)]
     ok: bool,
     #[serde(default)]
-    job: Option<JeanJob>,
+    job: Option<MoniqueJob>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -432,7 +432,7 @@ fn post_json(
     Ok(resp)
 }
 
-fn instance_from(resp: reqwest::blocking::Response) -> Result<JeanInstance> {
+fn instance_from(resp: reqwest::blocking::Response) -> Result<MoniqueInstance> {
     let parsed: InstanceResponse = resp
         .json()
         .map_err(|e| ShellDeckError::Serialization(format!("invalid instance response: {}", e)))?;
@@ -447,7 +447,7 @@ fn instance_from(resp: reqwest::blocking::Response) -> Result<JeanInstance> {
     }
 }
 
-fn job_from(resp: reqwest::blocking::Response) -> Result<Option<JeanJob>> {
+fn job_from(resp: reqwest::blocking::Response) -> Result<Option<MoniqueJob>> {
     let parsed: JobResponse = resp
         .json()
         .map_err(|e| ShellDeckError::Serialization(format!("invalid job response: {}", e)))?;
@@ -464,7 +464,7 @@ fn job_from(resp: reqwest::blocking::Response) -> Result<Option<JeanJob>> {
 
 /// Register (or, with `reg.id`, update) this machine as a runtime instance.
 /// The server forces `runtime = "shelldeck"`.
-pub fn register(base_url: &str, token: &str, reg: &RegisterInstance) -> Result<JeanInstance> {
+pub fn register(base_url: &str, token: &str, reg: &RegisterInstance) -> Result<MoniqueInstance> {
     let mut instance = serde_json::json!({
         "name": reg.name,
         "tenant_id": reg.tenant_id,
@@ -503,7 +503,7 @@ pub fn heartbeat(
     status: &str,
     detail: Option<&str>,
     version: Option<&str>,
-) -> Result<JeanInstance> {
+) -> Result<MoniqueInstance> {
     let mut body = serde_json::json!({ "action": "heartbeat", "id": id, "status": status });
     let obj = body.as_object_mut().unwrap();
     if let Some(d) = detail {
@@ -516,7 +516,7 @@ pub fn heartbeat(
 }
 
 /// Claim the oldest pending job for this instance (or `None`).
-pub fn claim(base_url: &str, token: &str, id: &str) -> Result<Option<JeanJob>> {
+pub fn claim(base_url: &str, token: &str, id: &str) -> Result<Option<MoniqueJob>> {
     job_from(post_json(
         base_url,
         token,
@@ -531,7 +531,7 @@ pub fn update_job(
     job_id: &str,
     status: &str,
     result: Option<&str>,
-) -> Result<Option<JeanJob>> {
+) -> Result<Option<MoniqueJob>> {
     let mut body = serde_json::json!({ "action": "job", "jobId": job_id, "status": status });
     if let Some(r) = result {
         body.as_object_mut()
@@ -548,7 +548,7 @@ pub fn dispatch(
     id: &str,
     prompt: &str,
     source: Option<&str>,
-) -> Result<Option<JeanJob>> {
+) -> Result<Option<MoniqueJob>> {
     let mut body = serde_json::json!({ "action": "dispatch", "id": id, "prompt": prompt });
     if let Some(s) = source {
         body.as_object_mut()
@@ -691,14 +691,14 @@ enum ExecutorImpl {
 }
 
 impl ConfiguredJobExecutor {
-    pub fn from_config(config: &JeanRuntimeExecutorConfig) -> Self {
+    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
         let claude = ClaudeExecutor::from_config(config);
         match config.rollout {
-            JeanRuntimeExecutorRollout::Jcode => Self {
+            MoniqueRuntimeExecutorRollout::Jcode => Self {
                 primary: ExecutorImpl::Jcode(JcodeExecutor::from_config(config)),
                 fallback: config.fallback_to_claude.then_some(claude),
             },
-            JeanRuntimeExecutorRollout::Claude => Self {
+            MoniqueRuntimeExecutorRollout::Claude => Self {
                 primary: ExecutorImpl::Claude(claude),
                 fallback: None,
             },
@@ -740,7 +740,7 @@ pub struct JcodeExecutor {
 }
 
 impl JcodeExecutor {
-    pub fn from_config(config: &JeanRuntimeExecutorConfig) -> Self {
+    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
         Self {
             bin: opt_trimmed(&config.binary)
                 .map(str::to_string)
@@ -759,7 +759,7 @@ impl JobExecutor for JcodeExecutor {
     fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
         let workdir = match validate_workdir(workdir) {
             Ok(path) => path,
-            Err(e) => return JobOutcome::error(format!("Workdir Jean invalide: {}", e)),
+            Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
         };
 
         let process = ProcessJcodeTransport { executor: self };
@@ -1004,7 +1004,7 @@ impl Default for ClaudeExecutor {
 }
 
 impl ClaudeExecutor {
-    pub fn from_config(config: &JeanRuntimeExecutorConfig) -> Self {
+    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
         Self {
             bin: opt_trimmed(&config.claude_binary)
                 .map(str::to_string)
@@ -1048,7 +1048,7 @@ impl JobExecutor for ClaudeExecutor {
     fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
         let workdir = match validate_workdir(workdir) {
             Ok(path) => path,
-            Err(e) => return JobOutcome::error(format!("Workdir Jean invalide: {}", e)),
+            Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
         };
 
         let mut cmd = self.command(&workdir, model);
@@ -1249,18 +1249,18 @@ fn parse_stream_json(stdout: &str, killed: bool) -> JobOutcome {
 pub fn execute_job(
     base_url: &str,
     token: &str,
-    job: &JeanJob,
+    job: &MoniqueJob,
     workdir: &str,
     model: &str,
     exec: &dyn JobExecutor,
     timeout: Duration,
-) -> Result<JeanJob> {
+) -> Result<MoniqueJob> {
     let _ = update_job(base_url, token, &job.id, "running", None)?;
     let outcome = exec.execute(&job.prompt, workdir, model, timeout);
     let status = if outcome.is_error { "failed" } else { "done" };
     let brief: String = outcome.result.chars().take(4000).collect();
     let updated = update_job(base_url, token, &job.id, status, Some(&brief))?;
-    Ok(updated.unwrap_or_else(|| JeanJob {
+    Ok(updated.unwrap_or_else(|| MoniqueJob {
         id: job.id.clone(),
         status: status.to_string(),
         result: Some(brief),
@@ -1273,7 +1273,7 @@ pub fn execute_job(
 pub struct TickResult {
     /// Set (only for `confirm` instances) when a job was claimed and awaits a
     /// human's explicit "Exécuter" in the UI.
-    pub awaiting_confirm: Option<JeanJob>,
+    pub awaiting_confirm: Option<MoniqueJob>,
 }
 
 /// One runtime iteration: heartbeat, claim a pending job, and — for `auto`
@@ -1456,7 +1456,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("shelldeck-jean-fleet-{name}-{id}"));
+        let path = std::env::temp_dir().join(format!("shelldeck-monique-fleet-{name}-{id}"));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -1508,7 +1508,7 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
             ),
         );
 
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             provider: Some("openai-api".into()),
             model: Some("gpt-5.5".into()),
@@ -1563,7 +1563,7 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
             "fake-jcode-json",
             r#"printf '%s\n' '{"response":"json done","is_error":false}'"#,
         );
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             output_format: JcodeOutputFormat::Json,
             ..Default::default()
@@ -1588,7 +1588,7 @@ printf '%s\n' '{{"type":"result","result":"jcode done","is_error":false}}'
             "fake-jcode-json",
             "@echo {\"response\":\"json done\",\"is_error\":false}\r\n",
         );
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             output_format: JcodeOutputFormat::Json,
             ..Default::default()
@@ -1680,7 +1680,7 @@ printf '%s\n' '{{"type":"result","result":"process fallback","is_error":false}}'
             ),
         );
 
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             transport: JcodeTransportPreference::Acp,
             ..Default::default()
@@ -1709,7 +1709,7 @@ printf '%s\n' '{{"type":"result","result":"process fallback","is_error":false}}'
             "fake-jcode-workdir",
             &format!("touch {}", shell_quote(&touched)),
         );
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             ..Default::default()
         });
@@ -1747,7 +1747,7 @@ printf '%s\n' '{{"type":"result","result":"process fallback","is_error":false}}'
         let workdir = dir.join("work");
         fs::create_dir_all(&workdir).unwrap();
         let bin = fake_executable(&dir, "fake-jcode-sleep", "sleep 5");
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             ..Default::default()
         });
@@ -1767,7 +1767,7 @@ printf '%s\n' '{{"type":"result","result":"process fallback","is_error":false}}'
         let workdir = dir.join("work");
         fs::create_dir_all(&workdir).unwrap();
         let bin = fake_executable(&dir, "fake-jcode-acp-timeout", "sleep 5");
-        let exec = JcodeExecutor::from_config(&JeanRuntimeExecutorConfig {
+        let exec = JcodeExecutor::from_config(&MoniqueRuntimeExecutorConfig {
             binary: Some(bin.display().to_string()),
             transport: JcodeTransportPreference::Acp,
             ..Default::default()
@@ -1804,8 +1804,8 @@ printf '%s\n' '{{"type":"result","result":"claude fallback","is_error":false}}'
                 shell_quote(&stdin_file)
             ),
         );
-        let exec = ConfiguredJobExecutor::from_config(&JeanRuntimeExecutorConfig {
-            rollout: JeanRuntimeExecutorRollout::Jcode,
+        let exec = ConfiguredJobExecutor::from_config(&MoniqueRuntimeExecutorConfig {
+            rollout: MoniqueRuntimeExecutorRollout::Jcode,
             binary: Some(dir.join("missing-jcode").display().to_string()),
             fallback_to_claude: true,
             claude_binary: Some(claude.display().to_string()),
@@ -1940,7 +1940,7 @@ printf '%s\n' '{{"type":"result","result":"claude fallback","is_error":false}}'
           "agent_version":null,"created_at":"2026-07-02T20:54:11.843Z",
           "updated_at":"2026-07-02T20:54:11.843Z"
         }"#;
-        let inst: JeanInstance = serde_json::from_str(json).expect("parse live register shape");
+        let inst: MoniqueInstance = serde_json::from_str(json).expect("parse live register shape");
         assert_eq!(inst.id, "4365eee9");
         assert!(inst.is_shelldeck());
         assert_eq!(inst.autonomy, "confirm");

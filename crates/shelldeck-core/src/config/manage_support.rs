@@ -955,7 +955,7 @@ mod tests {
     // the toast does.
     //
     // Mock pattern matches `issues.rs::start_mock` and
-    // `jean_fleet.rs::start_mock` — zero-dep loopback TcpListener
+    // `monique_fleet.rs::start_mock` — zero-dep loopback TcpListener
     // + std thread, records every POST body verbatim, echoes back a
     // canonical ticket response so `post_action` can parse Ok.
 

@@ -486,13 +486,7 @@ impl Workspace {
                     ms::support_resolve(&b, &t, &id, &resolution)
                 });
             }
-            SupportViewEvent::JeanConfirm(thread) => {
-                self.jean_action(cx, move |c| jeanclaude::confirm(&c, &thread));
-            }
-            SupportViewEvent::JeanReject(thread) => {
-                self.jean_action(cx, move |c| jeanclaude::reject(&c, &thread));
-            }
-            SupportViewEvent::SendToJean(text) => self.prepare_jean_dispatch(text, cx),
+            SupportViewEvent::SendToMonique(text) => self.prepare_monique_dispatch(text, cx),
             SupportViewEvent::ConvertToIssue { title, body } => {
                 self.open_prefilled_request(title, body, "support", cx)
             }

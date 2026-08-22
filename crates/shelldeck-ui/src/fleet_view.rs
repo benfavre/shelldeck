@@ -1,4 +1,4 @@
-//! Jean fleet supervision view.
+//! Monique fleet supervision view.
 //!
 //! The view keeps operational work prominent: local runtime controls and
 //! instances live in the left rail, while approvals and recent jobs use the
@@ -15,7 +15,7 @@ use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
 
-use shelldeck_core::config::jean_fleet::{FleetSnapshot, JeanInstance, JeanJob};
+use shelldeck_core::config::monique_fleet::{FleetSnapshot, MoniqueInstance, MoniqueJob};
 
 use crate::i18n::rel_time;
 use crate::icons::lucide_icon;
@@ -62,7 +62,7 @@ impl JobFilter {
         }
     }
 
-    fn matches(self, job: &JeanJob) -> bool {
+    fn matches(self, job: &MoniqueJob) -> bool {
         match self {
             Self::All => true,
             Self::Awaiting => matches!(job.status.as_str(), "pending" | "claimed"),
@@ -79,7 +79,7 @@ pub struct FleetView {
     my_id: Option<String>,
     runtime_enabled: bool,
     my_status: String,
-    awaiting: Vec<JeanJob>,
+    awaiting: Vec<MoniqueJob>,
     loading: bool,
     error: Option<String>,
     job_filter: JobFilter,
@@ -119,7 +119,7 @@ impl FleetView {
         self.my_status = status.into();
     }
 
-    pub fn set_awaiting(&mut self, awaiting: Vec<JeanJob>) {
+    pub fn set_awaiting(&mut self, awaiting: Vec<MoniqueJob>) {
         self.awaiting = awaiting;
     }
 
@@ -365,7 +365,7 @@ impl FleetView {
         }
     }
 
-    fn render_instance(&self, inst: &JeanInstance) -> impl IntoElement {
+    fn render_instance(&self, inst: &MoniqueInstance) -> impl IntoElement {
         let is_me = self.my_id.as_deref() == Some(inst.id.as_str());
         let (status_key, status_color) = Self::instance_status(&inst.status);
         let scope = if let Some(label) = &inst.site_label {
@@ -479,7 +479,7 @@ impl FleetView {
     }
 
     fn render_instances(&self) -> impl IntoElement {
-        let mut instances: Vec<&JeanInstance> = self.snapshot.instances.iter().collect();
+        let mut instances: Vec<&MoniqueInstance> = self.snapshot.instances.iter().collect();
         instances.sort_by_key(|instance| {
             let is_me = self.my_id.as_deref() == Some(instance.id.as_str());
             let status_rank = match instance.status.as_str() {
@@ -651,7 +651,7 @@ impl FleetView {
         )
     }
 
-    fn job_status(job: &JeanJob) -> (&'static str, BadgeVariant, Hsla) {
+    fn job_status(job: &MoniqueJob) -> (&'static str, BadgeVariant, Hsla) {
         match job.status.as_str() {
             "pending" => (
                 "fleet.job.pending",
@@ -691,7 +691,7 @@ impl FleetView {
         }
     }
 
-    fn open_job_detail(&mut self, job: JeanJob, cx: &mut Context<Self>) {
+    fn open_job_detail(&mut self, job: MoniqueJob, cx: &mut Context<Self>) {
         let title = t!("fleet.job.detail.title").to_string();
         let description = format!("{} · {}", job.source, rel_time(job.updated_at));
         let detail_job = job.clone();
@@ -771,7 +771,7 @@ impl FleetView {
     }
 
     fn render_job_detail_content(
-        job: &JeanJob,
+        job: &MoniqueJob,
         link_handler: MarkdownLinkHandler,
         markdown_font_size: Pixels,
     ) -> impl IntoElement {
@@ -888,7 +888,7 @@ impl FleetView {
             )
     }
 
-    fn render_job(&self, job: &JeanJob, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_job(&self, job: &MoniqueJob, cx: &mut Context<Self>) -> impl IntoElement {
         let (status_key, status_variant, status_color) = Self::job_status(job);
         let job_for_detail = job.clone();
         let metadata = if job.requested_by.is_empty() {

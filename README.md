@@ -48,7 +48,7 @@ requests, and automation into one role-aware control plane.
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
 - **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and fleet dispatch
-- **Contextual AI** -- Native AI Dock plus JeanClaude and Fleet integrations for assisted operations
+- **Contextual AI** -- Native AI Dock plus Monique and Fleet integrations for assisted operations
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI
@@ -192,7 +192,7 @@ Inklura Manage account:
 
 - **User** — available to every authenticated account. It provides dedicated **Accueil**, **Mes sites**, **Mes demandes**, and **Mes informations** tabs with one-click Manage links and account-scoped data.
 - **Support** — a native two-pane helpdesk console for support.inklura.fr: view filters (Tous / Non attribués / Les miens / Ouverts / En attente / SLA / Résolus) with live counts, the ticket list, and a conversation pane with a reply/note composer and an action bar (status, priority, assign, resolve). The list refreshes every ~30s while open.
-- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, JeanClaude, Fleet, and bext Cloud.
+- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, Monique, Fleet, and bext Cloud.
 
 Regular and customer-admin accounts are restricted to User mode. Accounts with
 the dedicated `inklura_support` role can switch between User and Support.
@@ -204,55 +204,51 @@ hidden, not destroyed. The selected mode is remembered across restarts. When
 no account is signed in, ShellDeck displays its mandatory welcome and login
 screen; Dev mode is never used as a logged-out fallback.
 
-## JeanClaude
+## Monique / Automonique
 
-[JeanClaude](https://github.com/benfavre/slack-claude-bot) is Ben's `#jean` Slack ticket bot, driven by headless Claude Code. ShellDeck is a **native client for it, replacing the bot's web dashboard** — the console lives in the app instead of a browser tab.
+ShellDeck includes a native staff console for Monique, the production Automonique runtime. It reads typed health, generation, queue, reconciliation and process state, shares Monique's durable dashboard conversation, and presents any state-changing Manage action for an explicit approve/reject decision.
 
-It appears only when a JeanClaude config is available (which de facto scopes it to super-admins and local overrides), sourced with this precedence:
+The console is available only to super-admins with a complete configuration, sourced with this precedence:
 
-1. A local `[jeanclaude]` section in `config.toml` (wins — e.g. to point at an SSH tunnel on `127.0.0.1`):
+1. A local `[monique]` section in `config.toml` (wins — useful for a local tunnel):
    ```toml
-   [jeanclaude]
-   url = "http://127.0.0.1:3100"
-   user = "jean"
+   [monique]
+   url = "https://monique.1clic.pro"
+   user = "ops"
    pass = "…"
    ```
 2. Otherwise the config delivered by the server in the sites feed (super-admin tokens only).
 
-Where it shows up:
-
-- **Dev mode** — the **JeanClaude** console is available from the Go menu and command palette: bot status (connected / paused / concurrency) with a "Dire dans #jean" input, **Aperçu** (pending confirmations with Confirmer/Rejeter + active tickets with heartbeat age and Annuler), **Historique** (status filter + detail with the per-ticket action log + Forcer/Annuler), **Cibles** (domain→server CRUD), and **Mémoire** (rules/notes CRUD). It polls every ~10s while open. The command palette also provides **pause / reprendre**.
-- **Support mode** — a compact JeanClaude strip (pending confirmations + active count) and an **Envoyer à Jean** action per ticket that files it through Jean's normal Slack intake.
-- **User mode** — a **Demander à JeanClaude** card to send a request (a confirmer must still approve in `#jean`), with a read-only recent-activity list.
+Basic credentials are sent only to the configured canonical URL; redirects are refused. ShellDeck has no alternate bot transport or fallback.
 
 ### Fleet runtime
 
-Beyond controlling one dashboard, ShellDeck can be a **runtime for the Jean fleet** — the tenant/site-aware set of Jean instances managed from `manage.inklura.fr`. In Dev mode, the **Fleet** view shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
+Beyond controlling one dashboard, ShellDeck can be a **runtime for the Monique fleet** — the tenant/site-aware set of Monique instances managed from `manage.inklura.fr`. In Dev mode, the **Fleet** view shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
 
 When enabled, ShellDeck registers itself, heartbeats, and claims pending jobs for its instance, executing each by driving **headless Claude Code** (`claude -p`, subscription auth) in the configured working directory.
 
 ⚠️ **Safety.** Executing a job runs Claude Code with file/edit/command powers on this machine. It is **off by default** and gated hard:
 
-- The runtime only runs when `[jean_runtime].enabled = true` **and** the instance's autonomy is **`auto`**.
+- The runtime only runs when `[monique_runtime].enabled = true` **and** the instance's autonomy is **`auto`**.
 - An instance set to **`confirm`** never auto-runs — each claimed job appears in the Fleet view with **Exécuter / Rejeter** and waits for an explicit click. New instances default to `confirm`.
 - One job at a time per machine.
 
 ```toml
-[jean_runtime]
+[monique_runtime]
 enabled = false          # default — must be turned on explicitly
 # instance_id = "…"      # filled in after the first registration
 # workdir = "/home/you/infra"
 # name = "my-machine"
 ```
 
-Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Jean**).
+Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Monique**).
 
 ## Requests (hosted issue management)
 
-ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched to the Jean fleet.
+ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched to the Monique fleet.
 
-- **User mode** — a dedicated **Mes demandes** tab: file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. It's the durable, tracked path — the quick "Demander à JeanClaude" card stays for one-off Slack-style asks.
-- **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, **Dispatcher** to a tenant Jean instance, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
+- **User mode** — a dedicated **Mes demandes** tab: file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. The quick **Ask Monique** card stages one-off operational asks through the same reviewed conversation workflow.
+- **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, **Dispatcher** to a tenant Monique instance, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
 
 Staff-only actions are gated server-side; the action bar only appears for staff tokens. Palette: **Nouvelle demande**, **Demandes (support)**.
 

@@ -644,7 +644,7 @@ sync_on_startup = false
     // A tiny loopback HTTP server exercises `fetch_sync` end-to-end
     // against the same wire format the real Manage exposes. We don't
     // reach for wiremock/mockito on purpose — the raw TcpListener
-    // pattern matches the rest of the crate (`jean_fleet`, `issues`,
+    // pattern matches the rest of the crate (`monique_fleet`, `issues`,
     // `manage_support`) and stays zero-dep.
     //
     // Behaviour under test:
