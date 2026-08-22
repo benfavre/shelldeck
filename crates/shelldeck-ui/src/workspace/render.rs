@@ -175,6 +175,7 @@ impl Render for Workspace {
                     match self.active_view {
                         ActiveView::Dashboard => content = content.child(self.dashboard.clone()),
                         ActiveView::Terminal => content = content.child(self.terminal.clone()),
+                        ActiveView::Agents => content = content.child(self.agent_console.clone()),
                         ActiveView::Scripts => content = content.child(self.scripts.clone()),
                         ActiveView::PortForwards => {
                             content = content.child(self.port_forwards.clone())
@@ -214,6 +215,7 @@ impl Render for Workspace {
         let h16 = handle.clone();
         let h17 = handle.clone();
         let h18 = handle.clone();
+        let h19 = handle.clone();
 
         let mut root = div()
             .relative()
@@ -351,6 +353,13 @@ impl Render for Workspace {
                 if let Some(ws) = h16.upgrade() {
                     ws.update(cx, |ws, cx| {
                         ws.activate_dev_section(SidebarSection::Recent, cx);
+                    });
+                }
+            })
+            .on_action(move |_: &OpenAgents, _window, cx| {
+                if let Some(ws) = h19.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.activate_dev_section(SidebarSection::Agents, cx)
                     });
                 }
             })

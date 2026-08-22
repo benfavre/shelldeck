@@ -1,3 +1,4 @@
+pub mod agent_console_view;
 mod ai_action_dialog;
 pub mod ai_assistant;
 pub mod ai_companion;

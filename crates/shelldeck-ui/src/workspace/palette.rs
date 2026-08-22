@@ -127,6 +127,12 @@ impl Workspace {
                     Box::new(OpenServerSync),
                 ),
                 PaletteAction::new(
+                    t!("palette.open_agents").to_string(),
+                    None,
+                    "bot",
+                    Box::new(OpenAgents),
+                ),
+                PaletteAction::new(
                     t!("palette.open_sites").to_string(),
                     None,
                     "globe",
@@ -340,6 +346,8 @@ impl Workspace {
             self.show_script_form(cx);
         } else if action.as_any().is::<OpenServerSync>() {
             self.activate_dev_section(SidebarSection::ServerSync, cx);
+        } else if action.as_any().is::<OpenAgents>() {
+            self.activate_dev_section(SidebarSection::Agents, cx);
         } else if action.as_any().is::<OpenSites>() {
             self.activate_dev_section(SidebarSection::Sites, cx);
         } else if action.as_any().is::<OpenRecent>() {
@@ -381,7 +389,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal,
+        AppMode, ApplyTerminalTheme, CloudSyncNow, NewRequest, NewScript, NewTerminal, OpenAgents,
         OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
         OpenMoniqueConsole, OpenRecent, OpenServerSync, OpenSettings, OpenSites,
         OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite,
@@ -402,6 +410,7 @@ mod tests {
         assert!(!contains_action::<NewTerminal>(actions), "{context}");
         assert!(!contains_action::<OpenFileEditorView>(actions), "{context}");
         assert!(!contains_action::<OpenServerSync>(actions), "{context}");
+        assert!(!contains_action::<OpenAgents>(actions), "{context}");
         assert!(!contains_action::<OpenSites>(actions), "{context}");
         assert!(!contains_action::<OpenRecent>(actions), "{context}");
         assert!(!contains_action::<NewScript>(actions), "{context}");
@@ -466,6 +475,7 @@ mod tests {
 
         let in_dev = Workspace::base_palette_actions(allowed, AppMode::Dev, true, true);
         assert!(contains_action::<NewTerminal>(&in_dev));
+        assert!(contains_action::<OpenAgents>(&in_dev));
         assert!(contains_action::<OpenMoniqueConsole>(&in_dev));
         assert!(contains_action::<OpenBextCloud>(&in_dev));
         assert!(contains_action::<ApplyTerminalTheme>(&in_dev));

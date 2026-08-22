@@ -52,6 +52,7 @@ use std::ops::{DerefMut, Range};
 use std::rc::Rc;
 use uuid::Uuid;
 
+use crate::agent_console_view::{AgentConsoleEvent, AgentConsoleView};
 use crate::ai_action_dialog::render_ai_action_dialog;
 use crate::ai_assistant::{AiAssistantEvent, AiAssistantView};
 use crate::ai_companion::{assistant_action_acknowledgement, AiCompanionEvent};
@@ -111,6 +112,7 @@ pub type AiDockOpenHandler = Box<dyn Fn(&mut App)>;
 // 2,000 lines. See `.agents/workspace-architecture.md`.
 mod account;
 mod activity;
+mod agents;
 mod ai;
 mod ai_routing;
 mod bext;
@@ -320,6 +322,7 @@ enum RuntimeStep {
 pub enum ActiveView {
     Dashboard,
     Terminal,
+    Agents,
     Scripts,
     PortForwards,
     ServerSync,
@@ -363,6 +366,7 @@ actions!(
         ConnectBextCloud,
         OpenAiAssistant,
         OpenClippy,
+        OpenAgents,
     ]
 );
 
@@ -414,6 +418,7 @@ pub struct Workspace {
     sidebar: Entity<SidebarView>,
     dashboard: Entity<DashboardView>,
     terminal: Entity<TerminalView>,
+    agent_console: Entity<AgentConsoleView>,
     scripts: Entity<ScriptEditorView>,
     port_forwards: Entity<PortForwardView>,
     server_sync: Entity<ServerSyncView>,
@@ -475,9 +480,12 @@ pub struct Workspace {
     active_tunnels: HashMap<Uuid, ActiveTunnel>,
     /// Active script executions keyed by script ID.
     active_scripts: HashMap<Uuid, ActiveScript>,
+    /// Explicit local/SSH coding-agent runs, keyed by run ID.
+    active_agent_runs: HashMap<Uuid, agents::ActiveAgentRun>,
     // Keep subscriptions alive
     _sidebar_sub: Subscription,
     _terminal_sub: Subscription,
+    _agent_console_sub: Subscription,
     _palette_sub: Subscription,
     _companion_palette_sub: Subscription,
     _settings_sub: Subscription,
@@ -888,6 +896,23 @@ impl Workspace {
         });
 
         let terminal = cx.new(TerminalView::new);
+        let agent_console = cx.new(|cx| {
+            let mut view = AgentConsoleView::new(cx);
+            view.set_connections(
+                connections
+                    .iter()
+                    .map(
+                        |connection| crate::agent_console_view::AgentConnectionOption {
+                            id: connection.id,
+                            label: connection.display_name().to_string(),
+                            host: connection.hostname.clone(),
+                        },
+                    )
+                    .collect(),
+                cx,
+            );
+            view
+        });
         let scripts = cx.new(ScriptEditorView::new);
         let port_forwards = cx.new(|_| PortForwardView::new());
         let server_sync = cx.new(|cx| {
@@ -1082,6 +1107,12 @@ impl Workspace {
         let terminal_sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
             this.handle_terminal_event(event, cx);
         });
+        let agent_console_sub = cx.subscribe(
+            &agent_console,
+            |this, _view, event: &AgentConsoleEvent, cx| {
+                this.handle_agent_console_event(event.clone(), cx);
+            },
+        );
 
         // Subscribe to command palette events
         let palette_sub = cx.subscribe(
@@ -1222,6 +1253,7 @@ impl Workspace {
             sidebar,
             dashboard,
             terminal,
+            agent_console,
             scripts,
             port_forwards,
             server_sync,
@@ -1267,8 +1299,10 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             active_tunnels: HashMap::new(),
             active_scripts: HashMap::new(),
+            active_agent_runs: HashMap::new(),
             _sidebar_sub: sidebar_sub,
             _terminal_sub: terminal_sub,
+            _agent_console_sub: agent_console_sub,
             _palette_sub: palette_sub,
             _companion_palette_sub: companion_palette_sub,
             _settings_sub: settings_sub,

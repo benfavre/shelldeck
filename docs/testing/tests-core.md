@@ -265,6 +265,17 @@ Existing: **0 tests**.
 
 ---
 
+## 14b. `agent_runtime.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1673 | `agent_runtime.rs::sdtest_1673_provider_specs_keep_access_and_prompt_boundaries` | SDUC-475 | Green | Claude/Codex/Jcode/DeepSeek launch arguments map access and resume modes correctly; stdin providers never expose the prompt in argv, while Jcode auto leaves provider selection to the target configuration. |
+| SDTEST-1674 | `agent_runtime.rs::sdtest_1674_remote_command_quotes_workspace_and_encodes_stdin` | SDUC-475 | Green | SSH commands quote hostile working-directory characters and base64-encode multiline stdin so prompt text cannot become shell syntax. |
+| SDTEST-1675 | `agent_runtime.rs::sdtest_1675_provider_streams_normalize_visible_text_and_errors` | SDUC-475 | Green | Claude, Codex, and Jcode JSONL fixtures normalize into provider-neutral text/error events. |
+| SDTEST-1680 | `agent_runtime.rs::sdtest_1680_remote_shell_transport_preserves_hostile_multiline_stdin` (`#[cfg(unix)]`) | SDUC-475 | Green | The generated SSH shell command is executed against a fake agent; hostile multiline prompt text arrives byte-for-byte on stdin and cannot become shell syntax. |
+
+---
+
 ## 15. `config/monique_fleet.rs`
 
 | ID | Location | SDUC | Status | Notes |

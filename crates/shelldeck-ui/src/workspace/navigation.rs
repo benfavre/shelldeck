@@ -142,6 +142,7 @@ impl Workspace {
             tracing::info!("Stopping script {}", script_id);
             active.stop();
         }
+        self.stop_all_agent_runs();
         // Close all terminal sessions (drops channels, threads exit)
         self.terminal.update(cx, |terminal, _| {
             terminal.close_all_sessions();
@@ -390,6 +391,7 @@ impl Workspace {
         self.active_view = match section {
             SidebarSection::Connections => ActiveView::Dashboard,
             SidebarSection::Terminals => ActiveView::Terminal,
+            SidebarSection::Agents => ActiveView::Agents,
             SidebarSection::Scripts => ActiveView::Scripts,
             SidebarSection::PortForwards => ActiveView::PortForwards,
             SidebarSection::ServerSync => ActiveView::ServerSync,

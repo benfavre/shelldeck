@@ -121,6 +121,7 @@ impl Workspace {
                         self.port_forwards.update(cx, |pf, _| {
                             pf.forwards.retain(|f| f.connection_id != id);
                         });
+                        self.refresh_agent_connections(cx);
                         self.add_activity(
                             t!("activity.connection_deleted", name = name.as_str()).to_string(),
                             ActivityKind::Connection,

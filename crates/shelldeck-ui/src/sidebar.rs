@@ -176,6 +176,7 @@ pub struct PanelItem {
 pub enum SidebarSection {
     Connections,
     Terminals,
+    Agents,
     Scripts,
     PortForwards,
     ServerSync,
@@ -200,6 +201,7 @@ impl SidebarSection {
         &[
             SidebarSection::Connections,
             SidebarSection::Terminals,
+            SidebarSection::Agents,
             SidebarSection::Scripts,
             SidebarSection::PortForwards,
             SidebarSection::ServerSync,
@@ -246,6 +248,7 @@ impl SidebarSection {
         match self {
             SidebarSection::Connections => "server",
             SidebarSection::Terminals => "terminal",
+            SidebarSection::Agents => "bot",
             SidebarSection::Scripts => "scroll-text",
             SidebarSection::PortForwards => "arrow-left-right",
             SidebarSection::ServerSync => "refresh-cw",
@@ -263,6 +266,7 @@ impl SidebarSection {
         match self {
             SidebarSection::Connections => t!("sidebar.nav.connections"),
             SidebarSection::Terminals => t!("sidebar.nav.terminals"),
+            SidebarSection::Agents => t!("sidebar.nav.agents"),
             SidebarSection::Scripts => t!("sidebar.nav.scripts"),
             SidebarSection::PortForwards => t!("sidebar.nav.port_forwards"),
             SidebarSection::ServerSync => t!("sidebar.nav.server_sync"),
@@ -1310,7 +1314,7 @@ mod tests {
     }
 
     // SDTEST-1214 — the rail lists activities that have a panel behind them,
-    // plus Server Sync as a deliberate main-view-only entry. The three
+    // plus Server Sync and Agents as deliberate main-view-only entries. The four
     // destinations reached from the Aller menu must never take a rail slot,
     // and Settings is pinned separately rather than living in the list.
     #[test]
@@ -1327,10 +1331,14 @@ mod tests {
                 "{excluded:?} is a destination, not a rail activity"
             );
         }
-        // Every rail entry either has a panel or is the known exception.
+        // Every rail entry either has a panel or is a known main-view entry.
         for section in rail {
             assert!(
-                section.has_panel() || *section == super::SidebarSection::ServerSync,
+                section.has_panel()
+                    || matches!(
+                        section,
+                        super::SidebarSection::ServerSync | super::SidebarSection::Agents
+                    ),
                 "{section:?} sits in the rail with neither a panel nor an exemption"
             );
         }

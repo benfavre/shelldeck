@@ -10,10 +10,10 @@ use shelldeck_core::config::cloud_account::AppMode;
 use crate::t;
 use crate::theme::ShellDeckColors;
 use crate::workspace::{
-    CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAiAssistant, OpenBextCloud,
-    OpenFileEditorView, OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect, OpenRecent,
-    OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests, OpenTemplateBrowser, PrevTab,
-    SwitchSite, ToggleMenuBar, ToggleSidebar,
+    CloseTab, NewRequest, NewScript, NewTerminal, NextTab, OpenAgents, OpenAiAssistant,
+    OpenBextCloud, OpenFileEditorView, OpenFleet, OpenLogin, OpenMoniqueConsole, OpenQuickConnect,
+    OpenRecent, OpenServerSync, OpenSettings, OpenSites, OpenSupportRequests, OpenTemplateBrowser,
+    PrevTab, SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
 actions!(shelldeck, [ToggleCommandPalette]);
@@ -130,6 +130,7 @@ pub fn action_opens_main_window(action: &dyn Action) -> bool {
         || action.as_any().is::<NextTab>()
         || action.as_any().is::<PrevTab>()
         || action.as_any().is::<OpenTemplateBrowser>()
+        || action.as_any().is::<OpenAgents>()
         || action.as_any().is::<NewScript>()
         || action.as_any().is::<OpenServerSync>()
         || action.as_any().is::<OpenSites>()

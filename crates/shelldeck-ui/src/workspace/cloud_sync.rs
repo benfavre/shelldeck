@@ -127,6 +127,7 @@ impl Workspace {
         self.sites.update(cx, |view, _| {
             view.set_connections(conns);
         });
+        self.refresh_agent_connections(cx);
         self.update_dashboard_stats(cx);
         cx.notify();
     }

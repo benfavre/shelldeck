@@ -194,6 +194,7 @@ impl Workspace {
                     this.sidebar.update(cx, |sidebar, _| {
                         sidebar.set_connections(this.connections.clone());
                     });
+                    this.refresh_agent_connections(cx);
                     let conn_name = conn.display_name().to_string();
                     this.add_activity_entry(
                         ActivityEntry::new(

@@ -867,6 +867,27 @@ at a short cadence; background runtime refreshes never erase an in-flight chat.
 
 ---
 
+## 10b. Local and SSH agent runtime
+
+### SDUC-475 — Coding agents run on an explicit local or SSH target
+
+Dev mode exposes one provider-neutral agent console for Claude Code, Codex,
+DeepSeek through Jcode, and Jcode's configured/default provider. Every run names an absolute working directory, an
+explicit local machine or existing ShellDeck SSH connection, a model override,
+and a closed access level. Read-only is the default. Workspace-write and full
+access require a separate confirmation that repeats the provider, target,
+working directory, and permission level. Output streams into the console and
+Stop terminates the local process or closes the remote SSH channel. The
+contextual drafting assistant remains a separate no-tools surface, and Monique
+may dispatch work without becoming an alternate execution implementation.
+Successful runs retain the provider's opaque conversation ID in memory, so a
+follow-up resumes only when provider, target, permissions, workdir, and model
+still match exactly. Changing any of them starts a fresh provider session, and
+the operator can always choose “Nouvelle session” explicitly. Session IDs are
+never shared across local and SSH targets or persisted by ShellDeck.
+
+---
+
 ## 11. Monique fleet runtime
 
 `crates/shelldeck-core/src/config/monique_fleet.rs`
@@ -2318,6 +2339,11 @@ once the network returns.
 ---
 
 ## Change log
+
+- **2026-08-22** — Added SDUC-475 for the provider-neutral local/SSH agent
+  console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
+  access confirmation, resumable same-context turns, streaming output, and
+  cancellation.
 
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
