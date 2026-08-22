@@ -852,6 +852,17 @@ The application contains no alternate dashboard client, state poller, action
 transport, or configuration field. An unavailable Monique endpoint surfaces an
 error and cannot activate another service as a fallback.
 
+### SDUC-474 — Native subscription accounts remain isolated and plural
+
+ShellDeck reads and mutates Monique's authoritative native-account registry
+through `/api/agent-accounts` and `/api/agent-accounts/action`. Any number of
+bounded Codex CLI and Claude Code profiles may coexist on one host. Adding or
+re-authenticating an account uses the provider's native subscription flow;
+ShellDeck receives only aliases, opaque IDs, health evidence and strictly
+allowlisted authorization links—never token material or filesystem paths.
+Selecting a worker account remains an explicit operator action, so concurrent
+jobs never trigger silent account rotation.
+
 ---
 
 ## 11. Monique fleet runtime

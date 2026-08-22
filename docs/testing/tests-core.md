@@ -258,6 +258,9 @@ Existing: **0 tests**.
 | SDTEST-1665 | `monique.rs::sdtest_monique_auth_failure_is_explicit` | SDUC-472 | Green | A 401 is surfaced with its bounded structured category and no credential. |
 | SDTEST-1666 | `app_config.rs::monique_override_round_trips_and_omits_when_unset` | SDUC-469 | Green | Older configs omit the table; a deliberate local override round-trips all required fields. |
 | SDTEST-1668 | `manage_sites.rs::sites_payload_parses_contract_example` | SDUC-469 | Green | The super-admin sites contract parses the complete typed Monique configuration. |
+| SDTEST-1669 | `monique.rs::sdtest_monique_native_accounts_preserve_n_provider_profiles` | SDUC-474 | Green | The typed view retains multiple Codex and Claude subscription profiles plus explicit provider/worker selections. |
+| SDTEST-1670 | `monique.rs::sdtest_monique_native_account_mutations_are_typed_and_token_free` | SDUC-474 | Green | Native login uses the closed action contract and sends neither provider tokens nor host paths. |
+| SDTEST-1671 | `monique.rs::sdtest_monique_native_authorization_links_are_exactly_allowlisted` | SDUC-474 | Green | ShellDeck opens only the exact HTTPS Codex device or Claude OAuth origins and rejects suffix-host tricks. |
 
 ---
 

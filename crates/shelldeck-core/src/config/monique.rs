@@ -220,6 +220,158 @@ pub struct MoniqueChatResponse {
     pub action: Option<MoniqueChatAction>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoniqueAgentProvider {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub native_subscription: String,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub account_count: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoniqueAgentAccount {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub provider_name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub selected: bool,
+    #[serde(default)]
+    pub worker_selected: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub observed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_verified_at_ms: Option<u64>,
+}
+
+impl MoniqueAgentAccount {
+    pub fn can_select(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "authenticated" | "configured_unverified"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoniqueAgentLoginSession {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub account_id: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+    #[serde(default)]
+    pub user_code: Option<String>,
+    #[serde(default)]
+    pub accepts_authorization_code: bool,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub expires_at_ms: u64,
+}
+
+impl MoniqueAgentLoginSession {
+    pub fn active(&self) -> bool {
+        !matches!(
+            self.status.as_str(),
+            "authenticated" | "failed" | "cancelled"
+        )
+    }
+
+    pub fn safe_authorization_url(&self) -> Option<&str> {
+        let value = self.authorization_url.as_deref()?;
+        let url = value.parse::<reqwest::Url>().ok()?;
+        if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+            return None;
+        }
+        match self.provider.as_str() {
+            "codex"
+                if url.host_str() == Some("auth.openai.com")
+                    && url.path() == "/codex/device"
+                    && url.query().is_none() =>
+            {
+                Some(value)
+            }
+            "claude"
+                if url.host_str() == Some("claude.com")
+                    && url.path() == "/cai/oauth/authorize"
+                    && url.query().is_some() =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoniqueAgentAccounts {
+    #[serde(default)]
+    pub schema: String,
+    #[serde(default)]
+    pub max_accounts: usize,
+    #[serde(default)]
+    pub providers: Vec<MoniqueAgentProvider>,
+    #[serde(default)]
+    pub worker_provider: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<MoniqueAgentAccount>,
+    #[serde(default)]
+    pub login_sessions: Vec<MoniqueAgentLoginSession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MoniqueAgentAuthAction {
+    StartLogin {
+        provider: String,
+        label: String,
+        account_id: Option<String>,
+    },
+    Select {
+        account_id: String,
+    },
+    Refresh {
+        account_id: String,
+    },
+    CancelLogin {
+        session_id: String,
+    },
+    SubmitAuthorizationCode {
+        session_id: String,
+        code: String,
+    },
+    Logout {
+        account_id: String,
+        confirm: bool,
+    },
+    Remove {
+        account_id: String,
+        confirm: bool,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
     #[serde(default)]
@@ -331,6 +483,17 @@ pub fn new_chat(config: &MoniqueConfig) -> Result<MoniqueChatHistory> {
     post(config, "/api/chat/new", &serde_json::json!({}))
 }
 
+pub fn agent_accounts(config: &MoniqueConfig) -> Result<MoniqueAgentAccounts> {
+    get(config, "/api/agent-accounts")
+}
+
+pub fn mutate_agent_accounts(
+    config: &MoniqueConfig,
+    action: &MoniqueAgentAuthAction,
+) -> Result<MoniqueAgentAccounts> {
+    post(config, "/api/agent-accounts/action", action)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +553,9 @@ mod tests {
                     ("200 OK", PROCESSES)
                 } else if target == "/api/chat/history" || target == "/api/chat/new" {
                     ("200 OK", HISTORY)
+                } else if target == "/api/agent-accounts" || target == "/api/agent-accounts/action"
+                {
+                    ("200 OK", ACCOUNTS)
                 } else {
                     ("200 OK", CHAT)
                 };
@@ -419,6 +585,7 @@ mod tests {
     const PROCESSES: &str = r#"{"schema":"automonique.dashboard.processes/v1","health":"ready","observed_at_ms":42,"stats":{"total":1,"queued":0,"running":1,"completed":0,"failed":0},"worker":null,"jobs":[{"id":"job-1","status":"running","source":"manage","provider":"codex","runtime":"worker","assigned_to_worker":true,"approved":true,"output":[{"at_ms":42,"kind":"progress","text":"Checking","truncated":false}]}]}"#;
     const HISTORY: &str = r#"{"schema":"automonique.dashboard.chat-history/v1","messages":[{"role":"user","content":"hello","created_at_ms":41}],"pending_actions":[]}"#;
     const CHAT: &str = r#"{"schema":"automonique.dashboard.chat/v2","answer":"Hello from Monique","profile":"conversation","memory_evidence":0,"live_sources":["automonique:status"],"duration_ms":3,"conversation_retained":true,"action":{"id":"action-1","title":"Review action","detail":"Deploy one site","impact":"Changes Manage"}}"#;
+    const ACCOUNTS: &str = r#"{"schema":"automonique.dashboard.agent-accounts/v1","max_accounts":64,"providers":[{"id":"codex","name":"Codex CLI","native_subscription":"ChatGPT subscription","available":true,"account_count":2},{"id":"claude","name":"Claude Code","native_subscription":"Claude.ai subscription","available":true,"account_count":1}],"worker_provider":"codex","accounts":[{"id":"acct-0123456789abcdef01234567","provider":"codex","provider_name":"Codex CLI","label":"Codex Pro","selected":true,"worker_selected":true,"status":"authenticated","method":"chatgpt","evidence":"execution_succeeded","observed_at_ms":42,"last_verified_at_ms":42},{"id":"acct-abcdef0123456789abcdef01","provider":"codex","provider_name":"Codex CLI","label":"Codex Team","selected":false,"worker_selected":false,"status":"configured_unverified","method":"chatgpt","evidence":"local_session_present","observed_at_ms":42,"last_verified_at_ms":null},{"id":"acct-111111111111111111111111","provider":"claude","provider_name":"Claude Code","label":"Claude Max","selected":true,"worker_selected":false,"status":"authenticated","method":"claude_ai","evidence":"native_login_verified","observed_at_ms":42,"last_verified_at_ms":42}],"login_sessions":[]}"#;
 
     #[test]
     // SDTEST-1662
@@ -486,5 +653,74 @@ mod tests {
         let error = status(&config).unwrap_err().to_string();
         assert!(error.contains("401"));
         assert!(error.contains("unauthorized"));
+    }
+
+    #[test]
+    // SDTEST-1669
+    fn sdtest_monique_native_accounts_preserve_n_provider_profiles() {
+        let mock = start_mock();
+        let config = config(&mock);
+        let accounts = agent_accounts(&config).unwrap();
+        assert_eq!(accounts.accounts.len(), 3);
+        assert_eq!(accounts.max_accounts, 64);
+        assert_eq!(accounts.providers[0].account_count, 2);
+        assert_eq!(
+            accounts
+                .accounts
+                .iter()
+                .filter(|item| item.provider == "codex")
+                .count(),
+            2
+        );
+        assert!(accounts.accounts[0].worker_selected);
+        assert!(accounts.accounts[1].can_select());
+        assert!(accounts
+            .login_sessions
+            .iter()
+            .all(|session| !session.active()));
+    }
+
+    #[test]
+    // SDTEST-1670
+    fn sdtest_monique_native_account_mutations_are_typed_and_token_free() {
+        let mock = start_mock();
+        let config = config(&mock);
+        mutate_agent_accounts(
+            &config,
+            &MoniqueAgentAuthAction::StartLogin {
+                provider: "claude".into(),
+                label: "Claude Team".into(),
+                account_id: None,
+            },
+        )
+        .unwrap();
+        let requests = mock.requests.lock().unwrap();
+        assert_eq!(requests[0].0, "/api/agent-accounts/action");
+        let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["action"], "start_login");
+        assert_eq!(body["provider"], "claude");
+        assert_eq!(body["label"], "Claude Team");
+        assert!(body.get("token").is_none());
+        assert!(body.get("path").is_none());
+    }
+
+    #[test]
+    // SDTEST-1671
+    fn sdtest_monique_native_authorization_links_are_exactly_allowlisted() {
+        let mut session = MoniqueAgentLoginSession {
+            provider: "codex".into(),
+            authorization_url: Some("https://auth.openai.com/codex/device".into()),
+            ..Default::default()
+        };
+        assert!(session.safe_authorization_url().is_some());
+        session.authorization_url =
+            Some("https://auth.openai.com.attacker.invalid/codex/device".into());
+        assert!(session.safe_authorization_url().is_none());
+        session.provider = "claude".into();
+        session.authorization_url =
+            Some("https://claude.com/cai/oauth/authorize?state=opaque".into());
+        assert!(session.safe_authorization_url().is_some());
+        session.authorization_url = Some("https://claude.com/cai/oauth/authorize".into());
+        assert!(session.safe_authorization_url().is_none());
     }
 }

@@ -78,15 +78,17 @@ impl Workspace {
                     let status = monique_client::status(&config)?;
                     let processes = monique_client::processes(&config)?;
                     let history = monique_client::chat_history(&config)?;
-                    Ok::<_, shelldeck_core::ShellDeckError>((status, processes, history))
+                    let accounts = monique_client::agent_accounts(&config)?;
+                    Ok::<_, shelldeck_core::ShellDeckError>((status, processes, history, accounts))
                 })
                 .await;
             let _ = this.update(cx, |workspace, cx| match result {
-                Ok((status, processes, history)) => {
+                Ok((status, processes, history, accounts)) => {
                     workspace.monique_status = Some(status.clone());
                     workspace.monique_processes = Some(processes.clone());
                     workspace.monique_view.update(cx, |view, cx| {
                         view.set_snapshot(status, processes, history);
+                        view.set_agent_accounts(accounts);
                         cx.notify();
                     });
                 }
@@ -111,7 +113,47 @@ impl Workspace {
                 approved,
             } => self.resolve_monique_action(action_id, approved, cx),
             MoniqueViewEvent::NewChat => self.new_monique_chat(cx),
+            MoniqueViewEvent::AgentAction(action) => self.mutate_monique_accounts(action, cx),
+            MoniqueViewEvent::OpenAuthorization(url) => {
+                if let Err(error) = shelldeck_core::config::cloud_account::open_in_browser(&url) {
+                    self.monique_view.update(cx, |view, cx| {
+                        view.set_error(crate::i18n::api_error_message(&error));
+                        cx.notify();
+                    });
+                }
+            }
         }
+    }
+
+    fn mutate_monique_accounts(
+        &mut self,
+        action: shelldeck_core::config::monique::MoniqueAgentAuthAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.effective_monique_config() else {
+            return;
+        };
+        self.monique_view.update(cx, |view, cx| {
+            view.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { monique_client::mutate_agent_accounts(&config, &action) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(accounts) => workspace.monique_view.update(cx, |view, cx| {
+                    view.set_agent_accounts(accounts);
+                    cx.notify();
+                }),
+                Err(error) => workspace.monique_view.update(cx, |view, cx| {
+                    view.set_error(crate::i18n::api_error_message(&error));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
     }
 
     fn monique_chat(&mut self, message: String, cx: &mut Context<Self>) {

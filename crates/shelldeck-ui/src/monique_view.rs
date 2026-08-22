@@ -6,6 +6,7 @@ use adabraka_ui::prelude::Markdown;
 use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::monique::{
+    MoniqueAgentAccount, MoniqueAgentAccounts, MoniqueAgentAuthAction, MoniqueAgentLoginSession,
     MoniqueChatAction, MoniqueChatHistory, MoniqueChatMessage, MoniqueChatResponse,
     MoniqueProcesses, MoniqueStatus,
 };
@@ -20,6 +21,8 @@ pub enum MoniqueViewEvent {
     Send(String),
     ResolveAction { action_id: String, approved: bool },
     NewChat,
+    AgentAction(MoniqueAgentAuthAction),
+    OpenAuthorization(String),
 }
 
 impl EventEmitter<MoniqueViewEvent> for MoniqueView {}
@@ -29,7 +32,12 @@ pub struct MoniqueView {
     processes: Option<MoniqueProcesses>,
     messages: Vec<MoniqueChatMessage>,
     pending_actions: Vec<MoniqueChatAction>,
+    agent_accounts: MoniqueAgentAccounts,
     composer: Entity<InputState>,
+    account_label: Entity<InputState>,
+    authorization_code: Entity<InputState>,
+    confirm_logout: Option<String>,
+    confirm_remove: Option<String>,
     loading: bool,
     error: Option<String>,
     scroll: ScrollHandle,
@@ -42,7 +50,12 @@ impl MoniqueView {
             processes: None,
             messages: Vec::new(),
             pending_actions: Vec::new(),
+            agent_accounts: MoniqueAgentAccounts::default(),
             composer: cx.new(InputState::new),
+            account_label: cx.new(InputState::new),
+            authorization_code: cx.new(InputState::new),
+            confirm_logout: None,
+            confirm_remove: None,
             loading: false,
             error: None,
             scroll: ScrollHandle::new(),
@@ -87,6 +100,12 @@ impl MoniqueView {
             self.pending_actions.retain(|item| item.id != action.id);
             self.pending_actions.push(action);
         }
+        self.loading = false;
+        self.error = None;
+    }
+
+    pub fn set_agent_accounts(&mut self, accounts: MoniqueAgentAccounts) {
+        self.agent_accounts = accounts;
         self.loading = false;
         self.error = None;
     }
@@ -262,6 +281,372 @@ impl MoniqueView {
                     .unwrap_or(0)
                     .to_string(),
             ))
+    }
+
+    fn start_agent_login(&mut self, provider: &str, cx: &mut Context<Self>) {
+        let entered = self.account_label.read(cx).content().trim().to_string();
+        let label = if entered.is_empty() {
+            match provider {
+                "claude" => t!("monique.accounts.default_claude").to_string(),
+                _ => t!("monique.accounts.default_codex").to_string(),
+            }
+        } else {
+            entered
+        };
+        self.account_label.update(cx, |state, cx| state.reset(cx));
+        self.loading = true;
+        cx.emit(MoniqueViewEvent::AgentAction(
+            MoniqueAgentAuthAction::StartLogin {
+                provider: provider.to_string(),
+                label,
+                account_id: None,
+            },
+        ));
+        cx.notify();
+    }
+
+    fn render_agent_account(
+        &self,
+        account: &MoniqueAgentAccount,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let select_id = account.id.clone();
+        let refresh_id = account.id.clone();
+        let login_id = account.id.clone();
+        let login_provider = account.provider.clone();
+        let login_label = account.label.clone();
+        let logout_id = account.id.clone();
+        let remove_id = account.id.clone();
+        let confirming = self.confirm_remove.as_deref() == Some(account.id.as_str());
+        let confirming_logout = self.confirm_logout.as_deref() == Some(account.id.as_str());
+        let can_select = account.can_select() && !account.worker_selected;
+        let state = if account.worker_selected {
+            t!("monique.accounts.active").to_string()
+        } else {
+            account.status.clone()
+        };
+        let mut actions = div().flex().flex_wrap().gap(px(5.0));
+        if can_select {
+            actions = actions.child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-account-select-{select_id}"
+                ))),
+                t!("monique.accounts.use").to_string(),
+                cx,
+                move |_this, cx| {
+                    cx.emit(MoniqueViewEvent::AgentAction(
+                        MoniqueAgentAuthAction::Select {
+                            account_id: select_id.clone(),
+                        },
+                    ))
+                },
+            ));
+        }
+        actions = actions
+            .child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-account-refresh-{refresh_id}"
+                ))),
+                t!("monique.accounts.verify").to_string(),
+                cx,
+                move |_this, cx| {
+                    cx.emit(MoniqueViewEvent::AgentAction(
+                        MoniqueAgentAuthAction::Refresh {
+                            account_id: refresh_id.clone(),
+                        },
+                    ))
+                },
+            ))
+            .child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-account-login-{login_id}"
+                ))),
+                t!("monique.accounts.sign_in_again").to_string(),
+                cx,
+                move |_this, cx| {
+                    cx.emit(MoniqueViewEvent::AgentAction(
+                        MoniqueAgentAuthAction::StartLogin {
+                            provider: login_provider.clone(),
+                            label: login_label.clone(),
+                            account_id: Some(login_id.clone()),
+                        },
+                    ))
+                },
+            ))
+            .child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-account-logout-{logout_id}"
+                ))),
+                if confirming_logout {
+                    t!("monique.accounts.confirm_sign_out").to_string()
+                } else {
+                    t!("monique.accounts.sign_out").to_string()
+                },
+                cx,
+                move |this, cx| {
+                    if this.confirm_logout.as_deref() == Some(logout_id.as_str()) {
+                        this.confirm_logout = None;
+                        cx.emit(MoniqueViewEvent::AgentAction(
+                            MoniqueAgentAuthAction::Logout {
+                                account_id: logout_id.clone(),
+                                confirm: true,
+                            },
+                        ));
+                    } else {
+                        this.confirm_logout = Some(logout_id.clone());
+                        cx.notify();
+                    }
+                },
+            ));
+        if !account.worker_selected {
+            actions = actions.child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-account-remove-{remove_id}"
+                ))),
+                if confirming {
+                    t!("monique.accounts.confirm_remove").to_string()
+                } else {
+                    t!("monique.accounts.remove").to_string()
+                },
+                cx,
+                move |this, cx| {
+                    if this.confirm_remove.as_deref() == Some(remove_id.as_str()) {
+                        this.confirm_remove = None;
+                        cx.emit(MoniqueViewEvent::AgentAction(
+                            MoniqueAgentAuthAction::Remove {
+                                account_id: remove_id.clone(),
+                                confirm: true,
+                            },
+                        ));
+                    } else {
+                        this.confirm_remove = Some(remove_id.clone());
+                        cx.notify();
+                    }
+                },
+            ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .p(px(9.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(if account.worker_selected {
+                ShellDeckColors::success()
+            } else {
+                ShellDeckColors::border()
+            })
+            .bg(ShellDeckColors::bg_surface())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ShellDeckColors::text_primary())
+                            .child(account.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(if account.can_select() {
+                                ShellDeckColors::success()
+                            } else {
+                                ShellDeckColors::warning()
+                            })
+                            .child(state),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(format!("{} · {}", account.provider_name, account.method)),
+            )
+            .child(actions)
+    }
+
+    fn render_login_session(
+        &self,
+        session: &MoniqueAgentLoginSession,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open_url = session.safe_authorization_url().map(str::to_string);
+        let cancel_id = session.id.clone();
+        let submit_id = session.id.clone();
+        let mut actions = div().flex().flex_wrap().items_center().gap(px(6.0));
+        if let Some(url) = open_url {
+            actions = actions.child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-login-open-{}",
+                    session.id
+                ))),
+                t!("monique.accounts.continue_login").to_string(),
+                cx,
+                move |_this, cx| cx.emit(MoniqueViewEvent::OpenAuthorization(url.clone())),
+            ));
+        }
+        if let Some(code) = &session.user_code {
+            actions = actions.child(
+                div()
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .bg(ShellDeckColors::selected_bg())
+                    .text_size(px(12.0))
+                    .child(code.clone()),
+            );
+        }
+        if session.accepts_authorization_code {
+            let entity = cx.entity();
+            actions = actions
+                .child(
+                    div().w(px(210.0)).child(
+                        Input::new(&self.authorization_code)
+                            .size(InputSize::Sm)
+                            .placeholder(t!("monique.accounts.authorization_code").to_string()),
+                    ),
+                )
+                .child(Self::button(
+                    ElementId::from(SharedString::from(format!(
+                        "monique-login-submit-{submit_id}"
+                    ))),
+                    t!("monique.accounts.submit_code").to_string(),
+                    cx,
+                    move |_this, cx| {
+                        entity.update(cx, |this, cx| {
+                            let code = this
+                                .authorization_code
+                                .read(cx)
+                                .content()
+                                .trim()
+                                .to_string();
+                            if !code.is_empty() {
+                                this.authorization_code
+                                    .update(cx, |state, cx| state.reset(cx));
+                                cx.emit(MoniqueViewEvent::AgentAction(
+                                    MoniqueAgentAuthAction::SubmitAuthorizationCode {
+                                        session_id: submit_id.clone(),
+                                        code,
+                                    },
+                                ));
+                            }
+                        });
+                    },
+                ));
+        }
+        if session.active() {
+            actions = actions.child(Self::button(
+                ElementId::from(SharedString::from(format!(
+                    "monique-login-cancel-{cancel_id}"
+                ))),
+                t!("monique.accounts.cancel").to_string(),
+                cx,
+                move |_this, cx| {
+                    cx.emit(MoniqueViewEvent::AgentAction(
+                        MoniqueAgentAuthAction::CancelLogin {
+                            session_id: cancel_id.clone(),
+                        },
+                    ))
+                },
+            ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .p(px(9.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(ShellDeckColors::warning())
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_primary())
+                    .child(format!("{} · {}", session.provider, session.status)),
+            )
+            .child(actions)
+    }
+
+    fn render_agent_accounts(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div().flex().flex_col().gap(px(7.0));
+        for session in &self.agent_accounts.login_sessions {
+            list = list.child(self.render_login_session(session, cx));
+        }
+        for account in &self.agent_accounts.accounts {
+            list = list.child(self.render_agent_account(account, cx));
+        }
+        if self.agent_accounts.accounts.is_empty() && self.agent_accounts.login_sessions.is_empty()
+        {
+            list = list.child(
+                div()
+                    .py(px(8.0))
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(t!("monique.accounts.empty").to_string()),
+            );
+        }
+        div()
+            .id("monique-agent-accounts")
+            .mx(px(14.0))
+            .mt(px(10.0))
+            .p(px(10.0))
+            .max_h(px(290.0))
+            .overflow_y_scroll()
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(ShellDeckColors::border())
+            .bg(ShellDeckColors::bg_primary())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .mb(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("monique.accounts.title").to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(ShellDeckColors::text_muted())
+                                    .child(t!("monique.accounts.boundary").to_string()),
+                            ),
+                    )
+                    .child(
+                        div().w(px(180.0)).child(
+                            Input::new(&self.account_label)
+                                .size(InputSize::Sm)
+                                .placeholder(t!("monique.accounts.alias").to_string()),
+                        ),
+                    )
+                    .child(Self::button(
+                        "monique-add-codex",
+                        t!("monique.accounts.add_codex").to_string(),
+                        cx,
+                        |this, cx| this.start_agent_login("codex", cx),
+                    ))
+                    .child(Self::button(
+                        "monique-add-claude",
+                        t!("monique.accounts.add_claude").to_string(),
+                        cx,
+                        |this, cx| this.start_agent_login("claude", cx),
+                    )),
+            )
+            .child(list)
     }
 
     fn render_action(action: &MoniqueChatAction, cx: &mut Context<Self>) -> impl IntoElement {
@@ -440,6 +825,7 @@ impl Render for MoniqueView {
             .bg(ShellDeckColors::bg_primary())
             .child(self.render_header(cx))
             .child(self.render_metrics())
+            .child(self.render_agent_accounts(cx))
             .child(self.render_conversation(cx))
             .child(self.render_composer(cx));
         if let Some(error) = &self.error {
