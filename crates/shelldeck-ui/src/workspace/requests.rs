@@ -688,7 +688,7 @@ impl Workspace {
     }
 
     pub(super) fn refresh_issues(&mut self, cx: &mut Context<Self>) {
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         // User mode is a personal surface, including when an internal staff
@@ -803,7 +803,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         if self.issue_selected.as_deref() != Some(id.as_str()) {
@@ -874,7 +874,7 @@ impl Workspace {
         if title.is_empty() {
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         self.issue_attachment_busy = true;
@@ -1004,7 +1004,7 @@ impl Workspace {
         if body.is_empty() && attachments.is_empty() {
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         self.issue_attachment_busy = true;
@@ -1088,7 +1088,7 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Support) || !self.issues_staff {
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         cx.spawn(async move |this, cx: &mut AsyncApp| {
@@ -1184,7 +1184,7 @@ impl Workspace {
             );
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         self.show_toast(
@@ -1363,7 +1363,7 @@ impl Workspace {
     /// removed from the local list, the detail pane closed, and any drift
     /// is caught by the 15 s issues poll.
     pub(super) fn delete_issue_now(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         let deleted_id = id.clone();
@@ -1412,7 +1412,7 @@ impl Workspace {
         attachment_id: String,
         cx: &mut Context<Self>,
     ) {
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         cx.spawn(async move |this, cx: &mut AsyncApp| {

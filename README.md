@@ -221,27 +221,17 @@ The console is available only to super-admins with a complete configuration, sou
 
 Basic credentials are sent only to the configured canonical URL; redirects are refused. ShellDeck has no alternate bot transport or fallback.
 
-### Fleet runtime
+### Platform cockpit
 
-Beyond controlling one dashboard, ShellDeck can be a **runtime for the Monique fleet** — the tenant/site-aware set of Monique instances managed from `manage.inklura.fr`. In Dev mode, the **Fleet** view shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
+In Dev mode, the **Fleet** entry opens a native cockpit backed by the shared
+Automonique platform contract. It presents federated resources, capabilities,
+models, receipts, and every attachable session. Operators may attach or detach
+observation and explicitly claim or release a short control lease.
 
-When enabled, ShellDeck registers itself, heartbeats, and claims pending jobs for its instance, executing each by driving **headless Claude Code** (`claude -p`, subscription auth) in the configured working directory.
-
-⚠️ **Safety.** Executing a job runs Claude Code with file/edit/command powers on this machine. It is **off by default** and gated hard:
-
-- The runtime only runs when `[monique_runtime].enabled = true` **and** the instance's autonomy is **`auto`**.
-- An instance set to **`confirm`** never auto-runs — each claimed job appears in the Fleet view with **Exécuter / Rejeter** and waits for an explicit click. New instances default to `confirm`.
-- One job at a time per machine.
-
-```toml
-[monique_runtime]
-enabled = false          # default — must be turned on explicitly
-# instance_id = "…"      # filled in after the first registration
-# workdir = "/home/you/infra"
-# name = "my-machine"
-```
-
-Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Monique**).
+ShellDeck is always a client. It contains no provider executor, job claim loop,
+runtime switch, or duplicate platform wire types. The signed-in AI Operations
+bearer is validated by the platform gateway; Basic credentials remain scoped
+to the dashboard's browser-style APIs.
 
 ## Requests (hosted issue management)
 

@@ -39,7 +39,7 @@ use shelldeck_core::config::manage_support;
 use shelldeck_core::config::monique::{
     self as monique_client, MoniqueConfig, MoniqueProcesses, MoniqueStatus,
 };
-use shelldeck_core::config::monique_fleet::{self, FleetSnapshot, MoniqueInstance, MoniqueJob};
+use shelldeck_core::config::platform::PlatformSnapshot;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -544,21 +544,12 @@ pub struct Workspace {
     /// The Monique fleet view (Dev mode).
     fleet_view: Entity<FleetView>,
     _fleet_sub: Subscription,
-    /// Cached fleet snapshot (feeds fleet_view).
-    fleet_snapshot: Option<FleetSnapshot>,
-    /// Exact Fleet job requested by a deep link, retained across async refresh.
-    pending_fleet_job_focus: Option<String>,
+    /// Cached shared-platform snapshot (feeds the native cockpit and mentions).
+    fleet_snapshot: Option<PlatformSnapshot>,
+    /// Exact session requested by a deep link, retained across async refresh.
+    pending_fleet_session_focus: Option<String>,
     /// Poll while the Fleet view is visible.
     _fleet_view_poll: Option<gpui::Task<()>>,
-    /// This machine's registered runtime instance (when the runtime is enabled).
-    runtime_instance: Option<MoniqueInstance>,
-    /// Jobs claimed by a `confirm`-autonomy instance, awaiting an explicit
-    /// "Exécuter" in the UI. Also gates the loop (concurrency 1).
-    runtime_awaiting: Vec<MoniqueJob>,
-    /// True while a job is executing or awaiting confirmation (no new claim).
-    runtime_busy: bool,
-    /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
-    _runtime_loop: Option<gpui::Task<()>>,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
     /// are the one mention kind that needs server-side role information.
@@ -1328,12 +1319,8 @@ impl Workspace {
             fleet_view,
             _fleet_sub: fleet_sub,
             fleet_snapshot: None,
-            pending_fleet_job_focus: None,
+            pending_fleet_session_focus: None,
             _fleet_view_poll: None,
-            runtime_instance: None,
-            runtime_awaiting: Vec::new(),
-            runtime_busy: false,
-            _runtime_loop: None,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,

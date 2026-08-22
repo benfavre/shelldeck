@@ -3,6 +3,8 @@ use tracing::debug;
 
 const SERVICE_NAME: &str = "shelldeck-ssh";
 const AI_SERVICE_NAME: &str = "shelldeck-ai";
+const MANAGE_SERVICE_NAME: &str = "shelldeck-ai-operations";
+const MANAGE_TOKEN_KEY: &str = "federated-bearer";
 
 /// Build a keyring entry key from host and user.
 fn entry_key(host: &str, user: &str) -> String {
@@ -108,6 +110,41 @@ pub fn delete_ai_api_key(provider: &str) -> Result<()> {
     }
 }
 
+/// Persist the signed-in AI Operations bearer outside `shelldeck.toml`.
+pub fn store_manage_token(token: &str) -> Result<()> {
+    let entry = keyring::Entry::new(MANAGE_SERVICE_NAME, MANAGE_TOKEN_KEY).map_err(|error| {
+        ShellDeckError::Keychain(format!("Failed to create account token entry: {error}"))
+    })?;
+    entry.set_password(token).map_err(|error| {
+        ShellDeckError::Keychain(format!("Failed to store account token: {error}"))
+    })
+}
+
+pub fn get_manage_token() -> Result<Option<String>> {
+    let entry = keyring::Entry::new(MANAGE_SERVICE_NAME, MANAGE_TOKEN_KEY).map_err(|error| {
+        ShellDeckError::Keychain(format!("Failed to create account token entry: {error}"))
+    })?;
+    match entry.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(ShellDeckError::Keychain(format!(
+            "Failed to retrieve account token: {error}"
+        ))),
+    }
+}
+
+pub fn delete_manage_token() -> Result<()> {
+    let entry = keyring::Entry::new(MANAGE_SERVICE_NAME, MANAGE_TOKEN_KEY).map_err(|error| {
+        ShellDeckError::Keychain(format!("Failed to create account token entry: {error}"))
+    })?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(ShellDeckError::Keychain(format!(
+            "Failed to delete account token: {error}"
+        ))),
+    }
+}
+
 /// Store a private key passphrase in the OS keychain, keyed by the key file path.
 pub fn store_key_passphrase(key_path: &str, passphrase: &str) -> Result<()> {
     let key = passphrase_entry_key(key_path);
@@ -194,6 +231,13 @@ mod tests {
         assert_eq!(ai_provider_key(" OpenAI "), "provider:openai");
         assert_eq!(ai_provider_key("ANTHROPIC"), "provider:anthropic");
         assert_ne!(ai_provider_key("openai"), entry_key("openai", "provider"));
+    }
+
+    #[test]
+    fn manage_token_uses_a_dedicated_fixed_namespace() {
+        assert_ne!(MANAGE_SERVICE_NAME, AI_SERVICE_NAME);
+        assert_ne!(MANAGE_SERVICE_NAME, SERVICE_NAME);
+        assert_eq!(MANAGE_TOKEN_KEY, "federated-bearer");
     }
 
     // ── SDTEST-120/123 — live keychain smoke (opt-in) ──────────────

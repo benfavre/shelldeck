@@ -24,7 +24,7 @@
 //! | `shelldeck://open/site/<id>`         | [`DeepLink::OpenSite`] |
 //! | `shelldeck://issue/<id>`             | [`DeepLink::OpenIssue`] |
 //! | `shelldeck://ticket/<id>`            | [`DeepLink::OpenTicket`] |
-//! | `shelldeck://fleet/confirm/<job_id>`  | [`DeepLink::FleetConfirm`] |
+//! | `shelldeck://platform/session/<id>`   | [`DeepLink::PlatformSession`] |
 //!
 //! Anything else (unknown verb, bad UUID, wrong scheme) parses to `None`
 //! so the caller can no-op safely instead of guessing.
@@ -38,7 +38,7 @@ pub const SCHEME: &str = "shelldeck";
 
 /// A parsed, typed deep link. IDs mirror the model types they resolve
 /// against: connections/tunnels are `Uuid` (validated at parse time),
-/// while sites/tickets/issues/Fleet jobs are opaque `String` IDs (the
+/// while sites/tickets/issues/platform sessions are opaque `String` IDs (the
 /// server owns their shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeepLink {
@@ -56,8 +56,8 @@ pub enum DeepLink {
     OpenIssue(String),
     /// Open the support ticket in Support mode.
     OpenTicket(String),
-    /// Open the Fleet view where the Fleet job awaits confirmation.
-    FleetConfirm(String),
+    /// Open the platform cockpit and focus an attachable session.
+    PlatformSession(String),
 }
 
 impl DeepLink {
@@ -101,8 +101,8 @@ impl DeepLink {
             }
             ["issue", _] => non_empty(segments[1]).map(|s| DeepLink::OpenIssue(s.to_string())),
             ["ticket", _] => non_empty(segments[1]).map(|s| DeepLink::OpenTicket(s.to_string())),
-            ["fleet", "confirm", _] => {
-                non_empty(segments[2]).map(|s| DeepLink::FleetConfirm(s.to_string()))
+            ["platform", "session", _] => {
+                non_empty(segments[2]).map(|s| DeepLink::PlatformSession(s.to_string()))
             }
             _ => None,
         }
@@ -181,8 +181,8 @@ mod tests {
             Some(DeepLink::OpenTicket("tkt_7".to_string()))
         );
         assert_eq!(
-            DeepLink::parse("shelldeck://fleet/confirm/job_9"),
-            Some(DeepLink::FleetConfirm("job_9".to_string()))
+            DeepLink::parse("shelldeck://platform/session/session_9"),
+            Some(DeepLink::PlatformSession("session_9".to_string()))
         );
     }
 

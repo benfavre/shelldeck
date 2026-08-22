@@ -289,10 +289,10 @@ impl Workspace {
                 self.select_support_ticket(id, cx);
                 cx.notify();
             }
-            DeepLink::FleetConfirm(job_id) => {
-                self.pending_fleet_job_focus = Some(job_id);
+            DeepLink::PlatformSession(session_id) => {
+                self.pending_fleet_session_focus = Some(session_id);
                 self.open_fleet(cx);
-                self.focus_pending_fleet_job(cx);
+                self.focus_pending_fleet_session(cx);
             }
         }
     }

@@ -38,10 +38,6 @@ pub struct AppConfig {
     /// super-admins use the configuration delivered by Inklura Manage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monique: Option<crate::config::monique::MoniqueConfig>,
-    /// `[monique_runtime]` — whether this machine hosts a Monique fleet runtime.
-    /// `#[serde(default)]` keeps older configs parsing; `enabled` defaults false.
-    #[serde(default)]
-    pub monique_runtime: crate::config::monique_fleet::MoniqueRuntimeConfig,
     /// `[bext_cloud]` — connection to the cloud.bext.dev control plane. Empty
     /// token = not connected; `#[serde(default)]` keeps older configs parsing.
     #[serde(default)]
@@ -662,10 +658,12 @@ global_palette_shortcut_enabled = true
         config.cloud_sync.sync_on_startup = false;
 
         config.save_to(&path).expect("save_to");
+        let serialized = std::fs::read_to_string(&path).expect("saved config");
+        assert!(!serialized.contains("sd_secret"));
         let loaded = AppConfig::load_from(&path).expect("load_from");
 
         assert!(loaded.cloud_sync.enabled);
-        assert_eq!(loaded.cloud_sync.token, "sd_secret");
+        assert!(loaded.cloud_sync.token.is_empty());
         assert_eq!(loaded.cloud_sync.base_url, "https://example.test");
         assert!(!loaded.cloud_sync.sync_on_startup);
 
@@ -730,74 +728,6 @@ global_palette_shortcut_enabled = true
         assert_eq!(loaded.url, "https://monique.example");
         assert_eq!(loaded.user, "ops");
         assert_eq!(loaded.pass, "secret");
-
-        std::fs::remove_dir_all(path.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn monique_runtime_round_trips_and_defaults_off() {
-        let path = temp_path("config.toml");
-
-        // Default: enabled=false, no instance id.
-        AppConfig::default().save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path).expect("load");
-        assert!(!loaded.monique_runtime.enabled);
-        assert!(loaded.monique_runtime.instance_id.is_none());
-        assert_eq!(
-            loaded.monique_runtime.executor.rollout,
-            crate::config::monique_fleet::MoniqueRuntimeExecutorRollout::Jcode
-        );
-        assert_eq!(loaded.monique_runtime.executor.timeout_seconds, 30 * 60);
-        assert!(loaded.monique_runtime.executor.fallback_to_claude);
-        assert_eq!(
-            loaded.monique_runtime.executor.transport,
-            crate::config::monique_fleet::JcodeTransportPreference::Process
-        );
-
-        // Round-trip a registered runtime.
-        let mut cfg = AppConfig::default();
-        cfg.monique_runtime.enabled = true;
-        cfg.monique_runtime.instance_id = Some("4365eee9".to_string());
-        cfg.monique_runtime.workdir = Some("/home/x/infra".to_string());
-        cfg.monique_runtime.executor.provider = Some("openai-api".to_string());
-        cfg.monique_runtime.executor.model = Some("gpt-5.5".to_string());
-        cfg.monique_runtime.executor.tool_profile = Some("minimal".to_string());
-        cfg.monique_runtime.executor.binary = Some("/usr/local/bin/jcode".to_string());
-        cfg.monique_runtime.executor.transport =
-            crate::config::monique_fleet::JcodeTransportPreference::Acp;
-        cfg.monique_runtime.executor.timeout_seconds = 42;
-        cfg.save_to(&path).expect("save");
-        let loaded = AppConfig::load_from(&path).expect("load");
-        assert!(loaded.monique_runtime.enabled);
-        assert_eq!(
-            loaded.monique_runtime.instance_id.as_deref(),
-            Some("4365eee9")
-        );
-        assert_eq!(
-            loaded.monique_runtime.workdir.as_deref(),
-            Some("/home/x/infra")
-        );
-        assert_eq!(
-            loaded.monique_runtime.executor.provider.as_deref(),
-            Some("openai-api")
-        );
-        assert_eq!(
-            loaded.monique_runtime.executor.model.as_deref(),
-            Some("gpt-5.5")
-        );
-        assert_eq!(
-            loaded.monique_runtime.executor.tool_profile.as_deref(),
-            Some("minimal")
-        );
-        assert_eq!(
-            loaded.monique_runtime.executor.binary.as_deref(),
-            Some("/usr/local/bin/jcode")
-        );
-        assert_eq!(
-            loaded.monique_runtime.executor.transport,
-            crate::config::monique_fleet::JcodeTransportPreference::Acp
-        );
-        assert_eq!(loaded.monique_runtime.executor.timeout_seconds, 42);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
@@ -994,7 +924,6 @@ ui_font_size = 14.0
         assert!(cfg.account.is_none());
         assert!(cfg.monique.is_none());
         assert!(!cfg.cloud_sync.enabled);
-        assert!(!cfg.monique_runtime.enabled);
         assert!(!cfg.bext_cloud.is_connected());
         assert!(!cfg.companion.start_hidden);
     }

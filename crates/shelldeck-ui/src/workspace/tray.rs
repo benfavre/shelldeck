@@ -112,7 +112,7 @@ impl Workspace {
             0
         };
         let monique_pending = if signed_in {
-            self.runtime_awaiting.len() + self.monique_view.read(cx).pending_action_count()
+            self.monique_view.read(cx).pending_action_count()
         } else {
             0
         };

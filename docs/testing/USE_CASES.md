@@ -438,13 +438,12 @@ convention exists); absence is logged and honestly reported as no sites.
 ### SDUC-080 — Round-trip `AppConfig` (non-default values)
 
 All fields serialize back into the same TOML on disk, including nested
-sections (`[cloud_sync]`, `[account]`, `[monique]`,
-`[monique_runtime]`).
+sections (`[cloud_sync]`, `[account]`, `[monique]`).
 
 ### SDUC-081 — Backward compat: missing sections still parse
 
 A pre-cloud-sync `shelldeck.toml` with no `[cloud_sync]`, no
-`[account]`, no `[monique]`, no `[monique_runtime]` still parses into
+`[account]`, no `[monique]` still parses into
 sane defaults (`#[serde(default)]` on every new section is the
 contract).
 
@@ -458,11 +457,6 @@ trace in the file.
 
 A complete local `[monique]` overrides the server-delivered Monique config;
 when `None`, the section is not written back.
-
-### SDUC-084 — `[monique_runtime]` defaults to disabled
-
-Fresh config has `enabled = false`. Once persisted `enabled = true`,
-the round-trip preserves it.
 
 ### SDUC-085 — Load-from-missing returns defaults
 
@@ -730,9 +724,9 @@ terminal workspace so runtime authority cannot cross an account boundary.
 
 ### SDUC-153 — Login persists identity, enables cloud sync, toasts profile count
 
-`apply_login` writes `[account]`, sets `cloud_sync.enabled = true`,
-saves the token, runs a sync, and toasts the number of profiles
-merged.
+`apply_login` writes `[account]`, sets `cloud_sync.enabled = true`, stores the
+bearer in the OS keychain (never TOML), runs a sync, and toasts the number of
+profiles merged.
 
 ### SDUC-154 — Startup account check refreshes silently
 
@@ -888,19 +882,20 @@ never shared across local and SSH targets or persisted by ShellDeck.
 
 ---
 
-## 11. Fleet projection client
+## 11. Shared platform client
 
-`crates/shelldeck-core/src/config/monique_fleet.rs`
+`crates/shelldeck-core/src/config/platform.rs`
 
-### SDUC-200 — Fleet endpoint uses snake_case + ISO timestamps
+### SDUC-200 — Canonical remote contract
 
-`get_fleet()` parses `MoniqueInstance`, `MoniqueJob`, `FleetSnapshot` with
-snake_case fields and ISO-string
-timestamps (`de_flex_millis` → epoch ms).
+The desktop uses `automonique-platform-client` and the shared protocol types;
+the exact canonical frame travels over authenticated HTTPS.
 
-### SDUC-201 — Register, heartbeat, claim, update_job, dispatch
+### SDUC-201 — Native session cockpit
 
-Each API call sends the correct route, Bearer token, and body shape.
+The cockpit renders federated resources, capabilities, models, receipts and
+sessions, and sends typed attach, detach, claim-control and release-control
+requests.
 
 ### SDUC-202 — Retired: desktop fleet subprocess executor
 
@@ -920,9 +915,8 @@ Retired 2026-08-22. ShellDeck observes jobs without claiming them.
 
 ### SDUC-206 — ShellDeck is always client-only
 
-Old `[monique_runtime]` configuration remains readable for compatibility, but
-`Workspace::sync_runtime_loop` always clears it and starts no task. The fleet
-surface reads state and sends typed server actions only.
+There is no runtime configuration, subprocess executor, heartbeat, job claim
+loop, or handwritten platform wire model in the shipping workspace.
 
 ### SDUC-207 — Retired: desktop executor concurrency
 
@@ -2379,10 +2373,9 @@ once the network returns.
   exposed a test that incorrectly expected Unix separators from a native local
   path helper; the corrected test pins Unix paths on Unix and drive-letter
   paths on Windows, while the production helper remains unchanged.
-- **2026-08-22** — Replaced SDTEST-272 for SDUC-206. The production executor,
-  claim loop, approval action, and runtime palette entry are absent. The
-  compatibility boundary in `Workspace::sync_runtime_loop` clears every stale
-  enablement combination and starts no task.
+- **2026-08-22** — Replaced the desktop fleet protocol and runtime compatibility
+  with the shared platform SDK. The native cockpit now handles resources,
+  sessions, observation attachments and control leases as a client only.
 - **2026-08-18** — Clarified SDUC-260 and completed SDTEST-332/333: every
   single-instance Bext operation now has contract coverage for its route, body
   where applicable, and required `X-Bext-App-Id` header. Production already
@@ -2719,7 +2712,7 @@ once the network returns.
 - **2026-07-09 (G)** — Cluster G cloud_sync P0: SDTEST-152/153/154
   (404/405 → GET fallback, 401 without retry). First mock-based
   cluster of the session; extends the zero-dep `TcpListener` pattern
-  from `monique_fleet` / `issues` / `manage_support` to cover the sync
+  from `platform` / `issues` / `manage_support` to cover the sync
   entry point. SDTEST-154 is the load-bearing safety test — a bad
   token can never reach `merge_profiles` with an empty payload and
   silently prune every CloudSync connection.

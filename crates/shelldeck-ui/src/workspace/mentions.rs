@@ -406,34 +406,33 @@ impl Workspace {
             return Vec::new();
         };
         snapshot
-            .instances
+            .resources
             .iter()
-            .map(|instance| {
+            .filter(|resource| {
+                resource.resource.kind == shelldeck_core::config::platform::ResourceKind::Node
+            })
+            .map(|resource| {
+                let id = resource.resource.id.as_str();
                 MentionCandidate::new(
                     MentionKind::Instance,
-                    instance.id.clone(),
-                    if instance.name.trim().is_empty() {
-                        instance.id.clone()
-                    } else {
-                        instance.name.clone()
-                    },
-                    format!("{} · {}", instance.status, instance.autonomy),
+                    id.to_owned(),
+                    resource.summary.as_str().to_owned(),
+                    format!(
+                        "{} · {}",
+                        resource.resource.authority.as_str(),
+                        resource.freshness.state.as_str()
+                    ),
                     serde_json::json!({
-                        "id": instance.id,
-                        "runtime": instance.runtime,
-                        "status": instance.status,
-                        "status_detail": instance.status_detail,
-                        "autonomy": instance.autonomy,
-                        "enabled": instance.enabled,
-                        "model": instance.model,
-                        "workdir": instance.workdir,
-                        "tenant": instance.tenant_name,
-                        "site": instance.site_label,
-                        "last_seen_at": instance.last_seen_at,
+                        "id": id,
+                        "authority": resource.resource.authority.as_str(),
+                        "kind": resource.resource.kind.as_str(),
+                        "freshness": resource.freshness.state.as_str(),
+                        "observed_at": resource.freshness.observed_at.as_millis(),
+                        "revision": resource.freshness.revision.get(),
+                        "summary": resource.summary.as_str(),
                     }),
                 )
-                .site(instance.site_id.clone(), instance.site_label.clone())
-                .keywords(instance.workdir.clone())
+                .keywords(resource.resource.authority.as_str())
             })
             .collect()
     }
@@ -445,47 +444,32 @@ impl Workspace {
             return Vec::new();
         };
         snapshot
-            .jobs
+            .resources
             .iter()
-            .map(|job| {
-                let head: String = job
-                    .prompt
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(70)
-                    .collect();
-                let instance = snapshot
-                    .instances
-                    .iter()
-                    .find(|instance| instance.id == job.instance_id);
+            .filter(|resource| {
+                resource.resource.kind == shelldeck_core::config::platform::ResourceKind::Job
+            })
+            .map(|resource| {
+                let id = resource.resource.id.as_str();
                 MentionCandidate::new(
                     MentionKind::Job,
-                    job.id.clone(),
-                    if head.trim().is_empty() {
-                        job.id.clone()
-                    } else {
-                        head
-                    },
-                    format!("{} · {}", job.status, job.source),
+                    id.to_owned(),
+                    resource.summary.as_str().to_owned(),
+                    format!(
+                        "{} · {}",
+                        resource.resource.authority.as_str(),
+                        resource.freshness.state.as_str()
+                    ),
                     serde_json::json!({
-                        "id": job.id,
-                        "status": job.status,
-                        "source": job.source,
-                        "requested_by": job.requested_by,
-                        "instance": instance.map(|instance| instance.name.clone()),
-                        "created_at": job.created_at,
-                        "updated_at": job.updated_at,
-                        "prompt": job.prompt,
-                        "result": job.result,
+                        "id": id,
+                        "authority": resource.resource.authority.as_str(),
+                        "freshness": resource.freshness.state.as_str(),
+                        "observed_at": resource.freshness.observed_at.as_millis(),
+                        "revision": resource.freshness.revision.get(),
+                        "summary": resource.summary.as_str(),
                     }),
                 )
-                .site(
-                    job.site_id.clone(),
-                    instance.and_then(|instance| instance.site_label.clone()),
-                )
-                .keywords(job.requested_by.clone())
+                .keywords(resource.resource.authority.as_str())
             })
             .collect()
     }

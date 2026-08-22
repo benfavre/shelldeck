@@ -1462,7 +1462,7 @@ impl Workspace {
             );
             return;
         }
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some((base, token)) = self.manage_base_token() else {
             return;
         };
         self.audit_ai_action(&plan, "started", cx);

@@ -1,65 +1,74 @@
 use super::*;
 
-#[cfg(test)]
-fn runtime_loop_requested(_runtime_enabled: bool, _credentials_available: bool) -> bool {
-    false
+use shelldeck_core::config::platform::{
+    stable_client_id, Attachment, ControlLease, PlatformConnection, ResourceCoordinate,
+};
+
+enum PlatformActionResult {
+    Attached(Attachment),
+    Detached(ResourceCoordinate),
+    ControlClaimed(ControlLease),
+    ControlReleased(ResourceCoordinate),
 }
 
 impl Workspace {
-    // --- Fleet projection client ---
-
-    /// `(base_url, token)` when signed in to Inklura Manage.
-    pub(super) fn fleet_base_token(&self) -> Option<(String, String)> {
-        if self.signed_in() {
-            Some((
+    /// Signed-in AI Operations origin and bearer used by non-platform Manage APIs.
+    pub(super) fn manage_base_token(&self) -> Option<(String, String)> {
+        self.signed_in().then(|| {
+            (
                 self.account_base_url(),
                 self.app_config.cloud_sync.token.clone(),
-            ))
-        } else {
-            None
+            )
+        })
+    }
+
+    pub(super) fn platform_connection(&self) -> Option<PlatformConnection> {
+        if !self.signed_in() {
+            return None;
         }
+        let dashboard = self.effective_monique_config()?;
+        PlatformConnection::new(&dashboard.url, &self.app_config.cloud_sync.token).ok()
     }
 
     pub(super) fn fleet_visible(&self) -> bool {
         !self.settings_open
-            && self.fleet_base_token().is_some()
+            && self.platform_connection().is_some()
             && self.effective_mode() == AppMode::Dev
             && self.active_view == ActiveView::Fleet
     }
 
     pub(super) fn update_fleet_availability(&mut self, cx: &mut Context<Self>) {
-        let show = self.fleet_base_token().is_some() && self.effective_mode() == AppMode::Dev;
-        self.sidebar.update(cx, |s, cx| {
-            s.set_fleet_available(show);
+        let show = self.platform_connection().is_some() && self.effective_mode() == AppMode::Dev;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_fleet_available(show);
             cx.notify();
         });
     }
 
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some(connection) = self.platform_connection() else {
             return;
         };
-        self.fleet_view.update(cx, |v, cx| {
-            v.set_loading(true);
+        self.fleet_view.update(cx, |view, cx| {
+            view.set_loading(true);
             cx.notify();
         });
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { monique_fleet::get_fleet(&base, &token) })
+                .spawn(async move { connection.snapshot() })
                 .await;
-            let _ = this.update(cx, |ws, cx| match result {
-                Ok(snap) => {
-                    ws.fleet_snapshot = Some(snap.clone());
-                    ws.fleet_view.update(cx, |v, cx| {
-                        v.set_snapshot(snap);
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(snapshot) => {
+                    workspace.fleet_snapshot = Some(snapshot.clone());
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_snapshot(snapshot);
                         cx.notify();
                     });
-                    ws.push_runtime_status_to_fleet(cx);
-                    ws.focus_pending_fleet_job(cx);
+                    workspace.focus_pending_fleet_session(cx);
                 }
-                Err(e) => ws.fleet_view.update(cx, |v, cx| {
-                    v.set_error(crate::i18n::api_error_message(&e));
+                Err(error) => workspace.fleet_view.update(cx, |view, cx| {
+                    view.set_error(crate::i18n::api_error_message(&error));
                     cx.notify();
                 }),
             });
@@ -67,46 +76,15 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn push_runtime_status_to_fleet(&mut self, cx: &mut Context<Self>) {
-        let enabled = self.app_config.monique_runtime.enabled;
-        let my_id = self
-            .runtime_instance
-            .as_ref()
-            .map(|i| i.id.clone())
-            .or_else(|| self.app_config.monique_runtime.instance_id.clone());
-        let status = if !enabled {
-            "désactivé".to_string()
-        } else {
-            let base = self
-                .runtime_instance
-                .as_ref()
-                .map(|i| i.status.clone())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "démarrage…".to_string());
-            format!(
-                "{} · {}",
-                base,
-                self.app_config.monique_runtime.executor.self_report_label()
-            )
-        };
-        let awaiting = self.runtime_awaiting.clone();
-        self.fleet_view.update(cx, |v, cx| {
-            v.set_runtime(enabled, my_id, status);
-            v.set_awaiting(awaiting);
-            cx.notify();
-        });
-        self.focus_pending_fleet_job(cx);
-    }
-
-    pub(super) fn focus_pending_fleet_job(&mut self, cx: &mut Context<Self>) {
-        let Some(job_id) = self.pending_fleet_job_focus.clone() else {
+    pub(super) fn focus_pending_fleet_session(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.pending_fleet_session_focus.clone() else {
             return;
         };
         let opened = self
             .fleet_view
-            .update(cx, |view, cx| view.open_job_by_id(&job_id, cx));
+            .update(cx, |view, _cx| view.open_session_by_id(&session_id));
         if opened {
-            self.pending_fleet_job_focus = None;
+            self.pending_fleet_session_focus = None;
         }
     }
 
@@ -114,14 +92,14 @@ impl Workspace {
         if self.fleet_visible() {
             self.refresh_fleet_view(cx);
             if self._fleet_view_poll.is_none() {
-                let task = cx.spawn(async move |this, cx: &mut AsyncApp| loop {
+                self._fleet_view_poll = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(10))
                         .await;
                     let keep = this
-                        .update(cx, |ws, cx| {
-                            if ws.fleet_visible() {
-                                ws.refresh_fleet_view(cx);
+                        .update(cx, |workspace, cx| {
+                            if workspace.fleet_visible() {
+                                workspace.refresh_fleet_view(cx);
                                 true
                             } else {
                                 false
@@ -131,8 +109,7 @@ impl Workspace {
                     if !keep {
                         break;
                     }
-                });
-                self._fleet_view_poll = Some(task);
+                }));
             }
         } else {
             self._fleet_view_poll = None;
@@ -143,65 +120,84 @@ impl Workspace {
         if !self.can_access_mode(AppMode::Dev) {
             return;
         }
-        match event {
-            FleetViewEvent::Refresh => self.refresh_fleet_view(cx),
-            FleetViewEvent::RejectJob(id) => self.reject_fleet_job(id, cx),
+        if matches!(event, FleetViewEvent::Refresh) {
+            self.refresh_fleet_view(cx);
+            return;
         }
-    }
-
-    /// Keep the retired runtime task stopped even when old config enabled it.
-    pub fn sync_runtime_loop(&mut self, _cx: &mut Context<Self>) {
-        self.app_config.monique_runtime.enabled = false;
-        self._runtime_loop = None;
-    }
-
-    /// Reject a confirm-mode job: mark it cancelled server-side.
-    pub(super) fn reject_fleet_job(&mut self, job_id: String, cx: &mut Context<Self>) {
-        let Some((base, token)) = self.fleet_base_token() else {
+        let Some(connection) = self.platform_connection() else {
             return;
         };
-        let prompt = self
-            .runtime_awaiting
-            .iter()
-            .find(|j| j.id == job_id)
-            .map(|j| j.prompt.clone())
-            .unwrap_or_default();
-        self.runtime_awaiting.retain(|j| j.id != job_id);
-        self.runtime_busy = false;
-        self.publish_tray_state(cx);
-        self.push_runtime_status_to_fleet(cx);
-        self.add_activity_entry(
-            ActivityEntry::new(
-                ActivityKind::Fleet,
-                t!("activity.fleet.rejected").to_string(),
-            )
-            .with_target(job_id.clone(), t!("activity.fleet.job").to_string())
-            .with_detail(prompt)
-            .with_action(ActivityAction::OpenFleet),
-            cx,
-        );
-        let jid = job_id;
-        cx.background_executor()
-            .spawn(async move {
-                let _ = monique_fleet::update_job(
-                    &base,
-                    &token,
-                    &jid,
-                    "cancelled",
-                    Some("rejeté depuis ShellDeck"),
-                );
-            })
-            .detach();
-        self.refresh_fleet_view(cx);
-        cx.notify();
+        let Ok(client) = stable_client_id(&shelldeck_core::util::hostname()) else {
+            return;
+        };
+        self.fleet_view.update(cx, |view, cx| {
+            view.set_loading(true);
+            cx.notify();
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match event {
+                        FleetViewEvent::Refresh => unreachable!(),
+                        FleetViewEvent::Attach(session) => connection
+                            .attach(session, client)
+                            .map(PlatformActionResult::Attached),
+                        FleetViewEvent::Detach(session) => connection
+                            .detach(session.clone(), client)
+                            .map(|()| PlatformActionResult::Detached(session)),
+                        FleetViewEvent::ClaimControl(session) => connection
+                            .claim_control(session, client)
+                            .map(PlatformActionResult::ControlClaimed),
+                        FleetViewEvent::ReleaseControl(session, lease) => connection
+                            .release_control(session.clone(), client, lease.id)
+                            .map(|()| PlatformActionResult::ControlReleased(session)),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |workspace, cx| match result {
+                Ok(PlatformActionResult::Attached(attachment)) => {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_attached(attachment);
+                        view.set_loading(false);
+                        cx.notify();
+                    });
+                }
+                Ok(PlatformActionResult::Detached(session)) => {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_detached(&session);
+                        view.set_loading(false);
+                        cx.notify();
+                    });
+                }
+                Ok(PlatformActionResult::ControlClaimed(lease)) => {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_control_lease(lease);
+                        view.set_loading(false);
+                        cx.notify();
+                    });
+                }
+                Ok(PlatformActionResult::ControlReleased(session)) => {
+                    workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_control_released(&session);
+                        view.set_loading(false);
+                        cx.notify();
+                    });
+                }
+                Err(error) => workspace.fleet_view.update(cx, |view, cx| {
+                    view.set_error(crate::i18n::api_error_message(&error));
+                    cx.notify();
+                }),
+            });
+        })
+        .detach();
     }
 
-    /// Open the Fleet view (palette / action) in Dev mode.
     pub fn open_fleet(&mut self, cx: &mut Context<Self>) {
         if !self.enter_dev_mode(cx) {
             return;
         }
-        if self.fleet_base_token().is_none() {
+        if self.platform_connection().is_none() {
             self.show_toast(
                 t!("toast.monique.login_required_fleet").to_string(),
                 ToastLevel::Warning,
@@ -212,19 +208,5 @@ impl Workspace {
         self.active_view = ActiveView::Fleet;
         self.on_active_view_changed(cx);
         cx.notify();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::runtime_loop_requested;
-
-    // SDTEST-272 — ShellDeck remains client-only even with stale runtime config.
-    #[test]
-    fn runtime_loop_is_never_requested_by_the_client() {
-        assert!(!runtime_loop_requested(false, false));
-        assert!(!runtime_loop_requested(false, true));
-        assert!(!runtime_loop_requested(true, false));
-        assert!(!runtime_loop_requested(true, true));
     }
 }
