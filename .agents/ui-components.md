@@ -120,6 +120,6 @@ the biggest wins live if you're already touching the area):
 | Kebabs, theme / account / site / mode / sidebar switchers | `PopoverMenu` / `ContextMenu` | |
 | Destroy / delete confirms (bext, connections) | `ConfirmDialog` | `support_view` already uses `UiDialog` for some flows |
 | ~~Connection pickers (port_forward, script_form, server_sync)~~ | ~~`Select` / `Combobox`~~ | **Done** — `connection_combobox.rs` + `Select` in server_sync |
-| Support / Jean / Bext section tabs | `Tabs` | |
+| Support / Monique / Bext section tabs | `Tabs` | |
 | OIDC buttons (login_form), toolbar chips (sites_view) | `Button` variants | |
 | Dashboard stat cards | `Card` | |

@@ -56,7 +56,7 @@ after `let x = X { field: "hardcoded".into(), .. }`, stop.
 | Level | Where | Runs by default? | When to reach for it |
 |---|---|---|---|
 | **Unit** | `#[cfg(test)] mod tests` next to the code | ✅ | Pure functions, parsers, state reducers, small helpers. |
-| **Contract mock** | same file, spawn `std::net::TcpListener` in a thread | ✅ | Every Manage API / Jean / Bext / Cloud client. The mock asserts *route*, *headers* (Bearer / Basic / `X-Bext-App-Id`), and *body shape*; the fixture pins the *response shape* the parser must handle. |
+| **Contract mock** | same file, spawn `std::net::TcpListener` in a thread | ✅ | Every Manage API / Monique / Bext / Cloud client. The mock asserts *route*, *headers* (Bearer / Basic / `X-Bext-App-Id`), and *body shape*; the fixture pins the *response shape* the parser must handle. |
 | **Fake-executor integration** | same file, custom `impl JobExecutor` | ✅ | Fleet runtime, script runner — anything where the real subprocess is expensive or dangerous (`claude`, `ssh`, database mutations). |
 | **Live smoke** (`#[ignore]`) | same file, gated by `SHELLDECK_LIVE=1` or an env token | ❌ | Real-network sanity check the mock cannot substitute for (e.g. `merge_profiles` against the actual Manage). Never in CI. |
 | **Cross-platform check** | `cargo check --target …` in CI | ✅ (CI) | Any code guarded by `#[cfg(target_os = "…")]`. See `.agents/cross-platform.md`. |
@@ -133,12 +133,12 @@ Every PR that adds a user-visible feature or an external contract must:
    entries must exist so the gap is visible in review.
 3. **Wire mocks the same way we already do.** For a new Manage-style
    HTTP client, copy the `TcpListener`-in-a-thread pattern already in
-   `config/cloud_sync.rs`, `manage_support.rs`, `jean_fleet.rs`,
+   `config/cloud_sync.rs`, `manage_support.rs`, `monique_fleet.rs`,
    `issues.rs`. Do **not** introduce `wiremock`, `mockito`, or a new
    HTTP mocking crate — the raw `TcpListener` pattern is deliberate:
    zero deps, no async runtime coupling, works offline.
 4. **For subprocess-touching code, add a fake trait.** See
-   `JobExecutor` / `ClaudeExecutor` in `config/jean_fleet.rs` for the
+   `JobExecutor` / `ClaudeExecutor` in `config/monique_fleet.rs` for the
    template. Real subprocesses (`claude`, `ssh`, `rsync`, database
    clients) **never** run in unit tests.
 5. **Cross-platform gates get cross-platform tests.** Any new
