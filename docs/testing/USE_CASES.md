@@ -888,7 +888,7 @@ never shared across local and SSH targets or persisted by ShellDeck.
 
 ---
 
-## 11. Monique fleet runtime
+## 11. Fleet projection client
 
 `crates/shelldeck-core/src/config/monique_fleet.rs`
 
@@ -902,63 +902,51 @@ timestamps (`de_flex_millis` → epoch ms).
 
 Each API call sends the correct route, Bearer token, and body shape.
 
-### SDUC-202 — ClaudeExecutor argv matches slack-claude-bot
+### SDUC-202 — Retired: desktop fleet subprocess executor
 
-`ClaudeExecutor::spawn` invokes
-`claude -p --output-format stream-json --verbose --permission-mode acceptEdits [--model …]`
-with the prompt on stdin, cwd = workdir, `ANTHROPIC_API_KEY` dropped
-from the env, `CLAUDE_CODE_OAUTH_TOKEN` preserved, 30-minute SIGKILL
-timeout.
+Retired 2026-08-22. ShellDeck no longer ships a provider subprocess executor.
 
-### SDUC-203 — Stream JSON parsing finds `result` event
+### SDUC-203 — Retired: desktop provider stream parsing
 
-The final `result` event of a `claude -p` stream-json run is extracted
-and reported as the job outcome.
+Retired 2026-08-22 with the desktop fleet subprocess executor.
 
-### SDUC-204 — Runtime loop tick (auto mode)
+### SDUC-204 — Retired: desktop auto-execution loop
 
-`runtime_tick` in `autonomy = "auto"` mode claims a job and executes
-via the fake `JobExecutor` (unit tests never spawn `claude`).
+Retired 2026-08-22. AI Operations owns execution and automation policy.
 
-### SDUC-205 — Runtime loop tick (confirm mode)
+### SDUC-205 — Retired: desktop claim loop
 
-`runtime_tick` in `autonomy = "confirm"` (the default at register
-time) claims a job but leaves it in `runtime_awaiting` for explicit
-Exécuter/Rejeter — never executes autonomously.
+Retired 2026-08-22. ShellDeck observes jobs without claiming them.
 
-### SDUC-206 — Runtime disabled by default
+### SDUC-206 — ShellDeck is always client-only
 
-`[monique_runtime].enabled` defaults to false; `Workspace::sync_runtime_loop`
-is a no-op until the user explicitly enables the runtime.
+Old `[monique_runtime]` configuration remains readable for compatibility, but
+`Workspace::sync_runtime_loop` always clears it and starts no task. The fleet
+surface reads state and sends typed server actions only.
 
-### SDUC-207 — Concurrency = 1
+### SDUC-207 — Retired: desktop executor concurrency
 
-`runtime_busy` guards the loop; only one job executes at a time per
-instance.
+Retired 2026-08-22 with the desktop execution loop.
 
 ### SDUC-208 — Auth failures surface 401
 
 Wrong Bearer token surfaces 401 without silently retrying forever.
 
-### SDUC-458 — Jcode is the fleet executor, with Claude as startup-only fallback
+### SDUC-458 — Retired: JCode subprocess rollout
 
-Fleet jobs run through `jcode run --ndjson|--json --quiet --no-update
---no-selfdev -C <workdir> [--provider …] [--model …] [--tool-profile …]
-<prompt>` (binary from `[monique_runtime]` config, `$JCODE_BIN`, or `jcode`).
-Both NDJSON stream events and a final JSON object parse to the job result;
-the workdir is validated before spawn and the child is killed on timeout.
-The ACP transport is explicitly disabled by contract today and falls back to
-the `jcode run` process transport. Legacy Claude remains available as an
-explicit mode and as a *startup-only* fallback when Jcode cannot launch —
-never after Jcode has started and returned output. Real subprocesses never
-run in unit tests (fake executables only, per `.agents/testing.md`).
-*(Back-filled 2026-08-06 — the contract shipped in `b864c32`/`148b975`
-without a use-case entry.)*
+Retired 2026-08-22. JCode is now reached through the shared platform contract,
+not launched as a ShellDeck child process.
 
-### SDUC-209 — Instance ID persistence
+### SDUC-209 — Retired: desktop runtime identity
 
-The first successful `register()` persists `instance_id` into
-`[monique_runtime]`; subsequent heartbeats reuse it.
+Retired 2026-08-22. ShellDeck no longer registers as an execution runtime.
+
+### SDUC-476 — Fleet observation and control use the shared platform boundary
+
+ShellDeck is a presentation client. It may read scoped fleet state and request
+typed server-side control, but it never opens a provider process, claims a job,
+or owns an execution lease locally. Stale runtime configuration cannot restore
+the removed behavior.
 
 ---
 
@@ -2340,6 +2328,9 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-22** — Added SDUC-476 and retired the desktop fleet executor
+  contracts: ShellDeck now remains a shared-platform client under every stale
+  runtime-config combination.
 - **2026-08-22** — Added SDUC-475 for the provider-neutral local/SSH agent
   console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
   access confirmation, resumable same-context turns, streaming output, and
@@ -2388,12 +2379,10 @@ once the network returns.
   exposed a test that incorrectly expected Unix separators from a native local
   path helper; the corrected test pins Unix paths on Unix and drive-letter
   paths on Windows, while the production helper remains unchanged.
-- **2026-08-18** — Corrected and completed SDTEST-272 for SDUC-206. The safety
-  boundary lives in `Workspace::sync_runtime_loop`, before the core
-  `runtime_tick`: its full enablement/credentials truth table now proves that a
-  configured account cannot start Monique while `[monique_runtime].enabled` is
-  false. The existing defense-in-depth check inside `runtime_loop_step` remains
-  unchanged.
+- **2026-08-22** — Replaced SDTEST-272 for SDUC-206. The production executor,
+  claim loop, approval action, and runtime palette entry are absent. The
+  compatibility boundary in `Workspace::sync_runtime_loop` clears every stale
+  enablement combination and starts no task.
 - **2026-08-18** — Clarified SDUC-260 and completed SDTEST-332/333: every
   single-instance Bext operation now has contract coverage for its route, body
   where applicable, and required `X-Bext-App-Id` header. Production already

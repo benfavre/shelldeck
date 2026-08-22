@@ -1,16 +1,14 @@
 //! Monique fleet supervision view.
 //!
-//! The view keeps operational work prominent: local runtime controls and
-//! instances live in the left rail, while approvals and recent jobs use the
-//! larger right pane. The workspace remains responsible for all I/O.
+//! The view keeps operational work prominent: observed instances live in the
+//! left rail while recent jobs use the larger right pane. AI Operations owns
+//! execution and the workspace is only a typed client.
 
-use adabraka_ui::components::alert::Alert;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::icon_source::IconSource;
-use adabraka_ui::components::toggle::{Toggle, ToggleSize};
 use adabraka_ui::display::badge::{Badge, BadgeVariant};
 use adabraka_ui::overlays::sheet::{Sheet, SheetSize};
-use adabraka_ui::prelude::Markdown;
+use adabraka_ui::prelude::{Alert, Markdown};
 use gpui::prelude::*;
 use gpui::*;
 use std::ops::Range;
@@ -27,8 +25,6 @@ use crate::theme::ShellDeckColors;
 #[derive(Debug, Clone)]
 pub enum FleetViewEvent {
     Refresh,
-    ToggleRuntime,
-    ApproveJob(String),
     RejectJob(String),
 }
 
@@ -77,13 +73,10 @@ pub struct FleetView {
     snapshot: FleetSnapshot,
     /// This machine's registered instance id (to mark "cette machine").
     my_id: Option<String>,
-    runtime_enabled: bool,
-    my_status: String,
     awaiting: Vec<MoniqueJob>,
     loading: bool,
     error: Option<String>,
     job_filter: JobFilter,
-    show_runtime_warning: bool,
     job_detail_sheet: Option<Entity<Sheet>>,
     markdown_link_action: Option<MarkdownLinkAction>,
     markdown_font_size: Pixels,
@@ -94,13 +87,10 @@ impl FleetView {
         Self {
             snapshot: FleetSnapshot::default(),
             my_id: None,
-            runtime_enabled: false,
-            my_status: t!("fleet.runtime.disabled").to_string(),
             awaiting: Vec::new(),
             loading: false,
             error: None,
             job_filter: JobFilter::All,
-            show_runtime_warning: false,
             job_detail_sheet: None,
             markdown_link_action: None,
             markdown_font_size: gpui::px(12.0),
@@ -113,10 +103,13 @@ impl FleetView {
         self.error = None;
     }
 
-    pub fn set_runtime(&mut self, enabled: bool, my_id: Option<String>, status: impl Into<String>) {
-        self.runtime_enabled = enabled;
+    pub fn set_runtime(
+        &mut self,
+        _enabled: bool,
+        my_id: Option<String>,
+        _status: impl Into<String>,
+    ) {
         self.my_id = my_id;
-        self.my_status = status.into();
     }
 
     pub fn set_awaiting(&mut self, awaiting: Vec<MoniqueJob>) {
@@ -261,99 +254,6 @@ impl FleetView {
                         entity.update(cx, |_this, cx| cx.emit(FleetViewEvent::Refresh));
                     }),
             )
-    }
-
-    fn render_runtime_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let enabled = self.runtime_enabled;
-        let toggle_label = if enabled {
-            t!("fleet.runtime.disable").to_string()
-        } else {
-            t!("fleet.runtime.enable").to_string()
-        };
-        let toggle_entity = cx.entity();
-        let warning_entity = cx.entity();
-
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .p(px(14.0))
-            .border_b_1()
-            .border_color(ShellDeckColors::border())
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .min_w(px(0.0))
-                            .child(lucide_icon("cpu", 17.0, ShellDeckColors::primary()))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .min_w(px(0.0))
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(ShellDeckColors::text_primary())
-                                            .child(t!("fleet.runtime.local_title").to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(ShellDeckColors::text_muted())
-                                            .child(self.my_status.clone()),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        Button::new("fleet-runtime-info", "")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .icon(IconSource::from("info"))
-                            .tooltip(t!("fleet.runtime.safety_details").to_string())
-                            .on_click(move |_, _, cx| {
-                                warning_entity.update(cx, |this, cx| {
-                                    this.show_runtime_warning = !this.show_runtime_warning;
-                                    cx.notify();
-                                });
-                            }),
-                    ),
-            )
-            .child(
-                Toggle::new("fleet-runtime-toggle")
-                    .checked(enabled)
-                    .label(toggle_label)
-                    .size(ToggleSize::Sm)
-                    .on_click(move |_, _, cx| {
-                        toggle_entity
-                            .update(cx, |_this, cx| cx.emit(FleetViewEvent::ToggleRuntime));
-                    }),
-            );
-
-        if self.show_runtime_warning {
-            panel = panel.child(
-                Alert::warning()
-                    .title(t!("fleet.runtime.safety_title").to_string())
-                    .description(t!("fleet.runtime.warning").to_string())
-                    .p(px(12.0))
-                    .gap(px(8.0)),
-            );
-        }
-
-        panel
     }
 
     fn instance_status(status: &str) -> (&'static str, Hsla) {
@@ -515,7 +415,7 @@ impl FleetView {
         list
     }
 
-    fn render_left_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_left_rail(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(px(330.0))
             .min_w(px(280.0))
@@ -528,7 +428,6 @@ impl FleetView {
             .border_r_1()
             .border_color(ShellDeckColors::border())
             .bg(ShellDeckColors::bg_sidebar())
-            .child(self.render_runtime_panel(cx))
             .child(Self::section_header(
                 "server",
                 t!("fleet.instances.section").to_string(),
@@ -549,9 +448,7 @@ impl FleetView {
             .px(px(14.0))
             .pb(px(12.0));
         for job in &self.awaiting {
-            let approve_id = job.id.clone();
             let reject_id = job.id.clone();
-            let approve_entity = cx.entity();
             let reject_entity = cx.entity();
             list = list.child(
                 div()
@@ -599,22 +496,6 @@ impl FleetView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(
-                                Button::new(
-                                    ElementId::from(SharedString::from(format!(
-                                        "fleet-exec-{approve_id}"
-                                    ))),
-                                    t!("fleet.awaiting.execute").to_string(),
-                                )
-                                .size(ButtonSize::Sm)
-                                .h(px(30.0))
-                                .icon(IconSource::from("check"))
-                                .on_click(move |_, _, cx| {
-                                    approve_entity.update(cx, |_this, cx| {
-                                        cx.emit(FleetViewEvent::ApproveJob(approve_id.clone()))
-                                    });
-                                }),
-                            )
                             .child(
                                 Button::new(
                                     ElementId::from(SharedString::from(format!(

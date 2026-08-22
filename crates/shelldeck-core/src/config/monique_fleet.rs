@@ -1,23 +1,18 @@
-//! Monique fleet runtime — ShellDeck as a host for tenant/site-aware Monique
-//! instances. Reads the fleet, registers this machine as a `runtime="shelldeck"`
-//! instance, heartbeats + claims pending jobs, and (when authorized) executes
-//! them by driving a headless coding agent (Jcode by default, legacy Claude Code
-//! as an explicit rollout/fallback option).
+//! Read-only fleet projection and typed control client for ShellDeck.
 //!
 //! Endpoint: `{base}/api/manage/shelldeck/fleet` (Bearer device token).
 //!
-//! ## Safety
-//! Executing a claimed job runs a local coding agent with file/edit/command powers in the
-//! instance workdir. [`runtime_tick`] only auto-executes when `autonomy == "auto"`;
-//! `"confirm"` returns the claimed job for an explicit human approval in the UI.
-//! Execution goes through the [`JobExecutor`] trait so the loop is unit-tested
-//! with a fake executor and the real `jcode run` / `claude -p` invocation only
-//! runs live.
+//! ShellDeck never owns provider execution authority. Jobs are dispatched to AI
+//! Operations and observed here; the shipping crate contains no subprocess
+//! executor.
 
 use crate::error::{Result, ShellDeckError};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::io::Write;
+#[cfg(test)]
 use std::path::PathBuf;
+#[cfg(test)]
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -65,7 +60,7 @@ fn default_timeout_seconds() -> u64 {
     30 * 60
 }
 
-/// Explicit rollout switch for the local fleet executor.
+/// Retained deserialization vocabulary for old local-executor configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MoniqueRuntimeExecutorRollout {
@@ -100,7 +95,7 @@ pub enum JcodeTransportPreference {
     Auto,
 }
 
-/// `[monique_runtime.executor]` — local agent command + rollout policy.
+/// Retained `[monique_runtime.executor]` configuration shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoniqueRuntimeExecutorConfig {
     /// Explicit rollout setting. `jcode` uses `jcode run`; `claude` keeps the
@@ -185,30 +180,29 @@ impl MoniqueRuntimeExecutorConfig {
     }
 }
 
-/// Persisted `[monique_runtime]` config — whether this machine hosts a Monique
-/// runtime, and its identity across restarts.
+/// Retained `[monique_runtime]` config shape for backwards-compatible parsing.
+/// Shipping ShellDeck code ignores the execution fields and clears `enabled`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MoniqueRuntimeConfig {
-    /// Master switch. **Default `false`** — enabling this lets ShellDeck run
-    /// Claude Code jobs on this machine.
+    /// Retired master switch. It is always cleared by the client.
     #[serde(default)]
     pub enabled: bool,
-    /// Instance id returned by the first `register`, persisted so the same
-    /// machine keeps its identity across restarts.
+    /// Retired instance id, retained only so old files still deserialize.
     #[serde(default)]
     pub instance_id: Option<String>,
-    /// Working directory Claude Code runs in (defaults handled at register time).
+    /// Retired execution working directory.
     #[serde(default)]
     pub workdir: Option<String>,
-    /// Instance display name (defaults to the machine hostname).
+    /// Retired local runtime display name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Executor rollout + command configuration.
+    /// Retired executor configuration.
     #[serde(default)]
     pub executor: MoniqueRuntimeExecutorConfig,
 }
 
 impl MoniqueRuntimeConfig {
+    #[cfg(test)]
     pub fn job_timeout(&self) -> Duration {
         self.executor.timeout()
     }
@@ -217,8 +211,9 @@ impl MoniqueRuntimeConfig {
         self.executor.configured_model(fleet_model).to_string()
     }
 
-    pub fn job_executor(&self) -> ConfiguredJobExecutor {
-        ConfiguredJobExecutor::from_config(&self.executor)
+    #[cfg(test)]
+    pub fn job_executor(&self) -> direct_executor_fixture::ConfiguredJobExecutor {
+        direct_executor_fixture::ConfiguredJobExecutor::from_config(&self.executor)
     }
 }
 
@@ -560,767 +555,805 @@ pub fn dispatch(
 
 // ── execution ──────────────────────────────────────────────────────────────
 
-/// Result of running one job's prompt.
-#[derive(Debug, Clone)]
-pub struct JobOutcome {
-    pub result: String,
-    pub is_error: bool,
-    /// Safe to retry with the legacy Claude fallback because the primary agent
-    /// did not start user work (for example, binary not found). Runtime failures
-    /// after a child launches are never fallbackable to avoid duplicate edits.
-    pub fallback_allowed: bool,
-}
+#[cfg(test)]
+mod direct_executor_fixture {
+    use super::*;
 
-impl JobOutcome {
-    fn ok(result: impl Into<String>) -> Self {
-        Self {
-            result: result.into(),
-            is_error: false,
-            fallback_allowed: false,
-        }
+    /// Result of running one job's prompt.
+    #[derive(Debug, Clone)]
+    pub struct JobOutcome {
+        pub result: String,
+        pub is_error: bool,
+        /// Safe to retry with the legacy Claude fallback because the primary agent
+        /// did not start user work (for example, binary not found). Runtime failures
+        /// after a child launches are never fallbackable to avoid duplicate edits.
+        pub fallback_allowed: bool,
     }
 
-    fn error(result: impl Into<String>) -> Self {
-        Self {
-            result: result.into(),
-            is_error: true,
-            fallback_allowed: false,
-        }
-    }
-
-    fn fallbackable_error(result: impl Into<String>) -> Self {
-        Self {
-            result: result.into(),
-            is_error: true,
-            fallback_allowed: true,
-        }
-    }
-}
-
-/// Executes a job's prompt. Real impls drive headless Jcode/Claude Code; tests
-/// use fakes. `Send + Sync` so the runtime loop can run on a background thread.
-pub trait JobExecutor: Send + Sync {
-    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome;
-}
-
-fn opt_trimmed(value: &Option<String>) -> Option<&str> {
-    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
-fn validate_workdir(workdir: &str) -> std::result::Result<PathBuf, String> {
-    let trimmed = workdir.trim();
-    if trimmed.is_empty() {
-        return Err("répertoire de travail vide".to_string());
-    }
-    let path = std::path::Path::new(trimmed);
-    if !path.is_absolute() {
-        return Err(format!("répertoire de travail non absolu: {}", trimmed));
-    }
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| format!("répertoire de travail inaccessible ({}): {}", trimmed, e))?;
-    if !canonical.is_dir() {
-        return Err(format!(
-            "répertoire de travail invalide (pas un dossier): {}",
-            canonical.display()
-        ));
-    }
-    Ok(canonical)
-}
-
-#[derive(Debug)]
-struct ProcessOutput {
-    stdout: String,
-    stderr: String,
-    status: Option<ExitStatus>,
-    killed: bool,
-}
-
-fn read_pipe(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_string(&mut buf);
-        }
-        buf
-    })
-}
-
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> ProcessOutput {
-    let stdout_reader = read_pipe(child.stdout.take());
-    let stderr_reader = read_pipe(child.stderr.take());
-    let deadline = std::time::Instant::now() + timeout;
-    let mut killed = false;
-    let mut status = None;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => {
-                status = Some(s);
-                break;
+    impl JobOutcome {
+        fn ok(result: impl Into<String>) -> Self {
+            Self {
+                result: result.into(),
+                is_error: false,
+                fallback_allowed: false,
             }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    killed = true;
-                    status = child.wait().ok();
+        }
+
+        fn error(result: impl Into<String>) -> Self {
+            Self {
+                result: result.into(),
+                is_error: true,
+                fallback_allowed: false,
+            }
+        }
+
+        fn fallbackable_error(result: impl Into<String>) -> Self {
+            Self {
+                result: result.into(),
+                is_error: true,
+                fallback_allowed: true,
+            }
+        }
+    }
+
+    /// Executes a job's prompt. Real impls drive headless Jcode/Claude Code; tests
+    /// use fakes. `Send + Sync` so the runtime loop can run on a background thread.
+    pub trait JobExecutor: Send + Sync {
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &str,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome;
+    }
+
+    fn opt_trimmed(value: &Option<String>) -> Option<&str> {
+        value.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    fn validate_workdir(workdir: &str) -> std::result::Result<PathBuf, String> {
+        let trimmed = workdir.trim();
+        if trimmed.is_empty() {
+            return Err("répertoire de travail vide".to_string());
+        }
+        let path = std::path::Path::new(trimmed);
+        if !path.is_absolute() {
+            return Err(format!("répertoire de travail non absolu: {}", trimmed));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| format!("répertoire de travail inaccessible ({}): {}", trimmed, e))?;
+        if !canonical.is_dir() {
+            return Err(format!(
+                "répertoire de travail invalide (pas un dossier): {}",
+                canonical.display()
+            ));
+        }
+        Ok(canonical)
+    }
+
+    #[derive(Debug)]
+    struct ProcessOutput {
+        stdout: String,
+        stderr: String,
+        status: Option<ExitStatus>,
+        killed: bool,
+    }
+
+    fn read_pipe(
+        pipe: Option<impl std::io::Read + Send + 'static>,
+    ) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_string(&mut buf);
+            }
+            buf
+        })
+    }
+
+    fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> ProcessOutput {
+        let stdout_reader = read_pipe(child.stdout.take());
+        let stderr_reader = read_pipe(child.stderr.take());
+        let deadline = std::time::Instant::now() + timeout;
+        let mut killed = false;
+        let mut status = None;
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => {
+                    status = Some(s);
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(200));
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        killed = true;
+                        status = child.wait().ok();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(_) => break,
             }
-            Err(_) => break,
+        }
+        ProcessOutput {
+            stdout: stdout_reader.join().unwrap_or_default(),
+            stderr: stderr_reader.join().unwrap_or_default(),
+            status,
+            killed,
         }
     }
-    ProcessOutput {
-        stdout: stdout_reader.join().unwrap_or_default(),
-        stderr: stderr_reader.join().unwrap_or_default(),
-        status,
-        killed,
+
+    /// Configured executor wrapper. Jcode is the normal rollout path; Claude remains
+    /// available as explicit legacy mode and as a startup-only fallback.
+    pub struct ConfiguredJobExecutor {
+        primary: ExecutorImpl,
+        fallback: Option<ClaudeExecutor>,
     }
-}
 
-/// Configured executor wrapper. Jcode is the normal rollout path; Claude remains
-/// available as explicit legacy mode and as a startup-only fallback.
-pub struct ConfiguredJobExecutor {
-    primary: ExecutorImpl,
-    fallback: Option<ClaudeExecutor>,
-}
+    enum ExecutorImpl {
+        Jcode(JcodeExecutor),
+        Claude(ClaudeExecutor),
+    }
 
-enum ExecutorImpl {
-    Jcode(JcodeExecutor),
-    Claude(ClaudeExecutor),
-}
-
-impl ConfiguredJobExecutor {
-    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
-        let claude = ClaudeExecutor::from_config(config);
-        match config.rollout {
-            MoniqueRuntimeExecutorRollout::Jcode => Self {
-                primary: ExecutorImpl::Jcode(JcodeExecutor::from_config(config)),
-                fallback: config.fallback_to_claude.then_some(claude),
-            },
-            MoniqueRuntimeExecutorRollout::Claude => Self {
-                primary: ExecutorImpl::Claude(claude),
-                fallback: None,
-            },
+    impl ConfiguredJobExecutor {
+        pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
+            let claude = ClaudeExecutor::from_config(config);
+            match config.rollout {
+                MoniqueRuntimeExecutorRollout::Jcode => Self {
+                    primary: ExecutorImpl::Jcode(JcodeExecutor::from_config(config)),
+                    fallback: config.fallback_to_claude.then_some(claude),
+                },
+                MoniqueRuntimeExecutorRollout::Claude => Self {
+                    primary: ExecutorImpl::Claude(claude),
+                    fallback: None,
+                },
+            }
         }
     }
-}
 
-impl JobExecutor for ConfiguredJobExecutor {
-    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
-        let primary = match &self.primary {
-            ExecutorImpl::Jcode(exec) => exec.execute(prompt, workdir, model, timeout),
-            ExecutorImpl::Claude(exec) => exec.execute(prompt, workdir, model, timeout),
-        };
-        if primary.is_error && primary.fallback_allowed {
-            if let Some(fallback) = &self.fallback {
-                let mut legacy = fallback.execute(prompt, workdir, model, timeout);
-                if legacy.is_error {
-                    legacy.result = format!(
+    impl JobExecutor for ConfiguredJobExecutor {
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &str,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome {
+            let primary = match &self.primary {
+                ExecutorImpl::Jcode(exec) => exec.execute(prompt, workdir, model, timeout),
+                ExecutorImpl::Claude(exec) => exec.execute(prompt, workdir, model, timeout),
+            };
+            if primary.is_error && primary.fallback_allowed {
+                if let Some(fallback) = &self.fallback {
+                    let mut legacy = fallback.execute(prompt, workdir, model, timeout);
+                    if legacy.is_error {
+                        legacy.result = format!(
                         "Jcode indisponible, puis fallback Claude en échec.\nJcode: {}\nClaude: {}",
                         primary.result, legacy.result
                     );
+                    }
+                    return legacy;
                 }
-                return legacy;
+            }
+            primary
+        }
+    }
+
+    /// Jcode executor — `jcode run --ndjson|--json --quiet --no-update --no-selfdev
+    /// -C <workdir> [--provider …] [--model …] [--tool-profile …] <prompt>`.
+    pub struct JcodeExecutor {
+        pub bin: String,
+        pub provider: Option<String>,
+        pub model: Option<String>,
+        pub tool_profile: Option<String>,
+        pub output_format: JcodeOutputFormat,
+        pub transport: JcodeTransportPreference,
+    }
+
+    impl JcodeExecutor {
+        pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
+            Self {
+                bin: opt_trimmed(&config.binary)
+                    .map(str::to_string)
+                    .or_else(|| std::env::var("JCODE_BIN").ok())
+                    .unwrap_or_else(|| "jcode".to_string()),
+                provider: opt_trimmed(&config.provider).map(str::to_string),
+                model: opt_trimmed(&config.model).map(str::to_string),
+                tool_profile: opt_trimmed(&config.tool_profile).map(str::to_string),
+                output_format: config.output_format,
+                transport: config.transport,
             }
         }
-        primary
     }
-}
 
-/// Jcode executor — `jcode run --ndjson|--json --quiet --no-update --no-selfdev
-/// -C <workdir> [--provider …] [--model …] [--tool-profile …] <prompt>`.
-pub struct JcodeExecutor {
-    pub bin: String,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub tool_profile: Option<String>,
-    pub output_format: JcodeOutputFormat,
-    pub transport: JcodeTransportPreference,
-}
+    impl JobExecutor for JcodeExecutor {
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &str,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome {
+            let workdir = match validate_workdir(workdir) {
+                Ok(path) => path,
+                Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
+            };
 
-impl JcodeExecutor {
-    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
-        Self {
-            bin: opt_trimmed(&config.binary)
-                .map(str::to_string)
-                .or_else(|| std::env::var("JCODE_BIN").ok())
-                .unwrap_or_else(|| "jcode".to_string()),
-            provider: opt_trimmed(&config.provider).map(str::to_string),
-            model: opt_trimmed(&config.model).map(str::to_string),
-            tool_profile: opt_trimmed(&config.tool_profile).map(str::to_string),
-            output_format: config.output_format,
-            transport: config.transport,
-        }
-    }
-}
-
-impl JobExecutor for JcodeExecutor {
-    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
-        let workdir = match validate_workdir(workdir) {
-            Ok(path) => path,
-            Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
-        };
-
-        let process = ProcessJcodeTransport { executor: self };
-        match self.transport {
-            JcodeTransportPreference::Process => process.execute(prompt, &workdir, model, timeout),
-            JcodeTransportPreference::Acp | JcodeTransportPreference::Auto => {
-                let acp = AcpJcodeTransport { executor: self };
-                let probe = acp.probe(Duration::from_secs(2).min(timeout));
-                if probe.available {
-                    let outcome = acp.execute(prompt, &workdir, model, timeout);
-                    if !outcome.is_error || !outcome.fallback_allowed {
-                        return outcome;
-                    }
+            let process = ProcessJcodeTransport { executor: self };
+            match self.transport {
+                JcodeTransportPreference::Process => {
+                    process.execute(prompt, &workdir, model, timeout)
                 }
+                JcodeTransportPreference::Acp | JcodeTransportPreference::Auto => {
+                    let acp = AcpJcodeTransport { executor: self };
+                    let probe = acp.probe(Duration::from_secs(2).min(timeout));
+                    if probe.available {
+                        let outcome = acp.execute(prompt, &workdir, model, timeout);
+                        if !outcome.is_error || !outcome.fallback_allowed {
+                            return outcome;
+                        }
+                    }
 
-                let mut fallback = process.execute(prompt, &workdir, model, timeout);
-                if fallback.is_error {
-                    fallback.result = format!(
+                    let mut fallback = process.execute(prompt, &workdir, model, timeout);
+                    if fallback.is_error {
+                        fallback.result = format!(
                         "Transport Jcode ACP indisponible, puis fallback process en échec.\nACP: {}\nProcess: {}",
                         probe.reason, fallback.result
                     );
+                    }
+                    fallback
                 }
-                fallback
             }
         }
     }
-}
 
-struct ProcessJcodeTransport<'a> {
-    executor: &'a JcodeExecutor,
-}
-
-trait JcodeTransport {
-    fn probe(&self, timeout: Duration) -> JcodeTransportProbe;
-    fn execute(
-        &self,
-        prompt: &str,
-        workdir: &std::path::Path,
-        model: &str,
-        timeout: Duration,
-    ) -> JobOutcome;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JcodeTransportProbe {
-    pub available: bool,
-    pub reason: String,
-}
-
-impl JcodeTransportProbe {
-    fn unavailable(reason: impl Into<String>) -> Self {
-        Self {
-            available: false,
-            reason: reason.into(),
-        }
+    struct ProcessJcodeTransport<'a> {
+        executor: &'a JcodeExecutor,
     }
-}
 
-/// True for the transient `ETXTBSY` (errno 26) a Unix spawn can hit while a
-/// freshly replaced executable is still being closed by its writer.
-///
-/// Unix-only on purpose: on Windows `raw_os_error()` carries a Win32 error
-/// code, where 26 (`ERROR_NOT_DOS_DISK`) means something entirely unrelated —
-/// retrying on it would mask real launch failures.
-#[cfg(unix)]
-fn is_transient_spawn_error(err: &std::io::Error) -> bool {
-    err.raw_os_error() == Some(libc::ETXTBSY)
-}
+    trait JcodeTransport {
+        fn probe(&self, timeout: Duration) -> JcodeTransportProbe;
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &std::path::Path,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome;
+    }
 
-#[cfg(not(unix))]
-fn is_transient_spawn_error(_err: &std::io::Error) -> bool {
-    false
-}
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct JcodeTransportProbe {
+        pub available: bool,
+        pub reason: String,
+    }
 
-impl JcodeTransport for ProcessJcodeTransport<'_> {
-    fn probe(&self, _timeout: Duration) -> JcodeTransportProbe {
-        JcodeTransportProbe {
-            available: true,
-            reason: "stable jcode run process transport".to_string(),
+    impl JcodeTransportProbe {
+        fn unavailable(reason: impl Into<String>) -> Self {
+            Self {
+                available: false,
+                reason: reason.into(),
+            }
         }
     }
 
-    fn execute(
-        &self,
-        prompt: &str,
-        workdir: &std::path::Path,
-        model: &str,
-        timeout: Duration,
-    ) -> JobOutcome {
+    /// True for the transient `ETXTBSY` (errno 26) a Unix spawn can hit while a
+    /// freshly replaced executable is still being closed by its writer.
+    ///
+    /// Unix-only on purpose: on Windows `raw_os_error()` carries a Win32 error
+    /// code, where 26 (`ERROR_NOT_DOS_DISK`) means something entirely unrelated —
+    /// retrying on it would mask real launch failures.
+    #[cfg(unix)]
+    fn is_transient_spawn_error(err: &std::io::Error) -> bool {
+        err.raw_os_error() == Some(libc::ETXTBSY)
+    }
+
+    #[cfg(not(unix))]
+    fn is_transient_spawn_error(_err: &std::io::Error) -> bool {
+        false
+    }
+
+    impl JcodeTransport for ProcessJcodeTransport<'_> {
+        fn probe(&self, _timeout: Duration) -> JcodeTransportProbe {
+            JcodeTransportProbe {
+                available: true,
+                reason: "stable jcode run process transport".to_string(),
+            }
+        }
+
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &std::path::Path,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome {
+            use std::process::{Command, Stdio};
+
+            let mut args: Vec<String> = vec![
+                "run".into(),
+                match self.executor.output_format {
+                    JcodeOutputFormat::Ndjson => "--ndjson".into(),
+                    JcodeOutputFormat::Json => "--json".into(),
+                },
+                "--quiet".into(),
+                "--no-update".into(),
+                "--no-selfdev".into(),
+                "-C".into(),
+                workdir.display().to_string(),
+            ];
+            if let Some(provider) = &self.executor.provider {
+                args.push("--provider".into());
+                args.push(provider.clone());
+            }
+            let effective_model = self
+                .executor
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(model.trim());
+            if !effective_model.is_empty() {
+                args.push("--model".into());
+                args.push(effective_model.to_string());
+            }
+            if let Some(profile) = &self.executor.tool_profile {
+                args.push("--tool-profile".into());
+                args.push(profile.clone());
+            }
+            args.push(prompt.to_string());
+
+            let mut cmd = Command::new(&self.executor.bin);
+            cmd.args(&args)
+                .current_dir(workdir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            // Unix can briefly return ETXTBSY while a freshly replaced executable is still being
+            // closed by its writer. Retry only that transient condition (never on Windows — see
+            // `is_transient_spawn_error`); every other launch failure remains immediately
+            // fallbackable and the bounded retries do not affect cancellation.
+            let mut attempts = 0;
+            let child = loop {
+                match cmd.spawn() {
+                    Ok(c) => break c,
+                    Err(e) if is_transient_spawn_error(&e) && attempts < 3 => {
+                        attempts += 1;
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => {
+                        return JobOutcome::fallbackable_error(format!(
+                            "Impossible de lancer Jcode ({}): {}",
+                            self.executor.bin, e
+                        ));
+                    }
+                }
+            };
+
+            let output = wait_with_timeout(child, timeout);
+            parse_jcode_output(&output, self.executor.output_format, timeout)
+        }
+    }
+
+    struct AcpJcodeTransport<'a> {
+        executor: &'a JcodeExecutor,
+    }
+
+    impl JcodeTransport for AcpJcodeTransport<'_> {
+        fn probe(&self, timeout: Duration) -> JcodeTransportProbe {
+            probe_jcode_acp(&self.executor.bin, timeout)
+        }
+
+        fn execute(
+            &self,
+            _prompt: &str,
+            _workdir: &std::path::Path,
+            _model: &str,
+            _timeout: Duration,
+        ) -> JobOutcome {
+            JobOutcome::fallbackable_error(
+            "Transport Jcode ACP désactivé: aucun contrat client ACP versionné et public n'est encore validé pour ShellDeck.",
+        )
+        }
+    }
+
+    #[cfg(not(feature = "jcode-acp"))]
+    pub(super) fn probe_jcode_acp(_bin: &str, _timeout: Duration) -> JcodeTransportProbe {
+        JcodeTransportProbe::unavailable(
+        "support ACP Jcode non compilé (feature shelldeck-core/jcode-acp absente); fallback process utilisé",
+    )
+    }
+
+    #[cfg(feature = "jcode-acp")]
+    fn probe_jcode_acp(bin: &str, timeout: Duration) -> JcodeTransportProbe {
         use std::process::{Command, Stdio};
 
-        let mut args: Vec<String> = vec![
-            "run".into(),
-            match self.executor.output_format {
-                JcodeOutputFormat::Ndjson => "--ndjson".into(),
-                JcodeOutputFormat::Json => "--json".into(),
-            },
-            "--quiet".into(),
-            "--no-update".into(),
-            "--no-selfdev".into(),
-            "-C".into(),
-            workdir.display().to_string(),
-        ];
-        if let Some(provider) = &self.executor.provider {
-            args.push("--provider".into());
-            args.push(provider.clone());
-        }
-        let effective_model = self
-            .executor
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(model.trim());
-        if !effective_model.is_empty() {
-            args.push("--model".into());
-            args.push(effective_model.to_string());
-        }
-        if let Some(profile) = &self.executor.tool_profile {
-            args.push("--tool-profile".into());
-            args.push(profile.clone());
-        }
-        args.push(prompt.to_string());
-
-        let mut cmd = Command::new(&self.executor.bin);
-        cmd.args(&args)
-            .current_dir(workdir)
+        let mut cmd = Command::new(bin);
+        cmd.arg("acp")
+            .arg("--help")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        // Unix can briefly return ETXTBSY while a freshly replaced executable is still being
-        // closed by its writer. Retry only that transient condition (never on Windows — see
-        // `is_transient_spawn_error`); every other launch failure remains immediately
-        // fallbackable and the bounded retries do not affect cancellation.
-        let mut attempts = 0;
-        let child = loop {
-            match cmd.spawn() {
-                Ok(c) => break c,
-                Err(e) if is_transient_spawn_error(&e) && attempts < 3 => {
-                    attempts += 1;
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(e) => {
-                    return JobOutcome::fallbackable_error(format!(
-                        "Impossible de lancer Jcode ({}): {}",
-                        self.executor.bin, e
-                    ));
-                }
-            }
-        };
-
-        let output = wait_with_timeout(child, timeout);
-        parse_jcode_output(&output, self.executor.output_format, timeout)
-    }
-}
-
-struct AcpJcodeTransport<'a> {
-    executor: &'a JcodeExecutor,
-}
-
-impl JcodeTransport for AcpJcodeTransport<'_> {
-    fn probe(&self, timeout: Duration) -> JcodeTransportProbe {
-        probe_jcode_acp(&self.executor.bin, timeout)
-    }
-
-    fn execute(
-        &self,
-        _prompt: &str,
-        _workdir: &std::path::Path,
-        _model: &str,
-        _timeout: Duration,
-    ) -> JobOutcome {
-        JobOutcome::fallbackable_error(
-            "Transport Jcode ACP désactivé: aucun contrat client ACP versionné et public n'est encore validé pour ShellDeck.",
-        )
-    }
-}
-
-#[cfg(not(feature = "jcode-acp"))]
-fn probe_jcode_acp(_bin: &str, _timeout: Duration) -> JcodeTransportProbe {
-    JcodeTransportProbe::unavailable(
-        "support ACP Jcode non compilé (feature shelldeck-core/jcode-acp absente); fallback process utilisé",
-    )
-}
-
-#[cfg(feature = "jcode-acp")]
-fn probe_jcode_acp(bin: &str, timeout: Duration) -> JcodeTransportProbe {
-    use std::process::{Command, Stdio};
-
-    let mut cmd = Command::new(bin);
-    cmd.arg("acp")
-        .arg("--help")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return JcodeTransportProbe::unavailable(format!(
-                "commande ACP Jcode indisponible ({} acp --help): {}; fallback process utilisé",
-                bin, err
-            ));
-        }
-    };
-    let output = wait_with_timeout(child, timeout.max(Duration::from_secs(1)));
-    if output.killed {
-        return JcodeTransportProbe::unavailable(
-            "probe ACP Jcode expiré; fallback process utilisé".to_string(),
-        );
-    }
-    let help = format!("{}\n{}", output.stdout, output.stderr);
-    if !status_success(output.status)
-        || !help.contains("Agent Client Protocol")
-        || !help.contains("acp")
-    {
-        return JcodeTransportProbe::unavailable(
-            "la CLI Jcode courante n'annonce pas un adaptateur ACP compatible; fallback process utilisé",
-        );
-    }
-    JcodeTransportProbe::unavailable(
-        "adaptateur ACP Jcode détecté, mais exécution désactivée: ShellDeck n'a trouvé qu'un contrat de source CLI non versionné, pas une API client publique stable; fallback process utilisé",
-    )
-}
-
-/// Real executor — mirrors the bot's `claude.ts`: `claude -p --output-format
-/// stream-json --verbose --permission-mode acceptEdits [--model …]`, prompt on
-/// stdin, subscription auth (drops `ANTHROPIC_API_KEY`, keeps
-/// `CLAUDE_CODE_OAUTH_TOKEN`), cwd = workdir, killed after `timeout`.
-pub struct ClaudeExecutor {
-    pub bin: String,
-    pub permission_mode: String,
-}
-
-impl Default for ClaudeExecutor {
-    fn default() -> Self {
-        Self {
-            bin: std::env::var("CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
-            permission_mode: "acceptEdits".to_string(),
-        }
-    }
-}
-
-impl ClaudeExecutor {
-    pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
-        Self {
-            bin: opt_trimmed(&config.claude_binary)
-                .map(str::to_string)
-                .or_else(|| std::env::var("CLAUDE_BIN").ok())
-                .unwrap_or_else(|| "claude".to_string()),
-            permission_mode: opt_trimmed(&config.claude_permission_mode)
-                .unwrap_or("acceptEdits")
-                .to_string(),
-        }
-    }
-
-    fn command(&self, workdir: &std::path::Path, model: &str) -> std::process::Command {
-        use std::process::{Command, Stdio};
-
-        let mut args: Vec<String> = vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-            "--permission-mode".into(),
-            self.permission_mode.clone(),
-        ];
-        if !model.trim().is_empty() {
-            args.push("--model".into());
-            args.push(model.to_string());
-        }
-
-        let mut command = Command::new(&self.bin);
-        command
-            .args(&args)
-            .current_dir(workdir)
-            .env_remove("ANTHROPIC_API_KEY")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
-    }
-}
-
-impl JobExecutor for ClaudeExecutor {
-    fn execute(&self, prompt: &str, workdir: &str, model: &str, timeout: Duration) -> JobOutcome {
-        let workdir = match validate_workdir(workdir) {
-            Ok(path) => path,
-            Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
-        };
-
-        let mut cmd = self.command(&workdir, model);
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return JobOutcome::fallbackable_error(format!(
-                    "Impossible de lancer Claude Code ({}): {}",
-                    self.bin, e
+        let child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                return JcodeTransportProbe::unavailable(format!(
+                    "commande ACP Jcode indisponible ({} acp --help): {}; fallback process utilisé",
+                    bin, err
                 ));
             }
         };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prompt.as_bytes());
-            // dropping stdin closes it (EOF)
+        let output = wait_with_timeout(child, timeout.max(Duration::from_secs(1)));
+        if output.killed {
+            return JcodeTransportProbe::unavailable(
+                "probe ACP Jcode expiré; fallback process utilisé".to_string(),
+            );
         }
-
-        let output = wait_with_timeout(child, timeout);
-        parse_claude_stream_json(&output, timeout)
-    }
-}
-
-fn timeout_outcome(timeout: Duration) -> JobOutcome {
-    JobOutcome::error(format!(
-        "Délai dépassé ({}s) — exécution interrompue.",
-        timeout.as_secs().max(1)
-    ))
-}
-
-fn status_success(status: Option<ExitStatus>) -> bool {
-    status.map(|s| s.success()).unwrap_or(true)
-}
-
-fn extract_string(value: &serde_json::Value) -> Option<String> {
-    if let Some(s) = value.as_str() {
-        return Some(s.to_string());
-    }
-    if let Some(arr) = value.as_array() {
-        let mut parts = Vec::new();
-        for item in arr {
-            if let Some(text) = item
-                .get("text")
-                .and_then(|v| v.as_str())
-                .or_else(|| item.get("content").and_then(|v| v.as_str()))
-            {
-                parts.push(text.to_string());
-            } else if let Some(text) = item.as_str() {
-                parts.push(text.to_string());
-            }
-        }
-        if !parts.is_empty() {
-            return Some(parts.join(""));
-        }
-    }
-    if let Some(obj) = value.as_object() {
-        for key in [
-            "result", "response", "message", "content", "text", "output", "final",
-        ] {
-            if let Some(text) = obj.get(key).and_then(extract_string) {
-                return Some(text);
-            }
-        }
-    }
-    None
-}
-
-fn json_result(value: &serde_json::Value) -> Option<JobOutcome> {
-    let text = [
-        "result", "response", "message", "content", "text", "output", "final",
-    ]
-    .iter()
-    .find_map(|key| value.get(*key).and_then(extract_string))
-    .or_else(|| extract_string(value.get("delta")?));
-    let text = text?;
-    let is_error = value
-        .get("is_error")
-        .and_then(|e| e.as_bool())
-        .or_else(|| value.get("error").and_then(|e| e.as_bool()))
-        .unwrap_or(false)
-        || value.get("status").and_then(|s| s.as_str()) == Some("error");
-    Some(JobOutcome {
-        result: text,
-        is_error,
-        fallback_allowed: false,
-    })
-}
-
-fn fallback_result(agent: &str, stdout: &str, stderr: &str) -> JobOutcome {
-    let combined = match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
-        (true, true) => format!("{} n'a produit aucune sortie.", agent),
-        (false, true) => stdout.trim().chars().take(2000).collect(),
-        (true, false) => stderr.trim().chars().take(2000).collect(),
-        (false, false) => format!(
-            "{}\n\nstderr:\n{}",
-            stdout.trim().chars().take(1400).collect::<String>(),
-            stderr.trim().chars().take(600).collect::<String>()
-        ),
-    };
-    JobOutcome::error(combined)
-}
-
-fn parse_jcode_output(
-    output: &ProcessOutput,
-    _format: JcodeOutputFormat,
-    timeout: Duration,
-) -> JobOutcome {
-    if output.killed {
-        return timeout_outcome(timeout);
-    }
-    let mut last_result = None;
-    let mut stream_text = String::new();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(output.stdout.trim()) {
-        last_result = json_result(&v);
-    } else {
-        for line in output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
+        let help = format!("{}\n{}", output.stdout, output.stderr);
+        if !status_success(output.status)
+            || !help.contains("Agent Client Protocol")
+            || !help.contains("acp")
         {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(text) = v.get("delta").and_then(extract_string) {
-                    stream_text.push_str(&text);
-                }
-                if let Some(outcome) = json_result(&v) {
-                    last_result = Some(outcome);
-                }
-            }
-        }
-    }
-    let mut outcome = last_result.unwrap_or_else(|| {
-        if !stream_text.trim().is_empty() {
-            JobOutcome::ok(stream_text.trim().to_string())
-        } else {
-            fallback_result("Jcode", &output.stdout, &output.stderr)
-        }
-    });
-    if !status_success(output.status) {
-        outcome.is_error = true;
-        if outcome.result.trim().is_empty() && !output.stderr.trim().is_empty() {
-            outcome.result = output.stderr.trim().chars().take(2000).collect();
-        }
-    }
-    outcome
-}
-
-fn parse_claude_stream_json(output: &ProcessOutput, timeout: Duration) -> JobOutcome {
-    if output.killed {
-        return timeout_outcome(timeout);
-    }
-    let mut last_result: Option<JobOutcome> = None;
-    for line in output.stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-                let text = v
-                    .get("result")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                last_result = Some(JobOutcome {
-                    result: text,
-                    is_error,
-                    fallback_allowed: false,
-                });
-            }
-        }
-    }
-    let mut outcome = last_result
-        .unwrap_or_else(|| fallback_result("Claude Code", &output.stdout, &output.stderr));
-    if !status_success(output.status) {
-        outcome.is_error = true;
-    }
-    outcome
-}
-
-/// Parse the final `result` event out of Claude Code's stream-json stdout.
-#[cfg(test)]
-fn parse_stream_json(stdout: &str, killed: bool) -> JobOutcome {
-    let output = ProcessOutput {
-        stdout: stdout.to_string(),
-        stderr: String::new(),
-        status: None,
-        killed,
-    };
-    parse_claude_stream_json(&output, Duration::from_secs(default_timeout_seconds()))
-}
-
-/// Execute a claimed job end-to-end: mark `running`, run it, then `done`/`failed`
-/// with a brief result. Used for `auto` instances and for a human-approved
-/// `confirm` job.
-pub fn execute_job(
-    base_url: &str,
-    token: &str,
-    job: &MoniqueJob,
-    workdir: &str,
-    model: &str,
-    exec: &dyn JobExecutor,
-    timeout: Duration,
-) -> Result<MoniqueJob> {
-    let _ = update_job(base_url, token, &job.id, "running", None)?;
-    let outcome = exec.execute(&job.prompt, workdir, model, timeout);
-    let status = if outcome.is_error { "failed" } else { "done" };
-    let brief: String = outcome.result.chars().take(4000).collect();
-    let updated = update_job(base_url, token, &job.id, status, Some(&brief))?;
-    Ok(updated.unwrap_or_else(|| MoniqueJob {
-        id: job.id.clone(),
-        status: status.to_string(),
-        result: Some(brief),
-        ..job.clone()
-    }))
-}
-
-/// Outcome of one runtime tick.
-#[derive(Debug, Clone, Default)]
-pub struct TickResult {
-    /// Set (only for `confirm` instances) when a job was claimed and awaits a
-    /// human's explicit "Exécuter" in the UI.
-    pub awaiting_confirm: Option<MoniqueJob>,
-}
-
-/// One runtime iteration: heartbeat, claim a pending job, and — for `auto`
-/// instances — execute it. For `confirm`, the claimed job is returned so the UI
-/// can surface it for approval (NOT executed here).
-///
-/// `busy` is a flag the caller flips so it never runs two jobs at once
-/// (concurrency 1 per ShellDeck runtime).
-#[allow(clippy::too_many_arguments)]
-pub fn runtime_tick(
-    base_url: &str,
-    token: &str,
-    instance_id: &str,
-    workdir: &str,
-    model: &str,
-    autonomy: &str,
-    version: &str,
-    exec: &dyn JobExecutor,
-    timeout: Duration,
-) -> Result<TickResult> {
-    heartbeat(base_url, token, instance_id, "online", None, Some(version))?;
-    let Some(job) = claim(base_url, token, instance_id)? else {
-        return Ok(TickResult::default());
-    };
-
-    if autonomy == "auto" {
-        let _ = heartbeat(
-            base_url,
-            token,
-            instance_id,
-            "busy",
-            Some("exécution"),
-            Some(version),
+            return JcodeTransportProbe::unavailable(
+            "la CLI Jcode courante n'annonce pas un adaptateur ACP compatible; fallback process utilisé",
         );
-        let r = execute_job(base_url, token, &job, workdir, model, exec, timeout);
-        let _ = heartbeat(base_url, token, instance_id, "online", None, Some(version));
-        r?;
-        Ok(TickResult::default())
-    } else {
-        Ok(TickResult {
-            awaiting_confirm: Some(job),
+        }
+        JcodeTransportProbe::unavailable(
+        "adaptateur ACP Jcode détecté, mais exécution désactivée: ShellDeck n'a trouvé qu'un contrat de source CLI non versionné, pas une API client publique stable; fallback process utilisé",
+    )
+    }
+
+    /// Real executor — mirrors the bot's `claude.ts`: `claude -p --output-format
+    /// stream-json --verbose --permission-mode acceptEdits [--model …]`, prompt on
+    /// stdin, subscription auth (drops `ANTHROPIC_API_KEY`, keeps
+    /// `CLAUDE_CODE_OAUTH_TOKEN`), cwd = workdir, killed after `timeout`.
+    pub struct ClaudeExecutor {
+        pub bin: String,
+        pub permission_mode: String,
+    }
+
+    impl Default for ClaudeExecutor {
+        fn default() -> Self {
+            Self {
+                bin: std::env::var("CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
+                permission_mode: "acceptEdits".to_string(),
+            }
+        }
+    }
+
+    impl ClaudeExecutor {
+        pub fn from_config(config: &MoniqueRuntimeExecutorConfig) -> Self {
+            Self {
+                bin: opt_trimmed(&config.claude_binary)
+                    .map(str::to_string)
+                    .or_else(|| std::env::var("CLAUDE_BIN").ok())
+                    .unwrap_or_else(|| "claude".to_string()),
+                permission_mode: opt_trimmed(&config.claude_permission_mode)
+                    .unwrap_or("acceptEdits")
+                    .to_string(),
+            }
+        }
+
+        pub(super) fn command(
+            &self,
+            workdir: &std::path::Path,
+            model: &str,
+        ) -> std::process::Command {
+            use std::process::{Command, Stdio};
+
+            let mut args: Vec<String> = vec![
+                "-p".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                self.permission_mode.clone(),
+            ];
+            if !model.trim().is_empty() {
+                args.push("--model".into());
+                args.push(model.to_string());
+            }
+
+            let mut command = Command::new(&self.bin);
+            command
+                .args(&args)
+                .current_dir(workdir)
+                .env_remove("ANTHROPIC_API_KEY")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        }
+    }
+
+    impl JobExecutor for ClaudeExecutor {
+        fn execute(
+            &self,
+            prompt: &str,
+            workdir: &str,
+            model: &str,
+            timeout: Duration,
+        ) -> JobOutcome {
+            let workdir = match validate_workdir(workdir) {
+                Ok(path) => path,
+                Err(e) => return JobOutcome::error(format!("Workdir Monique invalide: {}", e)),
+            };
+
+            let mut cmd = self.command(&workdir, model);
+
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    return JobOutcome::fallbackable_error(format!(
+                        "Impossible de lancer Claude Code ({}): {}",
+                        self.bin, e
+                    ));
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(prompt.as_bytes());
+                // dropping stdin closes it (EOF)
+            }
+
+            let output = wait_with_timeout(child, timeout);
+            parse_claude_stream_json(&output, timeout)
+        }
+    }
+
+    fn timeout_outcome(timeout: Duration) -> JobOutcome {
+        JobOutcome::error(format!(
+            "Délai dépassé ({}s) — exécution interrompue.",
+            timeout.as_secs().max(1)
+        ))
+    }
+
+    fn status_success(status: Option<ExitStatus>) -> bool {
+        status.map(|s| s.success()).unwrap_or(true)
+    }
+
+    fn extract_string(value: &serde_json::Value) -> Option<String> {
+        if let Some(s) = value.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(arr) = value.as_array() {
+            let mut parts = Vec::new();
+            for item in arr {
+                if let Some(text) = item
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| item.get("content").and_then(|v| v.as_str()))
+                {
+                    parts.push(text.to_string());
+                } else if let Some(text) = item.as_str() {
+                    parts.push(text.to_string());
+                }
+            }
+            if !parts.is_empty() {
+                return Some(parts.join(""));
+            }
+        }
+        if let Some(obj) = value.as_object() {
+            for key in [
+                "result", "response", "message", "content", "text", "output", "final",
+            ] {
+                if let Some(text) = obj.get(key).and_then(extract_string) {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
+    fn json_result(value: &serde_json::Value) -> Option<JobOutcome> {
+        let text = [
+            "result", "response", "message", "content", "text", "output", "final",
+        ]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(extract_string))
+        .or_else(|| extract_string(value.get("delta")?));
+        let text = text?;
+        let is_error = value
+            .get("is_error")
+            .and_then(|e| e.as_bool())
+            .or_else(|| value.get("error").and_then(|e| e.as_bool()))
+            .unwrap_or(false)
+            || value.get("status").and_then(|s| s.as_str()) == Some("error");
+        Some(JobOutcome {
+            result: text,
+            is_error,
+            fallback_allowed: false,
         })
+    }
+
+    fn fallback_result(agent: &str, stdout: &str, stderr: &str) -> JobOutcome {
+        let combined = match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+            (true, true) => format!("{} n'a produit aucune sortie.", agent),
+            (false, true) => stdout.trim().chars().take(2000).collect(),
+            (true, false) => stderr.trim().chars().take(2000).collect(),
+            (false, false) => format!(
+                "{}\n\nstderr:\n{}",
+                stdout.trim().chars().take(1400).collect::<String>(),
+                stderr.trim().chars().take(600).collect::<String>()
+            ),
+        };
+        JobOutcome::error(combined)
+    }
+
+    fn parse_jcode_output(
+        output: &ProcessOutput,
+        _format: JcodeOutputFormat,
+        timeout: Duration,
+    ) -> JobOutcome {
+        if output.killed {
+            return timeout_outcome(timeout);
+        }
+        let mut last_result = None;
+        let mut stream_text = String::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(output.stdout.trim()) {
+            last_result = json_result(&v);
+        } else {
+            for line in output
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+            {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(text) = v.get("delta").and_then(extract_string) {
+                        stream_text.push_str(&text);
+                    }
+                    if let Some(outcome) = json_result(&v) {
+                        last_result = Some(outcome);
+                    }
+                }
+            }
+        }
+        let mut outcome = last_result.unwrap_or_else(|| {
+            if !stream_text.trim().is_empty() {
+                JobOutcome::ok(stream_text.trim().to_string())
+            } else {
+                fallback_result("Jcode", &output.stdout, &output.stderr)
+            }
+        });
+        if !status_success(output.status) {
+            outcome.is_error = true;
+            if outcome.result.trim().is_empty() && !output.stderr.trim().is_empty() {
+                outcome.result = output.stderr.trim().chars().take(2000).collect();
+            }
+        }
+        outcome
+    }
+
+    fn parse_claude_stream_json(output: &ProcessOutput, timeout: Duration) -> JobOutcome {
+        if output.killed {
+            return timeout_outcome(timeout);
+        }
+        let mut last_result: Option<JobOutcome> = None;
+        for line in output.stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+                    let text = v
+                        .get("result")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                    last_result = Some(JobOutcome {
+                        result: text,
+                        is_error,
+                        fallback_allowed: false,
+                    });
+                }
+            }
+        }
+        let mut outcome = last_result
+            .unwrap_or_else(|| fallback_result("Claude Code", &output.stdout, &output.stderr));
+        if !status_success(output.status) {
+            outcome.is_error = true;
+        }
+        outcome
+    }
+
+    /// Parse the final `result` event out of Claude Code's stream-json stdout.
+    #[cfg(test)]
+    pub(super) fn parse_stream_json(stdout: &str, killed: bool) -> JobOutcome {
+        let output = ProcessOutput {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            status: None,
+            killed,
+        };
+        parse_claude_stream_json(&output, Duration::from_secs(default_timeout_seconds()))
+    }
+
+    /// Execute a claimed job end-to-end: mark `running`, run it, then `done`/`failed`
+    /// with a brief result. Used for `auto` instances and for a human-approved
+    /// `confirm` job.
+    pub fn execute_job(
+        base_url: &str,
+        token: &str,
+        job: &MoniqueJob,
+        workdir: &str,
+        model: &str,
+        exec: &dyn JobExecutor,
+        timeout: Duration,
+    ) -> Result<MoniqueJob> {
+        let _ = update_job(base_url, token, &job.id, "running", None)?;
+        let outcome = exec.execute(&job.prompt, workdir, model, timeout);
+        let status = if outcome.is_error { "failed" } else { "done" };
+        let brief: String = outcome.result.chars().take(4000).collect();
+        let updated = update_job(base_url, token, &job.id, status, Some(&brief))?;
+        Ok(updated.unwrap_or_else(|| MoniqueJob {
+            id: job.id.clone(),
+            status: status.to_string(),
+            result: Some(brief),
+            ..job.clone()
+        }))
+    }
+
+    /// Outcome of one runtime tick.
+    #[derive(Debug, Clone, Default)]
+    pub struct TickResult {
+        /// Set (only for `confirm` instances) when a job was claimed and awaits a
+        /// human's explicit "Exécuter" in the UI.
+        pub awaiting_confirm: Option<MoniqueJob>,
+    }
+
+    /// One runtime iteration: heartbeat, claim a pending job, and — for `auto`
+    /// instances — execute it. For `confirm`, the claimed job is returned so the UI
+    /// can surface it for approval (NOT executed here).
+    ///
+    /// `busy` is a flag the caller flips so it never runs two jobs at once
+    /// (concurrency 1 per ShellDeck runtime).
+    #[allow(clippy::too_many_arguments)]
+    pub fn runtime_tick(
+        base_url: &str,
+        token: &str,
+        instance_id: &str,
+        workdir: &str,
+        model: &str,
+        autonomy: &str,
+        version: &str,
+        exec: &dyn JobExecutor,
+        timeout: Duration,
+    ) -> Result<TickResult> {
+        heartbeat(base_url, token, instance_id, "online", None, Some(version))?;
+        let Some(job) = claim(base_url, token, instance_id)? else {
+            return Ok(TickResult::default());
+        };
+
+        if autonomy == "auto" {
+            let _ = heartbeat(
+                base_url,
+                token,
+                instance_id,
+                "busy",
+                Some("exécution"),
+                Some(version),
+            );
+            let r = execute_job(base_url, token, &job, workdir, model, exec, timeout);
+            let _ = heartbeat(base_url, token, instance_id, "online", None, Some(version));
+            r?;
+            Ok(TickResult::default())
+        } else {
+            Ok(TickResult {
+                awaiting_confirm: Some(job),
+            })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::direct_executor_fixture::*;
     use super::*;
     use std::fs;
     use std::io::{BufRead, BufReader, Read};

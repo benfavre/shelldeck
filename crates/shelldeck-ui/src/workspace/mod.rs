@@ -39,9 +39,7 @@ use shelldeck_core::config::manage_support;
 use shelldeck_core::config::monique::{
     self as monique_client, MoniqueConfig, MoniqueProcesses, MoniqueStatus,
 };
-use shelldeck_core::config::monique_fleet::{
-    self, FleetSnapshot, MoniqueInstance, MoniqueJob, MoniqueRuntimeConfig, RegisterInstance,
-};
+use shelldeck_core::config::monique_fleet::{self, FleetSnapshot, MoniqueInstance, MoniqueJob};
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -294,29 +292,6 @@ fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
     }
 }
 
-/// Everything the runtime tick needs, gathered on the UI thread then moved into
-/// the background executor (all owned + `Send`).
-struct RuntimeTickCtx {
-    base: String,
-    token: String,
-    instance_id: String,
-    workdir: String,
-    model: String,
-    autonomy: String,
-    version: String,
-    runtime_config: MoniqueRuntimeConfig,
-}
-
-/// One decision of the runtime loop, produced on the UI thread.
-enum RuntimeStep {
-    /// (base, token, register payload)
-    Register(String, String, RegisterInstance),
-    /// (base, token, instance id, version) — heartbeat only (a job is busy).
-    HeartbeatOnly(String, String, String, String),
-    /// Heartbeat + claim (+ auto-execute).
-    Tick(RuntimeTickCtx),
-}
-
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -359,7 +334,6 @@ actions!(
         SwitchSite,
         OpenMoniqueConsole,
         OpenFleet,
-        ToggleMoniqueRuntime,
         NewRequest,
         OpenSupportRequests,
         OpenBextCloud,

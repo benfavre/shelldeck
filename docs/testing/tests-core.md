@@ -292,7 +292,7 @@ Existing: **0 tests**.
 | SDTEST-269 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `CLAUDE_CODE_OAUTH_TOKEN` is not overridden or removed, so parent inheritance remains intact. |
 | SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
 | SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
-| SDTEST-272 | `workspace/fleet.rs::runtime_loop_requested_requires_explicit_enablement_and_credentials` | SDUC-206 | Green | The Workspace gate is the layer that prevents `runtime_tick` from ever being reached while disabled; its complete enablement/credentials truth table is pinned in `shelldeck-ui`. |
+| SDTEST-272 | `workspace/fleet.rs::runtime_loop_is_never_requested_by_the_client` | SDUC-206, SDUC-476 | Green | Every old enablement/credential combination remains client-only and starts no local claim or executor loop. |
 | SDTEST-1584 | `monique_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Green | Added 2026-08-06, activated in CI 2026-08-18. The `Core tests (windows-x86_64)` job runs the `.cmd` batch fake through the real `JcodeExecutor` spawn→parse path on `windows-latest`. |
 
 > ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
