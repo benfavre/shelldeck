@@ -861,7 +861,9 @@ re-authenticating an account uses the provider's native subscription flow;
 ShellDeck receives only aliases, opaque IDs, health evidence and strictly
 allowlisted authorization links—never token material or filesystem paths.
 Selecting a worker account remains an explicit operator action, so concurrent
-jobs never trigger silent account rotation.
+jobs never trigger silent account rotation. Simultaneous native login sessions
+retain independent authorization-code state and poll only the account endpoint
+at a short cadence; background runtime refreshes never erase an in-flight chat.
 
 ---
 

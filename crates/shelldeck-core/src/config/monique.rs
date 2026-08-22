@@ -723,4 +723,32 @@ mod tests {
         session.authorization_url = Some("https://claude.com/cai/oauth/authorize".into());
         assert!(session.safe_authorization_url().is_none());
     }
+
+    #[test]
+    // SDTEST-1672
+    fn sdtest_monique_preserves_multiple_simultaneous_native_login_sessions() {
+        let accounts: MoniqueAgentAccounts = serde_json::from_str(
+            r#"{
+                "schema":"automonique.dashboard.agent-accounts/v1",
+                "max_accounts":64,
+                "providers":[],
+                "accounts":[],
+                "login_sessions":[
+                    {"id":"login-0123456789abcdef01234567","account_id":"acct-0123456789abcdef01234567","provider":"codex","status":"awaiting_user","authorization_url":"https://auth.openai.com/codex/device","user_code":"ABCD-12345","accepts_authorization_code":false,"created_at_ms":1,"expires_at_ms":2},
+                    {"id":"login-abcdef0123456789abcdef01","account_id":"acct-abcdef0123456789abcdef01","provider":"claude","status":"awaiting_user","authorization_url":"https://claude.com/cai/oauth/authorize?state=opaque","user_code":null,"accepts_authorization_code":true,"created_at_ms":1,"expires_at_ms":2}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(accounts.login_sessions.len(), 2);
+        assert!(accounts
+            .login_sessions
+            .iter()
+            .all(MoniqueAgentLoginSession::active));
+        assert!(accounts
+            .login_sessions
+            .iter()
+            .all(|session| session.safe_authorization_url().is_some()));
+        assert_ne!(accounts.login_sessions[0].id, accounts.login_sessions[1].id);
+    }
 }

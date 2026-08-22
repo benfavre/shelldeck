@@ -10,6 +10,7 @@ use shelldeck_core::config::monique::{
     MoniqueChatAction, MoniqueChatHistory, MoniqueChatMessage, MoniqueChatResponse,
     MoniqueProcesses, MoniqueStatus,
 };
+use std::collections::BTreeMap;
 
 use crate::scale::px;
 use crate::t;
@@ -35,10 +36,11 @@ pub struct MoniqueView {
     agent_accounts: MoniqueAgentAccounts,
     composer: Entity<InputState>,
     account_label: Entity<InputState>,
-    authorization_code: Entity<InputState>,
+    authorization_codes: BTreeMap<String, Entity<InputState>>,
     confirm_logout: Option<String>,
     confirm_remove: Option<String>,
     loading: bool,
+    account_loading: bool,
     error: Option<String>,
     scroll: ScrollHandle,
 }
@@ -53,10 +55,11 @@ impl MoniqueView {
             agent_accounts: MoniqueAgentAccounts::default(),
             composer: cx.new(InputState::new),
             account_label: cx.new(InputState::new),
-            authorization_code: cx.new(InputState::new),
+            authorization_codes: BTreeMap::new(),
             confirm_logout: None,
             confirm_remove: None,
             loading: false,
+            account_loading: false,
             error: None,
             scroll: ScrollHandle::new(),
         }
@@ -72,6 +75,12 @@ impl MoniqueView {
     pub fn set_error(&mut self, error: impl Into<String>) {
         self.error = Some(error.into());
         self.loading = false;
+        self.account_loading = false;
+    }
+
+    pub fn set_account_error(&mut self, error: impl Into<String>) {
+        self.error = Some(error.into());
+        self.account_loading = false;
     }
 
     pub fn set_snapshot(
@@ -104,10 +113,42 @@ impl MoniqueView {
         self.error = None;
     }
 
-    pub fn set_agent_accounts(&mut self, accounts: MoniqueAgentAccounts) {
+    pub fn set_agent_accounts(&mut self, accounts: MoniqueAgentAccounts, cx: &mut Context<Self>) {
+        self.authorization_codes.retain(|session_id, _| {
+            accounts
+                .login_sessions
+                .iter()
+                .any(|session| session.id == *session_id && session.accepts_authorization_code)
+        });
+        for session in &accounts.login_sessions {
+            if session.accepts_authorization_code
+                && !self.authorization_codes.contains_key(&session.id)
+            {
+                self.authorization_codes
+                    .insert(session.id.clone(), cx.new(InputState::new));
+            }
+        }
         self.agent_accounts = accounts;
-        self.loading = false;
+        self.account_loading = false;
         self.error = None;
+    }
+
+    pub fn set_account_loading(&mut self, loading: bool) {
+        self.account_loading = loading;
+        if loading {
+            self.error = None;
+        }
+    }
+
+    pub fn has_active_login(&self) -> bool {
+        self.agent_accounts
+            .login_sessions
+            .iter()
+            .any(MoniqueAgentLoginSession::active)
+    }
+
+    pub fn chat_busy(&self) -> bool {
+        self.loading
     }
 
     pub fn clear_chat(&mut self) {
@@ -135,7 +176,7 @@ impl MoniqueView {
             content: message.clone(),
             created_at_ms: chrono::Utc::now().timestamp_millis(),
         });
-        self.loading = true;
+        self.account_loading = true;
         cx.emit(MoniqueViewEvent::Send(message));
         cx.notify();
     }
@@ -504,41 +545,39 @@ impl MoniqueView {
         }
         if session.accepts_authorization_code {
             let entity = cx.entity();
-            actions = actions
-                .child(
-                    div().w(px(210.0)).child(
-                        Input::new(&self.authorization_code)
-                            .size(InputSize::Sm)
-                            .placeholder(t!("monique.accounts.authorization_code").to_string()),
-                    ),
-                )
-                .child(Self::button(
-                    ElementId::from(SharedString::from(format!(
-                        "monique-login-submit-{submit_id}"
-                    ))),
-                    t!("monique.accounts.submit_code").to_string(),
-                    cx,
-                    move |_this, cx| {
-                        entity.update(cx, |this, cx| {
-                            let code = this
-                                .authorization_code
-                                .read(cx)
-                                .content()
-                                .trim()
-                                .to_string();
-                            if !code.is_empty() {
-                                this.authorization_code
-                                    .update(cx, |state, cx| state.reset(cx));
-                                cx.emit(MoniqueViewEvent::AgentAction(
-                                    MoniqueAgentAuthAction::SubmitAuthorizationCode {
-                                        session_id: submit_id.clone(),
-                                        code,
-                                    },
-                                ));
-                            }
-                        });
-                    },
-                ));
+            if let Some(code_state) = self.authorization_codes.get(&session.id).cloned() {
+                let code_state_for_submit = code_state.clone();
+                actions = actions
+                    .child(
+                        div().w(px(210.0)).child(
+                            Input::new(&code_state)
+                                .size(InputSize::Sm)
+                                .placeholder(t!("monique.accounts.authorization_code").to_string()),
+                        ),
+                    )
+                    .child(Self::button(
+                        ElementId::from(SharedString::from(format!(
+                            "monique-login-submit-{submit_id}"
+                        ))),
+                        t!("monique.accounts.submit_code").to_string(),
+                        cx,
+                        move |_this, cx| {
+                            entity.update(cx, |_this, cx| {
+                                let code =
+                                    code_state_for_submit.read(cx).content().trim().to_string();
+                                if !code.is_empty() {
+                                    code_state_for_submit.update(cx, |state, cx| state.reset(cx));
+                                    cx.emit(MoniqueViewEvent::AgentAction(
+                                        MoniqueAgentAuthAction::SubmitAuthorizationCode {
+                                            session_id: submit_id.clone(),
+                                            code,
+                                        },
+                                    ));
+                                }
+                            });
+                        },
+                    ));
+            }
         }
         if session.active() {
             actions = actions.child(Self::button(
@@ -574,6 +613,24 @@ impl MoniqueView {
     }
 
     fn render_agent_accounts(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let account_count = self.agent_accounts.accounts.len();
+        let maximum = self.agent_accounts.max_accounts;
+        let at_capacity = maximum > 0 && account_count >= maximum;
+        let codex_available = self
+            .agent_accounts
+            .providers
+            .iter()
+            .any(|provider| provider.id == "codex" && provider.available);
+        let claude_available = self
+            .agent_accounts
+            .providers
+            .iter()
+            .any(|provider| provider.id == "claude" && provider.available);
+        let capacity = if maximum > 0 {
+            format!("{account_count} / {maximum}")
+        } else {
+            account_count.to_string()
+        };
         let mut list = div().flex().flex_col().gap(px(7.0));
         for session in &self.agent_accounts.login_sessions {
             list = list.child(self.render_login_session(session, cx));
@@ -627,24 +684,40 @@ impl MoniqueView {
                             ),
                     )
                     .child(
-                        div().w(px(180.0)).child(
-                            Input::new(&self.account_label)
-                                .size(InputSize::Sm)
-                                .placeholder(t!("monique.accounts.alias").to_string()),
-                        ),
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(ShellDeckColors::text_muted())
+                            .child(if self.account_loading {
+                                t!("monique.accounts.updating").to_string()
+                            } else {
+                                capacity
+                            }),
                     )
-                    .child(Self::button(
-                        "monique-add-codex",
-                        t!("monique.accounts.add_codex").to_string(),
-                        cx,
-                        |this, cx| this.start_agent_login("codex", cx),
-                    ))
-                    .child(Self::button(
-                        "monique-add-claude",
-                        t!("monique.accounts.add_claude").to_string(),
-                        cx,
-                        |this, cx| this.start_agent_login("claude", cx),
-                    )),
+                    .when(!at_capacity, |header| {
+                        header.child(
+                            div().w(px(180.0)).child(
+                                Input::new(&self.account_label)
+                                    .size(InputSize::Sm)
+                                    .placeholder(t!("monique.accounts.alias").to_string()),
+                            ),
+                        )
+                    })
+                    .when(codex_available && !at_capacity, |header| {
+                        header.child(Self::button(
+                            "monique-add-codex",
+                            t!("monique.accounts.add_codex").to_string(),
+                            cx,
+                            |this, cx| this.start_agent_login("codex", cx),
+                        ))
+                    })
+                    .when(claude_available && !at_capacity, |header| {
+                        header.child(Self::button(
+                            "monique-add-claude",
+                            t!("monique.accounts.add_claude").to_string(),
+                            cx,
+                            |this, cx| this.start_agent_login("claude", cx),
+                        ))
+                    }),
             )
             .child(list)
     }

@@ -261,6 +261,7 @@ Existing: **0 tests**.
 | SDTEST-1669 | `monique.rs::sdtest_monique_native_accounts_preserve_n_provider_profiles` | SDUC-474 | Green | The typed view retains multiple Codex and Claude subscription profiles plus explicit provider/worker selections. |
 | SDTEST-1670 | `monique.rs::sdtest_monique_native_account_mutations_are_typed_and_token_free` | SDUC-474 | Green | Native login uses the closed action contract and sends neither provider tokens nor host paths. |
 | SDTEST-1671 | `monique.rs::sdtest_monique_native_authorization_links_are_exactly_allowlisted` | SDUC-474 | Green | ShellDeck opens only the exact HTTPS Codex device or Claude OAuth origins and rejects suffix-host tricks. |
+| SDTEST-1672 | `monique.rs::sdtest_monique_preserves_multiple_simultaneous_native_login_sessions` | SDUC-474 | Green | Two concurrent Codex/Claude native login sessions retain distinct opaque IDs, provider flows and safe authorization origins. |
 
 ---
 

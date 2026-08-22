@@ -555,6 +555,7 @@ pub struct Workspace {
     monique_status: Option<MoniqueStatus>,
     monique_processes: Option<MoniqueProcesses>,
     _monique_poll_task: Option<gpui::Task<()>>,
+    _monique_auth_poll_task: Option<gpui::Task<()>>,
     /// User-mode "Ask Monique" composer buffer + focus.
     monique_ask_input: String,
     monique_ask_focus: FocusHandle,
@@ -1313,6 +1314,7 @@ impl Workspace {
             monique_status: None,
             monique_processes: None,
             _monique_poll_task: None,
+            _monique_auth_poll_task: None,
             monique_ask_input: String::new(),
             monique_ask_focus: cx.focus_handle(),
             fleet_view,
