@@ -2193,14 +2193,6 @@ fn main() -> Result<()> {
                 });
                 cx.on_action({
                     let w = w.clone();
-                    move |_: &ToggleMoniqueRuntime, cx| {
-                        if let Some(ws) = w.upgrade() {
-                            ws.update(cx, |ws, cx| ws.toggle_monique_runtime(cx));
-                        }
-                    }
-                });
-                cx.on_action({
-                    let w = w.clone();
                     move |_: &NewRequest, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| ws.open_new_request(cx));

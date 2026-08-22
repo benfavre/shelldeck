@@ -4,8 +4,7 @@ use gpui::*;
 pub use shelldeck_ui::workspace::{
     CloseTab, CloudSyncNow, ConnectBextCloud, NewRequest, NewTerminal, NextTab, OpenAiAssistant,
     OpenBextCloud, OpenFileEditorView, OpenFleet, OpenMoniqueConsole, OpenQuickConnect,
-    OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleMenuBar,
-    ToggleMoniqueRuntime, ToggleSidebar,
+    OpenSettings, OpenSupportRequests, PrevTab, Quit, SwitchSite, ToggleMenuBar, ToggleSidebar,
 };
 
 // Re-export terminal view actions
