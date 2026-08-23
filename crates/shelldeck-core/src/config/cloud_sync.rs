@@ -29,7 +29,10 @@ pub struct CloudSyncConfig {
     pub enabled: bool,
     /// Base URL of the management portal, e.g. `https://manage.inklura.fr`.
     pub base_url: String,
-    /// Bearer token issued by the portal (`sd_...`).
+    /// Bearer token issued by the portal (`sd_...`). Kept in memory for API
+    /// calls and accepted from old files for one-time migration, but never
+    /// serialized; the durable value lives in the OS keychain.
+    #[serde(skip_serializing)]
     pub token: String,
     /// Whether to sync automatically at app startup.
     pub sync_on_startup: bool,
@@ -265,7 +268,7 @@ fn parse_response(resp: reqwest::blocking::Response) -> Result<SyncPayload> {
     let status = resp.status();
     if status.as_u16() == 401 {
         return Err(ShellDeckError::Connection(
-            "sync token rejected (401) — check the cloud_sync token in shelldeck.toml".to_string(),
+            "account token rejected (401) — sign in to Inklura Manage again".to_string(),
         ));
     }
     if !status.is_success() {
@@ -644,7 +647,7 @@ sync_on_startup = false
     // A tiny loopback HTTP server exercises `fetch_sync` end-to-end
     // against the same wire format the real Manage exposes. We don't
     // reach for wiremock/mockito on purpose — the raw TcpListener
-    // pattern matches the rest of the crate (`monique_fleet`, `issues`,
+    // pattern matches the rest of the crate (`platform`, `issues`,
     // `manage_support`) and stays zero-dep.
     //
     // Behaviour under test:

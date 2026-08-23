@@ -19,7 +19,7 @@ Lire d'abord `.agents/testing.md` (source canonique). Ce skill résume le workfl
 
 | Cas | Pattern |
 |-----|---------|
-| Client HTTP Manage/Jean/Bext | `TcpListener` dans un thread — copier `cloud_sync.rs`, `issues.rs`, etc. |
+| Client HTTP Manage/Monique/Bext | `TcpListener` dans un thread — copier `cloud_sync.rs`, `issues.rs`, etc. |
 | Subprocess (`claude`, `ssh`) | trait fake (`JobExecutor`) — jamais le vrai binaire en unit test |
 | Logique UI | extraire helper pur hors `Render`, tester le helper |
 | Réseau live | `#[ignore]` + `SHELLDECK_LIVE=1`, entrée Yellow dans l'inventaire |

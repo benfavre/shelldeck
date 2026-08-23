@@ -80,12 +80,11 @@ entries, `git grep <fn>` lands on the code.
 | SDTEST-061 | `app_config.rs::cloud_sync_round_trips` | SDUC-080 | Green | |
 | SDTEST-062 | `app_config.rs::account_round_trips_and_omits_when_logged_out` | SDUC-082 | Green | |
 | SDTEST-063 | `app_config.rs::monique_override_round_trips_and_omits_when_unset` | SDUC-083 | Green | Superseded by the expanded SDTEST-1666 contract. |
-| SDTEST-064 | `app_config.rs::monique_runtime_round_trips_and_defaults_off` | SDUC-084 | Green | |
 | SDTEST-065 | `app_config.rs::config_without_cloud_sync_section_still_parses` | SDUC-081 | Green | |
 | SDTEST-066 | `app_config.rs::load_from_missing_creates_defaults` | SDUC-085 | Green | |
 | SDTEST-067 | `app_config.rs::load_from_corrupt_returns_err` | SDUC-086 | Green | |
 | SDTEST-068 | *to write* — config with unknown fields still loads (forward compat) | SDUC-081 | **Red / P1** | Server may add a `[foo]` we don't know about yet; must not Err. |
-| SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Added 2026-07-09. Pins every default: Dark theme, JetBrains Mono 14pt, 10 000-line scrollback, block cursor with blink, sidebar 260px, notifications on, confirm-close on, auto-update on, `ui_language = System`. All session flags OFF (account None, cloud_sync/monique_runtime/bext_cloud all disabled). Sensor for silent drift on any first-run field. |
+| SDTEST-069 | `app_config.rs::default_matches_documented_first_run_values` | SDUC-093 | Green | Pins first-run presentation and session defaults; no desktop execution configuration exists. |
 | SDTEST-070 | `app_config.rs::save_to_replaces_config_file_atomically` | SDUC-091 | Green | A hard link preserves the prior file identity and contents while `save_to` atomically replaces the configured path. |
 | SDTEST-071 | *to write* — ConfigWatcher fires the callback on external edit (debounced) | SDUC-090 | **Red / P1** | Use a `TempDir` + `std::fs::write` twice within the debounce window. |
 | SDTEST-1335 | `app_config.rs::older_config_defaults_pinned_connections_to_empty` + `round_trip_non_default` | SDUC-411 | Green | Pins backward compatibility plus UUID/order persistence for quick favorites. |
@@ -276,35 +275,19 @@ Existing: **0 tests**.
 
 ---
 
-## 15. `config/monique_fleet.rs`
+## 15. `config/platform.rs`
 
 | ID | Location | SDUC | Status | Notes |
 |---|---|---|---|---|
-| SDTEST-260 | `monique_fleet.rs::get_fleet_parses` | SDUC-200 | Green | |
-| SDTEST-261 | `monique_fleet.rs::register_heartbeat_dispatch` | SDUC-201 | Green | |
-| SDTEST-262 | `monique_fleet.rs::auto_tick_claims_and_executes` | SDUC-204 | Green | |
-| SDTEST-263 | `monique_fleet.rs::confirm_tick_claims_but_does_not_execute` | SDUC-205 | Green | |
-| SDTEST-264 | `monique_fleet.rs::wrong_auth_surfaces_401` | SDUC-208 | Green | |
-| SDTEST-265 | `monique_fleet.rs::parses_iso_and_null_timestamps` | SDUC-200 | Green | |
-| SDTEST-266 | `monique_fleet.rs::parse_stream_json_finds_result` | SDUC-203 | Green | |
-| SDTEST-267 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | Inspects the non-spawned `Command` builder, including optional-model omission. |
-| SDTEST-268 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `ANTHROPIC_API_KEY` is explicitly removed before spawn. |
-| SDTEST-269 | `monique_fleet.rs::claude_executor_command_matches_bot_argv_and_auth_contract` | SDUC-202 | Green | `CLAUDE_CODE_OAUTH_TOKEN` is not overridden or removed, so parent inheritance remains intact. |
-| SDTEST-270 | *to write* — runtime_busy prevents concurrent execution | SDUC-207 | **Red / P1** | Fake executor that blocks + a concurrent tick attempt. |
-| SDTEST-271 | *to write* — first successful register() persists instance_id, second call reuses it | SDUC-209 | **Red / P1** | Guard against re-registering per boot. |
-| SDTEST-272 | `workspace/fleet.rs::runtime_loop_requested_requires_explicit_enablement_and_credentials` | SDUC-206 | Green | The Workspace gate is the layer that prevents `runtime_tick` from ever being reached while disabled; its complete enablement/credentials truth table is pinned in `shelldeck-ui`. |
-| SDTEST-1584 | `monique_fleet.rs::jcode_executor_parses_json_output_from_cmd_fake` (`#[cfg(windows)]`) | SDUC-458 | Green | Added 2026-08-06, activated in CI 2026-08-18. The `Core tests (windows-x86_64)` job runs the `.cmd` batch fake through the real `JcodeExecutor` spawn→parse path on `windows-latest`. |
-
-> ⚠️ **Inventory debt:** the Jcode executor tests that shipped with
-> `c5dd9c2`/`148b975` (`jcode_executor_uses_run_ndjson_flags_and_prompt_arg`,
-> `jcode_executor_parses_json_output`, `jcode_acp_probe_is_explicitly_disabled_by_contract`,
-> `jcode_acp_transport_falls_back_to_process_run`,
-> `jcode_executor_rejects_relative_or_missing_workdir_before_spawn`,
-> `jcode_executor_kills_child_on_timeout`,
-> `jcode_acp_fallback_preserves_process_timeout_cancellation`,
-> `configured_executor_falls_back_to_legacy_claude_only_when_jcode_cannot_start`)
-> are Green in code but have no SDTEST rows yet. SDUC-458 now exists to map
-> them to — back-fill pending.
+| SDTEST-260 | `platform.rs::endpoint_is_canonical_and_https_only` | SDUC-200 | Green | HTTPS origin is normalized to the canonical platform path; embedded credentials and cleartext remotes are refused. |
+| SDTEST-261 | `platform.rs::client_identity_is_stable_bounded_and_typed` | SDUC-201 | Green | Desktop identity is validated by the shared opaque ID type. |
+| SDTEST-264 | shared SDK `https_transport_carries_the_canonical_frame_and_redacts_the_bearer` | SDUC-200, SDUC-208 | Green | Canonical body, bearer header, response correlation and secret-safe diagnostics are covered at the shared boundary. |
+| SDTEST-272 | workspace source audit | SDUC-206, SDUC-476 | Green | No runtime configuration, direct provider executor, job claim loop, or handwritten platform response model remains. |
+| SDTEST-1682 | `platform.rs::cockpit_keeps_pane_cursors_unread_and_control_loss_independent` | SDUC-201, SDUC-476 | Green | Two attachments sharing the `sessions` topic advance independently; only the unfocused pane gains unread events, and disconnect drops a held control lease without erasing the pane. |
+| SDTEST-1683 | shared SDK `platform_view_tracks_independent_attachments_and_reconciles_receipts` | SDUC-201, SDUC-476 | Green | The pinned shared reducer keys cursors by exact session/client attachment and reconciles monotonic receipts; Automonique CI runs the standalone SDK suite. |
+| SDTEST-1684 | shared SDK `session_refresh_and_mutation_keep_typed_refusals` | SDUC-200, SDUC-201 | Green | Cursor expiry and mutation conflicts remain typed outcomes instead of private client retry/error rules; Automonique CI runs the standalone SDK suite. |
+| SDTEST-1685 | `platform.rs::refresh_uses_cursors_per_surface_and_reconciles_pending_receipts` | SDUC-200, SDUC-201, SDUC-476 | Green | A canonical fake server proves steady-state refresh sends resource, directory and pane subscriptions—no snapshot—and reconciles an accepted receipt by ID. |
+| SDTEST-1686 | Automonique `platform_live.rs::platform_capabilities_snapshot_and_controller_are_live_and_durable` | SDUC-201, SDUC-476 | Green | The shared live socket fixture projects a pending approval, executes a revision-bound grant, returns a completed receipt, marks the resolved resource stale, and links a session to its controllable run. |
 
 ---
 

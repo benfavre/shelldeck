@@ -39,9 +39,7 @@ use shelldeck_core::config::manage_support;
 use shelldeck_core::config::monique::{
     self as monique_client, MoniqueConfig, MoniqueProcesses, MoniqueStatus,
 };
-use shelldeck_core::config::monique_fleet::{
-    self, FleetSnapshot, MoniqueInstance, MoniqueJob, MoniqueRuntimeConfig, RegisterInstance,
-};
+use shelldeck_core::config::platform::PlatformSnapshot;
 use shelldeck_core::config::store::ConnectionStore;
 use shelldeck_core::config::themes::TerminalTheme;
 use shelldeck_core::models::connection::{Connection, ConnectionSource, ConnectionStatus};
@@ -294,29 +292,6 @@ fn post_login_splash_opacity(dismissing: bool, delta: f32) -> f32 {
     }
 }
 
-/// Everything the runtime tick needs, gathered on the UI thread then moved into
-/// the background executor (all owned + `Send`).
-struct RuntimeTickCtx {
-    base: String,
-    token: String,
-    instance_id: String,
-    workdir: String,
-    model: String,
-    autonomy: String,
-    version: String,
-    runtime_config: MoniqueRuntimeConfig,
-}
-
-/// One decision of the runtime loop, produced on the UI thread.
-enum RuntimeStep {
-    /// (base, token, register payload)
-    Register(String, String, RegisterInstance),
-    /// (base, token, instance id, version) — heartbeat only (a job is busy).
-    HeartbeatOnly(String, String, String, String),
-    /// Heartbeat + claim (+ auto-execute).
-    Tick(RuntimeTickCtx),
-}
-
 /// The active content view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -359,7 +334,6 @@ actions!(
         SwitchSite,
         OpenMoniqueConsole,
         OpenFleet,
-        ToggleMoniqueRuntime,
         NewRequest,
         OpenSupportRequests,
         OpenBextCloud,
@@ -570,21 +544,16 @@ pub struct Workspace {
     /// The Monique fleet view (Dev mode).
     fleet_view: Entity<FleetView>,
     _fleet_sub: Subscription,
-    /// Cached fleet snapshot (feeds fleet_view).
-    fleet_snapshot: Option<FleetSnapshot>,
-    /// Exact Fleet job requested by a deep link, retained across async refresh.
-    pending_fleet_job_focus: Option<String>,
+    /// Cached shared-platform snapshot (feeds the native cockpit and mentions).
+    fleet_snapshot: Option<PlatformSnapshot>,
+    /// Exact session requested by a deep link, retained across async refresh.
+    pending_fleet_session_focus: Option<String>,
     /// Poll while the Fleet view is visible.
     _fleet_view_poll: Option<gpui::Task<()>>,
-    /// This machine's registered runtime instance (when the runtime is enabled).
-    runtime_instance: Option<MoniqueInstance>,
-    /// Jobs claimed by a `confirm`-autonomy instance, awaiting an explicit
-    /// "Exécuter" in the UI. Also gates the loop (concurrency 1).
-    runtime_awaiting: Vec<MoniqueJob>,
-    /// True while a job is executing or awaiting confirmation (no new claim).
-    runtime_busy: bool,
-    /// The register/heartbeat/claim/execute loop (only while enabled + signed in).
-    _runtime_loop: Option<gpui::Task<()>>,
+    /// Prevent overlapping cursor reads from applying out of order.
+    fleet_refresh_in_flight: bool,
+    /// Fences platform responses across sign-out and subsequent sign-in.
+    fleet_request_epoch: u64,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
     /// are the one mention kind that needs server-side role information.
@@ -1354,12 +1323,10 @@ impl Workspace {
             fleet_view,
             _fleet_sub: fleet_sub,
             fleet_snapshot: None,
-            pending_fleet_job_focus: None,
+            pending_fleet_session_focus: None,
             _fleet_view_poll: None,
-            runtime_instance: None,
-            runtime_awaiting: Vec::new(),
-            runtime_busy: false,
-            _runtime_loop: None,
+            fleet_refresh_in_flight: false,
+            fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,

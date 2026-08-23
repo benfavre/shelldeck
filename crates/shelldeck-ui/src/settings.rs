@@ -1199,8 +1199,7 @@ impl SettingsView {
                     .text_size(px(12.0))
                     .text_color(ShellDeckColors::text_muted())
                     .child(
-                        "Edit [cloud_sync] in shelldeck.toml — get a token at \
-                         https://manage.inklura.fr/manage/shelldeck",
+                        "Sign in from the account menu. The bearer is stored in the OS keychain.",
                     ),
             )
             .child(

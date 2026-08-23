@@ -22,7 +22,7 @@ impl Workspace {
             sidebar_visible: self.sidebar_visible,
             menu_bar_visible: self.app_config.general.menu_bar_visible,
             has_monique: self.has_monique(),
-            has_fleet: self.app_config.monique_runtime.enabled || self.fleet_snapshot.is_some(),
+            has_fleet: self.platform_connection().is_some() || self.fleet_snapshot.is_some(),
             ai_configured: self.ai_available_for_current_surface(cx),
         };
 

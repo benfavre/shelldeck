@@ -53,7 +53,7 @@ ShellDeck's three modes map to three audiences:
     requests triage surface (the person here is *helping* customers,
     not asking for help).
   * **Dev mode** — **Inklura platform staff only** (SSH, terminals,
-    port forwards, sites, editor, JeanClaude, Fleet, bext Cloud).
+    port forwards, sites, editor, Monique, Fleet, bext Cloud).
 
 The gate needs to distinguish **Inklura staff** from **customers**.
 CM's existing name predicates don't — they mix the two. So ShellDeck

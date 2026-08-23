@@ -1711,10 +1711,23 @@ fn main() -> Result<()> {
     });
 
     // Load configuration
-    let config = AppConfig::load().unwrap_or_else(|e| {
+    let mut config = AppConfig::load().unwrap_or_else(|e| {
         tracing::warn!("Failed to load config, using defaults: {}", e);
         AppConfig::default()
     });
+    if config.cloud_sync.token.is_empty() {
+        match shelldeck_core::config::keychain::get_manage_token() {
+            Ok(Some(token)) => config.cloud_sync.token = token,
+            Ok(None) => {}
+            Err(error) => tracing::warn!("AI Operations keychain token unavailable: {error}"),
+        }
+    } else if let Err(error) =
+        shelldeck_core::config::keychain::store_manage_token(&config.cloud_sync.token)
+    {
+        tracing::warn!("Could not migrate AI Operations token to OS keychain: {error}");
+    } else if let Err(error) = config.save() {
+        tracing::warn!("Could not remove migrated AI Operations token from config: {error}");
+    }
 
     shelldeck_ui::i18n::apply_ui_language(&config.general.ui_language);
 
@@ -2188,14 +2201,6 @@ fn main() -> Result<()> {
                     move |_: &OpenFleet, cx| {
                         if let Some(ws) = w.upgrade() {
                             ws.update(cx, |ws, cx| ws.open_fleet(cx));
-                        }
-                    }
-                });
-                cx.on_action({
-                    let w = w.clone();
-                    move |_: &ToggleMoniqueRuntime, cx| {
-                        if let Some(ws) = w.upgrade() {
-                            ws.update(cx, |ws, cx| ws.toggle_monique_runtime(cx));
                         }
                     }
                 });

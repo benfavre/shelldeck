@@ -163,12 +163,6 @@ impl Workspace {
                     Box::new(OpenFleet),
                 ),
                 PaletteAction::new(
-                    t!("palette.fleet_runtime").to_string(),
-                    None,
-                    "cpu",
-                    Box::new(ToggleMoniqueRuntime),
-                ),
-                PaletteAction::new(
                     t!("palette.bext_open").to_string(),
                     None,
                     "cloud",
@@ -366,8 +360,6 @@ impl Workspace {
             self.open_monique_console(cx);
         } else if action.as_any().is::<OpenFleet>() {
             self.open_fleet(cx);
-        } else if action.as_any().is::<ToggleMoniqueRuntime>() {
-            self.toggle_monique_runtime(cx);
         } else if action.as_any().is::<NewRequest>() {
             self.open_new_request(cx);
         } else if action.as_any().is::<OpenSupportRequests>() {
@@ -393,7 +385,7 @@ mod tests {
         OpenAiAssistant, OpenBextCloud, OpenClippy, OpenFileEditorView, OpenFleet, OpenLogin,
         OpenMoniqueConsole, OpenRecent, OpenServerSync, OpenSettings, OpenSites,
         OpenSupportRequests, OpenTemplateBrowser, PaletteAction, Quit, SetAppMode, SwitchSite,
-        ToggleMenuBar, ToggleMoniqueRuntime, Workspace,
+        ToggleMenuBar, Workspace,
     };
     use gpui::Action;
 
@@ -421,10 +413,6 @@ mod tests {
         assert!(!contains_action::<OpenMoniqueConsole>(actions), "{context}");
         assert!(!contains_action::<OpenFleet>(actions), "{context}");
         assert!(!contains_action::<OpenBextCloud>(actions), "{context}");
-        assert!(
-            !contains_action::<ToggleMoniqueRuntime>(actions),
-            "{context}"
-        );
     }
 
     // SDTEST-1377 — a regular account is offered nothing beyond User.

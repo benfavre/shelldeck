@@ -18,7 +18,6 @@ pub enum ActivityKind {
     Script,
     Support,
     Issue,
-    #[serde(alias = "jean")]
     Monique,
     Fleet,
     Site,

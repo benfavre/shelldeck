@@ -65,7 +65,7 @@ support = true
 issues = true
 scripts = true
 terminal = true
-jean = true
+monique = true
 naming = true
 recent = true
 """

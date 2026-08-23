@@ -47,8 +47,8 @@ requests, and automation into one role-aware control plane.
 - **Themes** -- 13 built-in app themes (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, …) plus terminal color themes, with live preview via the titlebar switcher and command palette
 - **Cloud Sync** -- Pull SSH connection profiles from the [Inklura Manage](https://manage.inklura.fr) portal into your connection store
 - **Role-Aware Workspaces** -- Dedicated User, Support, and Dev surfaces gated by the signed-in Manage account
-- **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and fleet dispatch
-- **Contextual AI** -- Native AI Dock plus Monique and Fleet integrations for assisted operations
+- **Support & Requests** -- Triage support tickets and manage tenant/site requests with comments, attachments, GitHub sync, and AI Operations dispatch
+- **Contextual AI** -- Native AI Dock plus Monique and the shared platform cockpit for assisted operations
 - **Auto-Update** -- Checks for and installs new releases automatically
 - **Context Menu** -- Right-click for copy, paste, search, and URL actions
 - **Git Integration** -- Branch indicator and status in the UI
@@ -176,14 +176,14 @@ You can also configure Cloud Sync by hand — add a `[cloud_sync]` section to
 [cloud_sync]
 enabled = true
 base_url = "https://manage.inklura.fr"
-token = "sd_..."          # get a token at manage.inklura.fr/manage/shelldeck
 sync_on_startup = true     # pull profiles automatically at launch
 ```
 
-- **Get a token** at [manage.inklura.fr/manage/shelldeck](https://manage.inklura.fr/manage/shelldeck).
+- **Sign in** from ShellDeck to bind the account token; its durable value lives
+  in the operating-system keychain, never in `config.toml`.
 - With `sync_on_startup = true`, ShellDeck syncs at launch (bounded by a 4s connect / 10s total timeout, so a portal outage never blocks startup).
 - Trigger a sync anytime via the command palette (**Cloud Sync Now**) or the **Sync now** button under Settings → General → Cloud Sync.
-- The token is stored in `config.toml`; the Settings screen only ever shows a masked hint of it.
+- The Settings screen only ever shows a masked account hint.
 
 ## App modes (User / Support / Dev)
 
@@ -192,7 +192,7 @@ Inklura Manage account:
 
 - **User** — available to every authenticated account. It provides dedicated **Accueil**, **Mes sites**, **Mes demandes**, and **Mes informations** tabs with one-click Manage links and account-scoped data.
 - **Support** — a native two-pane helpdesk console for support.inklura.fr: view filters (Tous / Non attribués / Les miens / Ouverts / En attente / SLA / Résolus) with live counts, the ticket list, and a conversation pane with a reply/note composer and an action bar (status, priority, assign, resolve). The list refreshes every ~30s while open.
-- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, Monique, Fleet, and bext Cloud.
+- **Dev** — the full ShellDeck workspace: terminals, SSH, port forwards, scripts, server sync, sites, the shared platform cockpit, and bext Cloud.
 
 Regular and customer-admin accounts are restricted to User mode. Accounts with
 the dedicated `inklura_support` role can switch between User and Support.
@@ -221,34 +221,24 @@ The console is available only to super-admins with a complete configuration, sou
 
 Basic credentials are sent only to the configured canonical URL; redirects are refused. ShellDeck has no alternate bot transport or fallback.
 
-### Fleet runtime
+### Platform cockpit
 
-Beyond controlling one dashboard, ShellDeck can be a **runtime for the Monique fleet** — the tenant/site-aware set of Monique instances managed from `manage.inklura.fr`. In Dev mode, the **Fleet** view shows every instance (name, tenant/site, runtime, status dot, heartbeat age), the recent-jobs feed, and a toggle to make **this machine** a runtime.
+In Dev mode, the **Platform** entry opens a native cockpit backed by the shared
+Automonique platform contract. It presents federated resources, capabilities,
+models, receipts, and every attachable session. Operators may attach or detach
+observation and explicitly claim or release a short control lease.
 
-When enabled, ShellDeck registers itself, heartbeats, and claims pending jobs for its instance, executing each by driving **headless Claude Code** (`claude -p`, subscription auth) in the configured working directory.
-
-⚠️ **Safety.** Executing a job runs Claude Code with file/edit/command powers on this machine. It is **off by default** and gated hard:
-
-- The runtime only runs when `[monique_runtime].enabled = true` **and** the instance's autonomy is **`auto`**.
-- An instance set to **`confirm`** never auto-runs — each claimed job appears in the Fleet view with **Exécuter / Rejeter** and waits for an explicit click. New instances default to `confirm`.
-- One job at a time per machine.
-
-```toml
-[monique_runtime]
-enabled = false          # default — must be turned on explicitly
-# instance_id = "…"      # filled in after the first registration
-# workdir = "/home/you/infra"
-# name = "my-machine"
-```
-
-Toggle it from the Fleet view or the command palette (**Fleet : activer / désactiver ce runtime**, **Fleet : ouvrir la flotte Monique**).
+ShellDeck is always a client. It contains no provider executor, job claim loop,
+runtime switch, or duplicate platform wire types. The signed-in AI Operations
+bearer is validated by the platform gateway; Basic credentials remain scoped
+to the dashboard's browser-style APIs.
 
 ## Requests (hosted issue management)
 
-ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched to the Monique fleet.
+ShellDeck has a built-in **request tracker** — per tenant/site issues that are synced to GitHub and can be dispatched through AI Operations.
 
 - **User mode** — a dedicated **Mes demandes** tab: file a **Nouvelle demande** (title + details + priority), see your tenant's requests with their status and GitHub number, and open any one to read its body/comments and add your own. The quick **Ask Monique** card stages one-off operational asks through the same reviewed conversation workflow.
-- **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, **Dispatcher** to a tenant Monique instance, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
+- **Support mode** — a **Demandes** tab in the console: the request queue for your scope (all tenants for staff). Open a request to see its thread and comment; staff get a triage action bar — set status, cycle priority, assign to me, dispatch through AI Operations, and **Créer sur GitHub** / refresh from GitHub. Any support ticket can be **Convertir[i] en demande** to become a tracked request.
 
 Staff-only actions are gated server-side; the action bar only appears for staff tokens. Palette: **Nouvelle demande**, **Demandes (support)**.
 
