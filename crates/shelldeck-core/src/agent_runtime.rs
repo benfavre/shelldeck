@@ -133,7 +133,13 @@ impl AgentRunRequest {
                 "agent prompt exceeds the safe remote-command limit".to_string(),
             ));
         }
-        if self.workdir.trim().is_empty() || !Path::new(self.workdir.trim()).is_absolute() {
+        let workdir = self.workdir.trim();
+        let absolute = match self.target {
+            AgentTarget::Local => Path::new(workdir).is_absolute(),
+            // Remote agent transport is POSIX shell based on every host OS.
+            AgentTarget::Ssh { .. } => workdir.starts_with('/'),
+        };
+        if workdir.is_empty() || !absolute {
             return Err(ShellDeckError::Config(
                 "agent workdir must be an absolute path".to_string(),
             ));
@@ -551,12 +557,17 @@ fn humanize_kind(kind: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
+    const LOCAL_TEST_WORKDIR: &str = "/srv/project";
+    #[cfg(windows)]
+    const LOCAL_TEST_WORKDIR: &str = r"C:\srv\project";
+
     fn request(provider: AgentProvider, access: AgentAccessMode, prompt: &str) -> AgentRunRequest {
         AgentRunRequest::new(
             provider,
             AgentTarget::Local,
             access,
-            "/srv/project",
+            LOCAL_TEST_WORKDIR,
             Some("model-x".to_string()),
             prompt,
         )
@@ -656,6 +667,10 @@ mod tests {
             AgentAccessMode::ReadOnly,
             "line one\n$(touch /tmp/nope) ' quoted",
         );
+        run.target = AgentTarget::Ssh {
+            connection_id: Uuid::nil(),
+            connection_label: "test-host".to_string(),
+        };
         run.workdir = "/srv/customer's app".to_string();
         let command = AgentCommandSpec::for_request(&run)
             .unwrap()
