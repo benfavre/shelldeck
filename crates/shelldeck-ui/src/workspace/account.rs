@@ -459,7 +459,12 @@ impl Workspace {
         self.site_directory = None;
         self.monique_status = None;
         self.monique_processes = None;
+        self.fleet_request_epoch = self.fleet_request_epoch.wrapping_add(1);
         self.fleet_snapshot = None;
+        self.fleet_view.update(cx, |view, cx| {
+            view.reset();
+            cx.notify();
+        });
         self.issues_list.clear();
         self.issues_instances.clear();
         self.issues_staff = false;
@@ -493,6 +498,7 @@ impl Workspace {
         self._issues_poll = None;
         self._monique_poll_task = None;
         self._fleet_view_poll = None;
+        self.fleet_refresh_in_flight = false;
         self._bext_poll = None;
         self.support.update(cx, |support, cx| {
             support.set_list(Vec::new(), Default::default(), Default::default());

@@ -893,9 +893,15 @@ the exact canonical frame travels over authenticated HTTPS.
 
 ### SDUC-201 — Native session cockpit
 
-The cockpit renders federated resources, capabilities, models, receipts and
-sessions, and sends typed attach, detach, claim-control and release-control
-requests.
+The cockpit renders federated resources, capabilities, models, pending
+approvals, receipts and sessions. Searchable discovery opens multiple observation panes with one
+resume cursor, unread count and stream status per exact session/client
+attachment. Attach, detach, claim-control and release-control are typed
+requests. Mutating run actions show the authority, target and expected
+revision before confirmation, then reconcile the typed receipt rather than
+retrying an ambiguous mutation. Pending approvals expose grant and deny only
+through the same revision-bound preview and receipt flow. A control conflict
+remains a typed ownership refusal instead of becoming an opaque network error.
 
 ### SDUC-202 — Retired: desktop fleet subprocess executor
 
@@ -939,8 +945,12 @@ Retired 2026-08-22. ShellDeck no longer registers as an execution runtime.
 
 ShellDeck is a presentation client. It may read scoped fleet state and request
 typed server-side control, but it never opens a provider process, claims a job,
-or owns an execution lease locally. Stale runtime configuration cannot restore
-the removed behavior.
+or owns an execution lease locally. The first load is a snapshot; subsequent
+loads resume shared resource and independent pane cursors. An explicit
+`resync_required` response re-snapshots or reattaches that exact stream.
+Disconnect drops local control authority, preserves observation panes, marks
+them offline, and requires a new server-side lease after reconnect. Stale
+runtime configuration cannot restore the removed behavior.
 
 ---
 
@@ -2322,6 +2332,10 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
+  refresh, exact attachment cursors, searchable multi-pane observation,
+  reconnect-safe lease loss, approval/run previews, typed ownership refusals,
+  and receipt reconciliation through the shared client.
 - **2026-08-22** — Added SDUC-476 and retired the desktop fleet executor
   contracts: ShellDeck now remains a shared-platform client under every stale
   runtime-config combination.

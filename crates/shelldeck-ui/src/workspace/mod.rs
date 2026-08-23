@@ -550,6 +550,10 @@ pub struct Workspace {
     pending_fleet_session_focus: Option<String>,
     /// Poll while the Fleet view is visible.
     _fleet_view_poll: Option<gpui::Task<()>>,
+    /// Prevent overlapping cursor reads from applying out of order.
+    fleet_refresh_in_flight: bool,
+    /// Fences platform responses across sign-out and subsequent sign-in.
+    fleet_request_epoch: u64,
     /// Mentionable people from Inklura Manage, for the assistant's `@` picker.
     /// Empty until the directory endpoint ships (`manage_directory`); people
     /// are the one mention kind that needs server-side role information.
@@ -1321,6 +1325,8 @@ impl Workspace {
             fleet_snapshot: None,
             pending_fleet_session_focus: None,
             _fleet_view_poll: None,
+            fleet_refresh_in_flight: false,
+            fleet_request_epoch: 0,
             mention_people: Vec::new(),
             issues_list: Vec::new(),
             issues_staff: false,

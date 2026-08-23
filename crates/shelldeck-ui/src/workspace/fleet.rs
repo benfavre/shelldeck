@@ -1,14 +1,21 @@
 use super::*;
 
 use shelldeck_core::config::platform::{
-    stable_client_id, Attachment, ControlLease, PlatformConnection, ResourceCoordinate,
+    stable_client_id, ActionResult, Attachment, ControlClaimResult, PlatformConnection,
+    PlatformRefresh, PlatformSnapshot, ResourceCoordinate,
 };
 
 enum PlatformActionResult {
     Attached(Attachment),
-    Detached(ResourceCoordinate),
-    ControlClaimed(ControlLease),
+    Detached(ResourceCoordinate, Option<Attachment>),
+    ControlClaimed(ControlClaimResult),
     ControlReleased(ResourceCoordinate),
+    Executed(ActionResult),
+}
+
+enum PlatformLoadResult {
+    Snapshot(PlatformSnapshot),
+    Refresh(PlatformRefresh),
 }
 
 impl Workspace {
@@ -46,31 +53,66 @@ impl Workspace {
     }
 
     pub(super) fn refresh_fleet_view(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_refresh_in_flight {
+            return;
+        }
+        if !self.fleet_view.update(cx, |view, _cx| view.can_refresh()) {
+            return;
+        }
         let Some(connection) = self.platform_connection() else {
             return;
         };
+        self.fleet_refresh_in_flight = true;
+        let request_epoch = self.fleet_request_epoch;
         self.fleet_view.update(cx, |view, cx| {
             view.set_loading(true);
             cx.notify();
         });
+        let previous = self.fleet_snapshot.clone();
+        let attachments = self.fleet_view.update(cx, |view, _cx| view.attachments());
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
-                .spawn(async move { connection.snapshot() })
+                .spawn(async move {
+                    if let Some(previous) = previous.as_ref() {
+                        connection
+                            .refresh(previous, &attachments)
+                            .map(PlatformLoadResult::Refresh)
+                    } else {
+                        connection.snapshot().map(PlatformLoadResult::Snapshot)
+                    }
+                })
                 .await;
-            let _ = this.update(cx, |workspace, cx| match result {
-                Ok(snapshot) => {
-                    workspace.fleet_snapshot = Some(snapshot.clone());
-                    workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_snapshot(snapshot);
-                        cx.notify();
-                    });
-                    workspace.focus_pending_fleet_session(cx);
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.fleet_request_epoch != request_epoch {
+                    return;
                 }
-                Err(error) => workspace.fleet_view.update(cx, |view, cx| {
-                    view.set_error(crate::i18n::api_error_message(&error));
-                    cx.notify();
-                }),
+                workspace.fleet_refresh_in_flight = false;
+                if workspace.platform_connection().is_none() {
+                    return;
+                }
+                match result {
+                    Ok(PlatformLoadResult::Snapshot(snapshot)) => {
+                        workspace.fleet_snapshot = Some(snapshot.clone());
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_snapshot(snapshot);
+                            cx.notify();
+                        });
+                        workspace.focus_pending_fleet_session(cx);
+                    }
+                    Ok(PlatformLoadResult::Refresh(refresh)) => {
+                        workspace.fleet_snapshot = Some(refresh.snapshot.clone());
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.apply_refresh(refresh);
+                            cx.notify();
+                        });
+                        workspace.focus_pending_fleet_session(cx);
+                    }
+                    Err(error) => workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_error(crate::i18n::api_error_message(&error));
+                        cx.notify();
+                    }),
+                }
             });
         })
         .detach();
@@ -94,7 +136,7 @@ impl Workspace {
             if self._fleet_view_poll.is_none() {
                 self._fleet_view_poll = Some(cx.spawn(async move |this, cx: &mut AsyncApp| loop {
                     cx.background_executor()
-                        .timer(std::time::Duration::from_secs(10))
+                        .timer(std::time::Duration::from_secs(2))
                         .await;
                     let keep = this
                         .update(cx, |workspace, cx| {
@@ -130,10 +172,21 @@ impl Workspace {
         let Ok(client) = stable_client_id(&shelldeck_core::util::hostname()) else {
             return;
         };
-        self.fleet_view.update(cx, |view, cx| {
-            view.set_loading(true);
+        let detached_attachment = match &event {
+            FleetViewEvent::Detach(session) => self
+                .fleet_view
+                .update(cx, |view, _cx| view.attachment(session)),
+            _ => None,
+        };
+        let started = self.fleet_view.update(cx, |view, cx| {
+            let started = view.begin_operation();
             cx.notify();
+            started
         });
+        if !started {
+            return;
+        }
+        let request_epoch = self.fleet_request_epoch;
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -145,49 +198,77 @@ impl Workspace {
                             .map(PlatformActionResult::Attached),
                         FleetViewEvent::Detach(session) => connection
                             .detach(session.clone(), client)
-                            .map(|()| PlatformActionResult::Detached(session)),
+                            .map(|()| PlatformActionResult::Detached(session, detached_attachment)),
                         FleetViewEvent::ClaimControl(session) => connection
                             .claim_control(session, client)
                             .map(PlatformActionResult::ControlClaimed),
                         FleetViewEvent::ReleaseControl(session, lease) => connection
                             .release_control(session.clone(), client, lease.id)
                             .map(|()| PlatformActionResult::ControlReleased(session)),
+                        FleetViewEvent::Execute(preview) => connection
+                            .execute(preview)
+                            .map(PlatformActionResult::Executed),
                     }
                 })
                 .await;
-            let _ = this.update(cx, |workspace, cx| match result {
-                Ok(PlatformActionResult::Attached(attachment)) => {
-                    workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_attached(attachment);
-                        view.set_loading(false);
-                        cx.notify();
-                    });
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.fleet_request_epoch != request_epoch || !workspace.signed_in() {
+                    return;
                 }
-                Ok(PlatformActionResult::Detached(session)) => {
-                    workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_detached(&session);
-                        view.set_loading(false);
+                match result {
+                    Ok(PlatformActionResult::Attached(attachment)) => {
+                        if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                            snapshot.view.track_attachment(&attachment);
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_attached(attachment);
+                            view.set_loading(false);
+                            cx.notify();
+                        });
+                    }
+                    Ok(PlatformActionResult::Detached(session, attachment)) => {
+                        if let Some(attachment) = attachment {
+                            if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                                snapshot.view.forget_attachment(&attachment);
+                            }
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_detached(&session);
+                            view.set_loading(false);
+                            cx.notify();
+                        });
+                    }
+                    Ok(PlatformActionResult::ControlClaimed(result)) => {
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_control_claim_result(result);
+                            view.set_loading(false);
+                            cx.notify();
+                        });
+                    }
+                    Ok(PlatformActionResult::ControlReleased(session)) => {
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_control_released(&session);
+                            view.set_loading(false);
+                            cx.notify();
+                        });
+                    }
+                    Ok(PlatformActionResult::Executed(result)) => {
+                        if let ActionResult::Receipt(receipt) = &result {
+                            if let Some(snapshot) = workspace.fleet_snapshot.as_mut() {
+                                snapshot.view.apply_receipt(receipt.clone());
+                                snapshot.resources = snapshot.view.resources().cloned().collect();
+                            }
+                        }
+                        workspace.fleet_view.update(cx, |view, cx| {
+                            view.set_action_result(result);
+                            cx.notify();
+                        });
+                    }
+                    Err(error) => workspace.fleet_view.update(cx, |view, cx| {
+                        view.set_operation_error(crate::i18n::api_error_message(&error));
                         cx.notify();
-                    });
+                    }),
                 }
-                Ok(PlatformActionResult::ControlClaimed(lease)) => {
-                    workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_control_lease(lease);
-                        view.set_loading(false);
-                        cx.notify();
-                    });
-                }
-                Ok(PlatformActionResult::ControlReleased(session)) => {
-                    workspace.fleet_view.update(cx, |view, cx| {
-                        view.set_control_released(&session);
-                        view.set_loading(false);
-                        cx.notify();
-                    });
-                }
-                Err(error) => workspace.fleet_view.update(cx, |view, cx| {
-                    view.set_error(crate::i18n::api_error_message(&error));
-                    cx.notify();
-                }),
             });
         })
         .detach();
