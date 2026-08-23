@@ -30,10 +30,10 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#fffdf9">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <title>ShellDeck — Une demande, le bon relais</title>
-  <meta name="description" content="ShellDeck réunit les demandes Utilisateur, le suivi Support, l’Assistant IA et les outils Dev dans une application desktop native.">
-  <meta property="og:title" content="ShellDeck — Une demande, le bon relais">
-  <meta property="og:description" content="De la demande Utilisateur à l’intervention Dev, avec le Support et l’Assistant IA dans le même fil.">
+  <title>ShellDeck — Le poste de contrôle de vos agents IA</title>
+  <meta name="description" content="Lancez Monique et vos agents, suivez chaque session, approuvez les actions sensibles et intervenez sans quitter ShellDeck.">
+  <meta property="og:title" content="ShellDeck — Le poste de contrôle de vos agents IA">
+  <meta property="og:description" content="Un cockpit natif pour déléguer, superviser et reprendre la main, du ticket jusqu’au terminal.">
   <meta property="og:image" content="https://shelldeck.1clic.pro/campaign/roles-v1/hero-desktop-poster.webp">
   <meta property="og:type" content="website">
   <style>
@@ -75,7 +75,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     .button-white{background:#fff;color:var(--blue-dark)}
     .text-link{display:inline-flex;align-items:center;gap:7px;padding:8px 0;border-bottom:1px solid #aab4c1;font-size:14px;font-weight:600}
     .availability{margin:19px 0 0;color:#89919c;font-size:12px}
-    .hero-stage{width:min(1180px,calc(100% - 48px));aspect-ratio:16/10;position:relative;margin:42px auto 72px;overflow:hidden;border:1px solid rgba(20,63,121,.12);border-radius:28px;background:#f7fbff url('/campaign/roles-v1/watercolor.webp') center/cover;box-shadow:0 28px 65px rgba(24,65,112,.13)}
+    .hero-stage{width:min(1180px,calc(100% - 48px));aspect-ratio:16/10;position:relative;margin:42px auto 72px;overflow:hidden;border:1px solid rgba(20,63,121,.12);border-radius:28px;background:#f7fbff url('/campaign/roles-v1/hero-desktop-poster.webp') center/cover;box-shadow:0 28px 65px rgba(24,65,112,.13)}
     .hero-motion{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
     .mode-strip{border-block:1px solid var(--line);background:#fff}
     .modes{min-height:136px;display:flex;align-items:center;justify-content:space-between;gap:44px}
@@ -83,6 +83,18 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     .mode-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));flex:1;gap:28px}
     .mode-list span{display:flex;flex-direction:column;gap:5px;color:#77808c;font-size:12px}
     .mode-list b{color:var(--ink);font-size:14px}
+    .ecosystem{padding-block:120px;background:#111318;color:#fff}
+    .ecosystem-head{display:grid;grid-template-columns:1fr 1fr;gap:90px;align-items:end;margin-bottom:58px}
+    .ecosystem-head .overline{justify-content:flex-start;color:#9bbdff;margin-bottom:18px}.ecosystem-head .overline::before{background:var(--yellow)}
+    .ecosystem-head h2{margin:0;font-size:54px;line-height:1.04;letter-spacing:-.06em}.ecosystem-head>p{margin:0;color:#b7c0cc;line-height:1.7}
+    .layer-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+    .layer{position:relative;min-height:250px;padding:28px;border:1px solid #303743;border-radius:22px;background:#191c22;overflow:hidden}
+    .layer::after{content:"";position:absolute;width:150px;height:150px;right:-60px;bottom:-70px;border-radius:50%;background:var(--layer-glow);filter:blur(45px);opacity:.34}
+    .layer-label{display:inline-flex;padding:6px 9px;border-radius:99px;background:#262b34;color:#bfc7d2;font-size:10px;font-weight:700;letter-spacing:.11em;text-transform:uppercase}
+    .layer h3{margin:54px 0 12px;color:#fff;font-size:26px;letter-spacing:-.04em}.layer p{margin:0;color:#aab3bf;font-size:14px;line-height:1.65}
+    .layer-monique{--layer-glow:#8b5cf6}.layer-runtime{--layer-glow:#16c7ac}.layer-shelldeck{--layer-glow:#146bff}
+    .proof-strip{display:grid;grid-template-columns:repeat(4,1fr);margin-top:22px;border:1px solid #303743;border-radius:18px;overflow:hidden;background:#15181d}
+    .proof-strip span{display:grid;gap:4px;padding:20px;border-right:1px solid #303743;color:#8f99a7;font-size:11px}.proof-strip span:last-child{border-right:0}.proof-strip b{color:#f2f5f9;font-size:13px}
     section{scroll-margin-top:72px}
     .story{padding-block:130px 150px}
     .section-head{display:grid;grid-template-columns:1fr 1fr;column-gap:100px;align-items:end;margin-bottom:80px}
@@ -145,8 +157,9 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     footer{padding-block:38px;background:#111318;color:#fff}.footer-row{display:flex;align-items:center;justify-content:space-between;gap:30px}.footer-links{display:flex;gap:25px;color:#aeb7c4;font-size:12px}.credit{color:#aeb7c4;font-size:11px}.credit:hover{color:#fff}
     @media(max-width:900px){
       .shell{width:min(100% - 28px,720px)}.nav{grid-template-columns:1fr auto}.nav-links{display:none}
-      .hero{padding-top:54px}.hero-intro{font-size:16px}.hero-stage{width:calc(100% - 28px);aspect-ratio:4/5;margin:36px auto 48px;border-radius:22px}
+      .hero{padding-top:54px}.hero-intro{font-size:16px}.hero-stage{width:calc(100% - 28px);aspect-ratio:4/5;margin:36px auto 48px;border-radius:22px;background-image:url('/campaign/roles-v1/hero-mobile-poster.webp')}
       .modes{padding:28px 0;align-items:flex-start;flex-direction:column}.modes>p{width:auto}.mode-list{width:100%;grid-template-columns:1fr 1fr;gap:18px}
+      .ecosystem{padding-block:85px}.ecosystem-head{display:block}.ecosystem-head h2{margin-bottom:24px;font-size:42px}.layer-grid{grid-template-columns:1fr}.layer{min-height:220px}.proof-strip{grid-template-columns:1fr 1fr}.proof-strip span:nth-child(2){border-right:0}.proof-strip span:nth-child(-n+2){border-bottom:1px solid #303743}
       .story{padding-block:90px}.section-head{display:block}.section-head h2{margin-bottom:24px;font-size:42px}.scene{height:auto;flex-direction:column;margin-bottom:80px}.scene-copy{width:100%;padding:0 12px 24px}.scene-user .scene-copy,.scene-support .scene-copy{margin:0}.scene-window{position:relative!important;width:100%!important;left:auto!important;right:auto!important}.scene-number,.journey-line{display:none}
       .ai-section{padding-block:85px}.ai-layout{display:flex;flex-direction:column;align-items:flex-start}.ai-copy{padding:0}.ai-copy h2{font-size:43px}.ai-window{width:920px;max-width:calc(100vw - 40px);margin-top:50px}
       .dev-section{padding-block:90px 70px}.dev-heading{display:block;margin-bottom:38px}.dev-heading h2{margin-bottom:24px;font-size:43px}.tool-grid{grid-template-columns:1fr}
@@ -156,7 +169,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     @media(max-width:500px){
       .site-header,.nav{height:64px}.brand{font-size:17px}.brand-mark{width:28px;height:28px}.nav-cta{padding:10px 14px}
       .hero{padding-top:46px}h1{font-size:50px}.hero-intro{font-size:15px}.hero-actions{flex-direction:column;gap:10px}.button-primary{width:100%}.mode-list{grid-template-columns:1fr}
-      .section-head h2,.dev-heading h2,.download-head h2{font-size:38px}.scene h3{font-size:30px}.ai-copy h2,.inklura-copy h2{font-size:38px}.ai-window{width:620px;max-width:none}.ai-section{overflow:hidden}.inklura-panel{padding:28px 20px}.inklura-actions .button{width:100%}
+      .section-head h2,.dev-heading h2,.download-head h2,.ecosystem-head h2{font-size:38px}.scene h3{font-size:30px}.ai-copy h2,.inklura-copy h2{font-size:38px}.ai-window{width:620px;max-width:none}.ai-section{overflow:hidden}.inklura-panel{padding:28px 20px}.inklura-actions .button{width:100%}
       .install-box{grid-template-columns:auto 1fr}.install-box code{font-size:10px}.install-box .copy{grid-column:2;justify-self:end}.footer-links{flex-wrap:wrap}
     }
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.button{transition:none}.hero-stage{background-image:url('/campaign/roles-v1/hero-desktop-poster.webp')}.hero-motion{display:none!important}}
@@ -171,7 +184,7 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
         <span class="wordmark">Shell<b>Deck</b></span>
       </a>
       <div class="nav-links">
-        <a href="#parcours">Le parcours</a><a href="#assistant">Assistant IA</a><a href="#dev">Outils Dev</a><a href="#inklura">Inklura</a>
+        <a href="#plateforme">La plateforme</a><a href="#parcours">Cas d’usage</a><a href="#assistant">Monique</a><a href="#dev">Outils Dev</a>
       </div>
       <a class="nav-cta" href="#telecharger">Télécharger <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 21h14"/></svg></a>
     </nav>
@@ -179,27 +192,38 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
   <main id="top">
     <section class="hero">
       <div class="shell hero-copy">
-        <p class="overline">Le bureau Inklura, pour chaque rôle</p>
-        <h1>Une demande.<br><em>Le bon relais.</em></h1>
-        <p class="hero-intro">L’utilisateur formule son besoin. Le Support le suit et lui répond. L’IA aide chacun à préparer la suite, puis les outils Dev prennent le relais quand il faut intervenir.</p>
+        <p class="overline">ShellDeck + Monique + Automonique</p>
+        <h1>Vos agents travaillent.<br><em>Vous gardez la main.</em></h1>
+        <p class="hero-intro">Lancez Monique ou un agent local ou SSH, suivez chaque session, approuvez les actions sensibles et passez du ticket au terminal sans changer d’outil.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#telecharger">Télécharger ShellDeck <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 21h14"/></svg></a>
-          <a class="text-link" href="#parcours">Voir le parcours <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="#plateforme">Découvrir la plateforme <span aria-hidden="true">→</span></a>
         </div>
         <p class="availability">Version ${v} · Gratuit et open source · Linux, macOS et Windows</p>
       </div>
-      <div class="hero-stage" aria-label="Démonstration animée : demande Utilisateur, suivi Support, Assistant IA et outils Dev">
+      <div class="hero-stage" aria-label="Démonstration animée : demande, suivi, travail de Monique et intervention technique">
         <video class="hero-motion" autoplay muted loop playsinline preload="metadata" disablepictureinpicture poster="/campaign/roles-v1/hero-desktop-poster.webp" data-desktop-webm="/campaign/roles-v1/hero-desktop.webm" data-desktop-mp4="/campaign/roles-v1/hero-desktop.mp4" data-mobile-webm="/campaign/roles-v1/hero-mobile.webm" data-mobile-mp4="/campaign/roles-v1/hero-mobile.mp4" aria-hidden="true"></video>
       </div>
     </section>
     <section class="mode-strip" aria-label="Le parcours ShellDeck">
       <div class="shell modes">
-        <p>Un même fil, du besoin jusqu’à l’intervention.</p>
-        <div class="mode-list"><span><b>01 · Utilisateur</b>créer et suivre sa demande</span><span><b>02 · Support</b>gérer demandes et tickets</span><span><b>03 · Assistant IA</b>préparer, résumer, rédiger</span><span><b>04 · Dev</b>diagnostiquer et intervenir</span></div>
+        <p>Un même cockpit, du besoin jusqu’au résultat.</p>
+        <div class="mode-list"><span><b>01 · Demander</b>depuis un ticket ou l’application</span><span><b>02 · Déléguer</b>à Monique ou à l’agent choisi</span><span><b>03 · Superviser</b>sessions, événements et reçus</span><span><b>04 · Intervenir</b>approuver, reprendre ou ouvrir le terminal</span></div>
+      </div>
+    </section>
+    <section class="ecosystem" id="plateforme">
+      <div class="shell">
+        <div class="ecosystem-head"><div><p class="overline">Une plateforme, trois responsabilités</p><h2>L’IA agit.<br>L’humain reste aux commandes.</h2></div><p>Chaque couche a un rôle clair. Monique réalise le travail, Automonique exécute et trace, ShellDeck rend les sessions visibles et contrôlables depuis le bureau.</p></div>
+        <div class="layer-grid">
+          <article class="layer layer-monique"><span class="layer-label">La collègue IA</span><h3>Monique fait avancer le travail.</h3><p>Elle comprend la demande, utilise le contexte disponible, exécute les étapes et revient avec un résultat à relire.</p></article>
+          <article class="layer layer-runtime"><span class="layer-label">Le moteur souverain</span><h3>Automonique exécute et garde la trace.</h3><p>Sessions durables, modèles interchangeables, budgets, événements ordonnés et reçus restent sous le contrôle de votre infrastructure.</p></article>
+          <article class="layer layer-shelldeck"><span class="layer-label">Le cockpit natif</span><h3>ShellDeck montre tout au bon moment.</h3><p>Vous observez plusieurs sessions, contrôlez une action à la fois et reprenez la main dans les outils techniques quand il le faut.</p></article>
+        </div>
+        <div class="proof-strip"><span><b>Contexte partagé</b>tickets, sites et outils</span><span><b>Exécution flexible</b>locale, distante ou hébergée</span><span><b>Résultats traçables</b>événements et reçus</span><span><b>Contrôle humain</b>approbations explicites</span></div>
       </div>
     </section>
     <section class="story shell" id="parcours">
-      <div class="section-head"><p class="overline">Le parcours principal</p><h2>Du besoin exprimé<br>à la réponse suivie.</h2><p>ShellDeck donne à chacun la bonne vue, sans casser le fil : une demande simple côté Utilisateur, une file de travail complète côté Support.</p></div>
+      <div class="section-head"><p class="overline">Le contexte reste attaché au travail</p><h2>Du ticket au résultat,<br>sans perdre le fil.</h2><p>ShellDeck donne à chaque rôle la bonne vue. La demande, le site, les échanges et l’intervention technique restent reliés au même travail.</p></div>
       <div class="journey">
         <svg class="journey-line" viewBox="0 0 1200 620" preserveAspectRatio="none" aria-hidden="true"><path d="M70 170 C310 20 430 310 610 300 S880 190 1120 450"/></svg>
         <article class="scene scene-user"><div class="scene-number">01</div><div class="scene-copy"><p class="scene-label">Mode Utilisateur</p><h3>Demander sans chercher le bon canal.</h3><p>Le besoin, le site concerné et les pièces utiles sont réunis dans un formulaire clair. L’IA peut aider à préparer le brouillon.</p></div><figure class="app-window scene-window"><img src="/campaign/roles-v1/user-request.webp" alt="Nouvelle demande en mode Utilisateur avec l’option Préparer avec l’IA" width="1800" height="1000" loading="lazy"></figure></article>
@@ -208,10 +232,10 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
     </section>
     <section class="ai-section" id="assistant">
       <div class="ai-orbit" aria-hidden="true"><span class="bubble bubble-one">Résumer la demande</span><span class="bubble bubble-two">Préparer une réponse</span><svg viewBox="0 0 760 520"><path d="M70 400 C170 230 260 440 390 280 S610 210 700 90"/></svg></div>
-      <div class="shell ai-layout"><div class="ai-copy"><p class="overline">Assistant IA intégré</p><h2>Une aide qui connaît l’écran.</h2><p>Côté Utilisateur, elle aide à formuler une demande. Côté Support, elle résume, trie et prépare une réponse. Chaque action reste relue et confirmée avant envoi.</p><a class="button button-white" href="#dev">Voir les outils Dev <span aria-hidden="true">→</span></a></div><figure class="app-window ai-window"><img src="/campaign/roles-v1/ai-support.webp" alt="Assistant IA ouvert avec le contexte d’un ticket Support" width="1800" height="1000" loading="lazy"></figure></div>
+      <div class="shell ai-layout"><div class="ai-copy"><p class="overline">Monique, dans le contexte</p><h2>Une collègue qui agit, pas un chatbot de plus.</h2><p>Monique peut préparer, résumer ou exécuter depuis la surface où se trouve déjà le travail. Les actions sensibles restent relues et confirmées avant leur application.</p><a class="button button-white" href="https://www.automonique.fr" target="_blank" rel="noopener">Découvrir Automonique <span aria-hidden="true">→</span></a></div><figure class="app-window ai-window"><img src="/campaign/roles-v1/ai-support.webp" alt="Monique ouverte avec le contexte d’un ticket Support" width="1800" height="1000" loading="lazy"></figure></div>
     </section>
     <section class="dev-section" id="dev">
-      <div class="shell"><div class="dev-heading"><div><p class="overline">Mode Dev</p><h2>Quand il faut agir,<br>les outils sont déjà là.</h2></div><p>Connexions SSH, terminaux, scripts et redirections de ports restent accessibles dans une surface dédiée aux interventions techniques.</p></div>
+      <div class="shell"><div class="dev-heading"><div><p class="overline">Reprendre la main</p><h2>Quand il faut intervenir,<br>les outils sont déjà là.</h2></div><p>Agents locaux ou SSH, terminaux, scripts et redirections de ports restent accessibles dans la même application, avec le contexte de la session.</p></div>
         <div class="tool-grid">
           <article><figure class="app-window"><img src="/campaign/roles-v1/dev-terminal.webp" alt="Terminal ShellDeck en mode Dev" width="1800" height="1000" loading="lazy"></figure><div><span class="tool-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m4 17 6-5-6-5M12 19h8"/></svg></span><span><h3>Terminal</h3><p>Ouvrir une session locale ou distante.</p></span></div></article>
           <article><figure class="app-window"><img src="/campaign/roles-v1/dev-scripts.webp" alt="Éditeur de scripts ShellDeck en mode Dev" width="1800" height="1000" loading="lazy"></figure><div><span class="tool-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8l-5-5h-3"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg></span><span><h3>Scripts</h3><p>Préparer et suivre les routines utiles.</p></span></div></article>
@@ -220,22 +244,22 @@ export function renderMarketingLandingPage(dl: LandingDownloadInfo): Response {
       </div>
     </section>
     <section class="inklura-section" id="inklura">
-      <div class="shell inklura-panel"><div class="inklura-copy"><p class="overline">Relié à Inklura</p><h2>Le même fil, jusqu’à la résolution.</h2><p>Les sites et les demandes restent reliés à Inklura Manage. L’utilisateur suit son besoin, le Support garde le contexte et l’équipe technique intervient avec les bons accès.</p><div class="inklura-actions"><a class="button button-primary" href="#telecharger">Utiliser ShellDeck</a><a class="button button-secondary" href="https://manage.inklura.fr" target="_blank" rel="noopener">Ouvrir Inklura Manage <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 4h5v5M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg></a></div></div>
+      <div class="shell inklura-panel"><div class="inklura-copy"><p class="overline">Relié à votre environnement</p><h2>Le même fil, jusqu’à la résolution.</h2><p>Sites, demandes et accès restent reliés à Inklura Manage. Automonique apporte l’exécution souveraine, Monique réalise le travail et ShellDeck garde la supervision au même endroit.</p><div class="inklura-actions"><a class="button button-primary" href="#telecharger">Utiliser ShellDeck</a><a class="button button-secondary" href="https://www.automonique.fr" target="_blank" rel="noopener">Voir Automonique <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 4h5v5M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg></a></div></div>
         <div class="flow-card"><div class="flow-step"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 13c0 5-3.5 7-8 7a9 9 0 0 1-4-.9L3 21l1.8-4A8 8 0 1 1 20 13Z"/></svg></span><span><b>Utilisateur</b><span>Crée et suit sa demande</span></span><span class="flow-arrow">→</span></div><div class="flow-step"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4h16v16H4zM4 9h16M9 9v11"/></svg></span><span><b>Support</b><span>Qualifie, répond et coordonne</span></span><span class="flow-arrow">→</span></div><div class="flow-step"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg></span><span><b>Dev</b><span>Diagnostique et intervient</span></span><span class="flow-arrow">✓</span></div></div>
       </div>
     </section>
     <section class="download-section" id="telecharger">
       <div class="shell"><div class="download-head"><div><p class="overline">Prêt à l’installer ?</p><h2>ShellDeck vient<br>sur votre bureau.</h2></div><div class="version">version ${v}</div></div>
         <div class="download-grid">
-          <article class="download-card" data-platform="linux"><div class="platform"><div class="platform-name"><img class="os-icon" src="https://cdn.simpleicons.org/linux/FCC624?viewbox=auto&amp;size=27" width="27" height="27" alt="" referrerpolicy="no-referrer"><strong>Linux</strong></div><span class="platform-badge">Votre système</span></div><div class="download-meta">AppImage · x86_64${linuxMeta}</div><a class="button button-primary" href="${linuxUrl}">Télécharger pour Linux</a></article>
-          <article class="download-card" data-platform="macos"><div class="platform"><div class="platform-name"><img class="os-icon" src="https://cdn.simpleicons.org/apple/111318?viewbox=auto&amp;size=27" width="27" height="27" alt="" referrerpolicy="no-referrer"><strong>macOS</strong></div><span class="platform-badge">Votre système</span></div><div class="download-meta">DMG · Apple Silicon${macosMeta}</div><a class="button button-primary" href="${macosUrl}">Télécharger pour macOS</a></article>
+          <article class="download-card" data-platform="linux"><div class="platform"><div class="platform-name"><svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="#111318" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></svg><strong>Linux</strong></div><span class="platform-badge">Votre système</span></div><div class="download-meta">AppImage · x86_64${linuxMeta}</div><a class="button button-primary" href="${linuxUrl}">Télécharger pour Linux</a></article>
+          <article class="download-card" data-platform="macos"><div class="platform"><div class="platform-name"><svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="#111318" stroke-width="2" aria-hidden="true"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M2 20h20M9 20h6"/></svg><strong>macOS</strong></div><span class="platform-badge">Votre système</span></div><div class="download-meta">DMG · Apple Silicon${macosMeta}</div><a class="button button-primary" href="${macosUrl}">Télécharger pour macOS</a></article>
           <article class="download-card" data-platform="windows"><div class="platform"><div class="platform-name"><svg class="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="#146bff" d="M2 4.45 10.15 3.3v7.83H2V4.45Zm9.25-1.31L22 1.62v9.51H11.25V3.14ZM2 12.25h8.15v7.84L2 18.94v-6.69Zm9.25 0H22v9.51l-10.75-1.52v-7.99Z"/></svg><strong>Windows</strong></div><span class="platform-badge">Votre système</span></div><div class="download-meta">Installeur · x86_64${windowsMeta}</div><a class="button button-primary" href="${windowsUrl}">Télécharger pour Windows</a></article>
         </div>
         <div class="install-box"><span>$</span><code>curl -fsSL https://shelldeck.1clic.pro/install.sh | bash</code><button class="copy" type="button" aria-label="Copier la commande d’installation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg></button></div>
       </div>
     </section>
   </main>
-  <footer><div class="shell footer-row"><a class="brand" href="#top"><img class="brand-mark" src="/favicon.svg" width="28" height="28" alt=""><span class="wordmark">Shell<b>Deck</b></span></a><div class="footer-links"><a href="${GITHUB}" target="_blank" rel="noopener">GitHub</a><a href="${GITHUB_RELEASES}" target="_blank" rel="noopener">Versions</a><span>Licence MIT</span></div><a class="credit" href="https://webdesign29.net" target="_blank" rel="noopener">Conçu par Webdesign29</a></div></footer>
+  <footer><div class="shell footer-row"><a class="brand" href="#top"><img class="brand-mark" src="/favicon.svg" width="28" height="28" alt=""><span class="wordmark">Shell<b>Deck</b></span></a><div class="footer-links"><a href="https://www.automonique.fr" target="_blank" rel="noopener">Automonique</a><a href="${GITHUB}" target="_blank" rel="noopener">GitHub</a><a href="${GITHUB_RELEASES}" target="_blank" rel="noopener">Versions</a><span>Licence MIT</span></div><a class="credit" href="https://webdesign29.net" target="_blank" rel="noopener">Conçu par Webdesign29</a></div></footer>
   <script>
     (function(){
       var platform=navigator.platform||'';var ua=navigator.userAgent||'';var os=/Linux/.test(platform)?'linux':/Mac/.test(platform)?'macos':/Win/.test(platform)?'windows':'';
