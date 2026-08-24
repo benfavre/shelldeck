@@ -1426,6 +1426,16 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
+### SDUC-470 — Operational vocabulary stays localized and consistent
+
+Server-owned ticket statuses, request statuses, and priorities never appear as
+raw protocol tokens when a newer value reaches an older ShellDeck client; an
+unknown value uses a localized generic label. The Dev status bar localizes and
+inflects its live connection, port-forward, and running-script counts, and its
+labels describe activity rather than stored inventory. A navigation
+destination keeps the same localized name in the activity rail, the Go menu,
+and the destination title.
+
 ---
 
 ## 19. Deep links (`shelldeck://`)
@@ -2408,6 +2418,10 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
 
 - **2026-08-24** — Added SDUC-480 and SDTEST-1693/1694 for the stable ACP v1
   client host and fail-closed permission boundary.
+- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
   namespaced Manage federation endpoints.
 - **2026-08-23** — Added SDUC-477..479 and SDTEST-1687..1691 for
@@ -2424,7 +2438,6 @@ authority. Automonique is the built-in launch profile (`automonique acp`).
   console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
   access confirmation, resumable same-context turns, streaming output, and
   cancellation.
-
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history

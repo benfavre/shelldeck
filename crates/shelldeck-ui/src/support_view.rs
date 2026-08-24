@@ -1725,7 +1725,7 @@ pub(crate) fn status_label(s: &str) -> String {
         "open" => t!("support.status.open").to_string(),
         "pending" => t!("support.status.pending").to_string(),
         "closed" => t!("support.status.closed").to_string(),
-        other => other.to_string(),
+        _ => t!("support.status.unknown").to_string(),
     }
 }
 
@@ -1735,7 +1735,7 @@ pub(crate) fn priority_label(p: &str) -> String {
         "normal" => t!("support.priority.normal").to_string(),
         "high" => t!("support.priority.high").to_string(),
         "urgent" => t!("support.priority.urgent").to_string(),
-        other => other.to_string(),
+        _ => t!("support.priority.unknown").to_string(),
     }
 }
 
@@ -1779,7 +1779,7 @@ pub(crate) fn issue_status_label(s: &str) -> String {
         "blocked" => t!("support.issue_status.blocked").to_string(),
         "done" => t!("support.issue_status.done").to_string(),
         "closed" => t!("support.issue_status.closed").to_string(),
-        other => other.to_string(),
+        _ => t!("support.issue_status.unknown").to_string(),
     }
 }
 

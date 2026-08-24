@@ -203,6 +203,7 @@ parallel `cargo test`.
 | SDTEST-1307 | *to write* — `UiLanguage` round-trips through `shelldeck.toml` as snake_case | SDUC-400 | **Red / P1** | Lives in `shelldeck-core::config::app_config` — add there, not here. Cross-linked. |
 | SDTEST-1308 | *to write* — Config without `ui_language` still parses (defaults to `System`) | SDUC-400 | **Red / P1** | Same location; back-compat with pre-i18n configs. |
 | SDTEST-1309 | *to write* — Unknown OS locale resolves to `"fr"`, not `"en"` | SDUC-401 | **Red / P1** | Product default per AGENTS.md; regression sensor if someone flips the fallback. Needs an injectable locale-reader trait to test deterministically. |
+| SDTEST-1671 | `i18n.rs::assert_operational_vocabulary_is_localized` (called by `locale_fr_and_en`) | SDUC-470 | Green | In both locales, unknown server status/priority tokens become a translated generic label; status-bar counters distinguish one/many and describe live activity; Server Sync and Recent Activity have identical names in the rail, Go menu, and view title. Folded into the one locale-mutating test to avoid process-global races. |
 
 ---
 
