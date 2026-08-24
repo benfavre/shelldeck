@@ -8,7 +8,7 @@ tarball. If GitHub ever comes back, prefer that per `.agents/patches.md`
 step 3.)*
 **Last synced**: 2026-07-07 (v0.3.0 → v0.5.1)
 
-Total marker occurrences in code: **128**
+Total marker occurrences in code: **130**
 (`rg "ShellDeck patch:" src/`; SDPATCH-103 is Cargo.toml-only and outside
 the src-scoped marker convention.)
 
@@ -478,6 +478,23 @@ the src-scoped marker convention.)
 - **Upstream status**: not filed yet — an upstream policy may also want a
   per-animation opt-out for essential motion.
 
+### SDPATCH-116 — Typographic apostrophes stay inside French words
+
+- **Files / symbols**:
+  - `src/text_system/line_wrapper.rs` — `LineWrapper::is_word_char`,
+    `tests::test_is_word_char`
+- **Markers** (2 markers):
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-116 — a French typographic apostrophe joins`
+  - `src/text_system/line_wrapper.rs` — `// ShellDeck patch: SDPATCH-116 — keep frequent French elisions on the`
+- **Why**: The wrapper treated ASCII `'` as part of a word but classified the
+  French typographic apostrophe `U+2019` as punctuation. It therefore selected
+  the apostrophe itself as a wrap boundary and rendered lines beginning with
+  `’échange` or `’importe`. Treating both apostrophe forms alike keeps common
+  elisions (`l’`, `d’`, `qu’`, `n’`) indivisible without changing CJK or general
+  punctuation wrapping.
+- **Upstream status**: not filed yet; suitable for a focused text-wrapping bug
+  report and PR.
+
 ## Preserved files (do not overwrite on sync)
 
 - `PATCHES.md` (this file)
@@ -517,6 +534,10 @@ the src-scoped marker convention.)
 
 ## Sync log
 
+- **2026-08-24** — Added SDPATCH-116 with 2 markers, bringing the source
+  marker total from 128 to 130. SDPATCH-115 was already assigned to the
+  reduced-motion animation patch, so the French elision patch received the
+  next unused sticky ID during integration.
 - **2026-08-23** — Added SDPATCH-115. The header's accumulated count had
   drifted from the source (114 documented versus 127 actual before this patch),
   so it was reconciled to the auditable source count; the new marker brings the
