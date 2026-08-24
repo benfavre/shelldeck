@@ -954,10 +954,12 @@ impl Render for AiWorkflowView {
                         "ai-workflow-thinking",
                         34.0,
                         MonolithMotion::Thinking,
+                        cx,
                     ))
                     .child(animated_loading_text(
                         "ai-workflow-thinking-text",
                         t!("ai.assistant.generating").to_string(),
+                        cx,
                     )),
             );
         } else {

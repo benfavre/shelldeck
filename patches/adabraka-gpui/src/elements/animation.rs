@@ -196,10 +196,22 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
             let cancelled = self.cancel_handle.as_ref().map_or(false, |h| h.get());
 
-            let animation_ix = state.animation_ix;
+            // ShellDeck patch: reduced-motion platforms snap element animations and schedule no follow-up frames.
+            let reduced_motion = cx.prefers_reduced_motion();
+            let animation_ix = if reduced_motion && self.animations.iter().all(|item| item.oneshot) {
+                self.animations.len() - 1
+            } else {
+                state.animation_ix
+            };
 
             let (delta, done) = if cancelled {
                 (1.0_f32, true)
+            } else if reduced_motion {
+                if self.animations[animation_ix].oneshot {
+                    (1.0_f32, true)
+                } else {
+                    (0.0_f32, true)
+                }
             } else {
                 let mut delta = state.start.elapsed().as_secs_f32()
                     / self.animations[animation_ix].duration.as_secs_f32();

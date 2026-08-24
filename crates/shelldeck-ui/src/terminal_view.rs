@@ -4682,6 +4682,7 @@ impl TerminalView {
                         "terminal-empty-typing",
                         96.0,
                         MonolithMotion::TerminalTyping,
+                        cx,
                     ))
                     .child(
                         div()

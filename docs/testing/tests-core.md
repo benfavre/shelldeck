@@ -475,6 +475,15 @@ Existing: **0 tests**.
 
 ---
 
+## 25. `acp.rs`
+
+| ID | Location | SDUC | Status | Notes |
+|---|---|---|---|---|
+| SDTEST-1693 | `acp.rs::permission_broker_output_must_match_an_offered_option` | SDUC-480 | Green | An injected broker cannot fabricate an allow/deny option absent from the exact agent request. |
+| SDTEST-1694 | `acp.rs::request_validation_rejects_relative_workspace_and_empty_prompt` | SDUC-480 | Green | Invalid workspace scope and empty turns fail before an ACP child is spawned. |
+
+---
+
 ## Retired tests
 
 *(none yet)*

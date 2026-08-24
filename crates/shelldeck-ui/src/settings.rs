@@ -1331,7 +1331,10 @@ impl SettingsView {
                     t!("settings.ai.status.disabled").to_string(),
                     ShellDeckColors::text_muted(),
                 ),
-                AiBackend::ClaudeCli | AiBackend::CodexCli | AiBackend::AiderCli => (
+                AiBackend::ClaudeCli
+                | AiBackend::CodexCli
+                | AiBackend::AiderCli
+                | AiBackend::AutomoniqueAcp => (
                     local_backend_status(backend.cli_command().expect("CLI backend"), !cli_missing),
                     if cli_missing {
                         ShellDeckColors::error()
@@ -3044,6 +3047,7 @@ fn build_ai_backend_select(
         (AiBackend::ClaudeCli, "Claude Code CLI".to_string()),
         (AiBackend::CodexCli, "Codex CLI".to_string()),
         (AiBackend::AiderCli, "Aider CLI".to_string()),
+        (AiBackend::AutomoniqueAcp, "Automonique ACP".to_string()),
         (AiBackend::OpenAi, "OpenAI API".to_string()),
         (AiBackend::Anthropic, "Anthropic API".to_string()),
     ];
@@ -3057,6 +3061,7 @@ fn build_ai_backend_select(
                     IconSource::from("icons/simple/openai.svg")
                 }
                 AiBackend::AiderCli => IconSource::Named("terminal".into()),
+                AiBackend::AutomoniqueAcp => IconSource::Named("bot".into()),
                 AiBackend::Anthropic => IconSource::from("icons/simple/anthropic.svg"),
             };
             SelectOption::new(*backend, label.clone()).with_icon(icon)

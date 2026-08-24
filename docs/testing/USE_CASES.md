@@ -2333,10 +2333,60 @@ once the network returns.
 
 ---
 
+## 30. Reading continuity and motion
+
+### SDUC-477 — Streaming output follows the reader, not just the producer
+
+The contextual Assistant and the coding-agent console keep new streamed output
+visible while the reader is already at the bottom. If the reader scrolls up to
+inspect an earlier answer or log line, incoming output preserves that reading
+position instead of forcing the viewport back to the latest item. Returning to
+the bottom resumes following on the next update. Sending a new turn, starting a
+new agent run, or explicitly selecting a conversation is navigation to current
+work and deliberately pins the view to the latest output.
+
+### SDUC-478 — Terminal selections remain attached to retained text
+
+A terminal selection is anchored to its row in retained history, so new output
+and scrollback navigation cannot silently move the highlight or copied text to
+different glyphs that later occupy the same screen coordinate. The highlight
+reappears when its row is scrolled back into view. If the configured scrollback
+limit evicts either selection endpoint, the selection clears; a column-width
+reflow or an alternate-screen boundary also clears it because the original row,
+column, or buffer identity no longer exists.
+
+### SDUC-479 — Application motion follows one accessible, bounded policy
+
+The operating system's reduced-motion preference applies to every GPUI element
+animation: one-shot transitions render their final state, repeating transitions
+render a stable initial state, and neither schedules more animation frames.
+ShellDeck's animated Monolith assets switch to a static badge under the same
+preference. With motion enabled, recurring lightweight indicators share one
+approximately 30 Hz clock instead of each repainting at the display refresh
+rate; the clock stops once no rendered view renews it.
+
+---
+
+### SDUC-480 — ShellDeck hosts stable ACP agents without becoming an executor
+
+ShellDeck can launch an explicitly configured ACP v1 agent without a shell,
+negotiate the official protocol, create or reload its durable session, submit
+baseline and rich prompt content, and preserve every ordered session update.
+Permission requests reach an injected user-decision broker and only an option
+the agent actually offered can be returned. With no broker the request is
+cancelled. ShellDeck advertises no filesystem or terminal service, so ACP
+cannot bypass its typed confirmation paths or Automonique's execution
+authority. Automonique is the built-in launch profile (`automonique acp`).
+
 ## Change log
 
+- **2026-08-24** — Added SDUC-480 and SDTEST-1693/1694 for the stable ACP v1
+  client host and fail-closed permission boundary.
 - **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
   namespaced Manage federation endpoints.
+- **2026-08-23** — Added SDUC-477..479 and SDTEST-1687..1691 for
+  reader-preserving stream follow, history-anchored terminal selection, and a
+  shared reduced-motion / bounded-cadence animation policy.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,

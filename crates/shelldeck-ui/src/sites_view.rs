@@ -1586,6 +1586,7 @@ impl SitesView {
                 "sites-empty-scan",
                 72.0,
                 MonolithMotion::SiteScan,
+                cx,
             ))
             .child(
                 div()
