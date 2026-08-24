@@ -1769,6 +1769,7 @@ viewer links are routed to the originating email, livechat, Manage, or SMS chann
 Issue uploads never appear in the uploader's personal Share gallery.
 The shared image lightbox preserves the floating window's outer radius and
 becomes edge-to-edge with square corners only while the window is maximized.
+The full-window capture annotator follows the same corner ownership contract.
 After publication, request owners and internal staff can permanently delete an
 image from the native gallery after a destructive confirmation. Manage removes
 the thread reference and uses a short-lived, single-use scope capability so
@@ -2387,9 +2388,10 @@ once the network returns.
 - **2026-08-24** — Amended SDUC-475 with the agent console's responsive chrome
   contract: explicit scale-aware control rows and one centered prompt frame
   with one visible execution action.
-- **2026-08-24** — Amended SDUC-432 after the shared attachment lightbox was
-  found repainting all four floating-window corners: its opaque media backdrop
-  now owns the common radius and deliberately drops it when maximized.
+- **2026-08-24** — Amended SDUC-432 after both full-window attachment surfaces
+  were found repainting all four floating-window corners: the lightbox and
+  capture annotator now own the common radius and deliberately drop it when
+  maximized.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
