@@ -640,12 +640,12 @@ carries no marker of its own — see its entry).
   ordinary ordered/unordered markers stay unchanged.
 - **Upstream status**: not filed yet — generic Markdown fidelity improvement.
 
-### SDPATCH-032 — Assistant Sheet corner owners preserve the host curve
+### SDPATCH-032 — Sheet corner owners preserve the host curve
 
 - **Files / symbols**:
   - `src/overlays/sheet.rs` — `Sheet::render`
 - **Markers**:
-  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — the full-window Assistant`
+  - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — the full-window Sheet backdrop`
   - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — the Assistant shadow is an`
   - `src/overlays/sheet.rs` — `// ShellDeck patch: SDPATCH-032 — rounded Sheet chrome must`
 - **Why**: GPUI does not reliably propagate a rounded overflow clip through
@@ -655,6 +655,12 @@ carries no marker of its own — see its entry).
   rectangular paint layer outside that clip and left a translucent square at
   the bottom-right corner; the Assistant variant therefore omits it while
   ordinary Sheets retain the standard shadow.
+
+  **2026-08-21** — the backdrop radius was gated on the Assistant variant,
+  which was wrong: the backdrop covers the whole window whatever the variant,
+  so it always owns the four corners. A default `Sheet` (the Fleet job detail)
+  therefore squared off the floating window. The gate is now
+  `!window.is_maximized()` alone; `assistant` still drives the panel chrome.
 - **Upstream status**: not filed yet — the behavior is generic, but the
   Assistant variant and its outer-window geometry are ShellDeck-specific.
 

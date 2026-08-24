@@ -203,7 +203,11 @@ impl Render for Sheet {
         let sheet_size = self.get_sheet_size();
         let user_style = self.style.clone();
         let assistant = self.variant == SheetVariant::Assistant;
-        let round_assistant = assistant && !window.is_maximized();
+        // Le fond couvre toute la fenêtre quelle que soit la variante : il en
+        // possède donc les quatre coins dans tous les cas. Seul l'habillage du
+        // panneau dépend de `assistant`.
+        let round_backdrop = !window.is_maximized();
+        let round_assistant = assistant && round_backdrop;
 
         div()
             .track_focus(&self.focus_handle)
@@ -212,11 +216,13 @@ impl Render for Sheet {
             .inset_0()
             .flex()
             .bg(hsla(0.0, 0.0, 0.0, 0.5))
-            // ShellDeck patch: SDPATCH-032 — the full-window Assistant
-            // backdrop owns all four native window corners. Apply the radius
-            // directly here, exactly like Workspace::render_user_sheet; a
-            // rounded wrapper cannot reliably clip this absolute paint layer.
-            .when(round_assistant, |backdrop| {
+            // ShellDeck patch: SDPATCH-032 — the full-window Sheet backdrop
+            // owns all four native window corners, in every variant. Apply the
+            // radius directly here, exactly like Workspace::render_user_sheet;
+            // a rounded wrapper cannot reliably clip this absolute paint layer.
+            // Gating this on the Assistant variant left the default Sheet
+            // (Fleet job detail) squaring off the floating window.
+            .when(round_backdrop, |backdrop| {
                 backdrop.rounded(theme.tokens.radius_xl).overflow_hidden()
             })
             .when(self.close_on_backdrop_click, |this: Div| {

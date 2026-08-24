@@ -1,4 +1,5 @@
 use super::*;
+use crate::overlay::window_backdrop;
 use adabraka_ui::components::input::InputVariant;
 use adabraka_ui::prelude::{Composer, ComposerCommit};
 use shelldeck_core::ai::AiBackend;
@@ -80,7 +81,41 @@ impl Workspace {
                     .overflow_hidden(),
             );
         }
+        // Deux informations que la file Support affichait déjà et que le
+        // client, propriétaire de la demande, n'avait pas : depuis quand elle
+        // a bougé, et si quelqu'un y a répondu. Sans elles, on ne peut pas
+        // savoir que le support a écrit.
+        if iss.comment_count > 0 {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    // `messages-square` : le lot Lucide embarqué ne contient
+                    // pas `message-square` au singulier, et un slug absent ne
+                    // dessine rien du tout (`.agents/icons.md`).
+                    .child(lucide_icon(
+                        "messages-square",
+                        11.0,
+                        ShellDeckColors::text_muted(),
+                    ))
+                    .child(iss.comment_count.to_string()),
+            );
+        }
         row = row.child(priority_badge(&iss.priority));
+        let updated = crate::i18n::rel_time(iss.updated_at);
+        if !updated.is_empty() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.0))
+                    .text_color(ShellDeckColors::text_muted())
+                    .child(updated),
+            );
+        }
         if let Some(g) = &iss.github {
             row = row.child(
                 div()
@@ -269,24 +304,16 @@ impl Workspace {
         const ANIM_MS: u64 = SHEET_ANIM_MS;
 
         let close_bg = on_close.clone();
-        let mut sheet = div()
-            .id(id)
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
-            .overflow_hidden();
-        if !is_maximized {
-            // Apply the window clip directly to the element that paints the
-            // full-screen backdrop. A nested absolute overlay can escape a
-            // rounded ancestor's clip in GPUI and square off all four corners.
-            sheet = sheet.rounded(use_theme().tokens.radius_xl);
-        }
-
-        sheet
+        // Le rayon de la fenêtre est porté par la couche qui peint réellement
+        // le fond, jamais par un ancêtre : voir `crate::overlay`.
+        window_backdrop(id, is_maximized)
+            // Leave the client-side titlebar outside the occluding layer: its
+            // minimize / maximize / close controls must remain reachable while
+            // a request is open. `window_backdrop` starts at zero and rounds
+            // every corner, so override both the top edge and its now-internal
+            // radii after constructing it.
+            .top(px(WORKSPACE_TITLEBAR_HEIGHT))
+            .rounded_t(px(0.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _window, cx| {
@@ -314,13 +341,10 @@ impl Workspace {
                         if is_maximized {
                             panel
                         } else {
-                            // The backdrop owns the left corners, but this
-                            // opaque panel paints after it and therefore owns
-                            // the two right window corners. Match the exact
-                            // root radius on those edges as well.
-                            panel
-                                .rounded_tr(use_theme().tokens.radius_xl)
-                                .rounded_br(use_theme().tokens.radius_xl)
+                            // The sheet begins below the titlebar, so its top
+                            // edge is internal and square. It still owns the
+                            // outer bottom-right corner it paints over.
+                            panel.rounded_br(use_theme().tokens.radius_xl)
                         }
                     })
                     .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {
@@ -1350,11 +1374,18 @@ impl Workspace {
             self.issue_attachments_open || !self.issue_new_attachments.is_empty();
         let attachment_count = self.issue_new_attachments.len();
 
+        // `create_issue_now` refuse un titre vide par un `return` silencieux :
+        // sans cette condition le bouton restait plein, le clic ne produisait
+        // rien du tout, et rien n'expliquait pourquoi. Le formulaire de
+        // connexion désactive déjà son action principale de la même façon.
+        let title_filled = !self.issue_title_state.read(cx).content().trim().is_empty();
+
         let mut composer =
             Composer::new("user-new-request-composer", &self.issue_body_state)
                 .placeholder(t!("user.requests.body_placeholder").to_string())
                 .min_rows(5)
                 .max_rows(14)
+                .commit_enabled(title_filled && !self.issue_attachment_busy)
                 .commit(ComposerCommit::Labeled(
                     t!("user.requests.create").to_string().into(),
                 ))
@@ -1657,6 +1688,14 @@ impl Workspace {
         // (bg / border / rounded) so the sheet reads as a single surface. Only
         // this thread scrolls; the reply composer is rendered by the fixed
         // sheet footer below.
+        //
+        // Le fil reste ancré en haut, contrairement à celui des tickets côté
+        // Support : là-bas c'est une `uniform_list` virtualisée qui se place
+        // en fin de liste, ici un simple bloc défilant. Un intercalaire
+        // extensible ne suffit pas — le conteneur n'a pas de hauteur de
+        // référence dans un parent `overflow_y_scroll`. Passer par un
+        // `ScrollHandle` positionné à l'ouverture est le vrai correctif ;
+        // il reste à écrire (UX-023).
         div()
             .flex()
             .flex_col()

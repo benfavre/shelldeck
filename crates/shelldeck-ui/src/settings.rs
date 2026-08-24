@@ -161,6 +161,39 @@ pub fn shortcut_error_is_portal_missing(error: &str) -> bool {
         && (error.contains("not found") || error.contains("ServiceUnknown"))
 }
 
+/// Ce qu'on peut dire à l'utilisateur d'un échec d'enregistrement de raccourci.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ShortcutFailure {
+    /// Session sans portail `org.freedesktop.portal.GlobalShortcuts`
+    /// (`.agents/cross-platform.md`) — rien côté application ne peut le régler.
+    PortalMissing,
+    /// La combinaison est déjà prise par une autre application. Sous X11,
+    /// `XGrabKey` répond `BadAccess`.
+    AlreadyTaken,
+    /// Tout le reste. Le détail part dans les journaux, pas dans l'interface.
+    Other,
+}
+
+/// Classe l'erreur d'enregistrement pour ne jamais afficher un `Debug` Rust.
+///
+/// L'onglet Général montrait littéralement
+/// `X11 error X11Error { error_kind: Access, error_code:` — tronqué au milieu,
+/// dans une pastille rouge — dès qu'une autre application détenait déjà
+/// Ctrl+Maj+Espace, ce qui est le cas courant et non une anomalie.
+pub fn classify_shortcut_error(error: &str) -> ShortcutFailure {
+    if shortcut_error_is_portal_missing(error) {
+        return ShortcutFailure::PortalMissing;
+    }
+    // X11 : `BadAccess` sur `GrabKey`. Le libellé exact varie selon la
+    // bibliothèque, on reconnaît donc la paire plutôt qu'une chaîne entière.
+    let taken = (error.contains("GrabKey") || error.contains("grab"))
+        && (error.contains("Access") || error.contains("BadAccess"));
+    if taken || error.contains("AlreadyGrabbed") || error.contains("already in use") {
+        return ShortcutFailure::AlreadyTaken;
+    }
+    ShortcutFailure::Other
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ShortcutCaptureValidation {
     Accepted(String),
@@ -758,14 +791,17 @@ impl SettingsView {
                     BadgeVariant::Destructive,
                 ),
                 ShortcutRegistrationStatus::Error(error) => {
-                    if shortcut_error_is_portal_missing(error) {
-                        (
-                            t!("settings.companion.shortcut.status.portal_missing").to_string(),
-                            BadgeVariant::Destructive,
-                        )
-                    } else {
-                        (error.clone(), BadgeVariant::Destructive)
-                    }
+                    // Le détail reste dans les journaux ; l'interface dit ce que
+                    // l'utilisateur peut en faire.
+                    tracing::warn!("raccourci global non enregistré : {error}");
+                    let key = match classify_shortcut_error(error) {
+                        ShortcutFailure::PortalMissing => {
+                            "settings.companion.shortcut.status.portal_missing"
+                        }
+                        ShortcutFailure::AlreadyTaken => "settings.companion.shortcut.status.taken",
+                        ShortcutFailure::Other => "settings.companion.shortcut.status.failed",
+                    };
+                    (t!(key).to_string(), BadgeVariant::Destructive)
                 }
             }
         };
@@ -3220,9 +3256,10 @@ fn ai_clippy_replace_policy_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_character_choice, compositor_companion_limited, display_shortcut,
-        is_monospace_family, shortcut_error_is_portal_missing, validate_shortcut_capture,
-        ClippyAppearanceConfig, ShortcutCaptureValidation, MONOSPACE_FONTS, UI_FONT_FAMILIES,
+        apply_character_choice, classify_shortcut_error, compositor_companion_limited,
+        display_shortcut, is_monospace_family, shortcut_error_is_portal_missing,
+        validate_shortcut_capture, ClippyAppearanceConfig, ShortcutCaptureValidation,
+        MONOSPACE_FONTS, UI_FONT_FAMILIES,
     };
     use gpui::Keystroke;
 
@@ -3289,9 +3326,48 @@ mod tests {
         ] {
             assert!(
                 !shortcut_error_is_portal_missing(unrelated),
-                "{unrelated} must reach the user verbatim"
+                "{unrelated} must not be reported as a missing portal"
             );
         }
+    }
+
+    /// SDTEST-1700 — aucun échec d'enregistrement ne doit atteindre l'écran
+    /// sous forme de `Debug` Rust.
+    ///
+    /// L'onglet Général affichait littéralement
+    /// `X11 error X11Error { error_kind: Access, error_code:`, tronqué au
+    /// milieu, dès qu'une autre application détenait déjà la combinaison — le
+    /// cas courant, pas une anomalie.
+    #[test]
+    fn sdtest_1700_shortcut_failures_are_classified_never_dumped() {
+        use super::ShortcutFailure;
+
+        assert_eq!(
+            classify_shortcut_error(
+                "A portal frontend implementing \
+                 `org.freedesktop.portal.GlobalShortcuts` was not found"
+            ),
+            ShortcutFailure::PortalMissing
+        );
+
+        // La forme exacte observée sur cette machine, X11 / GNOME.
+        assert_eq!(
+            classify_shortcut_error(
+                "X11 error X11Error { error_kind: Access, error_code: 10, sequence: 171, \
+                 bad_value: 1227, minor_opcode: 0, major_opcode: 33, extension_name: None, \
+                 request_name: Some(\"GrabKey\") }"
+            ),
+            ShortcutFailure::AlreadyTaken
+        );
+        assert_eq!(
+            classify_shortcut_error("BadAccess: another client already grabbed this combination"),
+            ShortcutFailure::AlreadyTaken
+        );
+
+        assert_eq!(
+            classify_shortcut_error("Could not resolve keycode for key: nosuchkey"),
+            ShortcutFailure::Other
+        );
     }
 
     // SDTEST-1401

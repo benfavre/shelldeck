@@ -1,14 +1,18 @@
 //! Post-login first-run tour — skippable, replayable from Settings.
 //!
 //! Distinct from the pre-login welcome landing (`Workspace::render_welcome_screen`).
-//! A multi-step modal that orients new users on modes, surfaces, and shortcuts.
+//! A modal that walks a new account through the surfaces of the mode it lands
+//! in: one sequence per role, closed by a mode-switching slide when the account
+//! can reach more than one mode, and by a shortcut strip on the last slide.
 //!
-//! Each step has a hero media **slot** (styled placeholder by default). To add a
-//! GIF/WebP for one step only: drop the file under `assets/images/onboarding/`,
-//! register it in `main.rs` (`Assets::load` + `list`), then set `media_asset()`
-//! to `Some("images/onboarding/…")` for that step — GPUI animates GIF natively.
+//! Every slide carries artwork from `assets/images/onboarding/role-aware/`,
+//! exported at 1120x400 by `scripts/export-onboarding-images.mjs` from the
+//! composition in `docs/design/onboarding-role-visuals.html`. Adding one means
+//! registering it in `main.rs` (`Assets::load` + `list`) as well — GPUI also
+//! animates GIF natively if a slide ever needs motion.
 
 use crate::icons::lucide_icon;
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -17,43 +21,112 @@ use gpui::prelude::*;
 use gpui::*;
 use shelldeck_core::config::cloud_account::AppMode;
 
-/// Which slide is shown. `Modes` is omitted when the signed-in user cannot
-/// switch modes (forced User).
+/// One slide of the tour.
+///
+/// The sequence is chosen from the mode the account actually lands in, not from
+/// a single list shown to everybody: a client has no use for a terminal, and a
+/// developer does not need to be told how to file a request. Each role gets its
+/// own run, and the mode-switching slide is appended only for an account that
+/// can switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardingStep {
-    Welcome,
-    Modes,
-    Surfaces,
-    Shortcuts,
+    UserWelcome,
+    UserRequest,
+    UserFollow,
+    UserAi,
+    SupportWelcome,
+    SupportPrioritize,
+    SupportContext,
+    SupportAi,
+    SupportModes,
+    DevWelcome,
+    DevTerminal,
+    DevScripts,
+    DevTunnels,
+    DevAi,
+    DevModes,
 }
 
+/// A bullet of a slide: a bundled Lucide slug and the i18n suffix of its pair
+/// of keys (`…_title` / `…_body`).
+type Bullet = (&'static str, &'static str);
+
 impl OnboardingStep {
-    /// Optional embedded media (GIF/WebP/PNG). `None` → styled placeholder slot.
+    /// Role-aware artwork, exported at 1120x400 for the 560x200 media zone.
     fn media_asset(self) -> Option<&'static str> {
         Some(match self {
-            Self::Welcome => "images/onboarding/welcome.png",
-            Self::Modes => "images/onboarding/modes.png",
-            Self::Surfaces => "images/onboarding/surfaces.png",
-            Self::Shortcuts => "images/onboarding/shortcuts.png",
+            Self::UserWelcome => "images/onboarding/role-aware/user-01-welcome.webp",
+            Self::UserRequest => "images/onboarding/role-aware/user-02-request.webp",
+            Self::UserFollow => "images/onboarding/role-aware/user-03-follow.webp",
+            Self::UserAi => "images/onboarding/role-aware/user-04-ai.webp",
+            Self::SupportWelcome => "images/onboarding/role-aware/support-01-welcome.webp",
+            Self::SupportPrioritize => "images/onboarding/role-aware/support-02-prioritize.webp",
+            Self::SupportContext => "images/onboarding/role-aware/support-03-context.webp",
+            Self::SupportAi => "images/onboarding/role-aware/support-04-ai.webp",
+            Self::SupportModes => "images/onboarding/role-aware/support-05-modes.webp",
+            Self::DevWelcome => "images/onboarding/role-aware/dev-01-welcome.webp",
+            Self::DevTerminal => "images/onboarding/role-aware/dev-02-terminal.webp",
+            Self::DevScripts => "images/onboarding/role-aware/dev-03-scripts.webp",
+            Self::DevTunnels => "images/onboarding/role-aware/dev-04-tunnels.webp",
+            Self::DevAi => "images/onboarding/role-aware/dev-05-ai.webp",
+            Self::DevModes => "images/onboarding/role-aware/dev-06-modes.webp",
         })
     }
 
-    fn placeholder_icon(self) -> &'static str {
+    /// i18n prefix. Every slide owns `<prefix>.title`, `<prefix>.intro`, and one
+    /// `<prefix>.<suffix>_title` / `_body` pair per bullet.
+    fn key(self) -> &'static str {
         match self {
-            Self::Welcome => "terminal",
-            Self::Modes => "grid-2x2",
-            Self::Surfaces => "globe",
-            Self::Shortcuts => "table",
+            Self::UserWelcome => "onboarding.user.welcome",
+            Self::UserRequest => "onboarding.user.request",
+            Self::UserFollow => "onboarding.user.follow",
+            Self::UserAi => "onboarding.user.ai",
+            Self::SupportWelcome => "onboarding.support.welcome",
+            Self::SupportPrioritize => "onboarding.support.prioritize",
+            Self::SupportContext => "onboarding.support.context",
+            Self::SupportAi => "onboarding.support.ai",
+            Self::SupportModes => "onboarding.support.modes",
+            Self::DevWelcome => "onboarding.dev.welcome",
+            Self::DevTerminal => "onboarding.dev.terminal",
+            Self::DevScripts => "onboarding.dev.scripts",
+            Self::DevTunnels => "onboarding.dev.tunnels",
+            Self::DevAi => "onboarding.dev.ai",
+            Self::DevModes => "onboarding.dev.modes",
         }
     }
 
-    fn media_caption(self) -> String {
+    /// Icons must exist in the bundled Lucide subset (`.agents/icons.md`).
+    ///
+    /// A modes slide has none: it enumerates the modes this account can
+    /// actually reach, which is known only at runtime.
+    fn bullets(self) -> &'static [Bullet] {
         match self {
-            Self::Welcome => t!("onboarding.welcome.media_caption").to_string(),
-            Self::Modes => t!("onboarding.modes.media_caption").to_string(),
-            Self::Surfaces => t!("onboarding.surfaces.media_caption").to_string(),
-            Self::Shortcuts => t!("onboarding.shortcuts.media_caption").to_string(),
+            Self::UserWelcome => &[("cloud", "sync"), ("inbox", "requests")],
+            Self::UserRequest => &[("inbox", "form"), ("sparkles", "ai")],
+            Self::UserFollow => &[("globe", "sites"), ("clock", "status")],
+            Self::UserAi => &[("sparkles", "draft"), ("shield-check", "review")],
+            Self::SupportWelcome => &[("inbox", "queue"), ("users", "contacts")],
+            Self::SupportPrioritize => &[("filter", "filters"), ("user-check", "assign")],
+            Self::SupportContext => &[("messages-square", "thread"), ("reply", "answer")],
+            Self::SupportAi => &[("sparkles", "draft"), ("shield-check", "review")],
+            Self::SupportModes => &[],
+            Self::DevWelcome => &[("terminal", "ssh"), ("cloud", "sync")],
+            Self::DevTerminal => &[("terminal", "sessions"), ("server", "hosts")],
+            Self::DevScripts => &[("scroll-text", "library"), ("play", "run")],
+            Self::DevTunnels => &[("arrow-left-right", "forward"), ("zap", "presets")],
+            Self::DevAi => &[("at-sign", "mentions"), ("paperclip", "attachments")],
+            Self::DevModes => &[],
         }
+    }
+
+    /// The mode-switching slide closes a run only when there is a choice to make.
+    fn is_modes(self) -> bool {
+        matches!(self, Self::SupportModes | Self::DevModes)
+    }
+
+    fn media_caption(self) -> String {
+        let key = format!("{}.media_caption", self.key());
+        t!(&key).to_string()
     }
 }
 
@@ -76,19 +149,56 @@ pub struct OnboardingView {
 }
 
 impl OnboardingView {
-    pub fn new(allowed_modes: &[AppMode], cx: &mut Context<Self>) -> Self {
-        let mut steps = vec![OnboardingStep::Welcome];
-        if allowed_modes.len() > 1 {
-            steps.push(OnboardingStep::Modes);
-        }
-        steps.push(OnboardingStep::Surfaces);
-        steps.push(OnboardingStep::Shortcuts);
+    /// `mode` is the mode the account actually lands in
+    /// (`Workspace::effective_mode`), not a preference — the run is built for
+    /// the surface the user is about to see.
+    pub fn new(mode: AppMode, allowed_modes: &[AppMode], cx: &mut Context<Self>) -> Self {
         Self {
-            steps,
+            steps: Self::build_steps(mode, allowed_modes),
             allowed_modes: allowed_modes.to_vec(),
             index: 0,
             focus_handle: cx.focus_handle(),
             needs_focus: true,
+        }
+    }
+
+    /// The whole run, start to finish. Kept free of `Context` so the shape of
+    /// each role's tour is unit-testable without a GPUI app.
+    fn build_steps(mode: AppMode, allowed_modes: &[AppMode]) -> Vec<OnboardingStep> {
+        let mut steps = Self::sequence(mode);
+        if allowed_modes.len() > 1 {
+            // Only an account with a choice is told there is one, and the slide
+            // carries the accent of the highest surface it can reach.
+            steps.push(if allowed_modes.contains(&AppMode::Dev) {
+                OnboardingStep::DevModes
+            } else {
+                OnboardingStep::SupportModes
+            });
+        }
+        steps
+    }
+
+    fn sequence(mode: AppMode) -> Vec<OnboardingStep> {
+        match mode {
+            AppMode::User => vec![
+                OnboardingStep::UserWelcome,
+                OnboardingStep::UserRequest,
+                OnboardingStep::UserFollow,
+                OnboardingStep::UserAi,
+            ],
+            AppMode::Support => vec![
+                OnboardingStep::SupportWelcome,
+                OnboardingStep::SupportPrioritize,
+                OnboardingStep::SupportContext,
+                OnboardingStep::SupportAi,
+            ],
+            AppMode::Dev => vec![
+                OnboardingStep::DevWelcome,
+                OnboardingStep::DevTerminal,
+                OnboardingStep::DevScripts,
+                OnboardingStep::DevTunnels,
+                OnboardingStep::DevAi,
+            ],
         }
     }
 
@@ -136,15 +246,11 @@ impl OnboardingView {
         }
     }
 
-    /// Hero media slot — placeholder until `media_asset()` is set for a step.
+    /// Hero media zone. Every slide ships artwork; the placeholder branch is
+    /// kept for an asset that fails to resolve, not as a design state.
     fn render_media_zone(&self, step: OnboardingStep) -> impl IntoElement {
         let caption = step.media_caption();
-        let media_asset =
-            if step == OnboardingStep::Modes && !self.allowed_modes.contains(&AppMode::Dev) {
-                None
-            } else {
-                step.media_asset()
-            };
+        let media_asset = step.media_asset();
         let has_media = media_asset.is_some();
 
         let mut zone = div()
@@ -160,33 +266,14 @@ impl OnboardingView {
         if let Some(path) = media_asset {
             zone = zone.child(img(path).w_full().h_full().object_fit(ObjectFit::Contain));
         } else {
-            let mut inner = div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(10.0))
-                .size_full()
-                .px(px(20.0));
-
-            if step == OnboardingStep::Welcome {
-                inner = inner.child(img("images/shelldeck-icon.png").w(px(56.0)).h(px(56.0)));
-            } else {
-                inner = inner.child(lucide_icon(
-                    step.placeholder_icon(),
-                    40.0,
-                    ShellDeckColors::primary().opacity(0.55),
-                ));
-            }
-
-            inner = inner.child(
+            zone = zone.child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(ShellDeckColors::text_muted())
-                    .child(t!("onboarding.media_soon").to_string()),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size_full()
+                    .child(img("images/shelldeck-icon.png").w(px(56.0)).h(px(56.0))),
             );
-
-            zone = zone.child(inner);
         }
 
         let mut caption_bar = div()
@@ -233,6 +320,7 @@ impl OnboardingView {
             .flex()
             .items_center()
             .justify_center()
+            .flex_shrink_0()
             .gap(px(6.0))
             .py(px(10.0));
         for (i, _) in self.steps.iter().enumerate() {
@@ -288,7 +376,7 @@ impl OnboardingView {
             .flex()
             .items_center()
             .justify_between()
-            .py(px(6.0))
+            .py(px(5.0))
             .child(
                 div()
                     .text_size(px(12.0))
@@ -310,141 +398,96 @@ impl OnboardingView {
             )
     }
 
+    /// The last slide of every run closes with the shortcuts that reach the
+    /// surfaces just described — the tour used to spend a whole slide on them.
+    fn render_shortcut_strip(&self) -> impl IntoElement {
+        let mut strip = div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .mt(px(4.0))
+            .pt(px(8.0))
+            .border_t_1()
+            .border_color(ShellDeckColors::border())
+            .child(Self::shortcut_row(
+                "Ctrl+Shift+P",
+                t!("onboarding.shortcuts.palette").to_string(),
+            ));
+        if self.allowed_modes.contains(&AppMode::Dev) {
+            strip = strip
+                .child(Self::shortcut_row(
+                    "Ctrl+T",
+                    t!("onboarding.shortcuts.terminal").to_string(),
+                ))
+                .child(Self::shortcut_row(
+                    "Ctrl+B",
+                    t!("onboarding.shortcuts.sidebar").to_string(),
+                ));
+        }
+        strip.child(Self::shortcut_row(
+            "Ctrl+,",
+            t!("onboarding.shortcuts.settings").to_string(),
+        ))
+    }
+
     fn render_step_body(&self) -> impl IntoElement {
-        match self.current() {
-            OnboardingStep::Welcome => {
-                let dev = self.allowed_modes.contains(&AppMode::Dev);
-                let mut welcome = div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(if dev {
-                                t!("onboarding.welcome.body").to_string()
-                            } else {
-                                t!("onboarding.welcome.user_body").to_string()
-                            }),
-                    )
-                    .child(Self::bullet(
-                        "cloud",
-                        t!("onboarding.welcome.bullet_sync_title").to_string(),
-                        t!("onboarding.welcome.bullet_sync_body").to_string(),
-                    ));
-                welcome = if dev {
-                    welcome.child(Self::bullet(
-                        "terminal",
-                        t!("onboarding.welcome.bullet_ssh_title").to_string(),
-                        t!("onboarding.welcome.bullet_ssh_body").to_string(),
-                    ))
-                } else {
-                    welcome.child(Self::bullet(
-                        "inbox",
-                        t!("onboarding.welcome.bullet_requests_title").to_string(),
-                        t!("onboarding.welcome.bullet_requests_body").to_string(),
-                    ))
-                };
-                welcome
+        let step = self.current();
+        let key = step.key();
+
+        let intro_key = format!("{key}.intro");
+        let mut body = div().flex().flex_col().gap(px(10.0)).child(
+            div()
+                .text_size(px(13.0))
+                .text_color(ShellDeckColors::text_muted())
+                .child(t!(&intro_key).to_string()),
+        );
+
+        if step.is_modes() {
+            // The mode slide lists what this account can actually reach, so it
+            // never advertises a surface the user would find missing.
+            if self.allowed_modes.contains(&AppMode::User) {
+                body = body.child(Self::bullet(
+                    "user",
+                    t!("onboarding.modes.user_title").to_string(),
+                    t!("onboarding.modes.user_body").to_string(),
+                ));
             }
-            OnboardingStep::Modes => {
-                let mut modes = div().flex().flex_col().gap(px(10.0)).child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("onboarding.modes.intro").to_string()),
-                );
-                if self.allowed_modes.contains(&AppMode::User) {
-                    modes = modes.child(Self::bullet(
-                        "user",
-                        t!("onboarding.modes.user_title").to_string(),
-                        t!("onboarding.modes.user_body").to_string(),
-                    ));
-                }
-                if self.allowed_modes.contains(&AppMode::Support) {
-                    modes = modes.child(Self::bullet(
-                        "shield-check",
-                        t!("onboarding.modes.support_title").to_string(),
-                        t!("onboarding.modes.support_body").to_string(),
-                    ));
-                }
-                if self.allowed_modes.contains(&AppMode::Dev) {
-                    modes = modes.child(Self::bullet(
-                        "cpu",
-                        t!("onboarding.modes.dev_title").to_string(),
-                        t!("onboarding.modes.dev_body").to_string(),
-                    ));
-                }
-                modes
+            if self.allowed_modes.contains(&AppMode::Support) {
+                body = body.child(Self::bullet(
+                    "shield-check",
+                    t!("onboarding.modes.support_title").to_string(),
+                    t!("onboarding.modes.support_body").to_string(),
+                ));
             }
-            OnboardingStep::Surfaces => div()
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(ShellDeckColors::text_muted())
-                        .child(t!("onboarding.surfaces.intro").to_string()),
-                )
-                .child(Self::bullet(
-                    "globe",
-                    t!("onboarding.surfaces.sites_title").to_string(),
-                    t!("onboarding.surfaces.sites_body").to_string(),
-                ))
-                .child(Self::bullet(
-                    "inbox",
-                    t!("onboarding.surfaces.requests_title").to_string(),
-                    t!("onboarding.surfaces.requests_body").to_string(),
-                ))
-                .child(Self::bullet(
-                    "search",
-                    t!("onboarding.surfaces.palette_title").to_string(),
-                    t!("onboarding.surfaces.palette_body").to_string(),
-                )),
-            OnboardingStep::Shortcuts => {
-                let mut shortcuts = div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .child(
-                        div()
-                            .mb(px(8.0))
-                            .text_size(px(13.0))
-                            .text_color(ShellDeckColors::text_muted())
-                            .child(t!("onboarding.shortcuts.intro").to_string()),
-                    )
-                    .child(Self::shortcut_row(
-                        "Ctrl+Shift+P",
-                        t!("onboarding.shortcuts.palette").to_string(),
-                    ));
-                if self.allowed_modes.contains(&AppMode::Dev) {
-                    shortcuts = shortcuts
-                        .child(Self::shortcut_row(
-                            "Ctrl+T",
-                            t!("onboarding.shortcuts.terminal").to_string(),
-                        ))
-                        .child(Self::shortcut_row(
-                            "Ctrl+B",
-                            t!("onboarding.shortcuts.sidebar").to_string(),
-                        ));
-                }
-                shortcuts.child(Self::shortcut_row(
-                    "Ctrl+,",
-                    t!("onboarding.shortcuts.settings").to_string(),
-                ))
+            if self.allowed_modes.contains(&AppMode::Dev) {
+                body = body.child(Self::bullet(
+                    "cpu",
+                    t!("onboarding.modes.dev_title").to_string(),
+                    t!("onboarding.modes.dev_body").to_string(),
+                ));
+            }
+        } else {
+            for (icon, suffix) in step.bullets() {
+                let title_key = format!("{key}.{suffix}_title");
+                let body_key = format!("{key}.{suffix}_body");
+                body = body.child(Self::bullet(
+                    icon,
+                    t!(&title_key).to_string(),
+                    t!(&body_key).to_string(),
+                ));
             }
         }
+
+        if self.is_last() {
+            body = body.child(self.render_shortcut_strip());
+        }
+
+        body
     }
 
     fn step_title(&self) -> String {
-        match self.current() {
-            OnboardingStep::Welcome => t!("onboarding.welcome.title").to_string(),
-            OnboardingStep::Modes => t!("onboarding.modes.title").to_string(),
-            OnboardingStep::Surfaces => t!("onboarding.surfaces.title").to_string(),
-            OnboardingStep::Shortcuts => t!("onboarding.shortcuts.title").to_string(),
-        }
+        let key = format!("{}.title", self.current().key());
+        t!(&key).to_string()
     }
 }
 
@@ -466,7 +509,10 @@ impl Render for OnboardingView {
             .flex()
             .flex_col()
             .w(px(560.0))
-            .max_h(px(600.0))
+            // Window-relative, like adabraka's `Dialog`: a fixed cap is either
+            // too tall for a small window or forces the longest slide (the one
+            // carrying the shortcut strip) to scroll on a roomy one.
+            .max_h(relative(0.9))
             .bg(ShellDeckColors::bg_surface())
             .rounded(px(12.0))
             .border_1()
@@ -528,8 +574,19 @@ impl Render for OnboardingView {
 
         card = card.child(self.render_step_dots());
 
+        // The body is the only elastic row of the card. The last slide of a run
+        // appends the shortcut strip, which pushed the total past `max_h` and
+        // clipped the footer off the bottom — the exact failure
+        // `.agents/overflow.md` § Centered modals describes. `flex_grow` +
+        // `min_h(0)` + a scroll body is the fix it prescribes.
         card = card.child(
             div()
+                .id("onboarding-body")
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .min_h(px(0.0))
+                .overflow_y_scroll()
                 .px(px(20.0))
                 .pb(px(16.0))
                 .child(self.render_step_body()),
@@ -598,22 +655,264 @@ impl Render for OnboardingView {
                 }),
         );
 
-        div()
-            .id("onboarding-overlay")
+        window_backdrop("onboarding-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus : le
+            // contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|_this, _: &InputEscape, _window, cx| {
+                cx.emit(OnboardingEvent::Skipped);
+            }))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .items_center()
             .justify_center()
             .child(card)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Named imports, not `use super::*`: this module glob-imports `gpui`,
+    // which re-exports its own `test` attribute and would shadow the built-in
+    // one (`#[test]` then expands into itself until the recursion limit).
+    // `sidebar.rs` and `command_palette.rs` avoid it the same way.
+    use super::{OnboardingStep, OnboardingView};
+    use shelldeck_core::config::cloud_account::AppMode;
+
+    /// Every slide the tour can show. SDTEST-1697 keeps this honest against
+    /// the enum.
+    const ALL_STEPS: [OnboardingStep; 15] = [
+        OnboardingStep::UserWelcome,
+        OnboardingStep::UserRequest,
+        OnboardingStep::UserFollow,
+        OnboardingStep::UserAi,
+        OnboardingStep::SupportWelcome,
+        OnboardingStep::SupportPrioritize,
+        OnboardingStep::SupportContext,
+        OnboardingStep::SupportAi,
+        OnboardingStep::SupportModes,
+        OnboardingStep::DevWelcome,
+        OnboardingStep::DevTerminal,
+        OnboardingStep::DevScripts,
+        OnboardingStep::DevTunnels,
+        OnboardingStep::DevAi,
+        OnboardingStep::DevModes,
+    ];
+
+    /// The three account tiers, exactly as `AppMode::allowed_modes` returns
+    /// them for a regular user, Inklura support, and a super-admin.
+    const REGULAR: &[AppMode] = &[AppMode::User];
+    const SUPPORT: &[AppMode] = &[AppMode::User, AppMode::Support];
+    const SUPERADMIN: &[AppMode] = &[AppMode::User, AppMode::Support, AppMode::Dev];
+
+    fn run(mode: AppMode, allowed: &[AppMode]) -> Vec<&'static str> {
+        OnboardingView::build_steps(mode, allowed)
+            .iter()
+            .map(|s| s.key())
+            .collect()
+    }
+
+    /// SDTEST-1694 — SDUC-477.
+    ///
+    /// The whole decision in one table: the run follows the mode the account
+    /// *lands in*, while the closing modes slide follows what the account can
+    /// *reach*. The two are independent — a super-admin who left ShellDeck in
+    /// User mode gets the User run and the Dev-accented modes slide — which is
+    /// the pairing a per-mode-only test would miss.
+    #[test]
+    fn sdtest_1694_the_run_follows_the_mode_and_the_modes_slide_follows_capability() {
+        let cases: [(AppMode, &[AppMode], &[&str]); 5] = [
+            // A customer has one mode, so nothing tells them modes exist.
+            (
+                AppMode::User,
+                REGULAR,
+                &[
+                    "onboarding.user.welcome",
+                    "onboarding.user.request",
+                    "onboarding.user.follow",
+                    "onboarding.user.ai",
+                ],
+            ),
+            // Inklura support on its own surface: the Support run, closed by
+            // the two-mode slide.
+            (
+                AppMode::Support,
+                SUPPORT,
+                &[
+                    "onboarding.support.welcome",
+                    "onboarding.support.prioritize",
+                    "onboarding.support.context",
+                    "onboarding.support.ai",
+                    "onboarding.support.modes",
+                ],
+            ),
+            // Same account, currently in User mode: the User run, still closed
+            // by the Support-accented slide.
+            (
+                AppMode::User,
+                SUPPORT,
+                &[
+                    "onboarding.user.welcome",
+                    "onboarding.user.request",
+                    "onboarding.user.follow",
+                    "onboarding.user.ai",
+                    "onboarding.support.modes",
+                ],
+            ),
+            // Platform staff on the Dev surface — the only five-slide run.
+            (
+                AppMode::Dev,
+                SUPERADMIN,
+                &[
+                    "onboarding.dev.welcome",
+                    "onboarding.dev.terminal",
+                    "onboarding.dev.scripts",
+                    "onboarding.dev.tunnels",
+                    "onboarding.dev.ai",
+                    "onboarding.dev.modes",
+                ],
+            ),
+            // Same account in Support mode: Support run, Dev-accented slide.
+            (
+                AppMode::Support,
+                SUPERADMIN,
+                &[
+                    "onboarding.support.welcome",
+                    "onboarding.support.prioritize",
+                    "onboarding.support.context",
+                    "onboarding.support.ai",
+                    "onboarding.dev.modes",
+                ],
+            ),
+        ];
+
+        for (mode, allowed, expected) in cases {
+            assert_eq!(
+                run(mode, allowed),
+                expected,
+                "run for {mode:?} / {allowed:?}"
+            );
+        }
+
+        // Across every tier and landing mode: the modes slide, when present,
+        // is last and appears exactly once.
+        for allowed in [REGULAR, SUPPORT, SUPERADMIN] {
+            for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
+                let steps = OnboardingView::build_steps(mode, allowed);
+                let modes = steps.iter().filter(|s| s.is_modes()).count();
+                assert_eq!(
+                    modes,
+                    usize::from(allowed.len() > 1),
+                    "modes slide count for {mode:?} / {allowed:?}",
+                );
+                if modes == 1 {
+                    assert!(
+                        steps.last().expect("non-empty run").is_modes(),
+                        "{mode:?} / {allowed:?} must close on the modes slide",
+                    );
+                }
+            }
+        }
+    }
+
+    /// SDTEST-1695 — SDUC-477.
+    ///
+    /// Every slide must resolve the copy it asks for. `rust_i18n` renders a
+    /// missing key as the key itself, so a typo in `key()`/`bullets()` or a
+    /// forgotten line in `fr.toml` ships the literal
+    /// `onboarding.dev.tunnels.presets_body` to the user instead of failing.
+    ///
+    /// Deliberately does not call `set_locale` — that is process-global and
+    /// races the rest of the suite (see `i18n::tests::locale_fr_and_en`).
+    /// Resolving under the ambient locale proves the key exists; SDTEST-1302
+    /// already proves `fr.toml` and `en.toml` declare the same keys.
+    #[test]
+    fn sdtest_1695_every_slide_resolves_its_copy() {
+        for step in ALL_STEPS {
+            let prefix = step.key();
+            let mut keys = vec![
+                format!("{prefix}.title"),
+                format!("{prefix}.intro"),
+                format!("{prefix}.media_caption"),
+            ];
+            for (_, suffix) in step.bullets() {
+                keys.push(format!("{prefix}.{suffix}_title"));
+                keys.push(format!("{prefix}.{suffix}_body"));
+            }
+            for key in keys {
+                let shown = crate::t!(&key).to_string();
+                assert_ne!(shown, key, "{key} has no translation");
+                assert!(!shown.trim().is_empty(), "{key} resolves to blank");
+            }
+        }
+
+        // The modes slide borrows the shared mode descriptions rather than
+        // declaring bullets of its own, and the last slide of every run ends
+        // on the shortcut strip.
+        for key in [
+            "onboarding.modes.user_title",
+            "onboarding.modes.user_body",
+            "onboarding.modes.support_title",
+            "onboarding.modes.support_body",
+            "onboarding.modes.dev_title",
+            "onboarding.modes.dev_body",
+            "onboarding.shortcuts.palette",
+            "onboarding.shortcuts.terminal",
+            "onboarding.shortcuts.sidebar",
+            "onboarding.shortcuts.settings",
+        ] {
+            assert_ne!(crate::t!(key).to_string(), key, "{key} has no translation");
+        }
+    }
+
+    /// SDTEST-1696 — SDUC-477.
+    ///
+    /// A slide's artwork renders only if `main.rs` both embeds it
+    /// (`include_bytes!`) and lists it (`Assets::list`). Neither is checked by
+    /// the compiler: an unregistered path makes the image load fail silently,
+    /// leaving an empty hero zone that nothing else would catch.
+    #[test]
+    fn sdtest_1696_every_slide_asset_is_embedded_and_listed() {
+        let main_rs = include_str!("../../shelldeck/src/main.rs");
+        for step in ALL_STEPS {
+            let asset = step.media_asset().expect("every slide ships artwork");
+            assert!(
+                main_rs.contains(&format!("\"{asset}\" =>")),
+                "{asset} is not embedded in main.rs (Assets::load)",
+            );
+            assert!(
+                main_rs.contains(&format!("SharedString::from(\"{asset}\")")),
+                "{asset} is missing from Assets::list",
+            );
+        }
+    }
+
+    /// SDTEST-1697 — SDUC-477.
+    ///
+    /// `ALL_STEPS` drives the two tests above, so it must not drift from the
+    /// enum: the union of every reachable run has to account for all fifteen
+    /// slides, and no slide may be unreachable.
+    #[test]
+    fn sdtest_1697_runs_cover_every_slide() {
+        let mut seen: Vec<OnboardingStep> = Vec::new();
+        for allowed in [REGULAR, SUPPORT, SUPERADMIN] {
+            for mode in [AppMode::User, AppMode::Support, AppMode::Dev] {
+                for step in OnboardingView::build_steps(mode, allowed) {
+                    if !seen.contains(&step) {
+                        seen.push(step);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            ALL_STEPS.len(),
+            "a slide is unreachable or ALL_STEPS is stale",
+        );
+        for step in ALL_STEPS {
+            assert!(seen.contains(&step), "{step:?} is never shown to anyone");
+        }
     }
 }

@@ -16,6 +16,7 @@ use crate::icons::{
     ai_provider_badge, lucide_icon, lucide_path, script_category_chip, script_language_chip,
 };
 use crate::monolith::{animated_loading_text, animated_monolith, MonolithMotion};
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::syntax::highlight::render_code_block_with_language;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -1204,21 +1205,18 @@ impl Render for ScriptForm {
             );
         }
 
-        div()
-            .id("script-form-overlay")
+        window_backdrop("script-form-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus : le
+            // contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|_this, _: &InputEscape, _window, cx| {
+                cx.emit(ScriptFormEvent::Cancel);
+            }))
             // Legacy hand-rolled modal — must cap height + scroll (see .agents/overflow.md).
             // TODO: migrate to adabraka Dialog (see .agents/ui-components.md).
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .justify_center()
             .items_center()

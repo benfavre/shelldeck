@@ -1864,28 +1864,32 @@ impl Render for SitesView {
         }
         scan_btn = scan_btn.child(t!("sites.scan_all").to_string());
 
-        let clear_btn = div()
-            .id("clear-all-sites-btn")
-            .px(px(12.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .text_size(px(12.0))
-            .font_weight(FontWeight::MEDIUM)
-            .bg(ShellDeckColors::error().opacity(0.15))
-            .text_color(ShellDeckColors::error())
-            .cursor_pointer()
-            .hover(|el| el.bg(ShellDeckColors::error().opacity(0.25)))
-            .on_click(cx.listener(|_this, _, _, cx| {
-                cx.emit(SitesEvent::ClearAllSites);
-            }))
-            .child(t!("sites.clear_all").to_string());
+        // Action destructive : elle ne s'affiche que s'il y a quelque chose à
+        // effacer. Elle était rouge et cliquable au-dessus d'un écran vide.
+        let clear_btn = has_sites.then(|| {
+            div()
+                .id("clear-all-sites-btn")
+                .px(px(12.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .bg(ShellDeckColors::error().opacity(0.15))
+                .text_color(ShellDeckColors::error())
+                .cursor_pointer()
+                .hover(|el| el.bg(ShellDeckColors::error().opacity(0.25)))
+                .on_click(cx.listener(|_this, _, _, cx| {
+                    cx.emit(SitesEvent::ClearAllSites);
+                }))
+                .child(t!("sites.clear_all").to_string())
+        });
 
         header = header.child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .child(clear_btn)
+                .children(clear_btn)
                 .child(scan_btn),
         );
 

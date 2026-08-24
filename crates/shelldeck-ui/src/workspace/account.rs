@@ -145,7 +145,8 @@ impl Workspace {
             return;
         }
         let allowed_modes = self.allowed_modes();
-        let form = cx.new(|form_cx| OnboardingView::new(allowed_modes, form_cx));
+        let mode = self.effective_mode();
+        let form = cx.new(|form_cx| OnboardingView::new(mode, allowed_modes, form_cx));
         let sub = cx.subscribe(
             &form,
             |this, _form, event: &OnboardingEvent, cx| match event {
@@ -209,15 +210,19 @@ impl Workspace {
             let _ = this.update(cx, |ws, cx| match result {
                 Ok((token, account)) => ws.apply_login(token, account, cx),
                 Err(e) => {
-                    let msg = crate::i18n::api_error_message(&e);
+                    let msg = crate::i18n::login_error_message(&e);
+                    // Une seule fois, et à l'endroit où l'on regarde : sous les
+                    // champs. La bulle en bas à droite répétait mot pour mot le
+                    // message déjà affiché dans la modale.
                     if let Some(form) = &ws.login_form {
                         form.update(cx, |f, cx| {
                             f.set_busy(false);
-                            f.set_error(msg.clone());
+                            f.set_error(msg);
                             cx.notify();
                         });
+                    } else {
+                        ws.show_toast(msg, ToastLevel::Error, cx);
                     }
-                    ws.show_toast(msg, ToastLevel::Error, cx);
                 }
             });
         })

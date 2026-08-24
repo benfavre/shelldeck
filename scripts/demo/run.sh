@@ -18,6 +18,8 @@ PORT="${SHELLDECK_DEMO_PORT:-8899}"
 if [ "${1:-}" = "--reset" ]; then
   rm -rf "$DEMO_HOME"
   echo "profil de démonstration réinitialisé"
+  # Sans ce shift, `--reset` était aussi transmis au binaire par "$@".
+  shift
 fi
 
 mkdir -p "$DEMO_HOME/.ssh" "$DEMO_HOME/.config/shelldeck" "$DEMO_HOME/projets/boutique"

@@ -10,6 +10,7 @@ use shelldeck_core::models::port_forward::{ForwardDirection, PortForward};
 use uuid::Uuid;
 
 use crate::connection_combobox::{build_connection_combobox, connection_idx_for_id};
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -538,19 +539,16 @@ impl Render for PortForwardForm {
             );
         }
 
-        div()
-            .id("port-forward-form-overlay")
+        window_backdrop("port-forward-form-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus : le
+            // contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|_this, _: &InputEscape, _window, cx| {
+                cx.emit(PortForwardFormEvent::Cancel);
+            }))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .justify_center()
             .items_center()

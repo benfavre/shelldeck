@@ -1426,6 +1426,16 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
+### SDUC-478 — Operational vocabulary stays localized and consistent
+
+Server-owned ticket statuses, request statuses, and priorities never appear as
+raw protocol tokens when a newer value reaches an older ShellDeck client; an
+unknown value uses a localized generic label. The Dev status bar localizes and
+inflects its live connection, port-forward, and running-script counts, and its
+labels describe activity rather than stored inventory. A navigation
+destination keeps the same localized name in the activity rail, the Go menu,
+and the destination title.
+
 ---
 
 ## 19. Deep links (`shelldeck://`)
@@ -1931,8 +1941,34 @@ stale search and advanced constraints so the visible rows agree with the
 announced count. The home also exposes up to four actionable tickets ordered by
 SLA risk, urgency, missing owner, then recency, plus the four most recently
 updated visible requests; selecting either kind opens its real detail.
-Operational lists remain separate tabs. Onboarding only describes modes and
-shortcuts the signed-in role can actually reach.
+Operational lists remain separate tabs. The first-run tour that follows a
+sign-in is role-aware in its own right — see SDUC-477.
+
+### SDUC-477 — The first-run tour is built for the mode the account lands in
+
+The post-login tour is three sequences, not one. The run is chosen from the
+mode the account actually lands in (`Workspace::effective_mode`): User gets
+welcome / request / follow / ai, Support gets welcome / prioritize / context /
+ai, Dev gets welcome / terminal / scripts / tunnels / ai. A customer is never
+shown a terminal, and platform staff are never taught to file a request.
+
+A closing mode-switching slide is appended only when `allowed_modes` holds more
+than one mode, and it carries the artwork of the highest surface the account can
+reach — `dev-06-modes` when Dev is reachable, `support-05-modes` otherwise. Its
+bullets enumerate the modes that account can actually reach, so the tour never
+advertises a surface the user would find missing. Run and capability are
+independent: a super-admin sitting in User mode gets the User run closed by the
+Dev-accented modes slide.
+
+Shortcuts no longer own a slide. The last slide of every run ends on a strip
+that lists the palette and settings bindings for everyone, plus the terminal and
+sidebar bindings only for a Dev-capable account.
+
+Every slide carries role-aware artwork from
+`assets/images/onboarding/role-aware/`, embedded and listed in `main.rs`, and
+resolves its own `title` / `intro` / `media_caption` plus a title/body pair per
+bullet in both locales. The card is capped at 90% of the window height with a
+scrolling body, so the footer stays reachable on the longest run.
 
 ---
 
@@ -2340,6 +2376,16 @@ once the network returns.
   retry path (SDTEST-1693).
 - **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
   namespaced Manage federation endpoints.
+- **2026-08-24** — Reconciled the `dev` test IDs while porting its work onto
+  canonical `main`. The branch had already moved its colliding use cases to
+  SDUC-477/478; because `main` subsequently allocated SDTEST-1692/1693, the
+  ported ten-test block now occupies SDTEST-1694..1703. IDs stay sticky from
+  here. Still duplicated *inside* earlier `main` history and left untouched:
+  SDUC-468 and SDTEST-1200..1203/1377/1655/1656.
+- **2026-08-24** — Added SDUC-478 and SDTEST-1703 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
@@ -2352,6 +2398,10 @@ once the network returns.
   access confirmation, resumable same-context turns, streaming output, and
   cancellation.
 
+- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history
@@ -2428,6 +2478,12 @@ once the network returns.
   Requests share one bounded proportional master column and switch to explicit
   master/detail navigation on narrow windows. Empty details remain contained
   and side-effect-free rather than auto-selecting an arbitrary record.
+- **2026-08-21** — Added SDUC-477 and SDTEST-1694..1697, and amended SDUC-440,
+  for the role-aware first-run tour. The single four-step sequence became three
+  runs chosen from the effective mode, the shortcuts slide became a strip on the
+  last slide, and the mode slide is appended only for an account that can
+  switch. Capping the card at a window-relative height with a scrolling body
+  fixed a footer clipped off the bottom of the longest run.
 - **2026-08-17** — Added SDUC-462 and SDTEST-1617 after reproducing an invisible
   Requests refresh control. Tickets and Requests now share one standard,
   labeled button while retaining their separate read-only refresh events.
