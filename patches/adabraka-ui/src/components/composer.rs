@@ -166,6 +166,14 @@ impl Composer {
         self
     }
 
+    /// ShellDeck patch: SDPATCH-028 — callers that supply a richer commit
+    /// control through an option still need the shared frame and Enter wiring,
+    /// but must not render the default send control beside their own button.
+    pub fn without_commit(mut self) -> Self {
+        self.commit = None;
+        self
+    }
+
     /// Greys the commit control without removing it, so the row keeps its shape
     /// while there is nothing to send.
     pub fn commit_enabled(mut self, enabled: bool) -> Self {
