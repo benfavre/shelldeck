@@ -309,38 +309,6 @@ impl CommandPalette {
         );
     }
 
-    fn select_first(&mut self) {
-        self.selected_index = navigated_index(
-            self.selected_index,
-            self.filtered.len(),
-            PaletteNavigation::First,
-        );
-    }
-
-    fn select_last(&mut self) {
-        self.selected_index = navigated_index(
-            self.selected_index,
-            self.filtered.len(),
-            PaletteNavigation::Last,
-        );
-    }
-
-    fn select_page_up(&mut self) {
-        self.selected_index = navigated_index(
-            self.selected_index,
-            self.filtered.len(),
-            PaletteNavigation::PageUp,
-        );
-    }
-
-    fn select_page_down(&mut self) {
-        self.selected_index = navigated_index(
-            self.selected_index,
-            self.filtered.len(),
-            PaletteNavigation::PageDown,
-        );
-    }
-
     pub fn selected_action(&self) -> Option<&PaletteAction> {
         self.filtered
             .get(self.selected_index)
