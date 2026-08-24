@@ -247,6 +247,15 @@ impl fmt::Debug for PlatformConnection {
 impl PlatformConnection {
     pub fn new(dashboard_url: &str, token: &str) -> Result<Self> {
         let endpoint = platform_endpoint(dashboard_url)?;
+        Self::new_at_endpoint(&endpoint, token)
+    }
+
+    /// Connect to a gateway whose canonical Platform route is namespaced.
+    ///
+    /// Manage uses `/api/manage/automonique/platform` because Bext itself owns
+    /// `/api/platform` for its deployment control API.
+    pub fn new_at_endpoint(endpoint_url: &str, token: &str) -> Result<Self> {
+        let endpoint = explicit_platform_endpoint(endpoint_url)?;
         BearerToken::new(token.to_owned()).map_err(platform_error)?;
         Ok(Self {
             endpoint,
@@ -556,6 +565,30 @@ pub fn platform_endpoint(dashboard_url: &str) -> Result<String> {
     Ok(format!("{origin}/api/platform"))
 }
 
+fn explicit_platform_endpoint(endpoint_url: &str) -> Result<String> {
+    let url = Url::parse(endpoint_url.trim())
+        .map_err(|_| ShellDeckError::Connection("platform endpoint URL is invalid".to_string()))?;
+    if url.scheme() != "https"
+        && !(cfg!(test)
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+    {
+        return Err(ShellDeckError::Connection(
+            "platform endpoint must use HTTPS".to_string(),
+        ));
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ShellDeckError::Connection(
+            "platform endpoint contains unsupported components".to_string(),
+        ));
+    }
+    Ok(url.to_string())
+}
+
 pub fn stable_client_id(seed: &str) -> Result<ClientId> {
     let normalized = seed
         .chars()
@@ -617,6 +650,25 @@ mod tests {
         );
         assert!(platform_endpoint("http://monique.example.test/").is_err());
         assert!(platform_endpoint("https://user@monique.example.test/").is_err());
+    }
+
+    // SDTEST-1692
+    #[test]
+    fn sdtest_1692_explicit_manage_endpoint_preserves_its_namespaced_route() {
+        let connection = PlatformConnection::new_at_endpoint(
+            "https://manage.example.test/api/manage/automonique/platform",
+            "fixture-sensitive-token",
+        )
+        .unwrap();
+        assert_eq!(
+            connection.endpoint(),
+            "https://manage.example.test/api/manage/automonique/platform"
+        );
+        assert!(PlatformConnection::new_at_endpoint(
+            "https://manage.example.test/api/manage/automonique/platform?node=private",
+            "fixture-sensitive-token",
+        )
+        .is_err());
     }
 
     #[test]

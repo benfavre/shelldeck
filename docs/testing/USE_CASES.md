@@ -889,7 +889,10 @@ never shared across local and SSH targets or persisted by ShellDeck.
 ### SDUC-200 — Canonical remote contract
 
 The desktop uses `automonique-platform-client` and the shared protocol types;
-the exact canonical frame travels over authenticated HTTPS.
+the exact canonical frame travels over authenticated HTTPS. When AI Operations
+is the authentication and federation boundary, an explicit HTTPS endpoint
+preserves Manage's namespaced route instead of assuming the direct Automonique
+`/api/platform` path.
 
 ### SDUC-201 — Native session cockpit
 
@@ -2332,6 +2335,8 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-24** — Amended SDUC-200 and added SDTEST-1692 for explicit,
+  namespaced Manage federation endpoints.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
