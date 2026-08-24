@@ -14,13 +14,10 @@ impl Workspace {
         clippy_configured: bool,
     ) -> Vec<PaletteAction> {
         let signed_in = !allowed_modes.is_empty();
+        // « Quitter » est ajouté en dernier, volontairement : la palette
+        // présélectionne sa première ligne, si bien qu'ouvrir la palette et
+        // valider fermait l'application. Voir la fin de cette fonction.
         let mut actions = vec![
-            PaletteAction::new(
-                t!("palette.quit").to_string(),
-                Some("Ctrl+Q"),
-                "x",
-                Box::new(Quit),
-            ),
             // Recovery path must exist in every mode, including logged out:
             // the menu row cannot be the only place that can restore itself.
             PaletteAction::new(
@@ -229,6 +226,15 @@ impl Workspace {
                 ));
             }
         }
+        // Dernière ligne, jamais la première : la palette présélectionne son
+        // premier résultat, et « Quitter » en tête faisait de « ouvrir la
+        // palette puis Entrée » une fermeture de l'application.
+        actions.push(PaletteAction::new(
+            t!("palette.quit").to_string(),
+            Some("Ctrl+Q"),
+            "x",
+            Box::new(Quit),
+        ));
         actions
     }
 
@@ -396,6 +402,36 @@ mod tests {
         ToggleMenuBar, Workspace,
     };
     use gpui::Action;
+
+    /// SDTEST-1667 — « Quitter » ne doit jamais être la première ligne.
+    ///
+    /// La palette présélectionne son premier résultat : avec « Quitter » en
+    /// tête, ouvrir la palette et valider fermait l'application, et il n'y
+    /// avait aucun moyen clavier d'annuler puisque Échap n'était pas délivré
+    /// non plus.
+    #[test]
+    fn sdtest_1667_quit_is_never_the_preselected_first_entry() {
+        for (allowed, current) in [
+            (&[][..], AppMode::User),
+            (&[AppMode::User][..], AppMode::User),
+            (&[AppMode::User, AppMode::Support][..], AppMode::Support),
+            (
+                &[AppMode::User, AppMode::Support, AppMode::Dev][..],
+                AppMode::Dev,
+            ),
+        ] {
+            let allowed: &'static [AppMode] = Box::leak(allowed.to_vec().into_boxed_slice());
+            let actions = Workspace::base_palette_actions(allowed, current, false, false);
+            assert!(
+                contains_action::<Quit>(&actions),
+                "Quitter doit rester joignable ({current:?})"
+            );
+            assert!(
+                !actions[0].action.as_any().is::<Quit>(),
+                "Quitter ne doit pas être présélectionné ({current:?})"
+            );
+        }
+    }
 
     fn contains_action<T: Action + 'static>(actions: &[PaletteAction]) -> bool {
         actions

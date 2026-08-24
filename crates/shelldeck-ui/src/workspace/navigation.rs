@@ -54,7 +54,7 @@ impl Workspace {
             d.favorite_hosts = favorite_hosts;
         });
         self.status_bar.update(cx, |bar, _| {
-            bar.set_counts(terminal_count, active_forwards, running_scripts);
+            bar.set_counts(active_connections, active_forwards, running_scripts);
         });
         // Also push the fresh state to the tray. The tray publisher
         // dedups against its last state, so this is cheap even when

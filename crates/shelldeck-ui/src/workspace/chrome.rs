@@ -465,7 +465,7 @@ impl Workspace {
             .items_center()
             .w_full()
             .flex_shrink_0()
-            .h(px(40.0))
+            .h(px(WORKSPACE_TITLEBAR_HEIGHT))
             .bg(titlebar_bg);
         // Rounded clipping does not propagate to child backgrounds in GPUI.
         // This element owns the titlebar background, so it must own the

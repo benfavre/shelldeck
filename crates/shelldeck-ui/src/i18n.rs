@@ -71,6 +71,23 @@ pub fn api_error_message(err: &shelldeck_core::error::ShellDeckError) -> String 
     crate::t!(key).to_string()
 }
 
+/// Comme [`api_error_message`], mais pour un échec du **formulaire de
+/// connexion**.
+///
+/// Un 401 n'y veut pas dire la même chose qu'ailleurs : pendant une session
+/// c'est un jeton périmé, sur ce formulaire ce sont des identifiants refusés.
+/// Répondre « Votre session a expiré » à quelqu'un qui vient de taper son mot
+/// de passe l'envoie chercher un problème qui n'existe pas.
+pub fn login_error_message(err: &shelldeck_core::error::ShellDeckError) -> String {
+    use shelldeck_core::config::cloud_account::{classify_api_error, ApiFailure};
+
+    if classify_api_error(err) == ApiFailure::AuthRejected {
+        tracing::warn!("connexion refusée par le portail : {err}");
+        return crate::t!("error.login.rejected").to_string();
+    }
+    api_error_message(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +129,71 @@ mod tests {
         );
     }
 
+    /// SDTEST-1671 — reste dans le scénario bilingue unique : la locale est
+    /// globale au processus et ne doit jamais être modifiée par deux tests en
+    /// parallèle.
+    fn assert_operational_vocabulary_is_localized(
+        unknown_status: &str,
+        unknown_priority: &str,
+        one_connection: &str,
+        many_connections: &str,
+        one_forward: &str,
+        many_forwards: &str,
+        one_script: &str,
+        many_scripts: &str,
+    ) {
+        use crate::status_bar::{status_count_label, StatusMetric};
+
+        assert_eq!(
+            crate::support_view::status_label("awaiting_agent"),
+            unknown_status
+        );
+        assert_eq!(
+            crate::support_view::issue_status_label("awaiting_review"),
+            unknown_status
+        );
+        assert_eq!(
+            crate::support_view::priority_label("critical"),
+            unknown_priority
+        );
+
+        assert_eq!(
+            status_count_label(StatusMetric::ActiveConnections, 1),
+            one_connection
+        );
+        assert_eq!(
+            status_count_label(StatusMetric::ActiveConnections, 2),
+            many_connections
+        );
+        assert_eq!(
+            status_count_label(StatusMetric::ActiveForwards, 1),
+            one_forward
+        );
+        assert_eq!(
+            status_count_label(StatusMetric::ActiveForwards, 2),
+            many_forwards
+        );
+        assert_eq!(
+            status_count_label(StatusMetric::RunningScripts, 1),
+            one_script
+        );
+        assert_eq!(
+            status_count_label(StatusMetric::RunningScripts, 2),
+            many_scripts
+        );
+
+        assert_eq!(
+            crate::t!("sidebar.nav.server_sync"),
+            crate::t!("menu.go.server_sync")
+        );
+        assert_eq!(
+            crate::t!("sidebar.nav.server_sync"),
+            crate::t!("sync.title")
+        );
+        assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("menu.go.recent"));
+        assert_eq!(crate::t!("sidebar.nav.recent"), crate::t!("recent.title"));
+    }
+
     /// Single test — `rust_i18n::set_locale` is process-global; parallel tests race.
     #[test]
     fn locale_fr_and_en() {
@@ -137,6 +219,16 @@ mod tests {
             "Connexion interrompue\u{a0}: production"
         );
         assert_portal_failures_stay_readable("fr");
+        assert_operational_vocabulary_is_localized(
+            "statut inconnu",
+            "Priorité inconnue",
+            "1 connexion active",
+            "2 connexions actives",
+            "1 redirection active",
+            "2 redirections actives",
+            "1 script en cours",
+            "2 scripts en cours",
+        );
 
         apply_ui_language(&UiLanguage::En);
         assert_eq!(resolve_locale(&UiLanguage::En), "en");
@@ -157,6 +249,16 @@ mod tests {
             "Connection interrupted: production"
         );
         assert_portal_failures_stay_readable("en");
+        assert_operational_vocabulary_is_localized(
+            "unknown status",
+            "Unknown priority",
+            "1 active connection",
+            "2 active connections",
+            "1 active port forward",
+            "2 active port forwards",
+            "1 running script",
+            "2 running scripts",
+        );
     }
 
     #[test]

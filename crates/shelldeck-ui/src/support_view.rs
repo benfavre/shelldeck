@@ -48,6 +48,7 @@ use shelldeck_core::config::manage_support::{
     SupportAgent, SupportCounts, SupportMe, SupportMessage, SupportMessageDelivery, SupportTicket,
 };
 
+use crate::overlay::round_window_bottom;
 use crate::t;
 use crate::theme::ShellDeckColors;
 
@@ -1527,7 +1528,7 @@ impl SupportView {
 }
 
 impl Render for SupportView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search_query(cx);
         let filtered_count = self
             .tickets
@@ -1617,7 +1618,7 @@ impl Render for SupportView {
             .into_any_element()
         };
 
-        let compact = support_compact_layout(_window.viewport_size().width, _window.rem_size());
+        let compact = support_compact_layout(window.viewport_size().width, window.rem_size());
         let mut left = support_list_column(compact).child(header);
         if self.jean_available {
             left = left.child(self.render_jean_strip(cx));
@@ -1645,15 +1646,22 @@ impl Render for SupportView {
             SupportSection::Requests => self.render_requests(compact, cx).into_any_element(),
         };
 
-        let mut root = div()
-            .relative()
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(ShellDeckColors::bg_primary())
-            .child(self.render_section_tabs(cx))
-            .child(content);
+        // Le mode Support n'a pas de barre d'état sous lui (UX-004) : cette
+        // racine opaque est la couche la plus basse et porte donc elle-même
+        // les deux coins bas de la fenêtre.
+        let mut root = round_window_bottom(
+            div()
+                .relative()
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(ShellDeckColors::bg_primary())
+                .overflow_hidden(),
+            window.is_maximized(),
+        )
+        .child(self.render_section_tabs(cx))
+        .child(content);
 
         if self.filter_modal_open && self.section == SupportSection::Tickets {
             root = root.child(self.render_filter_modal(cx));
@@ -1737,7 +1745,7 @@ pub(crate) fn status_label(s: &str) -> String {
         "open" => t!("support.status.open").to_string(),
         "pending" => t!("support.status.pending").to_string(),
         "closed" => t!("support.status.closed").to_string(),
-        other => other.to_string(),
+        _ => t!("support.status.unknown").to_string(),
     }
 }
 
@@ -1747,7 +1755,7 @@ pub(crate) fn priority_label(p: &str) -> String {
         "normal" => t!("support.priority.normal").to_string(),
         "high" => t!("support.priority.high").to_string(),
         "urgent" => t!("support.priority.urgent").to_string(),
-        other => other.to_string(),
+        _ => t!("support.priority.unknown").to_string(),
     }
 }
 
@@ -1771,6 +1779,18 @@ pub struct AiDraft {
     pub model: String,
 }
 
+/// Nombre de commentaires d'une demande, accordé.
+///
+/// Partagé entre la file Support et « Mes demandes » : la même donnée doit se
+/// lire pareil des deux côtés (`.agents/ui-components.md` § Harmonisation).
+pub(crate) fn issue_comment_count_label(count: i64) -> String {
+    if count == 1 {
+        t!("support.meta.comments.one").to_string()
+    } else {
+        t!("support.meta.comments.many", count = count).to_string()
+    }
+}
+
 pub(crate) fn issue_status_label(s: &str) -> String {
     match s {
         "open" => t!("support.issue_status.open").to_string(),
@@ -1779,7 +1799,7 @@ pub(crate) fn issue_status_label(s: &str) -> String {
         "blocked" => t!("support.issue_status.blocked").to_string(),
         "done" => t!("support.issue_status.done").to_string(),
         "closed" => t!("support.issue_status.closed").to_string(),
-        other => other.to_string(),
+        _ => t!("support.issue_status.unknown").to_string(),
     }
 }
 

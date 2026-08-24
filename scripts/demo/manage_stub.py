@@ -31,7 +31,8 @@ def ticket(tid, subject, status, priority, contact, minutes_ago, preview, unread
     return {
         "id": tid, "channel": "livechat", "subject": subject,
         "contact": {"name": contact, "email": f"{contact.split()[0].lower()}@exemple.test"},
-        "status": status, "unread": unread, "assignee": "",
+        "status": status, "unread": unread,
+        "assignee": AGENT["email"] if tid == "t-1002" else "",
         "last_at": NOW - minutes_ago * MIN, "msg_count": count,
         "last_preview": preview, "priority": priority,
     }
@@ -44,7 +45,7 @@ TICKETS = [
            "Yanis Berger", 95, "Je vous envoie la capture demandée.", False, 6),
     ticket("t-1003", "Demande de restauration d'une sauvegarde", "open", "urgent",
            "Sophie Renard", 3, "Il nous faut la version d'avant-hier.", True, 2),
-    ticket("t-1004", "Question sur la facturation annuelle", "resolved", "low",
+    ticket("t-1004", "Question sur la facturation annuelle", "closed", "low",
            "Marc Oliveira", 26 * 60, "Parfait, merci pour la précision.", False, 3),
 ]
 
@@ -102,6 +103,9 @@ def issue(iid, title, status, priority, source, by, hours_ago, comments, body):
     }
 
 
+# Deux demandes portent le nom du compte de démonstration : sans elles, le mode
+# Utilisateur affiche une liste vide, car « Mes demandes » ne retient que celles
+# dont `requested_by` correspond au compte connecté.
 ISSUES = [
     issue("i-2001", "Ajouter un filtre par marque sur le catalogue", "open", "normal",
           "user", "Claire Meunier", 30, 2,
@@ -109,17 +113,50 @@ ISSUES = [
     issue("i-2002", "Le formulaire de contact ne fonctionne plus", "in_progress", "high",
           "user", "Yanis Berger", 6, 4,
           "Depuis ce matin, l'envoi affiche une erreur 500. Reproduit sur Firefox et Chrome."),
-    issue("i-2003", "Passer la page d'accueil en deux colonnes sur mobile", "resolved", "low",
+    issue("i-2003", "Passer la page d'accueil en deux colonnes sur mobile", "done", "low",
           "support", "Sophie Renard", 72, 3,
           "Converti depuis un ticket : la mise en page mobile tasse les visuels."),
+    issue("i-2004", "Prévoir une bannière pour les soldes d'été", "open", "normal",
+          "user", AGENT["name"], 20, 2,
+          "Un visuel pleine largeur sur la page d'accueil, du 1er au 30 juin."),
+    issue("i-2005", "Certificat expiré sur la préproduction", "in_progress", "urgent",
+          "user", AGENT["name"], 3, 1,
+          "Le navigateur affiche un avertissement en ouvrant preprod.boutique.exemple.test."),
 ]
+
+# Les commentaires voyagent *dans* l'objet demande (`issue.comments`), pas à
+# côté : le client ne lit que cette forme.
+ISSUE_COMMENTS = {
+    "i-2004": [
+        {"id": "c-1", "author": AGENT["name"], "kind": "comment",
+         "body": "Voici la maquette validée par la direction artistique.",
+         "at": NOW - 18 * H},
+        {"id": "c-2", "author": "Équipe Inklura", "kind": "comment",
+         "body": "Bien reçu, nous planifions la mise en ligne pour la semaine "
+                 "prochaine. Le visuel sera en place le 28 mai au plus tard.",
+         "at": NOW - 10 * H},
+    ],
+    "i-2005": [
+        {"id": "c-3", "author": "Équipe Inklura", "kind": "comment",
+         "body": "Renouvellement lancé, le certificat sera actif d'ici une heure.",
+         "at": NOW - 1 * H},
+    ],
+}
+
+
+def owned_by_account(iss):
+    """Les demandes du compte connecté, au sens du filtre `mine=1` de Manage."""
+    return iss["requested_by"] in (AGENT["name"], AGENT["email"])
 
 
 def body_for(path):
     if "auth" in path:
         return {"ok": True, "label": "Démonstration",
+                # `user.roles` est le sac de rôles que le client lit pour la
+                # carte « Rôles » ; `role`/`roleNames` sont les formes héritées.
                 "user": {"name": AGENT["name"], "email": AGENT["email"],
                          "role": "superadmin",
+                         "roles": ["superadmin", "inklura_support"],
                          "roleNames": ["superadmin", "inklura_support"]},
                 "is_superadmin": True, "is_admin": True, "is_inklura_support": True,
                 "roles": ["superadmin", "inklura_support"]}
@@ -133,7 +170,9 @@ def body_for(path):
             return {"ok": True, "agents": [AGENT]}
         if "action=list" in path or path.endswith("support"):
             return {"ok": True, "tickets": TICKETS,
-                    "counts": {"open": 2, "pending": 1, "resolved": 1, "unassigned": 3},
+                    "counts": {"all": len(TICKETS), "unassigned": 3, "mine": 1,
+                               "open": 2, "pending": 1, "breaching": 1,
+                               "closed": 1},
                     "me": AGENT}
         return {"ok": True}
 
@@ -141,8 +180,13 @@ def body_for(path):
         if "id=" in path:
             iid = path.split("id=")[-1].split("&")[0]
             found = next((i for i in ISSUES if i["id"] == iid), ISSUES[0])
-            return {"ok": True, "issue": found, "comments": [], "staff": True}
-        return {"ok": True, "issues": ISSUES, "total": len(ISSUES),
+            return {"ok": True,
+                    "issue": dict(found, comments=ISSUE_COMMENTS.get(iid, [])),
+                    "staff": True}
+        # `mine=1` est envoyé par le mode Utilisateur : le respecter évite de
+        # laisser croire que le client voit les demandes des autres.
+        listed = [i for i in ISSUES if owned_by_account(i)] if "mine=1" in path else ISSUES
+        return {"ok": True, "issues": listed, "total": len(listed),
                 "staff": True, "instances": []}
 
     if "sites" in path:

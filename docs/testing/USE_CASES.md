@@ -1412,6 +1412,16 @@ in the source key. The interpolation contract survives locale
 switches; a key without `%{…}` placeholders ignores extra vars
 without erroring.
 
+### SDUC-470 — Operational vocabulary stays localized and consistent
+
+Server-owned ticket statuses, request statuses, and priorities never appear as
+raw protocol tokens when a newer value reaches an older ShellDeck client; an
+unknown value uses a localized generic label. The Dev status bar localizes and
+inflects its live connection, port-forward, and running-script counts, and its
+labels describe activity rather than stored inventory. A navigation
+destination keeps the same localized name in the activity rail, the Go menu,
+and the destination title.
+
 ---
 
 ## 19. Deep links (`shelldeck://`)
@@ -2347,6 +2357,10 @@ once the network returns.
 
 ## Change log
 
+- **2026-08-24** — Added SDUC-470 and SDTEST-1671 for the NAV-06/D-05 UX
+  repair: unknown operational values no longer leak protocol English, live
+  status counters are explicit and inflected, and Server Sync / Recent
+  Activity keep one name across navigation surfaces.
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history

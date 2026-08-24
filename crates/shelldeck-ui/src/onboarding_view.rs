@@ -12,6 +12,7 @@
 //! animates GIF natively if a slide ever needs motion.
 
 use crate::icons::lucide_icon;
+use crate::overlay::{window_backdrop, InputEscape};
 use crate::scale::px;
 use crate::t;
 use crate::theme::ShellDeckColors;
@@ -654,19 +655,16 @@ impl Render for OnboardingView {
                 }),
         );
 
-        div()
-            .id("onboarding-overlay")
+        window_backdrop("onboarding-overlay", window.is_maximized())
+            // Échap n'arrive pas comme touche quand un champ a le focus : le
+            // contexte `Input` la lie à une action. Voir `crate::overlay`.
+            .capture_action(cx.listener(|_this, _: &InputEscape, _window, cx| {
+                cx.emit(OnboardingEvent::Skipped);
+            }))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key_down(event, cx);
             }))
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(ShellDeckColors::backdrop())
             .flex()
             .items_center()
             .justify_center()

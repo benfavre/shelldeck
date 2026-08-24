@@ -25,6 +25,7 @@ pub(crate) mod markdown;
 pub mod menu_bar;
 pub(crate) mod monolith;
 pub mod onboarding_view;
+pub mod overlay;
 pub mod port_forward_form;
 pub mod port_forward_view;
 pub mod recent_view;
