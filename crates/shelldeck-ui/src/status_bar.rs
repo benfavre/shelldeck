@@ -48,13 +48,42 @@ impl StatusBar {
         self.notification = msg;
     }
 
-    fn status_item(_icon: &str, count: usize, label: &str) -> impl IntoElement {
+    fn status_item(_icon: &str, label: String) -> impl IntoElement {
         div().flex().items_center().gap(px(4.0)).child(
             div()
                 .text_size(px(11.0))
                 .text_color(ShellDeckColors::text_muted())
-                .child(format!("{} {}", count, label)),
+                .child(label),
         )
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum StatusMetric {
+    ActiveConnections,
+    ActiveForwards,
+    RunningScripts,
+}
+
+/// Localized, explicit status-bar counter.
+///
+/// The values are live activity counts, not inventory totals. Keeping that
+/// meaning in the label prevents `0 scripts` from reading as an empty script
+/// library when it actually means that no script is currently running.
+pub(crate) fn status_count_label(metric: StatusMetric, count: usize) -> String {
+    match (metric, count) {
+        (StatusMetric::ActiveConnections, 1) => t!("status_bar.connections.one").to_string(),
+        (StatusMetric::ActiveConnections, _) => {
+            t!("status_bar.connections.many", count = count).to_string()
+        }
+        (StatusMetric::ActiveForwards, 1) => t!("status_bar.forwards.one").to_string(),
+        (StatusMetric::ActiveForwards, _) => {
+            t!("status_bar.forwards.many", count = count).to_string()
+        }
+        (StatusMetric::RunningScripts, 1) => t!("status_bar.scripts.one").to_string(),
+        (StatusMetric::RunningScripts, _) => {
+            t!("status_bar.scripts.many", count = count).to_string()
+        }
     }
 }
 
@@ -86,15 +115,19 @@ impl Render for StatusBar {
                     .gap(px(16.0))
                     .child(Self::status_item(
                         "server",
-                        self.active_connections,
-                        "connections",
+                        status_count_label(
+                            StatusMetric::ActiveConnections,
+                            self.active_connections,
+                        ),
                     ))
                     .child(Self::status_item(
                         "arrow-right-left",
-                        self.active_forwards,
-                        "forwards",
+                        status_count_label(StatusMetric::ActiveForwards, self.active_forwards),
                     ))
-                    .child(Self::status_item("play", self.running_scripts, "scripts")),
+                    .child(Self::status_item(
+                        "play",
+                        status_count_label(StatusMetric::RunningScripts, self.running_scripts),
+                    )),
             )
             .child(
                 // Center: git status

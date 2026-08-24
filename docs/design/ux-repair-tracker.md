@@ -50,6 +50,7 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-030 | User / Feuilles de demande | La feuille de nouvelle demande ou de détail couvrait toute la barre de titre, y compris réduire, agrandir et fermer : aucune action de fenêtre ne restait accessible à la souris. | P1 | À valider | Feuille ouverte, la barre de titre reste entièrement visible et ses trois boutons répondent. |
 | UX-031 | Toute l'application / Texte | Le moteur de retour à la ligne considérait l'apostrophe typographique `U+2019` comme une ponctuation, contrairement à l'apostrophe ASCII, et pouvait donc commencer une ligne par `’échange` ou `’importe`. | P1 | À valider | À largeur contrainte, `l’`, `d’`, `qu’` et `n’` restent attachés aux deux côtés de l'élision. |
 | UX-032 | Onboarding / Dernière étape | L'audit signalait encore la dernière ligne de raccourcis coupée par le pied de page, alors que le correctif du parcours par rôle avait déjà plafonné la carte et rendu son corps défilant. | P1 | À valider | À 800×650, le pied de page reste fixe et le corps défile jusqu'à « Ouvrir les paramètres ». |
+| UX-033 | Dev / Navigation et barre d'état | Les statuts/priorités inconnus reprenaient le jeton serveur brut, les trois compteurs fuyaient en anglais et confondaient activité en cours et inventaire, tandis que deux destinations changeaient de nom selon le rail, le menu ou leur titre. | P2 | À valider | En français puis en anglais, contrôler les trois compteurs à 1 et plusieurs ; « Synchronisation serveur » et « Activité récente » gardent leur nom entre le rail, Aller et le titre. |
 
 ## Règle de mise à jour
 
@@ -271,3 +272,13 @@ ligne existante.
   défilant. Le rapport était resté en retard. Rejoué à 800×650 sur l'étape
   Support 5/5 : le pied de page reste visible et le défilement atteint les quatre
   raccourcis, jusqu'à « Ouvrir les paramètres ».
+- **2026-08-24 — UX-033 → À valider.** Les replis de statut et de priorité
+  deviennent des libellés génériques traduits au lieu d'exposer le vocabulaire
+  du protocole. La barre d'état reçoit maintenant le vrai nombre de connexions
+  actives et accorde « connexion active », « redirection active » et « script
+  en cours » ; elle ne peut plus faire lire « 0 scripts » comme un inventaire
+  vide. Le rail, le menu Aller et les titres partagent enfin
+  « Synchronisation serveur » et « Activité récente ». SDTEST-1671 couvre les
+  deux locales dans le scénario séquentiel imposé par `rust_i18n`. Recette X11
+  sur le profil isolé : les trois zéros portent leur activité exacte ; les deux
+  entrées du menu Aller ont ensuite ouvert une vue au titre strictement identique.
