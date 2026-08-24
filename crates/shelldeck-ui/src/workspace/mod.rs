@@ -212,6 +212,7 @@ const MODE_TRANSITION_LOADING_MS: u64 = 2_540;
 /// Support ↔ Dev revenait à facturer une animation déjà vue.
 const MODE_TRANSITION_LOADING_REPEAT_MS: u64 = 420;
 const MODE_TRANSITION_IN_MS: u64 = 280;
+#[cfg(test)]
 const MODE_TRANSITION_TOTAL_MS: u64 =
     MODE_TRANSITION_OUT_MS + MODE_TRANSITION_LOADING_MS + MODE_TRANSITION_IN_MS;
 
