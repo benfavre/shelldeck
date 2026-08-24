@@ -879,6 +879,9 @@ follow-up resumes only when provider, target, permissions, workdir, and model
 still match exactly. Changing any of them starts a fresh provider session, and
 the operator can always choose “Nouvelle session” explicitly. Session IDs are
 never shared across local and SSH targets or persisted by ShellDeck.
+The control bar uses explicit scale-aware rows, and the prompt composer keeps
+one centered frame with one visible execution action from narrow windows to
+wide desktop layouts.
 
 ---
 
@@ -1764,6 +1767,9 @@ User and Support surfaces and are mirrored as image links to GitHub/Monique.
 Ticket attachments remain structured in the helpdesk thread and their Share
 viewer links are routed to the originating email, livechat, Manage, or SMS channel.
 Issue uploads never appear in the uploader's personal Share gallery.
+The shared image lightbox preserves the floating window's outer radius and
+becomes edge-to-edge with square corners only while the window is maximized.
+The full-window capture annotator follows the same corner ownership contract.
 After publication, request owners and internal staff can permanently delete an
 image from the native gallery after a destructive confirmation. Manage removes
 the thread reference and uses a short-lived, single-use scope capability so
@@ -2379,6 +2385,13 @@ once the network returns.
   repair: unknown operational values no longer leak protocol English, live
   status counters are explicit and inflected, and Server Sync / Recent
   Activity keep one name across navigation surfaces.
+- **2026-08-24** — Amended SDUC-475 with the agent console's responsive chrome
+  contract: explicit scale-aware control rows and one centered prompt frame
+  with one visible execution action.
+- **2026-08-24** — Amended SDUC-432 after both full-window attachment surfaces
+  were found repainting all four floating-window corners: the lightbox and
+  capture annotator now own the common radius and deliberately drop it when
+  maximized.
 - **2026-08-23** — Amended SDUC-201 and SDUC-476 for cursor-based steady-state
   refresh, exact attachment cursors, searchable multi-pane observation,
   reconnect-safe lease loss, approval/run previews, typed ownership refusals,
@@ -2390,7 +2403,6 @@ once the network returns.
   console (Claude Code, Codex, DeepSeek via Jcode), including explicit target,
   access confirmation, resumable same-context turns, streaming output, and
   cancellation.
-
 - **2026-08-20** — Amended SDUC-468: the mention wash became a padded, rounded
   chip (SDPATCH-041 on the gpui fork, where a run background was a bare
   full-line-height rect), and quoted turns — recent threads and the history

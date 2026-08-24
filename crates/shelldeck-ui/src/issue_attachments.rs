@@ -3,6 +3,7 @@
 //! Inklura Share.
 
 use crate::icons::lucide_icon;
+use crate::overlay::window_backdrop;
 use crate::scale::px;
 use crate::theme::ShellDeckColors;
 use gpui::prelude::*;
@@ -636,11 +637,7 @@ impl Render for AttachmentLightbox {
             );
         }
 
-        div()
-            .id("attachment-lightbox")
-            .absolute()
-            .inset_0()
-            .occlude()
+        window_backdrop("attachment-lightbox", window.is_maximized())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .flex()
