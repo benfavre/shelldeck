@@ -307,6 +307,13 @@ impl Workspace {
         // Le rayon de la fenêtre est porté par la couche qui peint réellement
         // le fond, jamais par un ancêtre : voir `crate::overlay`.
         window_backdrop(id, is_maximized)
+            // Leave the client-side titlebar outside the occluding layer: its
+            // minimize / maximize / close controls must remain reachable while
+            // a request is open. `window_backdrop` starts at zero and rounds
+            // every corner, so override both the top edge and its now-internal
+            // radii after constructing it.
+            .top(px(WORKSPACE_TITLEBAR_HEIGHT))
+            .rounded_t(px(0.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _window, cx| {
@@ -334,13 +341,10 @@ impl Workspace {
                         if is_maximized {
                             panel
                         } else {
-                            // The backdrop owns the left corners, but this
-                            // opaque panel paints after it and therefore owns
-                            // the two right window corners. Match the exact
-                            // root radius on those edges as well.
-                            panel
-                                .rounded_tr(use_theme().tokens.radius_xl)
-                                .rounded_br(use_theme().tokens.radius_xl)
+                            // The sheet begins below the titlebar, so its top
+                            // edge is internal and square. It still owns the
+                            // outer bottom-right corner it paints over.
+                            panel.rounded_br(use_theme().tokens.radius_xl)
                         }
                     })
                     .on_mouse_down(MouseButton::Left, |_e, _window, cx: &mut App| {

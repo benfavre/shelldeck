@@ -43,10 +43,13 @@ registres séparés référencés par [`work-registers.md`](./work-registers.md)
 | UX-023 | User / Détail demande | Le fil est ancré en haut, contre celui des tickets qui est ancré en bas : plusieurs centaines de pixels de vide séparent le dernier message du compositeur. | P1 | Ouvert | Fil court : le dernier message doit toucher le compositeur. |
 | UX-024 | Support / États vides | Le volet de détail annonçait « Aucun ticket ouvert » au-dessus d'une liste qui en contenait quatre — le sens réel étant « rien de sélectionné » — et son corps de texte tutoyait, seul de toute l'application. | P1 | À valider | Les deux files, sans sélection. |
 | UX-025 | Paramètres / Raccourci global | Le `Debug` Rust d'une erreur X11 s'affichait tel quel, tronqué en plein milieu, dès qu'une autre application détenait déjà la combinaison — le cas courant. | P1 | À valider | Raccourci déjà pris : message en français, pastille contenue. |
-| UX-026 | Dev / Barre latérale | Cinq activités sur huit ouvraient un panneau qui répétait la liste que leur propre vue affichait juste à côté — Scripts en donnait le cas d'école, six lignes identiques côte à côte, 570 px de navigation avant le premier pixel de contenu. | P1 | À valider | Scripts, Redirections, Éditeur, Terminaux et Activité doivent occuper toute la largeur ; Connexions et Sites gardent leur panneau. |
+| UX-026 | Dev / Barre latérale | Cinq activités sur huit ouvraient un panneau qui répétait la liste que leur propre vue affichait juste à côté — Scripts en donnait le cas d'école, six lignes identiques côte à côte, 570 px de navigation avant le premier pixel de contenu. | P1 | À valider | Scripts, Redirections, Éditeur, Terminaux, Activité et Sites doivent occuper toute la largeur ; seules Connexions gardent leur panneau. |
 | UX-027 | Transitions de mode | Trois secondes pleines à chaque changement de mode, alors que rien ne charge au retour : les entités Dev sont masquées et non détruites. Un agent qui fait des allers-retours Support ↔ Dev payait six secondes par aller-retour. | P1 | À valider | Première entrée dans un mode : palier long conservé. Retour : voile déjà refermé sous la seconde. |
 | UX-028 | Dev / Sites | Le panneau listait les sites du locataire Manage pendant que la vue annonçait « Aucun site découvert » : deux collections différentes, un seul mot, côte à côte. « Tout effacer », rouge, restait par ailleurs cliquable au-dessus d'un écran vide. | P1 | À valider | L'activité ne doit désigner qu'une chose ; l'action destructive ne doit apparaître que s'il y a quelque chose à effacer. |
 | UX-029 | Dev / Terminal | L'état vide peignait le fond de la palette *terminal* : en thème clair, un panneau noir plein cadre avec une carte claire posée dessus. La carte « Lancer Claude Code » affichait par ailleurs `claude --dangerously-skip-permiss`, coupé en plein mot — précisément sur l'information qui compte. | P1 | À valider | Thème clair : l'écran suit le thème. Carte Claude : légende lisible, commande exacte au survol. |
+| UX-030 | User / Feuilles de demande | La feuille de nouvelle demande ou de détail couvrait toute la barre de titre, y compris réduire, agrandir et fermer : aucune action de fenêtre ne restait accessible à la souris. | P1 | À valider | Feuille ouverte, la barre de titre reste entièrement visible et ses trois boutons répondent. |
+| UX-031 | Toute l'application / Texte | Le moteur de retour à la ligne considérait l'apostrophe typographique `U+2019` comme une ponctuation, contrairement à l'apostrophe ASCII, et pouvait donc commencer une ligne par `’échange` ou `’importe`. | P1 | À valider | À largeur contrainte, `l’`, `d’`, `qu’` et `n’` restent attachés aux deux côtés de l'élision. |
+| UX-032 | Onboarding / Dernière étape | L'audit signalait encore la dernière ligne de raccourcis coupée par le pied de page, alors que le correctif du parcours par rôle avait déjà plafonné la carte et rendu son corps défilant. | P1 | À valider | À 800×650, le pied de page reste fixe et le corps défile jusqu'à « Ouvrir les paramètres ». |
 
 ## Règle de mise à jour
 
@@ -250,3 +253,21 @@ ligne existante.
   fait — « Sans confirmation des actions », « Bac à sable, accord à la
   demande » — et la commande exacte passe en infobulle : tronquée dans la
   carte, elle déformait l'avertissement au lieu de le porter.
+
+- **2026-08-24 — UX-030 → À valider.** Le fond occlusif et le panneau commencent
+  désormais sous les 40 px de la barre de titre, en partageant la même constante
+  scale-aware que le chrome. Leur bord haut devient donc interne et carré ; seul le
+  panneau continue de posséder le coin bas droit de la fenêtre. Recette X11 : feuille
+  de détail ouverte, le bouton d'agrandissement a effectivement fait passer la
+  fenêtre de 1210×810 à 1920×1048, puis retour à l'état flottant.
+- **2026-08-24 — UX-031 → À valider.** `LineWrapper::is_word_char` classe
+  maintenant `U+2019` comme l'apostrophe ASCII. `SDPATCH-115` inventorie le correctif
+  et son garde-fou sur `l’échange`, `d’ici`, `qu’importe` et `n’importe`. À 900 puis
+  800 px, l'état vide Support garde `l’échange` entier et les Paramètres gardent
+  `n’importe` entier.
+- **2026-08-24 — UX-032 → À valider sans nouvelle correction.** Le code de
+  `21de839` portait déjà la structure prescrite par `.agents/overflow.md` : carte
+  plafonnée à 90 % de la fenêtre, rangées fixes, corps `flex_grow + min_h(0)`
+  défilant. Le rapport était resté en retard. Rejoué à 800×650 sur l'étape
+  Support 5/5 : le pied de page reste visible et le défilement atteint les quatre
+  raccourcis, jusqu'à « Ouvrir les paramètres ».

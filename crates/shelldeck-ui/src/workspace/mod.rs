@@ -153,6 +153,10 @@ pub enum AccountStatus {
     Offline,
 }
 
+/// Height of the custom client-side titlebar. Sheets that must leave the
+/// window controls reachable use the same scale-aware value as the chrome.
+const WORKSPACE_TITLEBAR_HEIGHT: f32 = 40.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueAttachmentTarget {
     NewRequest,
