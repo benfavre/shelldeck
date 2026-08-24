@@ -251,6 +251,9 @@ impl SidebarSection {
             SidebarSection::FileEditor => false,
             // Écran plein cadre, sans liste.
             SidebarSection::ServerSync => false,
+            // Console plein cadre : la cible, le fournisseur et l'accès sont
+            // choisis dans ses propres sélecteurs, pas dans une liste.
+            SidebarSection::Agents => false,
             _ => false,
         }
     }
@@ -1357,7 +1360,7 @@ mod tests {
                 "{excluded:?} is a destination, not a rail activity"
             );
         }
-        // SDTEST-1694 — un panneau ne se justifie que s'il montre ce que sa
+        // SDTEST-1701 — un panneau ne se justifie que s'il montre ce que sa
         // propre vue ne montre pas. Cinq activités affichaient la liste que la
         // vue rendait déjà juste à côté ; la liste ci-dessous est donc close et
         // toute addition doit être argumentée dans `has_panel`.
